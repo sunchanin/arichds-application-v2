@@ -1,0 +1,35 @@
+{
+  "skill_name": "antd-ui",
+  "evals": [
+    {
+      "id": 0,
+      "name": "setup-antd",
+      "prompt": "Set up Ant Design in this Next.js 16 App Router project (React 19, TypeScript) so the team can start building UI with it. Wire up whatever's needed in the app/ directory. Don't run installs \u2014 just write the code files and tell me which packages to add.",
+      "expected_output": "app/layout.tsx wraps children in <AntdRegistry> from @ant-design/nextjs-registry and imports @ant-design/v5-patch-for-react-19; a separate client ThemeProvider with 'use client' holding ConfigProvider + <App>; layout.tsx stays a server component; lists the 4 packages.",
+      "files": [],
+      "assertions": [
+        "antd <App> is mounted in a 'use client' component, never rendered directly in a Server Component page.tsx (would throw the RSC 'needs use client' error at build)"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "users-table",
+      "prompt": "Add a /users page that shows a table of users with columns name, email, and role, using Ant Design. The data comes from a paginated API (assume a fetchUsers({ page, pageSize }) function that returns { rows, total }).",
+      "expected_output": "A 'use client' component renders antd Table with server-side pagination (pagination passes total, onChange refetches), typed columns, rowKey set. A server component page.tsx may fetch initial data and pass as props.",
+      "files": [],
+      "assertions": [
+        "antd <App> is mounted in a 'use client' component, never rendered directly in a Server Component page.tsx (would throw the RSC 'needs use client' error at build)"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "settings-form",
+      "prompt": "Build a settings form with Ant Design where a user updates their name, email, and role (role is a dropdown). Show a success toast when saving works and an error toast when it fails.",
+      "expected_output": "A 'use client' Form with layout=vertical, fields wrapped in Form.Item with rules, Select uses options prop, and feedback uses App.useApp() message (not static message import).",
+      "files": [],
+      "assertions": [
+        "antd <App> is mounted in a 'use client' component, never rendered directly in a Server Component page.tsx (would throw the RSC 'needs use client' error at build)"
+      ]
+    }
+  ]
+}
