@@ -24,7 +24,7 @@
 flowchart LR
     P1["1️⃣ ชื่อโปรเจคไม่ตรงของจริง<br/>cewe แต่มี tcc + mitsubishi"]
     P2["2️⃣ ติดตั้งยาก<br/>2 service คนละภาษา<br/>+ MySQL + activate 2 แบบ"]
-    P3["3️⃣ over-engineer<br/>7 scheduler thread<br/>24 ตาราง"]
+    P3["3️⃣ over-engineer<br/>7 scheduler thread<br/>~30 ตาราง"]
     P4["4️⃣ frontend ไม่ทันสมัย"]
 
     S1["เปลี่ยนชื่อทุกชั้นเป็น arichds<br/>รวมชื่อเชิง crypto"]
@@ -32,29 +32,30 @@ flowchart LR
     S2B["SQLite แทน MySQL"]
     S2C["installer เดียว + online activate"]
     S3A["scheduler ตัวเดียว<br/>job registry"]
-    S3B["ลบ 5 ตารางตาย<br/>ยุบเหลือ ~12"]
+    S3B["ลบ 7 ตารางตาย<br/>ยุบเหลือ 13"]
     S3C["push ข้อมูลออก<br/>แทนให้คนอ่านตารางตรง"]
     S4["design system ใหม่<br/>+ ไลบรารีใหม่"]
 
     M1m["M1"]:::ms
-    M2m["M2"]:::ms
     M3m["M3"]:::ms
     M4m["M4"]:::ms
-    M5m["M5"]:::ms
-    M6m["M6"]:::ms
+    M8m["M8"]:::ms
+    M9m["M9"]:::ms
 
     P1 --> S1 --> M1m
-    P2 --> S2A --> M2m
+    P2 --> S2A --> M4m
     P2 --> S2B --> M1m
     P2 --> S2C --> M1m
-    S2C --> M6m
+    S2C --> M9m
     P3 --> S3A --> M3m
     P3 --> S3B --> M1m
-    P3 --> S3C --> M4m
-    P4 --> S4 --> M5m
+    P3 --> S3C --> M8m
+    P4 --> S4 --> M1m
 
     classDef ms fill:#1f6feb,color:#fff,stroke-width:0
 ```
+
+> S4 (design system) ลงที่ M0/M1 — จากนั้น**ทุกโมดูลทำหน้า FE ของตัวเอง**บนโครงนั้น ไม่มี milestone frontend แยก
 
 > 🔑 **จุดที่ต้องเข้าใจ**: `S3C` (push ข้อมูลออก) ไม่ได้แก้แค่ pain point ข้อ 3 — มันคือ **เงื่อนไขที่ปลดล็อก `S3B` และ `S2B`**
 > ตราบใดที่ยังมีคนอ่านตารางเราตรง ๆ จะเปลี่ยนชื่อตารางหรือเปลี่ยน database engine ไม่ได้เลย
@@ -65,26 +66,29 @@ flowchart LR
 flowchart TD
     M0["<b>M0 · Spec & Decisions</b><br/>SPEC.md · ล็อกตาราง · นิยาม license contract ของ v2"]
     M1["<b>M1 · Walking Skeleton</b> ⭐<br/>เครื่องเปล่า → ติดตั้ง 1 ขั้นตอน → offline activate<br/>→ มิเตอร์ CEWE 1 ตัว → เห็นค่าสดบนเว็บ<br/><i>exit: ติดตั้ง &lt; 10 นาที ไม่มีคำถามเรื่อง DB</i>"]
-    M2["<b>M2 · Acquisition</b><br/>DLMS 4 รุ่น + Modbus 2 รุ่น หลัง MeterDriver เดียวกัน<br/>ปิดเรื่อง scaler ×10 ที่นี่"]
-    M3["<b>M3 · Domain</b><br/>billing · load profile · energy · TOU · retention<br/><i>exit: ตัวเลขตรงกับ v1</i>"]
-    M4["<b>M4 · Data-out</b><br/>push billing+LP ขึ้น server · ถอน API ตัวกลางออกจากเครื่องลูกค้า"]
-    M5["<b>M5 · Frontend</b><br/>design system → 14 หน้า"]
-    M6["<b>M6 · Online Activation</b> 🔒"]
-    M7["<b>M7 · Hardening & Pilot</b><br/><i>exit: ลูกค้านำร่องรัน 2 สัปดาห์</i>"]
+    M2["<b>M2 · Auth & Login</b><br/>JWT · หน้า Login + User Mgmt"]
+    M3["<b>M3 · Device Manager</b><br/>CRUD · events · health-check<br/>pause/reconnect · หน้า Devices + Instantaneous"]
+    M4["<b>M4 · Acquisition</b><br/>a: DLMS ครบทุกรุ่น (≤ วันที่ 5)<br/>b: Modbus + billing cut (วันที่ 6–14)<br/>ปิดเรื่อง scaler ×10 ที่ M4a"]
+    M5["<b>M5 · Load Profile</b><br/>2 logger · CSV · retention<br/><i>exit: parity กับ v1</i>"]
+    M6["<b>M6 · Billing</b><br/>open period · backfill · capture<br/><i>exit: parity กับ v1</i>"]
+    M7["<b>M7 · โมดูลเบาที่เหลือ</b><br/>Energy · Holidays · SpecialDays<br/>Battery · ExportFormat · AppLog<br/><i>exit: parity กับ v1 + นับหน้าครบ</i>"]
+    M8["<b>M8 · Data-out</b><br/>push ขึ้น server · ถอน API ตัวกลาง"]
+    M9["<b>M9 · Online Activation</b> 🔒"]
+    M10["<b>M10 · Hardening & Pilot</b><br/><i>exit: ลูกค้านำร่องรัน 2 สัปดาห์</i>"]
     PORTAL[/"portal v2 — คนละรีโป<br/>ออกแบบใหม่ทีหลัง"/]
 
-    M0 --> M1 --> M2 --> M3 --> M4 --> M7
-    M3 --> M5 --> M7
+    M0 --> M1 --> M2 -- "เทสผ่าน" --> M3 -- "เทสผ่าน" --> M4 -- "เทสผ่าน" --> M5 -- "parity" --> M6 -- "parity" --> M7 -- "parity" --> M8 --> M10
     M0 -. "v2 นิยาม contract ให้ portal ตาม<br/>ไม่ใช่ทางกลับ" .-> PORTAL
-    PORTAL == "gate" ==> M6 --> M7
+    PORTAL == "gate" ==> M9 --> M10
 
     style M1 fill:#1f6feb,color:#fff
-    style M6 fill:#8250df,color:#fff
+    style M9 fill:#8250df,color:#fff
     style PORTAL fill:#6e7781,color:#fff
 ```
 
+> หลัง M1 ทุกลูกศรคือ **gate ด้วยเทส**: โมดูลหนึ่ง = BE + หน้า FE ของมัน + เทสผ่าน แล้วจึงเริ่มโมดูลถัดไป
 > M1 ตั้งใจใช้ **offline activation** เพื่อไม่ให้ skeleton ถูกบล็อกด้วย portal ที่ยังไม่เริ่ม
-> M6 คือ milestone เดียวที่พึ่งรีโปอื่น จึงถูกวางแยกออกมาไม่ให้ลาก M1–M5 ไปติดด้วย
+> M9 คือ milestone เดียวที่พึ่งรีโปอื่น จึงถูกวางแยกออกมาไม่ให้ลาก M1–M8 ไปติดด้วย
 
 ### สถาปัตยกรรมตอนรัน
 
@@ -103,7 +107,7 @@ flowchart LR
             POLL["poller<br/>1 pool · 1 lock/device"]
             JOBS["jobs<br/><b>scheduler ตัวเดียว</b>"]
             DOM["domain<br/>billing · LP · energy"]
-            DB[("SQLite<br/>~12 ตาราง")]
+            DB[("SQLite<br/>13 ตาราง")]
             SYNC["sync<br/>watermark + retry"]
             API["FastAPI + SPA<br/>origin เดียวกัน"]
             LIC["licensing"]
@@ -192,12 +196,12 @@ arichds-app.exe  (Python 3.13, PyInstaller onedir, 1 process)
 │   ├── transport/  tcp / serial / gprs
 │   └── poller/     1 ThreadPoolExecutor + 1 lock/device + manual-priority gate
 ├── jobs/           scheduler ตัวเดียว รัน periodic job ทุกตัวจาก registry
-├── domain/         billing / load_profile / energy / devices
+├── domain/         billing / load_profile / energy / devices / special_days / holidays
 ├── sync/           ⭐ ส่ง billing + LP ขึ้น server (ของใหม่ — §3.5)
 ├── licensing/      verify + enforcement + portal client
 │   └── features    feature entitlement — .env FEATURES ∩ license features (§3.6)
 └── db/             SQLite เดียว, Alembic ชุดเดียว
-web/                React + <ไลบรารีใหม่> → static เสิร์ฟจาก api/
+web/                React + AntD v6 (re-theme, D4) → static เสิร์ฟจาก api/
 ```
 
 ### 3.1 การรวม Modbus (pain point ข้อ 2)
@@ -216,7 +220,7 @@ DLMS ผูกกับ Gurux ซึ่งมีแต่ Python/.NET → ย้
 | `internal/modbus` — transport | 141 | | `internal/storage` — v2 ใช้ SQLite/Python | 710 |
 | `internal/poller` | 111 | | `internal/license` — v2 ใช้ของ worker | 463 |
 | | | | `internal/config` | 213 |
-| | | | `cmd/make-license` — portal ออกให้ | 216 |
+| | | | `cmd/make-license` — portal ออกให้ *(แต่ก่อน M9 ยังต้องมี vendor CLI เซ็น license — ดู M1)* | 216 |
 | | | | `cmd/logger/service.go` — NSSM wrapper | 204 |
 | **รวม** | **~1,117** | | **รวม** | **~2,823** |
 
@@ -275,7 +279,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 **เงื่อนไขที่จะทำให้ต้องกลับไป MySQL**: ถ้ามี process อื่นบนคนละเครื่องต้องต่อเข้ามาแบบ client-server
 — ปัจจุบันไม่มี หลัง §3.5 ยิ่งไม่มี
 
-### 3.4 ตาราง — 24 → ~12
+### 3.4 ตาราง — ~30 → 13
 
 | v2 | รวมมาจาก v1 |
 |---|---|
@@ -292,8 +296,9 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 | `users`, `user_tokens` | `users` + `user_tokens` — `role` เป็น enum column (`roles`/`permissions`/`role_permissions` **เป็นตารางตาย ไม่ใช่การยุบ** ดู §1.1) |
 | `sync_state` | ⭐ ใหม่ — watermark ของ §3.5 |
 
-**บัญชีที่ซื่อสัตย์**: ใน 12 ตารางที่ลดได้ **5 ตารางคือแค่ลบของที่ไม่เคยมีข้อมูล** การลดเชิงออกแบบจริงคือ
-14 ตาราง (ที่มีชีวิต) → ~12 อย่าขายเกินจริงตอนวัดผล
+**บัญชีที่ซื่อสัตย์**: v1 มีทั้งหมด ~30 ตาราง (19 core + 5 auth + 6 modbus จาก 2 ยี่ห้อ × 3 ช่วงเวลา)
+ในนั้น **7 ตารางตายอยู่แล้ว** (§1.1) — ของที่มีชีวิตจริงคือ ~23 → 13 คือการลดเชิงออกแบบจริง
+อย่าอ้างเลข 30 → 13 ตอนวัดผลโดยไม่บอกว่า 7 ตัวคือการลบของว่างเปล่า
 
 - Alembic **ชุดเดียว** — และต้องตั้ง `render_as_batch=True` ใน `env.py` **ตั้งแต่ migration แรก** เพราะ SQLite ทำ
   `ALTER TABLE` drop/alter column ไม่ได้ ถ้าไม่ตั้งไว้ migration ที่แก้คอลัมน์จะต้อง rebuild ตารางมือทุกครั้ง
@@ -320,6 +325,15 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 → batch แถวใหม่ตั้งแต่ watermark → POST JSON พร้อม JWT → server ACK → เลื่อน watermark
 ต้องทนเน็ตหลุด (retry + ส่งย้อนหลังได้) เพราะหน้างานเน็ตไม่นิ่ง — watermark เลื่อนเมื่อ ACK เท่านั้น
 
+**⚠️ billing ใช้ watermark แบบ "แถวใหม่" ไม่ได้** — สองชนิดข้อมูลนี้พฤติกรรมต่างกัน:
+
+| ชนิด | พฤติกรรม | วิธี sync |
+|---|---|---|
+| `interval_readings` | append-only | watermark ตาม rowid/`read_at` ตรง ๆ |
+| `billing_readings` | **ไม่ append-only** — open period คือแถวเดียวที่ถูก upsert ซ้ำในที่เดิม (ADR 0018) และ backfill แทรกแถว `bill_date` *เก่ากว่า* watermark (ADR 0012) | track ด้วย `updated_at` หรือส่ง open slot ซ้ำทุกรอบ ให้ server upsert ด้วย key `(device, bill_date)` |
+
+> ถ้าใช้ watermark เดียวกันหมด: เว็บไซต์จะไม่เห็นบิลงวดปัจจุบันขยับ และไม่เห็นประวัติที่ backfill — โดยที่ sync ไม่ error เลย
+
 > เพราะ `interval_readings` เก็บหน้าตา COSEM อยู่แล้ว (§6.1) payload จึงเป็นการ serialize แถวตรง ๆ ไม่ต้อง pivot
 
 **ข้อมูลประกอบที่เพิ่งพบ**: v1 มี M2M auth แบบ `X-API-Key` อยู่แล้วบนเกือบทุก router
@@ -338,10 +352,33 @@ v1 มีกลไกขายแยกฟีเจอร์อยู่แล�
 
 ---
 
-## 4. Roadmap — walking skeleton ก่อน
+## 4. Roadmap — walking skeleton ก่อน แล้วไต่ทีละโมดูล
 
 > ร่างแรกวางความเสี่ยงหนักที่สุด (packaging + activation = pain point ข้อ 2 ทั้งดุ้น) ไว้ท้ายสุด
 > และส่งมอบค่าได้ที่ milestone สุดท้ายเท่านั้น — รื้อลำดับใหม่ให้แตะทุกรอยต่อเสี่ยงตั้งแต่ก้อนแรก
+
+> 📅 **Timeline (จาก SPEC.md, M0 grilling 2026-08-03)**: **วันที่ 5 = M1–M6 ครบ** โดย M4 นับเฉพาะ
+> **เส้นทาง DLMS/COSEM ครบทุกรุ่น** — เส้นทาง Modbus (พอร์ต Go + modbus billing cut + §6.1 ฝั่งเขียน)
+> เลื่อนไปช่วง **วันที่ 6–14** พร้อม M7–M8 · **วันที่ 14 = M8 จบ** (push ขึ้นเว็บ + ถอน API ตัวกลาง) ·
+> M9 รอ portal v2 · มิเตอร์จริงมีครบ 3 ยี่ห้อตลอดช่วง — exit "อ่านมิเตอร์จริง"/"parity" ใช้ของจริงได้
+
+### 🧪 กติกาการเดิน — ทีละโมดูล gate ด้วยเทส
+
+หลัง M1 เป็นต้นไป **หนึ่ง milestone = หนึ่งโมดูลจบในตัว** (backend + หน้า FE ของมัน + เทส)
+เทสผ่านแล้วจึงเริ่มโมดูลถัดไป — **ไม่มี "milestone frontend แยก" อีก** design system ถูกเลือกที่ M0
+(mockup เทียบไลบรารี) และวางโครงที่ M1 จากนั้นทุกโมดูลทำหน้าของตัวเองบนโครงนั้น
+
+นิยาม **"เทสผ่าน"** ต่อโมดูล:
+
+| เกณฑ์ | ใช้กับ |
+|---|---|
+| `ruff format` + `ruff check` + `pytest` ของโมดูลผ่าน (เขียนแบบ `/tdd`) | ทุกโมดูล |
+| `pnpm lint` + `pnpm build` ผ่าน | ทุกโมดูลที่มีหน้า FE |
+| **Output parity** — ตัวเลขตรงกับ v1 บนมิเตอร์/ข้อมูลเดียวกัน (§5) | โมดูล domain: LP · Billing · Energy |
+| อ่านมิเตอร์จริงสำเร็จ | โมดูล acquisition |
+
+ข้อยกเว้นเดียว: **M1 skeleton ต้องมาก่อนบันไดโมดูล** — ถ้าเริ่มที่ login บนรีโปเปล่า
+ความเสี่ยง installer/packaging จะไหลกลับไปอยู่ท้ายแผนเหมือนร่างแรกทันที
 
 ### M0 — Spec & decisions
 เขียน `SPEC.md` (`/create-spec`) · ยกเฉพาะ ADR ที่ยังเป็นจริงจาก v1
@@ -349,8 +386,8 @@ v1 มีกลไกขายแยกฟีเจอร์อยู่แล�
 ส่วน **0019 modbus cut ต้องเขียนใหม่** เพราะฐานข้อมูลที่มันอ้างถึงหายไป ดู §5)
 
 งานที่ต้องเสร็จในนี้ด้วย:
-- **mockup หน้า Devices เทียบ 2–3 ไลบรารี** แล้วตัดสิน D4
-- **ยืนยัน mapping modbus → COSEM กับลูกค้า** (§6.1 ข้อ 2) — เป็นเงื่อนไขเข้า M2
+- ~~mockup หน้า Devices เทียบไลบรารี~~ ✅ ตัดสินแล้ว: **AntD v6 re-theme** (D4)
+- **ยืนยัน mapping modbus → COSEM กับลูกค้า** (§6.1 ข้อ 2) — gate ของ M4b เท่านั้น ไม่ block 5 วันแรก
 
 **Exit**: SPEC ผ่าน · ตาราง v2 ล็อก · **normalization contract (§6.1) เขียนครบทั้งเวลา/หน่วย/ชื่อคอลัมน์** ·
 เลือกไลบรารี FE แล้ว · mapping ยืนยันแล้ว · สัญญา license ของ v2 นิยามเสร็จ **พร้อม feature set (§3.6)**
@@ -365,35 +402,68 @@ fingerprint (เขียนใหม่ใน Python), poller, FastAPI, FE, one
 > ถ้าผูก M1 กับ online = skeleton ที่ควรลดความเสี่ยงกลับถูกบล็อกด้วย dependency ข้ามรีโป
 > offline code ยังไงก็ต้องมีเป็นทางหนีไฟถาวรอยู่แล้ว จึงพิสูจน์ packaging + enforcement ได้ครบโดยไม่ต้องรอใคร
 
+งานที่ซ่อนอยู่ใน M1 — พูดตรง ๆ กันประเมินเบาเกิน:
+- **vendor CLI เซ็น license** — offline activation ต้องมีคนเซ็น แต่ portal v2 มาที่ M9 → ยก `tools/generate_key.py` +
+  `generate_keypair.py` จาก v1 มาเปลี่ยนชื่อ (ของมีอยู่แล้ว งานน้อย แต่ถ้าลืม M1 ติดตั้งไม่จบจริง)
+- **"เห็นค่าอ่านสด" ดึง Gurux DLMS stack ทั้งชุดเข้า M1 โดยปริยาย** — รับได้เพราะเป็นการ *copy* จาก v1
+  ไม่ใช่เขียนใหม่ (§5) แต่งานคือ integration ไม่ใช่ development — M1 ไม่ใช่ milestone เบา มันเบาแค่ "ต่อฟีเจอร์"
+
 **Exit**: จับเวลาติดตั้งบนเครื่องเปล่า < 10 นาที โดยไม่ต้องตอบคำถามเรื่องฐานข้อมูลเลยสักข้อ
 
-### M2 — Acquisition ครบทุกยี่ห้อ  *(gate: mapping ยืนยันแล้วจาก M0)*
-`MeterDriver` ABC + transport · DLMS: Prometer100 / Saral305 / Premier550 / SMART TCC ·
-Modbus: SMW110 / Prometer100 (พอร์ตจาก Go) **พร้อม map register → COSEM ตอนเขียน** (§6.1) ·
+> **M1 ไม่มี auth โดยเจตนา** — หน้าเว็บเปิดโล่ง ไม่มี login เพื่อไม่ลากโมดูล M2 เข้ามาใน skeleton
+> M2 คือคนติด guard ย้อนหลังลง endpoint ทุกตัวที่ M1 สร้าง (งานชิ้นหนึ่งของ M2 ไม่ใช่ของแถม)
+
+### M2 — Auth & Login
+`users` + `user_tokens` + role เป็น enum column (§1.1 — ไม่มีตาราง roles/permissions อีก) · JWT ·
+**ติด auth guard ลง endpoint ทั้งหมดที่ M1 เปิดโล่งไว้** · หน้า Login + User Management (สองหน้าแรกที่ใช้ design system จริง)
+**Exit**: login/logout/จัดการ user ครบผ่าน UI · ไม่มี endpoint ไหนเข้าได้โดยไม่ authenticate + เทสผ่าน
+
+### M3 — Device Manager
+device CRUD (devices ตารางรวม §3.4) · `device_events` · health-check loop — **job แรกของ job registry (§3.2)** ·
+pause/reconnect (ADR 0009) · transport-endpoint lock (§3.2) · หน้า Devices เต็มรูป (ต่อยอดจากหน้า skeleton) ·
+**หน้า Instantaneous** (อ่านค่าสดตามสั่ง — คือ "ดูค่าสดของ device" จึงอยู่โมดูลนี้ ไม่ใช่ acquisition)
+**Exit**: เพิ่ม/แก้/หยุด/ต่อมิเตอร์ CEWE ได้จริงผ่าน UI เห็นสถานะ online/offline ถูกต้อง + เทสผ่าน
+
+### M4 — Acquisition ครบทุกยี่ห้อ — สองเฟส
+
+**M4a (ภายในวันที่ 5) — เส้นทาง DLMS/COSEM ครบทุกรุ่น**:
+Saral305 / Premier550 / SMART TCC ×5 / SMW110-serial (Prometer100 มีแล้วจาก M1) ·
 manual-priority gate (ADR 0020) · ปิดเรื่อง scaler (§5)
-**Exit**: อ่านมิเตอร์จริงครบ 3 ยี่ห้อ ลงตาราง `interval_readings` ตัวเดียวกัน
+**Exit**: อ่านมิเตอร์จริงครบ 3 ยี่ห้อผ่าน DLMS ลงตาราง `interval_readings` ตัวเดียวกัน
 
-### M3 — Domain modules
-Load profile (2 logger, merge `read_at`, CSV export) · Billing (open-period upsert slot, backfill,
-modbus billing cut, capture PDF/xlsx) · Energy summary + TOU/holidays · Battery · job registry + retention
-**Exit**: ตัวเลขที่ออกตรงกับ v1 บนมิเตอร์ตัวเดียวกัน (v1 ผ่านการยืนยันจากลูกค้าแล้ว — ใช้เป็นเกณฑ์ได้)
+**M4b (วันที่ 6–14) — เส้นทาง Modbus** *(gate: mapping — เดินด้วย DERIVED ของ ADR 0005 ระหว่างรอลูกค้ายืนยัน)*:
+SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register → COSEM ตอนเขียน** (§6.1) + modbus billing cut (ADR ใหม่)
+**Exit**: มิเตอร์ modbus ลงตารางเดียวกับ DLMS หน่วย/เวลา normalize ถูกต้อง
 
-### M4 — Data-out (§3.5)
-push billing + LP ขึ้น server · watermark + retry · ปลด API ตัวกลางบนเครื่องลูกค้า
+### M5 — Load Profile
+2 logger · merge `read_at` · CSV auto-export (สืบทอด watermark pattern) · retention job ·
+**backup รายวัน (`VACUUM INTO` + หมุนเวียนลบ — จาก SPEC grilling)** · หน้า Load Profile
+**Exit**: **output parity กับ v1** (ที่ setting default) + เทสผ่าน
+
+### M6 — Billing
+open-period upsert slot (ADR 0018) · backfill · capture PDF/xlsx · หน้า Billing
+(modbus billing cut ย้ายไปอยู่ M4b — มันเกิดได้ต่อเมื่อเส้นทาง modbus เขียนข้อมูลแล้ว)
+**Exit**: **output parity กับ v1** (ที่ setting default `divide_by_1000=on`) + เทสผ่าน
+
+### M7 — โมดูลเบาที่เหลือทั้งหมด
+Energy Summary (TOU buckets — ADR 0016) · Holidays · Special Days (`src/special_days/` — v1 มีโมดูลจริง อย่าลืมตามที่ ADR 0020 ระบุว่ายังไม่ gated) ·
+Battery · Export Format · App Log (log viewer + credential redaction ตาม §5)
+→ หน้า FE 6 หน้าในก้อนเดียว: EnergySummary / Holidays / SpecialDays / Battery / ExportFormat / AppLog
+**Exit**: **output parity กับ v1** + เทสผ่าน — **นับหน้าครบ**: 14 หน้า v1 = 12 หน้ามีเจ้าของใน M2–M7
+(+`DatabaseSettings` ลบตาม §3.3, `ApiConfig` ถูกแทนด้วย M8)
+
+### M8 — Data-out (§3.5)
+push billing + LP ขึ้น server · watermark (interval) + `updated_at` (billing) + retry ·
+ปลด API ตัวกลางบนเครื่องลูกค้า
 **Exit**: เว็บไซต์ได้ข้อมูลจาก v2 โดยไม่มีใครแตะตาราง และตัวกลางถูกถอนออกจากเครื่องลูกค้าแล้ว
 
-### M5 — Frontend เต็มรูป
-วาง design system ก่อนลงหน้า (typography scale, spacing, สี, สถานะ device) · ไล่ 14 หน้าเดิม ตัด/ยุบตามโมดูลที่ตัดจริง
-(`DatabaseSettings` หายไปทั้งหน้าตาม §3.3)
-**Exit**: ทุก flow ที่ v1 ทำได้ v2 ทำได้ + ผ่าน review ด้าน UX
-
-### M6 — Online activation 🔒 *(gate: portal v2 พร้อม)*
-> milestone เดียวในแผนที่ถูกบล็อกด้วยรีโปอื่น — วางแยกไว้เพื่อไม่ให้ลาก M1–M5 ไปติดด้วย
+### M9 — Online activation 🔒 *(gate: portal v2 พร้อม)*
+> milestone เดียวในแผนที่ถูกบล็อกด้วยรีโปอื่น — วางแยกไว้เพื่อไม่ให้ลาก M1–M8 ไปติดด้วย
 
 online activation flow · lease renew · meter key redeem · fallback กลับไป offline เมื่อ portal ล่ม
 **Exit**: ติดตั้งจบด้วย activation key เพียงตัวเดียว โดยไม่ต้องติดต่อ vendor
 
-### M7 — Hardening & pilot
+### M10 — Hardening & pilot
 limited mode ครบทุกเส้นทาง · ลงหน้างานลูกค้า 1 ราย
 **Exit**: ลูกค้านำร่องรัน v2 ได้ 2 สัปดาห์โดยไม่ต้องมีคนเข้าไปแตะเครื่อง
 
@@ -414,7 +484,7 @@ Business logic ของ v1 ผ่านหน้างานลูกค้า�
 - Ed25519 verify primitive + golden vectors (แต่ **ชื่อ** เปลี่ยนได้ เพราะยังไม่มี license ออกไป)
 - Credential redaction filter
 
-**ADR 0010 (scaler phantom ×10) — ปิดที่ M2 ไม่ใช่ open decision**
+**ADR 0010 (scaler phantom ×10) — ปิดที่ M4 (acquisition) ไม่ใช่ open decision**
 กติกาคือ **"ค่าที่แสดงออกต้องตรงกับ v1"** ไม่ใช่ "ต้องคัดลอกวิธีคำนวณของ v1"
 v2 เขียน scaler ให้ถูกต้องได้ ตราบใดที่ billing (÷10000) และ energy summary (÷1000) ยังออกตัวเลขเดิม
 → เอาค่าที่ลูกค้ายืนยันแล้วมาเขียนเป็น test case ล็อกไว้ก่อนแตะโค้ด
@@ -432,21 +502,18 @@ v2 เขียน scaler ให้ถูกต้องได้ ตราบ�
 | D2 | Database engine | **SQLite** — ปลดล็อกได้เพราะ §3.5 ทำให้ไม่มีใครนอกโปรแกรมแตะ DB |
 | D5 | ข้อมูลลูกค้าเดิม | ไม่มี — v1 ยังไม่เคยใช้งานจริง |
 | D6 | maintain v1 คู่ขนาน | ไม่ต้อง |
-| D7 | scaler ×10 | ปิดที่ M2 ด้วยกติกา output parity (§5) |
+| D7 | scaler ×10 | ปิดที่ M4 ด้วยกติกา output parity (§5) |
 | — | ชื่อเชิง crypto | เปลี่ยนได้ฟรี **และควรเปลี่ยนตอนนี้** |
 | — | portal | ออกแบบใหม่ทีหลัง — **v2 นิยาม contract ก่อน portal ทำตาม** ไม่ใช่ทางกลับ |
 | D3 | รูปแบบ installer | **exe ตัวเดียว** แทนกอง `.ps1` + `.bat` 24 ไฟล์ |
 | D8 | สเกลจริงต่อไซต์ | **DLMS/COSEM เป็นหลัก · Modbus เป็นส่วนน้อยมาก** → อย่าออกแบบ schema ให้เข้าข้าง Modbus (ดู §6.1) |
 | D9 | contract ของ push | **JSON · ทุก 15 นาที · JWT** — ตรงกับจังหวะ LP พอดี ส่งได้ทันทีที่มีแถวใหม่ |
 | D10 | รูปทรงของ `interval_readings` | **ตารางเดียว หน้าตา COSEM แปลงตอนเขียน** — §6.1 |
+| D4 | ไลบรารี frontend | **AntD v6 แบบ re-theme** — ตัดสิน 2026-08-03 หลังเทียบ mockup layout-parity กับ Mantine/shadcn (`mockups/devices-lib-compare/`); ความ "ทันสมัย" แก้ด้วย theme tokens ใหม่ ไม่ใช่เปลี่ยนไลบรารี — ได้ component ครบ (Table/DatePicker/Form) และความคุ้นเคยจาก v1 ซึ่งสำคัญกับกรอบ 5 วัน |
 
 ### ยังค้าง
 
-| # | คำถาม | ข้อเสนอ |
-|---|---|---|
-| **D4** | ไลบรารี frontend | **ทำ mockup หน้า Devices เทียบ 2–3 ไลบรารีก่อนตัดสิน** → เป็นงานใน M0 |
-| **D11** | ขา inbound: เก็บ `X-API-Key` ไว้ไหม | v1 มีอยู่แล้วบนเกือบทุก router (§3.5) — พอ push ทำงานแล้วอาจไม่มีใครใช้ ตัดทิ้งได้ 1 กลไก |
-| **D12** | `divide_by_1000` จะเหลืออะไร | หลัง normalize ตอนเขียน (§6.1) มันเป็นได้แค่การจัดรูปแบบตอนแสดงผล หรือตัดทิ้ง — เป็นการเปลี่ยนที่ผู้ใช้เห็น |
+*(ปิดครบแล้ว — D11/D12 ปิดใน SPEC grilling 2026-08-03: ตัด X-API-Key ทิ้ง · ตัด divide_by_1000 ทิ้ง แสดง kWh เสมอ)*
 
 ### 6.1 D10 — `interval_readings` : ตารางเดียว หน้าตา COSEM แปลงตอนเขียน
 
@@ -535,7 +602,7 @@ flowchart LR
 - แปลงตอนอ่าน (v1): map ผิด → แก้โค้ด ข้อมูลเก่ากลับมาถูกทันที
 - แปลงตอนเขียน (v2): map ผิด → **ข้อมูลที่เก็บไปแล้วผิดถาวร**
 
-→ **ยืนยัน mapping กับลูกค้าให้เสร็จก่อนเริ่ม M2 = เงื่อนไข ไม่ใช่ nice-to-have**
+→ **ยืนยัน mapping กับลูกค้าให้เสร็จก่อนเริ่ม M4 (acquisition) = เงื่อนไข ไม่ใช่ nice-to-have**
 ความเสี่ยงจำกัดวงเพราะ Modbus เป็นส่วนน้อยมาก (D8) และ SMW110 ที่ ADR เตือนไว้ก็อยู่ในส่วนน้อยนั้น
 
 **ตาข่ายกันตก (ถ้ายังไม่สบายใจ)**: เก็บ raw modbus 91 คอลัมน์คู่ขนานไว้ด้วย retention สั้น ๆ 7 วัน

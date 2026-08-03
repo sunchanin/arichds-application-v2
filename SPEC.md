@@ -1,0 +1,209 @@
+# ARICHDS Application — SPEC
+
+> Baseline specification. Status: draft · Last updated: 2026-08-03
+> เอกสารอ้างอิงหลักของโปรเจค — คำถาม "อยู่ใน scope ไหม" ให้กลับมาที่นี่
+> รายละเอียดเชิงเหตุผล/หลักฐานของทุกการตัดสินใจอยู่ที่ [docs/REMAKE-PLAN.md](docs/REMAKE-PLAN.md)
+
+## 1. ภาพรวม (Overview)
+
+**ARICHDS Application** คือโปรแกรมติดตั้งบนเครื่อง Windows ที่ไซต์ลูกค้า ทำหน้าที่อ่านข้อมูลจากมิเตอร์ไฟฟ้า
+9 รุ่น 3 ยี่ห้อ (CEWE · Mitsubishi · SMART TCC ผ่าน DLMS/COSEM และ Modbus) เก็บ load profile /
+billing / energy summary ลงฐานข้อมูลในเครื่อง แสดงผลบนเว็บ UI ภายในไซต์ และ **push** ข้อมูลขึ้น
+server กลางเพื่อแสดงบนเว็บไซต์ของทีม
+
+เป็นการ remake จาก v1 (`cewe` — demo ผ่านลูกค้าแล้วแต่ยังไม่เคยใช้งานจริง) เพื่อแก้ 4 ปัญหา:
+ชื่อโปรเจคไม่ตรงของจริง · การติดตั้งยุ่งยาก (2 service คนละภาษา + MySQL) · over-engineering
+(~30 ตาราง, 10+ threads) · frontend ไม่ทันสมัย — โดย **business logic ของ v1 คือ ground truth**
+(ลูกค้ายืนยันหน้างานแล้ว) แต่ internals เขียนใหม่ได้อิสระ
+
+## 2. เป้าหมาย & สิ่งที่ไม่ทำ (Goals & Non-Goals)
+
+### เป้าหมาย
+
+- **ติดตั้งจบใน < 10 นาที** บนเครื่อง Windows เปล่า ด้วย installer exe ตัวเดียว + activation code
+  หนึ่งบรรทัด โดยไม่มีคำถามเรื่องฐานข้อมูลเลยสักข้อ
+- **1 process · 1 exe · 1 database · 1 license** ครอบทั้ง DLMS และ Modbus (v1 มี 2 service คนละภาษา)
+- **Output parity กับ v1** — ตัวเลข load profile / billing / energy summary ที่แสดงต้องตรงกับ v1
+  บนมิเตอร์ตัวเดียวกัน **ที่ค่า setting default ของ v1** (`divide_by_1000=on` → kWh) —
+  ใช้เป็นเกณฑ์เทสได้เพราะ v1 ผ่านการยืนยันจากลูกค้าแล้ว
+- **เว็บไซต์กลางได้ข้อมูลผ่าน push เท่านั้น** — ไม่มีโปรแกรมภายนอกอ่านตารางฐานข้อมูลอีก
+  และ API ตัวกลางบนเครื่องลูกค้าถูกถอนทิ้ง
+- **Lean**: ตาราง ≤ 13 · thread คงที่ 2 + n มิเตอร์ (v1: ~30 ตาราง, 10+ threads)
+- **กรอบเวลา**: วันที่ 5 = M1–M6 ครบ (เส้นทาง DLMS ทุกรุ่น + installer) · วันที่ 14 = M8 จบ
+  (push ขึ้นเว็บได้ + ครบทุกหน้า)
+
+### สิ่งที่ไม่ทำ (Non-Goals)
+
+- **ไม่ ship Linux** — Windows เท่านั้นในเฟสนี้ (โค้ดเขียนให้ portable ไม่ผูก Windows API
+  เพื่อเปิดทาง Linux ทีหลัง แต่ไม่มี artifact/installer/testing ฝั่ง Linux)
+- **ไม่มี online activation ใน 14 วัน** — M9 ถูก gate ด้วย portal v2 ซึ่งยังไม่เริ่ม
+  (offline activation คือทางหลักของเฟสนี้ และเป็นทางหนีไฟถาวรตลอดไป)
+- **ไม่มี inbound API สำหรับ 3rd party** — ตัดกลไก `X-API-Key` (M2M) ของ v1 ทิ้ง
+  auth เหลือ JWT ของผู้ใช้ทางเดียว · ไม่มี Open API / webhook (หน้า ApiConfig ของ v1 ตายไปกับ push)
+- **ไม่มี i18n** — UI อังกฤษล้วน (กวาดข้อความไทยที่ปนใน v1 ออกให้หมด)
+- **ไม่มี GPRS เป็น transport แยก** — transport มีแค่ TCP/IP + Serial (มิเตอร์ที่ต่อผ่าน GPRS
+  เข้ามาเป็น TCP อยู่แล้วจากฝั่งโมเด็ม)
+- **ไม่เก็บ register modbus นอก mapping** — เก็บเฉพาะ ~14 คอลัมน์ที่ map เป็น COSEM
+  (register อีก ~77 ตัวของ CEWE modbus ไม่เก็บ — ดู Open Questions เรื่องตาข่ายกันตก)
+- **ไม่ migrate ข้อมูลจาก v1 · ไม่ maintain v1 คู่ขนาน** — v1 ไม่เคยมี production install
+- **ไม่มี auto-update ในตัวโปรแกรม** — อัปเดตเวอร์ชัน = รัน installer ตัวใหม่ทับ
+  (ตรวจของเดิม เก็บ DB/license รัน migration อัตโนมัติ)
+- **ไม่ optimize เกิน 30 มิเตอร์/ไซต์** — สเกลจริงคือ 10–30 ตัว/ไซต์
+- **ไม่เปลี่ยน divide_by_1000 เป็น option** — ตัดทิ้ง แสดง kWh เสมอ (หน่วยเดียวทั้งระบบ)
+
+## 3. ความต้องการเชิงฟังก์ชัน (Functional Requirements)
+
+จัดกลุ่มตามบันไดโมดูล M2–M8 (ลำดับ implement) — ทุกโมดูล = backend + หน้า FE ของมัน + เทสผ่าน
+จึงเริ่มโมดูลถัดไป
+
+### 3.1 Skeleton & ติดตั้ง (M1)
+
+- Installer exe ตัวเดียว: ติดตั้งโปรแกรม + สร้าง Windows service + สร้าง SQLite DB + รัน migration
+- Offline activation: ผู้ใช้ส่ง Machine ID ให้ vendor → ได้ activation code (license ที่เซ็นแล้ว
+  base64 หนึ่งบรรทัด) → วางในโปรแกรม → ใช้งานได้
+- Machine fingerprint คำนวณใน Python — **พอร์ตสูตรเดิมจาก Go** (`modbus-logger/internal/license/fingerprint.go`:
+  collect → combine → SHA-256 องค์ประกอบราย OS) เปลี่ยนเฉพาะ salt/ชื่อเป็น ARICHDS แล้ว**แช่แข็งตั้งแต่วันแรก**
+  (เปลี่ยนสูตรทีหลัง = license ทุกใบที่ออกไปพัง)
+- Vendor-side CLI สำหรับสร้าง keypair + เซ็น license (ยกจาก `tools/generate_key.py` ของ v1 มาเปลี่ยนชื่อ)
+- SPA เสิร์ฟจาก FastAPI origin เดียวกัน — ไม่มี nginx, ไม่มี CORS
+- **M1 ไม่มี auth โดยเจตนา** — M2 ติด guard ย้อนหลัง
+
+### 3.2 Auth & User Management (M2)
+
+- Login/logout ด้วย username + password → JWT · role มี 2 ระดับ: `admin` / `user` (enum column)
+- admin: จัดการ user, ตั้งค่าระบบทั้งหมด · user: ใช้งานทั่วไป ดูข้อมูล สั่งอ่าน
+- ทุก endpoint ต้อง authenticate (ยกเว้น health + static SPA) — ไม่มี API key, ไม่มี M2M auth
+- หน้า: Login · User Management
+
+### 3.3 Device Manager (M3)
+
+- CRUD มิเตอร์: ชื่อ, ยี่ห้อ/รุ่น (จาก catalog 9 รุ่น), transport (TCP: host:port · Serial: COM port
+  + baud + slave address), พารามิเตอร์ auth ของมิเตอร์
+- สถานะ online/offline จาก health-check loop (job แรกของ job registry) + ประวัติเหตุการณ์
+  (`device_events`)
+- Pause/Reconnect ราย device — หยุด polling ทุกชนิดของ device นั้นแบบ persistent (ADR 0009)
+- การเพิ่ม device ตรวจ quota จาก license (`max_meters` + Meter Key — ดู §3.9)
+- หน้า: Devices · Instantaneous (อ่านค่าสดตามสั่ง)
+
+### 3.4 Acquisition (M4)
+
+- `MeterDriver` abstraction เดียว ครอบ DLMS (Gurux vendored) + Modbus (pymodbus)
+  — **ห้ามมี if/elif ตามรุ่นในโค้ดกลาง** (หลักการ ADR 0004 ของ v1)
+- รุ่นที่รองรับ (9 รุ่น เท่า v1): CEWE Prometer100 / Saral305 / Premier550 ·
+  Mitsubishi SMW110 (DLMS serial + Modbus) · SMART TCC st3c / st3cl / st33tl / st3tl / st3dh
+- **เฟสแรก (ภายในวันที่ 5): เส้นทาง DLMS/COSEM ครบทุกรุ่น** · เส้นทาง Modbus (พอร์ตจาก Go)
+  ตามมาหลังวันที่ 5 — mapping modbus→COSEM ใช้ของ ADR 0005 (v1) ระหว่างรอลูกค้ายืนยัน
+- ทุก driver เขียนลง `interval_readings` ตารางเดียว หน้าตา COSEM (แปลงตอนเขียน):
+  **UTC เสมอ · kWh เสมอ · ชื่อคอลัมน์ตรงหน่วยจริง** (normalization contract — REMAKE-PLAN §6.1)
+- Lock ต่อ **transport endpoint** (TCP: host:port · Serial: ชื่อ COM port) — อุปกรณ์บนสายเดียวกัน
+  เข้าคิวกัน · manual read มี priority เหนือ background (ADR 0020)
+- Scaler: เขียนให้ถูกต้องตั้งแต่ต้น โดยล็อกด้วย test case จากค่าที่ลูกค้ายืนยันแล้ว
+  (ไม่ยกพฤติกรรม phantom ×10 ของ ADR 0010 มา แต่ผลลัพธ์สุดท้ายต้องตรง v1)
+
+### 3.5 Load Profile (M5)
+
+- อ่าน load profile 15 นาที ทั้ง Logger 1 (energy) และ Logger 2 (V/I/PF/freq — Premier 550)
+  รวมแถวด้วย `read_at` — ตาม logic v1
+- CSV auto-export ต่อ device (watermark pattern) + manual read-now
+- Retention: LP 90 วัน · billing 365 วัน · events 90 วัน (ตัวเลขเดิม v1) — job รายวัน
+- Backup อัตโนมัติรายวัน: `VACUUM INTO` ไปโฟลเดอร์ backup + หมุนเวียนลบของเก่า
+- หน้า: Load Profile
+
+### 3.6 Billing (M6)
+
+- Open period = upsert slot เดียวต่อ device (ADR 0018) · ปิดงวดตาม reset-reason / driver capability
+- Backfill ประวัติจากมิเตอร์ · manual read · auto-read ตามเวลา (job ใน registry)
+- Capture PDF/xlsx ลง filesystem (ตาม v1) — gated ด้วย feature `auto_capture` / `billing_excel_export`
+- Modbus billing cut (ระบบตัดบิลแทนมิเตอร์ที่ตัดเองไม่ได้) — **เขียน ADR ใหม่** อ่านจาก
+  `interval_readings` (กฎธุรกิจเดิมของ ADR 0019: ตัดที่ 00:00 ของวันบิล, catch-up, idempotent) —
+  มากับเฟส modbus หลังวันที่ 5
+- หน้า: Billing
+
+### 3.7 โมดูลเบา (M7)
+
+- Energy Summary (TOU buckets — ADR 0016) · Holidays (2 ชนิด) · Special Days · Battery status ·
+  Export format settings · App Log (log viewer — log ผ่าน credential redaction filter เสมอ)
+- หน้า: EnergySummary · Holidays · SpecialDays · Battery · ExportFormat · AppLog
+- **นับหน้าครบที่นี่**: 14 หน้า v1 → 12 หน้ามีเจ้าของใน M2–M7 + DatabaseSettings ถูกลบ (SQLite)
+  + ApiConfig ถูกแทนด้วย push (M8)
+
+### 3.8 Data-out / Sync (M8)
+
+- โปรแกรม **push** ขึ้น server เดิมของทีม (เพิ่ม endpoint รับ) — outbound HTTPS ทางเดียว
+  ไม่เปิด inbound port ที่ไซต์
+- ข้อมูลที่ส่ง: **billing · load profile · energy summary · รายชื่อมิเตอร์ + สถานะ online/offline**
+- Contract: JSON · รอบ 15 นาที · JWT ผูกกับ activation (site identity = machine token จาก portal
+  — เฟสนี้ฝังใน license/config ตอน activate แบบ offline)
+- ทนเน็ตหลุด: watermark เลื่อนเมื่อ server ACK เท่านั้น · ส่งย้อนหลัง **ครบทุกแถวเสมอ** ·
+  `interval_readings`/energy ใช้ watermark append-only · `billing_readings` track ด้วย `updated_at`
+  (open period ถูก upsert ที่เดิม + backfill แทรกย้อนหลัง — watermark ธรรมดาใช้ไม่ได้) ·
+  รายชื่อมิเตอร์ + สถานะ = **snapshot ทั้งชุดทุกรอบ** (ข้อมูลเล็ก ไม่ต้อง track diff)
+- เมื่อ M8 เสร็จ: ถอน API ตัวกลางออกจากเครื่องลูกค้า
+
+### 3.9 Licensing (คร่อมทุกโมดูล — enforcement ตั้งแต่ M1)
+
+- License = ไฟล์เซ็นด้วย Ed25519 ผูก machine fingerprint · **lease 45 วัน renew รายวันผ่าน portal**
+  (kill-switch ไม่ใช่ subscription) · offline activation เป็นทางหนีไฟถาวร (payload `mode` รองรับ)
+- Limited mode เมื่อ license ขาด/หมด/fingerprint ไม่ตรง: API ตอบ 403 `LICENSE_INVALID`
+  (health + SPA ยังเข้าถึงได้เพื่อแสดง error) · polling หยุด · process ไม่ตาย
+- **Meter Key** (โมเดลเดิม v1 #145): 1 key = 1 device slot ผูก serial มิเตอร์ผ่าน probe-first redeem ·
+  ลบ device แล้ว slot ไม่คืน · เกิน `max_meters` ต้องใช้ key
+- **Feature entitlement**: enabled = `.env FEATURES ∩ license features` · sellable 8 ตัว (เท่า v1):
+  `billing` `load_profile` `energy_summary` `special_days` `instantaneous` `battery` `auto_capture`
+  `billing_excel_export` · ops-only (ใน .env เท่านั้น): `auto_read_billing` `auto_backfill` `app_log`
+  (`api_config` ของ v1 ตายไปกับหน้า ApiConfig)
+- ชื่อเชิง cryptographic ทั้งหมดเปลี่ยนเป็น ARICHDS (fingerprint salt, signing version, keypair ใหม่)
+  — ทำได้เพราะไม่มี license v1 ในสนาม · **v2 คือผู้นิยาม contract แล้ว portal v2 ทำตาม**
+
+## 4. เทคนิค & สถาปัตยกรรม (Technical & Architecture)
+
+- **Stack**: Python 3.13 + FastAPI (API + เสิร์ฟ SPA) · PyInstaller onedir → `arichds.exe` ·
+  React + TypeScript + **Ant Design v6 แบบ re-theme** (ConfigProvider tokens ใหม่ทั้งชุด — primary/density/radius
+  ไม่ใช่ default look; ตัดสิน 2026-08-03 หลังเทียบ mockup กับ Mantine และ shadcn/ui —
+  `mockups/devices-lib-compare/`) + Tailwind เฉพาะ layout/utility (convention เดิม v1) · SQLite (WAL) + Alembic
+  ชุดเดียว (`render_as_batch=True` ตั้งแต่ migration แรก) · Gurux DLMS (vendored `GX*.py` ห้ามแก้ API) ·
+  pymodbus · Ed25519 (`cryptography`)
+- **สถาปัตยกรรม**: 1 process — main thread (uvicorn) + poller pool (1 thread/มิเตอร์, lock ต่อ
+  transport endpoint) + scheduler thread เดียวรันทุก periodic job จาก registry
+  `[(name, interval, fn)]` (health-check, LP scheduler, billing auto-read, retention, backup, sync, license recheck)
+- **Data model** (13 ตาราง): `devices` (รวม settings/status/capture_objects เป็น JSON columns) ·
+  `device_events` · `interval_readings` (COSEM shape + `source` + `interval`) · `interval_read_jobs` ·
+  `billing_readings` · `billing_captures` · `energy_register_readings` · `battery_readings` ·
+  `holidays` · `settings` (key/value) · `users` · `user_tokens` · `sync_state`
+- **Interfaces**:
+  - ขาออก: push endpoint บน server เดิมของทีม (JSON/15min/JWT) — field-level contract ออกแบบร่วม
+    ฝั่ง server ที่ M8 · portal v2 (`/activate` `/renew` `/redeem`) — contract นิยามที่ M0 ใช้จริง M9
+  - ขาเข้า: ไม่มี (REST ของโปรแกรมเป็น internal สำหรับ SPA เท่านั้น)
+- **ข้อจำกัด**: Windows-first แต่โค้ด portable (ไม่ผูก Windows API นอกชั้น installer/service) ·
+  transport = TCP + Serial · เวลาใน DB = UTC เสมอ · พลังงาน = kWh เสมอ · UI อังกฤษล้วน ·
+  ชื่อทุกชั้นเป็น `arichds`/`ARICHDS_*` · log ทุกตัวผ่าน credential redaction ·
+  สเกลออกแบบที่ 10–30 มิเตอร์/ไซต์ · ทุกไซต์มีเน็ตแต่ไม่นิ่ง (ทุกอย่างที่แตะเน็ตต้อง retry ได้)
+
+## 5. Milestones & คำถามค้าง (Milestones & Open Questions)
+
+### Milestones
+
+กติกา: หนึ่ง milestone = หนึ่งโมดูลจบในตัว (BE + FE + เทส) ผ่านแล้วจึงไปต่อ — นิยาม "เทสผ่าน"
+และ exit criteria ราย M อยู่ใน REMAKE-PLAN §4
+
+| ช่วง | เป้า |
+|---|---|
+| **วันที่ 1–5** | M0 (spec นี้ + เลือกไลบรารี FE จาก mockup) → M1 skeleton + installer → M2 auth → M3 devices → M4 **เส้นทาง DLMS ครบ 9 รุ่น** → M5 LP → M6 billing — จบด้วย demo ได้จริงจากเครื่องที่ติดตั้งด้วย installer |
+| **วันที่ 6–14** | M4-modbus (พอร์ต Go + modbus billing cut) → M7 โมดูลเบา 6 หน้า → M8 push ขึ้นเว็บ + ถอน API ตัวกลาง |
+| **หลัง 14 วัน** | M9 online activation (gate: portal v2) → M10 hardening + pilot ลูกค้า 1 ราย 2 สัปดาห์ |
+
+### คำถามค้าง (Open Questions)
+
+- **Mapping modbus→COSEM** — เดินหน้าด้วย mapping DERIVED ของ ADR 0005 ระหว่างรอลูกค้ายืนยัน
+  (โดยเฉพาะช่องว่างของ SMW110) · ต้องปิดก่อนเฟส modbus เขียนข้อมูลจริง — และตอนนั้นค่อยตัดสินว่า
+  ต้องมีตารางตาข่าย raw modbus (retention 7 วัน) ไหม
+- **Field-level contract ของ push** — โครงตัดสินแล้ว (JSON/15min/JWT/ครบทุกแถว) แต่รายชื่อ field
+  ต่อ payload ออกแบบร่วมฝั่ง server ตอน M8 — รวมถึง **วิธีที่ server verify JWT ที่ออกแบบ offline**
+  (ช่วงไม่มี portal, vendor CLI เป็นผู้ออก token → server ต้องมี key สำหรับ verify)
+- **`billing_captures`** — ยังไม่ยืนยันว่าจำเป็นเป็นตารางแยก หรือเก็บ metadata ใน filesystem พอ
+  (ตัดสินตอน M6)
+- **Portal v2** — timeline ยังไม่กำหนด · M9 บล็อกอยู่จนกว่า portal จะมี `/activate` `/renew` `/redeem`
+  ตาม contract ที่ v2 นิยาม (ระหว่างนั้น lease renew ยังทำไม่ได้ → license ที่ออกช่วงนี้ต้องเป็น
+  offline mode ไม่มี lease หรือ lease ยาวพิเศษ — **ต้องเลือกก่อนออก license จริงตัวแรก**)
+- (assumed) **SMW110 DLMS-over-serial อยู่ในเป้า 5 วัน** — เป็นรุ่น DLMS จึงจัดอยู่เฟสแรก
+  แต่ถ้าการต่อ serial จริงช้ากว่าแผน ให้เลื่อนไปกับเฟส modbus ได้โดยไม่กระทบรุ่น TCP

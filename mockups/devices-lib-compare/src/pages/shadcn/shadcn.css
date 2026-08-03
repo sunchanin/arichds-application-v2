@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+/* shadcn/ui-style design tokens (zinc palette, teal-family primary to match
+   the other two variants). Scoped mentally to the /shadcn route, though
+   Tailwind's build is global — only classes actually used get generated. */
+:root {
+  --background: #ffffff;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #0f766e;
+  --primary: #0f766e;
+  --primary-foreground: #f0fdfa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --destructive: #dc2626;
+  --destructive-foreground: #fef2f2;
+  --success: #16a34a;
+  --radius: 0.5rem;
+}
+
+.shadcn-scope {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+}
