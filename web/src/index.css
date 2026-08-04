@@ -1,0 +1,13 @@
+/* Minimal global reset. Layout and component styling come from Ant Design
+   tokens (web/src/theme.ts) — this file stays intentionally tiny. */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}

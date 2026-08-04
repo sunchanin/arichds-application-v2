@@ -8,16 +8,20 @@ You are the **orchestrator** for issue **#$1**. Drive the entire pipeline yourse
 
 **Keep an audit trail as you go.** From every subagent reply, capture the TDD decision, the scrutinize/code-review findings and how they were resolved, and the verdict.
 
-**Record which skills each subagent actually invoked — from its transcript, not its words.** Each `Task` call returns the path to that subagent's transcript (its `output_file`, a `.jsonl`); a `SendMessage` reply continues the same agent and appends to that same file. After every subagent reply (Task or SendMessage), grep that exact file — this is the tamper-proof source of truth for whether `/draft-delegation-prompt`, `/tdd`, `/scrutinize`, `/code-review` actually ran:
+**Record which skills each subagent actually invoked — from its transcript, not its words.** Each `Task` call returns the path to that subagent's transcript (its `output_file`, a `.jsonl` or `.output` under the session's `tasks/` dir); a `SendMessage` reply continues the same agent and appends to that same file. **Capture each subagent's `output_file` path verbatim from the tool result the moment it is returned — that exact path is the only reliable handle.** After every subagent reply (Task or SendMessage), grep that exact file — this is the tamper-proof source of truth for whether the required skills actually ran:
 ```
 grep -o '"skill":"[a-z-]*"' <that-agent's-output_file> | sort | uniq -c   # which skills
 grep -c '"name":"Skill"' <that-agent's-output_file>                        # how many Skill calls
 ```
-You will write this verified result into a Thai-language audit log in Step 5. The final report to the human must also be **in Thai (ภาษาไทย)**.
+Verify BOTH sets: the four pipeline skills (`/draft-delegation-prompt`, `/tdd` when required, `/scrutinize`, `/code-review`) **and** every domain skill the reviewer mandated in the delegation prompt's Workflow-discipline section (e.g. `antd-ui`, `frontend-design`, `dataviz`). A mandated domain skill that never appears in the implementer's transcript is a process miss — note it in the audit log and, if it plausibly changed the outcome (wrong-convention UI, stale API), feed it back as a fix-pass item rather than approving around it. You will write the verified result into a Thai-language audit log in Step 5. The final report to the human must also be **in Thai (ภาษาไทย)**.
 
 ## Step 0 — Fetch the issue
 Run: `gh issue view $1 --json number,title,body,labels,comments`
 If it fails, stop and report. Read the issue carefully and extract acceptance criteria.
+
+**Label sanity check:** if the issue carries `needs-info`, `needs-triage`, or `wontfix`, do not run it blind — tell the human it isn't marked ready and ask whether to proceed (a human explicitly running a single issue may override; unlike a batch, this is one deliberate pick). `ready-for-human` means a human must implement it — stop and say so.
+
+**Fold in the project's definition-of-done gate.** The issue's acceptance criteria are the primary standard, but this project also gates every module on things an issue body may not restate — read the "Workflow / เทสผ่าน" gate in `CLAUDE.md` and `SPEC.md` §5 (e.g. Output Parity vs v1 for LP/Billing/Energy, a real-meter read for acquisition work) and treat any that apply to this issue as additional acceptance criteria the reviewer must judge against. `/to-issues` should have written these into the issue already; if they're missing, add them to the criteria you pass downstream rather than letting the gap through.
 
 ## Step 1 — Reviewer authors the delegation prompt (Job A)
 Spawn **one reviewer agent for this issue** (Task tool), passing the issue text, and ask it for **Job A**. You will continue this **same** agent via SendMessage for Job B and any fix prompts (if SendMessage is a deferred tool in your session, load it via ToolSearch first) — do not spawn a fresh reviewer per step; the context it builds here (issue, code, tests) is reused across the whole issue. It invokes `/draft-delegation-prompt` and returns a `## DELEGATION PROMPT` (including a "TDD required" decision). Do not write the build prompt yourself — the reviewer owns prompt authoring.
@@ -61,9 +65,10 @@ First, **write a Thai-language audit log** to `.claude/run-logs/issue-$1.md` (cr
 <hash ถ้ามี> — <ข้อความ commit>  (ถ้ายังไม่ commit ให้ระบุว่ารอมนุษย์ตัดสินใจ)
 
 ## วิธีตรวจซ้ำด้วยตัวเอง (audit)
-หลักฐานจริงอยู่ใน subagent transcript — ตรวจว่า skill ถูกเรียกจริงกี่ครั้ง / ชื่ออะไร:
-    grep -ho '"skill":"[a-z-]*"' ~/.claude/projects/*/*/subagents/*.jsonl | sort | uniq -c
-    for f in ~/.claude/projects/*/*/subagents/*.jsonl; do echo "$f: $(grep -c '"name":"Skill"' "$f")"; done
+หลักฐานจริงอยู่ใน subagent transcript — **ระบุ path จริงของแต่ละ subagent (ค่า `output_file` ที่จับไว้ตอน spawn)** แล้ว grep ว่า skill ถูกเรียกจริงกี่ครั้ง / ชื่ออะไร. เก็บ path เหล่านั้นไว้ในบล็อกนี้ (อย่าใช้ glob สำเร็จรูป — โครงสร้าง path ของ transcript ต่างกันตาม harness และมักได้ผลศูนย์ทั้งที่ skill ถูกเรียกจริง):
+    # แทน <path> ด้วย output_file จริงของแต่ละ subagent ใน issue นี้
+    grep -o '"skill":"[a-z-]*"' <path> | sort | uniq -c
+    grep -c '"name":"Skill"' <path>
 ```
 
 **Then — learn & sync docs (do these two passes yourself as the orchestrator, before the final report):**

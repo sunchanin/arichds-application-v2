@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arichds"
+version = "0.1.0"
+description = "ARICHDS Application — Windows meter-monitoring app (M1 walking skeleton)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    # ─── Web framework (API + serves the SPA from one origin) ─────────────────
+    "fastapi[standard]>=0.141",
+    "uvicorn[standard]>=0.32",
+    # ─── Config ───────────────────────────────────────────────────────────────
+    "pydantic-settings>=2.7",
+    # ─── Database — one SQLite, one Alembic ───────────────────────────────────
+    "sqlalchemy>=2.0.30",
+    "alembic>=1.13",
+    # ─── Licensing — Ed25519 (SPEC §3.9) ──────────────────────────────────────
+    "cryptography>=43",
+    # ─── DLMS/COSEM acquisition (vendored GX*.py wrap these) ──────────────────
+    "gurux-dlms>=1.0.196",
+    "gurux-common>=1.0.13",
+    "gurux-net>=1.0.23",
+    "gurux-serial>=1.0.21",
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+    "ruff>=0.6",
+    "pyinstaller>=6.6",
+]
+
+# FastAPI CLI entrypoint — `fastapi dev` / `fastapi run` read this.
+[tool.fastapi]
+entrypoint = "arichds.main:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+arichds = ["licensing/*.pem"]
+
+# ─── pytest ───────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+# ─── ruff ─────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+# Vendored Gurux wrappers are copied verbatim from v1 — never reformatted.
+extend-exclude = ["src/arichds/vendor/gurux"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+# E501 (line-too-long) is handled by the formatter, not the linter.
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["arichds"]
+
+[tool.ruff.lint.per-file-ignores]
+# GX*.py files are adapted from the Gurux DLMS library which uses camelCase
+# conventions throughout. Renaming would break API compatibility (ported from
+# cewe-worker/ruff.toml). Kept alongside `extend-exclude` so the exemptions
+# still apply if the exclusion is ever lifted.
+"src/arichds/vendor/gurux/GXDLMSReader.py" = ["N802", "N803", "N806", "F403", "SIM115", "E721"]
+"src/arichds/vendor/gurux/GXSettings.py" = ["N802", "N803", "N806"]
+"src/arichds/vendor/gurux/GXDLMSSecureClient2.py" = ["N802", "N803", "N806"]
+# The vendor package deliberately mutates sys.path before importing the flat
+# GX* modules (they import each other by bare name — copied verbatim).
+"src/arichds/vendor/gurux/__init__.py" = ["E402"]

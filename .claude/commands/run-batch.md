@@ -8,7 +8,7 @@ You are the **batch orchestrator**. You will process GitHub issues **#$1 through
 
 **Audit trail.** For each issue, capture from every subagent reply: the TDD decision, scrutinize/code-review findings and their resolution, and the verdict.
 
-**Record which skills each subagent actually invoked — from its transcript, not its words.** Each `Task` call returns that subagent's transcript path (its `output_file`, a `.jsonl`); a `SendMessage` reply continues the same agent and appends to that same file. After every subagent reply (Task or SendMessage), grep that exact file — `grep -o '"skill":"[a-z-]*"' <output_file> | sort | uniq -c` and `grep -c '"name":"Skill"' <output_file>` — and record the verified result into the per-issue Thai audit log (Step 4b below). The final batch report must be **in Thai (ภาษาไทย)**.
+**Record which skills each subagent actually invoked — from its transcript, not its words.** Each `Task` call returns that subagent's transcript path (its `output_file`, a `.jsonl` or `.output` under the session `tasks/` dir) — **capture that exact path verbatim when it is returned**; a `SendMessage` reply continues the same agent and appends to the same file. After every subagent reply (Task or SendMessage), grep that exact file — `grep -o '"skill":"[a-z-]*"' <output_file> | sort | uniq -c` and `grep -c '"name":"Skill"' <output_file>`. Verify BOTH the four pipeline skills AND every domain skill the reviewer mandated in the delegation prompt (e.g. `antd-ui`, `frontend-design`, `dataviz`); a mandated domain skill absent from the implementer's transcript is a process miss to record and, if outcome-relevant, feed back as a fix pass. Record the verified result into the per-issue Thai audit log (Step 4b below). The final batch report must be **in Thai (ภาษาไทย)**.
 
 ## Setup (once, before the loop)
 
@@ -29,7 +29,7 @@ For each issue **#N**, run the same pipeline as `/run-issue` (do not re-derive i
 
 1. **Fetch:** `gh issue view N --json number,title,body,labels,comments`.
    - If the issue does not exist or is already closed, record SKIPPED with the reason, **write its audit log (Step 4b)**, and continue to N+1.
-   - **Label gate:** if its labels include `needs-info`, `needs-triage`, `ready-for-human`, or `wontfix`, record **SKIPPED (label gate: <label>)**, write its audit log (Step 4b), and continue to N+1 — do not spend a single subagent on an issue that is not ready for an agent (`ready-for-human` means a human must do it — never implement it).
+   - **Label gate (opt-in, not opt-out):** an unattended batch runs an issue **only if it carries `ready-for-agent`.** If that label is absent — or any of `needs-info`, `needs-triage`, `ready-for-human`, `wontfix` is present — record **SKIPPED (label gate: <missing ready-for-agent | blocking label>)**, write its audit log (Step 4b), and continue to N+1. Rationale: a blank-labelled issue is un-triaged, and spending Opus subagents implementing something no one marked ready is exactly the waste this gate prevents (`ready-for-human` means a human must do it — never implement it).
 
 2. **Dependency awareness:** If any earlier issue in this batch was SKIPPED/BLOCKED/ERROR, and #N plausibly depends on it (references it, touches the same area), note the risk. Attempt #N anyway, but if it fails in a way that looks caused by the missing earlier work, record **BLOCKED_DEPENDENCY** rather than a generic failure.
 
@@ -64,7 +64,7 @@ For each issue **#N**, run the same pipeline as `/run-issue` (do not re-derive i
 - สำหรับทุก issue ที่ SKIPPED / BLOCKED / ERROR: ปัญหาที่ reviewer ยังค้าง หรือ error เพื่อให้มนุษย์ไปทำต่อเอง
 - ความเสี่ยงเรื่อง dependency ที่ flag ไว้
 - บรรทัดสรุปขั้นต่อไป: มนุษย์ยังต้องรีวิว branch แล้วตัดสินใจเรื่อง push / PR เอง — **คุณยังไม่ได้ push อะไรทั้งสิ้น**
-- วิธีตรวจสอบหลักฐานจริง (transcript): `grep -ho '"skill":"[a-z-]*"' ~/.claude/projects/*/*/subagents/*.jsonl | sort | uniq -c`
+- วิธีตรวจสอบหลักฐานจริง (transcript): ใช้ **path จริงของแต่ละ subagent** (ค่า `output_file` ที่จับไว้ตอน spawn — อย่าใช้ glob สำเร็จรูป เพราะโครงสร้าง path ต่างกันตาม harness และมัก grep ได้ศูนย์ทั้งที่ skill ถูกเรียกจริง): `grep -o '"skill":"[a-z-]*"' <output_file> | sort | uniq -c`
 
 ## Hard limits (stop the WHOLE batch and ask the human)
 - Dirty working tree at setup.

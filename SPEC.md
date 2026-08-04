@@ -56,24 +56,72 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
 จัดกลุ่มตามบันไดโมดูล M2–M8 (ลำดับ implement) — ทุกโมดูล = backend + หน้า FE ของมัน + เทสผ่าน
 จึงเริ่มโมดูลถัดไป
 
-### 3.1 Skeleton & ติดตั้ง (M1)
+### 3.1 Skeleton & ติดตั้ง (M1) — grill แล้ว 2026-08-03, 9 ข้อ
 
-- Installer exe ตัวเดียว: ติดตั้งโปรแกรม + สร้าง Windows service + สร้าง SQLite DB + รัน migration
-- Offline activation: ผู้ใช้ส่ง Machine ID ให้ vendor → ได้ activation code (license ที่เซ็นแล้ว
-  base64 หนึ่งบรรทัด) → วางในโปรแกรม → ใช้งานได้
+**โครง repo**: `app/` (Python backend, `src/` ข้างใน) · `web/` (React + AntD) · `installer/`
+(Inno script + ของประกอบ build) · `tools/` (vendor CLI)
+
+**Installer & service**:
+- **Inno Setup** สร้าง `setup.exe` ตัวเดียว (wizard/uninstall/upgrade ในตัว) + **NSSM** ห่อ
+  `arichds.exe` เป็น Windows service (สูตรเดียวกับ v1 ที่พิสูจน์แล้ว: auto-start, restart on exit,
+  log rotation 50 MB)
+- ที่อยู่: โปรแกรม `Program Files\ARICHDS` · ข้อมูลทั้งหมด `%ProgramData%\ARICHDS\`
+  (`arichds.db`, license, logs, captures, backups)
+- พอร์ต **8000** · bind LAN ได้ — installer เปิด firewall rule ให้เครื่องอื่นในไซต์เข้า
+  `http://<ip>:8000` ได้
+- **Migration รันอัตโนมัติตอน service start** (alembic upgrade head ก่อนเปิด API) —
+  installer/updater ไม่ต้องมี step migrate แยก
+
+**Activation (offline)**:
+- **หน้าเว็บ first-run**: โปรแกรมเริ่มใน limited mode → หน้า Activation โชว์ Machine ID
+  (ปุ่ม copy) + ช่องวาง activation code → verify แล้ว**มีผลทันที ไม่ต้อง restart**
+  (enforcement ออกแบบให้ re-evaluate ใน process — ต่างจาก v1 ที่ต้อง restart) —
+  หน้าเดียวกันใช้ซ้ำตอนต่อ/เปลี่ยน license และเป็นที่อยู่ของ online activation ใน M9
 - Machine fingerprint คำนวณใน Python — **พอร์ตสูตรเดิมจาก Go** (`modbus-logger/internal/license/fingerprint.go`:
-  collect → combine → SHA-256 องค์ประกอบราย OS) เปลี่ยนเฉพาะ salt/ชื่อเป็น ARICHDS แล้ว**แช่แข็งตั้งแต่วันแรก**
-  (เปลี่ยนสูตรทีหลัง = license ทุกใบที่ออกไปพัง)
-- Vendor-side CLI สำหรับสร้าง keypair + เซ็น license (ยกจาก `tools/generate_key.py` ของ v1 มาเปลี่ยนชื่อ)
+  collect → combine → SHA-256; ฝั่ง Windows องค์ประกอบเดียวคือ registry `MachineGuid`)
+  เปลี่ยนเฉพาะ salt/ชื่อเป็น ARICHDS แล้ว**แช่แข็งตั้งแต่วันแรก** (เปลี่ยนสูตรทีหลัง = license ทุกใบพัง)
+- Vendor CLI ใน `tools/`: สร้าง keypair + เซ็น license (ยกจาก `tools/generate_key.py` ของ v1
+  มาเปลี่ยนชื่อ) — license ทดสอบ/ช่วงก่อน portal ออกเป็น `mode: offline`
+
+**Skeleton ที่มองเห็น**:
+- App shell (AntD **re-theme: deep teal · compact density · light**) — theme tokens วางที่นี่
+  ครั้งเดียว ทุกโมดูลถัดไปสืบทอด
+- หน้า Activation + หน้า monitor เดียว: เพิ่มมิเตอร์ Prometer100 แบบ minimal →
+  **poller อ่าน instantaneous set เล็ก ๆ (V/I รายเฟส, freq, total import kWh) ทุก 60 วิ →
+  เก็บ DB → API → หน้าเว็บ auto-refresh** โชว์ค่าล่าสุด + เวลาอ่าน — พิสูจน์ chain เต็มเส้น
 - SPA เสิร์ฟจาก FastAPI origin เดียวกัน — ไม่มี nginx, ไม่มี CORS
 - **M1 ไม่มี auth โดยเจตนา** — M2 ติด guard ย้อนหลัง
+- เช็คคุณภาพเป็น local ทั้งหมด (ruff + pytest + build ตาม gate ต่อโมดูล) — **CI เพิ่มหลังพ้นช่วงเร่ง**
 
-### 3.2 Auth & User Management (M2)
+### 3.2 Auth & User Management (M2) — grill แล้ว 2026-08-04, 4 ข้อ
 
-- Login/logout ด้วย username + password → JWT · role มี 2 ระดับ: `admin` / `user` (enum column)
-- admin: จัดการ user, ตั้งค่าระบบทั้งหมด · user: ใช้งานทั่วไป ดูข้อมูล สั่งอ่าน
-- ทุก endpoint ต้อง authenticate (ยกเว้น health + static SPA) — ไม่มี API key, ไม่มี M2M auth
-- หน้า: Login · User Management
+**First-run flow (เครื่องใหม่)**: **Setup admin → Login → Activation** —
+- หน้า Setup สร้าง admin คนแรก เปิดโล่งเฉพาะตอน user = 0 (ยก pattern `check-setup`/`setup`
+  ของ v1 มาตรง ๆ: นับ user + UNIQUE กันซ้ำ, atomic)
+- endpoint ยกเว้น auth มีแค่ **health · check-setup · setup · login** (+ static SPA) —
+  ที่เหลือ JWT ทั้งหมด รวมถึง `/api/license/*`: ดู status = user ใดก็ได้ที่ login แล้ว,
+  **activate/เปลี่ยน license = admin เท่านั้น** (เปลี่ยนจาก M1 ที่เปิดโล่ง — M2 ติด guard ย้อนหลัง
+  ทับหน้า Activation ด้วย) — กันคนใน LAN แตะ license โดยไม่มีสิทธิ์
+- Login ใช้งานได้แม้อยู่ใน limited mode (auth endpoints ไม่ถูก license gate บัง — ไม่งั้น
+  เครื่องที่ lease ขาดจะ activate ใหม่ไม่ได้)
+
+**Session & token** (ยก mechanics v1 ที่พิสูจน์แล้ว):
+- JWT อายุ **8 ชม.** (`ARICHDS_TOKEN_EXPIRE_MINUTES` override ได้) · หมดแล้ว login ใหม่
+  ไม่มี refresh/remember-me (จอ dashboard ค้างถาวรเป็น feature อนาคตถ้าหน้างานขอ)
+- เก็บเฉพาะ **SHA-256 hash ของ token** ใน `user_tokens` (INV-AUTH-04 ของ v1) ·
+  revoke ตอน logout · เปลี่ยนรหัส = revoke token อื่นทั้งหมดของ user นั้น
+- bcrypt + constant-time login (dummy-hash path เมื่อไม่พบ user — INV-AUTH-02/03 ของ v1)
+
+**Role** (2 ระดับ, enum column — เส้นแบ่งตาม v1 เป๊ะ):
+- `admin`: จัดการมิเตอร์ (เพิ่ม/แก้/ลบ) · จัดการ user · ตั้งค่าระบบ · license
+- `user`: ดูข้อมูลทุกหน้า · สั่งอ่าน manual · export CSV/PDF
+
+**Password**: ขั้นต่ำ 8 ตัวอักษร ไม่บังคับ complexity · ลืมรหัส = admin ตั้งใหม่ให้จากหน้า
+User Management (ไม่มี email infra) · admin คนเดียวลืมเอง = ทางหนีไฟผ่าน vendor CLI บนเครื่อง ·
+**ไม่มี lockout/rate-limit** — บันทึก failed login ลง log (โผล่ App Log ใน M7); bcrypt ช้าพอ
+เป็น rate-limit ธรรมชาติ และเครื่องอยู่ใน LAN ปิด
+
+**หน้า**: Setup (first-run) · Login · User Management
 
 ### 3.3 Device Manager (M3)
 
@@ -157,12 +205,15 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
 
 ## 4. เทคนิค & สถาปัตยกรรม (Technical & Architecture)
 
-- **Stack**: Python 3.13 + FastAPI (API + เสิร์ฟ SPA) · PyInstaller onedir → `arichds.exe` ·
+- **Stack**: Python 3.14 (floor `>=3.13`; เครื่อง dev/build จริงคือ 3.14.6 — M1) + FastAPI
+  (API + เสิร์ฟ SPA) · PyInstaller onedir → `arichds.exe` ·
   React + TypeScript + **Ant Design v6 แบบ re-theme** (ConfigProvider tokens ใหม่ทั้งชุด — primary/density/radius
   ไม่ใช่ default look; ตัดสิน 2026-08-03 หลังเทียบ mockup กับ Mantine และ shadcn/ui —
-  `mockups/devices-lib-compare/`) + Tailwind เฉพาะ layout/utility (convention เดิม v1) · SQLite (WAL) + Alembic
-  ชุดเดียว (`render_as_batch=True` ตั้งแต่ migration แรก) · Gurux DLMS (vendored `GX*.py` ห้ามแก้ API) ·
-  pymodbus · Ed25519 (`cryptography`)
+  `mockups/devices-lib-compare/`) · **ไม่มี Tailwind** (M1 ไม่ต้องใช้ — AntD tokens + layout
+  primitives พอแล้ว) · **SQLAlchemy 2** (ORM — ไม่ใช้ SQLModel แม้ FastAPI skill จะแนะนำ
+  เพราะ Alembic autogenerate + batch mode คือเส้นทางหลักของ schema; ตัดสิน M1) ·
+  SQLite (WAL) + Alembic ชุดเดียว (`render_as_batch=True` ตั้งแต่ migration แรก) ·
+  Gurux DLMS (vendored `GX*.py` ห้ามแก้ API) · pymodbus · Ed25519 (`cryptography`)
 - **สถาปัตยกรรม**: 1 process — main thread (uvicorn) + poller pool (1 thread/มิเตอร์, lock ต่อ
   transport endpoint) + scheduler thread เดียวรันทุก periodic job จาก registry
   `[(name, interval, fn)]` (health-check, LP scheduler, billing auto-read, retention, backup, sync, license recheck)

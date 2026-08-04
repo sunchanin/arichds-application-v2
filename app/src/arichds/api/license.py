@@ -1,0 +1,115 @@
+"""License endpoints — the Activation page's whole backend.
+
+Open in Limited Mode (``/api/license/*`` is on the enforcement allow-list), for
+the obvious reason: this is how a limited machine stops being limited.
+
+Activation applies **immediately** (ADR 0001). The endpoint verifies, persists,
+re-evaluates in place and lets the license listeners run — by the time the
+response is written, the Poller is already coming up. No restart, and no "please
+wait while the service restarts" in the UI.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+
+from fastapi import APIRouter
+from pydantic import BaseModel, Field
+
+from arichds.api.deps import LicenseServiceDep
+from arichds.api.envelope import ApiResponse
+from arichds.constants import ERROR_LICENSE_INVALID
+from arichds.licensing.service import LicenseState
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/license", tags=["license"])
+
+
+class LicenseStatus(BaseModel):
+    """What the Activation page needs to render.
+
+    Attributes:
+        machine_id: This machine's Machine ID — shown with a copy button.
+        state: ``"active"`` or ``"limited"``.
+        reason: Why it is limited, or None when active.
+        customer: Licensed customer name, when known.
+        mode: ``"offline"`` or ``"leased"``, when known.
+        expires_at: Lease end (UTC), or None for a non-expiring license.
+        max_meters: Device quota, or None for unlimited.
+    """
+
+    machine_id: str
+    state: str
+    reason: str | None = None
+    customer: str | None = None
+    mode: str | None = None
+    expires_at: datetime | None = None
+    max_meters: int | None = None
+
+
+class ActivateRequest(BaseModel):
+    """The pasted Activation Code.
+
+    Attributes:
+        code: One line of ``base64url(payload).base64url(signature)``.
+            Surrounding whitespace is tolerated — people paste from email.
+    """
+
+    code: str = Field(min_length=1, description="The Activation Code issued by the vendor.")
+
+
+def _to_status(machine_id: str, state: LicenseState) -> LicenseStatus:
+    """Project a :class:`LicenseState` onto the API shape."""
+    return LicenseStatus(
+        machine_id=machine_id,
+        state=state.state,
+        reason=state.reason,
+        customer=state.customer,
+        mode=state.mode,
+        expires_at=state.expires_at,
+        max_meters=state.max_meters,
+    )
+
+
+@router.get("/status")
+def get_license_status(license_service: LicenseServiceDep) -> ApiResponse[LicenseStatus]:
+    """Return the Machine ID and the current license state.
+
+    The SPA polls this to decide whether to show the Activation page or the
+    Monitor page, so it must always answer — including in Limited Mode.
+    """
+    state = license_service.current_state()
+    return ApiResponse.ok(_to_status(license_service.machine_id, state))
+
+
+@router.post("/activate")
+def activate_license(payload: ActivateRequest, license_service: LicenseServiceDep) -> ApiResponse[LicenseStatus]:
+    """Verify and install an Activation Code. Takes effect immediately.
+
+    A rejected code changes nothing: the stored license and the current state
+    are left exactly as they were, and the reason code comes back so the page
+    can say *why* (wrong machine, expired, tampered) rather than just "invalid".
+
+    Args:
+        payload: The pasted code.
+
+    Returns:
+        Success with the new status, or a failure envelope carrying the reason.
+    """
+    state = license_service.activate(payload.code)
+    status = _to_status(license_service.machine_id, state)
+
+    if not state.valid:
+        return ApiResponse[LicenseStatus](
+            success=False,
+            data=status,
+            error={  # type: ignore[arg-type]
+                "code": ERROR_LICENSE_INVALID,
+                "message": "That Activation Code was not accepted.",
+                "reason": state.reason,
+            },
+        )
+
+    return ApiResponse.ok(status)

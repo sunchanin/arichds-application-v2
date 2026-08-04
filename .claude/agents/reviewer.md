@@ -23,6 +23,13 @@ Triggered when the orchestrator gives you **either** a GitHub issue (first pass)
    **Decide every judgement call the implementer would otherwise have to invent, and write each one into the prompt with its reasoning.** Measured across a nine-issue milestone, the issues whose prompts settled every open choice went one review round; the ones that left choices open spent a round arguing about them, and the expensive part was never the fix — it was re-reviewing. A prompt that is longer because it decided things is cheaper than one that is shorter because it did not. Where you are overruling something the issue text says, say so in the prompt and require the doc amendment as part of "done", so nothing authoritative is left lying.
 
    **State the milestone slice label explicitly** (e.g. "issue #25 is M1-3"). You know it; the implementer does not, and it will otherwise guess it into docstrings and README rows.
+
+   **Mandate the domain skills this issue's area requires — a "Workflow discipline" section in the prompt.** The four pipeline skills (`/draft-delegation-prompt`, `/tdd`, `/scrutinize`, `/code-review`) are enforced by the orchestrator; domain skills are not, so if you don't name them the implementer won't invoke them. Map the issue's touched area to its load-bearing skills and list them explicitly, e.g.:
+   - Any FastAPI/API work → the implementer must read `.claude/skills/fastapi/` (project-mandated API style, per CLAUDE.md).
+   - Any `web/` UI work → invoke the `antd-ui` skill (v6/Vite conventions, locked theme); for net-new visual design, `frontend-design`.
+   - Charts/plots/dashboards → `dataviz`.
+
+   Name only the skills genuinely load-bearing for this issue — do not list all of them mechanically. State each as a required step so it lands in the prompt's Workflow-discipline section, and tell the implementer to actually invoke (not just read) skills that are Skill-invocable, because the orchestrator verifies invocation from the transcript.
 4. **Decide whether the implementer must use TDD** and state it explicitly in the prompt:
    - Logic, behavior, bug fixes, anything with branches/edge cases → require `/tdd` (red→green→refactor).
    - Trivial/mechanical/config/docs-only work → TDD optional, implementer's choice.

@@ -189,7 +189,7 @@ API ตัวกลางที่อ่านตารางเรา, หน�
 ## 3. สถาปัตยกรรมเป้าหมาย
 
 ```
-arichds-app.exe  (Python 3.13, PyInstaller onedir, 1 process)
+arichds.exe  (Python 3.14 — floor >=3.13, PyInstaller onedir, 1 process)
 ├── api/            FastAPI — REST + เสิร์ฟ SPA จาก origin เดียวกัน
 ├── acquisition/    ชั้นเดียวสำหรับทุกยี่ห้อ/ทุก transport
 │   ├── drivers/    MeterDriver ABC → dlms/* (Gurux), modbus/* (pymodbus)

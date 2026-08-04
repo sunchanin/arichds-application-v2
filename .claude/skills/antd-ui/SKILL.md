@@ -1,118 +1,100 @@
 ---
 name: antd-ui
 description: >-
-  Base UI guideline for this project: Ant Design v5 on Next.js 16 App Router +
-  React 19 + TypeScript. Use this skill WHENEVER building, editing, or reviewing
-  any UI in this repo — pages, forms, tables, modals, layouts, buttons, inputs,
-  selects, theming, or toasts/notifications. Trigger it even when the user says
-  "add a page/form/table/dialog", "build the dashboard", "wire up the UI", or
-  names an antd component, without saying "antd". It encodes the React 19 + antd
-  compat setup (v5-patch, AntdRegistry), the Server/Client boundary rules, and
-  the project's mandatory conventions (vertical forms, server-side pagination,
-  App.useApp(), theme tokens over hardcoded values). Consult it before writing
-  UI code so you don't reintroduce FOUC, "use client" errors, or off-convention
-  components.
+  Base UI guideline for ARICHDS Application v2: Ant Design v6 on Vite + React 19
+  + TypeScript (a client-rendered SPA served by FastAPI at one origin — NOT
+  Next.js, NOT SSR). Use this skill WHENEVER building, editing, or reviewing any
+  UI in web/ — pages, forms, tables, modals, layouts, buttons, inputs, selects,
+  theming, or toasts/notifications. Trigger it even when the user says "add a
+  page/form/table/dialog", "build the page", "wire up the UI", or names an antd
+  component, without saying "antd". It encodes the project's locked theme (deep
+  teal, compact, light), the App.useApp() feedback rule, English-only UI, and
+  the single-origin/no-SSR setup. Consult it before writing UI code so you stay
+  on-convention.
 ---
 
-# antd-ui — Project UI workflow (Ant Design v5)
+# antd-ui — Project UI workflow (Ant Design v6, Vite SPA)
 
-This project builds UI with **Ant Design v5** on **Next.js 16 (App Router) +
-React 19 + TypeScript**. This skill is a **workflow**: it holds the project's
-locked decisions and project-correct snippets inline (so it works offline), and
-points you to **context7** to confirm the **current upstream API** — exhaustive
-props, exact token names, anything the local snippets don't cover. Antd predates
-React 19, so a few setup pieces are non-negotiable — get them wrong and you get
-FOUC, runtime errors, or broken theming.
+ARICHDS v2 builds UI with **Ant Design v6** on **Vite + React 19 + TypeScript**.
+The built SPA is served by FastAPI from the same origin as `/api` (no nginx, no
+CORS, **no SSR, no Next.js**). This skill holds the project's locked UI decisions.
 
-## Workflow — run these phases for any UI task
+> **The living reference is `web/src/` itself** — `main.tsx` (provider wiring),
+> `theme.ts` (tokens), `App.tsx` (license-state routing), `pages/`. Read the
+> real files before adding UI; they already encode every rule below. This skill
+> is the *why* and the checklist; the code is the *what*.
 
-### Phase 0 · Is the app wired for antd? *(first UI task only)*
-Check `app/layout.tsx` wraps `children` in `<AntdRegistry>` and imports
-`@ant-design/v5-patch-for-react-19`, and that a client `ThemeProvider` holds
-`ConfigProvider` + `<App>`.
-- **Not wired?** → fix first using `references/setup-nextjs.md` (our exact code).
-- **Verify:** `app/layout.tsx` is still a Server Component (no `"use client"`).
+## Stack facts (get these wrong and things break)
 
-### Phase 1 · Pick the Server/Client boundary
-Data fetching stays in Server Components (`page.tsx`); anything importing antd or
-using state goes in a `"use client"` leaf, kept as low in the tree as practical.
-- **Verify:** every file importing antd starts with `"use client"`.
+- **AntD v6** — the v5 React-19 compat shims are gone. Do **NOT** add
+  `@ant-design/v5-patch-for-react-19` or `@ant-design/nextjs-registry`; they are
+  v5/Next-only and wrong here.
+- **Vite SPA, client-rendered** — there is no Server/Client boundary, no
+  `"use client"`, no `app/layout.tsx`. Every component is a client component.
+  Any guidance mentioning RSC, `page.tsx`, or `AntdRegistry` is from the old
+  Next.js stack and does not apply.
+- **One provider tree, set once in `web/src/main.tsx`**:
+  `<ConfigProvider theme={arichdsTheme} locale={enUS}><AntdApp>…`. Never nest a
+  second `ConfigProvider` with a competing theme.
 
-### Phase 2 · Start from the project snippet, verify props on context7
-Copy the project-correct snippet from `references/components.md` (it already
-encodes the conventions). When you need a prop the snippet doesn't show, or want
-to confirm the current API, query context7 (see **Fetching live docs**). The
-snippet's *composition* is the project rule; context7 covers the *prop surface*.
+## The non-negotiables (project policy)
 
-### Phase 3 · Apply the project conventions *(non-negotiable, see below)*
-Vertical forms · server-side pagination · `App.useApp()` feedback · theme tokens.
+1. **Theme is applied once, inherited everywhere.** Tokens live in
+   `web/src/theme.ts`: `colorPrimary #0f766e` (deep teal), `borderRadius 6`,
+   `algorithm: [defaultAlgorithm, compactAlgorithm]` (compact density, light
+   mode). Adding a page = using these tokens, never re-declaring the theme.
+   Changing brand feel = editing `theme.ts` only. This is the M0 decision (D4):
+   re-themed AntD, not stock — the compact+teal combination is what makes it not
+   look like default Ant Design.
+2. **Feedback via `App.useApp()`** → `message` / `modal` / `notification`.
+   Never the static `message.xxx()` / `Modal.confirm()` imports — they render
+   outside the ConfigProvider theme (wrong colors, no compact). `<AntdApp>` is
+   already mounted in `main.tsx` for this.
+3. **Styling from theme tokens**, not hardcoded hex/px. Consume via
+   `theme.useToken()` when a component needs a token value. Shared layout
+   constants (e.g. `HEADER_HEIGHT`) live as exports in `theme.ts`, not inline
+   magic numbers.
+4. **Forms:** `layout="vertical"` always; validate with `Form.useForm` +
+   `Form.Item` rules.
+5. **Tables:** for any list that can grow (readings, events, devices across
+   sites), paginate **server-side** — pass `total`, refetch on `onChange`.
+   Never dump a full dataset into a client-side table. (M1's Monitor shows a
+   handful of live devices and is fine unpaginated; the domain-module lists are
+   not.)
+6. **Subcomponents via props:** feed `Select`/`Menu` through `options`/`items`,
+   not `.Option`/`.Item` children (in v6 the installed `.d.ts` marks `.Option`
+   `@deprecated`). If you need the columns type, import it as
+   `import type { ColumnsType } from "antd/es/table"` — top-level `antd` exposes
+   it renamed to `TableColumnsType` in v6.
+7. **English only.** No Thai strings in `web/` (SPEC §2 rules out i18n).
+   `locale={enUS}`. v1 mixed Thai into the UI — do not carry it over.
+8. **License-state routing, not URL routing** (M1 pattern, `App.tsx`): the app
+   shows Activation vs the shell based on `GET /api/license/status`, and
+   transitions live on activation (ADR 0001) — no reload. Later modules add
+   in-shell navigation, but the top-level gate stays state-driven.
 
-### Phase 4 · Self-check before finishing
-Run the checklist in `references/patterns.md` (boundary, vertical form, server
-pagination + `total`, `App.useApp()`, tokens, `options`/`items` props, patch +
-registry wired).
+## Fetching current AntD docs (Context7 is NOT available here)
 
-## The non-negotiables (project policy — NOT docs, never fetch these)
+When you need a prop, token name, or API the local code doesn't show, do **NOT**
+rely on training memory and do **NOT** try Context7 MCP tools — they are not
+connected in this environment (verified 2026-08-04; any "use context7"
+instruction silently degrades). Use the proven fallbacks:
 
-**Setup (or the stack breaks):**
-1. **React 19 patch** — import `@ant-design/v5-patch-for-react-19` **once** at the
-   app entry, or `Modal`/`message`/`notification` silently misbehave. *(antd v6
-   drops this need — keep it while we're on v5.)*
-2. **`<AntdRegistry>`** from `@ant-design/nextjs-registry` must wrap `children` in
-   `app/layout.tsx` — SSR style extraction, or the first screen flashes unstyled.
-3. **`"use client"`** — antd components are client components; never import them
-   into a Server Component.
-4. **`ConfigProvider` + `<App>`** live in a **client** `ThemeProvider`, nested
-   inside `<AntdRegistry>`.
+- **WebFetch** the official docs: `https://ant.design/components/<name>` (append
+  the component, e.g. `/table`, `/form`, `/config-provider`). For v6-specific
+  changes, `https://ant.design/docs/react/migrate-v5-to-v6`.
+- **Read the installed source**: `web/node_modules/antd/es/<component>/` — the
+  `.d.ts` files are the exact current prop surface for the pinned version.
 
-**Conventions (apply every time — rationale in `references/patterns.md`):**
-- **Forms:** `layout="vertical"` always.
-- **Tables:** server-side pagination — pass `total`, refetch on `onChange`. Never
-  dump a full dataset client-side.
-- **Feedback:** `App.useApp()` → `message`/`modal`/`notification`. Never the
-  static `message.xxx()` imports (they render outside the theme context).
-- **Styling:** spacing/colors from **theme tokens** (`theme.useToken()` / `theme`
-  prop), not hardcoded hex/px.
-- **Subcomponents:** feed `Select`/`Menu` via `options`/`items` props, not
-  `.Option`/`.Item` children (RSC dot-notation caveat).
+Confirm against the installed version (`antd` in `web/package.json`), not a
+remembered one — v6 renamed/removed things v5 had.
 
-## Fetching live docs from context7
+## Self-check before finishing
 
-Use context7 to **confirm current props/tokens or fill gaps the local snippets
-don't cover** — not as a mandatory step before every component. Resolve isn't
-needed — use these IDs directly:
-
-| Library ID | Use for |
-|------------|---------|
-| `/ant-design/ant-design` | Components, Next.js setup, React 19 compat, `App`, forms, tables, theming |
-| `/websites/ant_design` | Alternative antd docs source if the first lacks coverage |
-
-Ready-made queries (pass to `query-docs`):
-
-| Task | `query-docs` query |
-|------|--------------------|
-| Next.js setup / SSR | "Use Ant Design v5 with Next.js App Router, AntdRegistry, React 19 patch" |
-| Form | "antd Form layout vertical, Form.Item rules validation, Form.useForm instance methods" |
-| Table | "antd Table server-side pagination, TableColumnsType, onChange, rowKey" |
-| Select | "antd Select options prop, multiple mode, showSearch, server-driven search" |
-| Modal | "antd Modal open state vs App.useApp modal.confirm" |
-| Feedback | "antd App.useApp message notification vs static methods" |
-| Theming | "antd v5 ConfigProvider theme tokens, algorithm dark compact, components override, useToken" |
-
-Anything not antd-specific (a JS API, a Next.js convention) → resolve the right
-library first with `resolve-library-id`.
-
-## References (project-specific — kept local because they are decisions, not docs)
-
-| File | Read it when… |
-|------|---------------|
-| `references/setup-nextjs.md` | Wiring `layout.tsx` / `ThemeProvider` — our exact code + boundary rules |
-| `references/patterns.md` | The conventions above, with full rationale + the finish checklist |
-| `references/components.md` | Project-correct snippets to copy (Form, Table, Select, Modal…) + context7 query for full props |
-| `references/theming.md` | Consuming tokens (project decisions) + context7 query for the token/algorithm API |
-
-## Required packages
-
-```bash
-bun add antd @ant-design/icons @ant-design/nextjs-registry @ant-design/v5-patch-for-react-19
-```
+- [ ] No `"use client"`, no `AntdRegistry`, no v5-patch import added.
+- [ ] No second `ConfigProvider` / theme re-declared; tokens come from `theme.ts`.
+- [ ] Feedback uses `App.useApp()`, not static `message.*`/`Modal.*`.
+- [ ] Forms `layout="vertical"`; growable tables paginate server-side with `total`.
+- [ ] `Select`/`Menu` fed via `options`/`items`.
+- [ ] All user-facing strings English; no hardcoded hex/px where a token fits.
+- [ ] `pnpm lint` and `pnpm build` pass (build fails on type errors).

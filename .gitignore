@@ -1,0 +1,49 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# ─── Node / web ───────────────────────────────────────────────────────────────
+node_modules/
+web/dist/
+*.tsbuildinfo
+
+# ─── Runtime data (never committed — lives in %ProgramData%\ARICHDS on a real
+#     install; ./data locally) ────────────────────────────────────────────────
+data/
+*.db
+*.db-wal
+*.db-shm
+logs/
+# Belt-and-braces: the vendored Gurux reader opens this in the CWD. The driver
+# redirects it before any frame is written (see _gurux_trace.py), but never let
+# a stray frame trace be committed — it carries meter passwords in cleartext.
+logFile.txt
+
+# ─── Licensing secrets ────────────────────────────────────────────────────────
+# The vendor signing PRIVATE key must NEVER be committed. The public key IS
+# committed (the app bundles it to verify Activation Codes).
+*.private.pem
+*_private_key.pem
+.arichds_private_key.pem
+keys/
+license/
+*.lic
+
+# ─── Installer vendor drops (see installer/README.md) ─────────────────────────
+# No trailing slash: the pattern must match before the directory exists, so a
+# freshly dropped nssm.exe is ignored on the very first `git status`.
+installer/vendor
+installer/Output
+
+# ─── Editors / OS ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
