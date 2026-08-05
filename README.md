@@ -82,9 +82,15 @@ Build the frozen exe + installer, then run `setup.exe` on the target machine —
 10 minutes, no database questions:
 
 ```powershell
-pwsh app\packaging\build.ps1        # PyInstaller onedir + built SPA
-iscc installer\arichds.iss          # needs Inno Setup + installer\vendor\nssm.exe drop
+powershell -File app\packaging\build.ps1   # PyInstaller onedir + built SPA (pwsh works too)
+iscc installer\arichds.iss                 # needs Inno Setup 6 + installer\vendor\nssm.exe drop
 ```
+
+**Updating an existing install** means running the newer `setup.exe` over it — the service
+stops, the files are replaced, and `C:\ProgramData\ARICHDS` (database, license, logs)
+survives. Bump `AppVersion` in `installer\arichds.iss` first, or every release reports
+itself as the same version. To re-test a build on your *own* machine without compiling an
+installer, see [installer/README.md](installer/README.md) → Upgrading.
 
 Full steps, prerequisites, upgrade/uninstall behavior, and troubleshooting:
 [installer/README.md](installer/README.md). After installing, the usage flow is the same

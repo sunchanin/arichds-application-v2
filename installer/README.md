@@ -60,10 +60,34 @@ Output: `installer\Output\arichds-setup-0.1.0.exe`.
 
 ## Upgrading
 
+### On a customer machine — the only supported path
+
 Run the newer `setup.exe` over the old install. It stops the service before
 replacing files (`PrepareToInstall`), reinstalls, and starts it again. The
 database, the license and the logs are untouched, and the service brings the
 schema to head on its next start.
+
+**Bump `AppVersion` in `arichds.iss` before every release.** It is hardcoded
+(`#define AppVersion "0.1.0"`) and drives both the output filename and what
+"Programs and Features" reports. Ship two different builds under one number and
+nobody on site can tell which one a machine is running.
+
+### On a build machine — testing a fresh build without Inno Setup
+
+Compiling `setup.exe` just to re-test your own build is not worth the round trip.
+Stop the service, overwrite the program directory, start it again:
+
+```powershell
+net stop arichds
+robocopy app\dist\arichds "C:\Program Files\ARICHDS" /MIR /XF nssm.exe /NFL /NDL
+net start arichds
+```
+
+`/XF nssm.exe` stops `/MIR` from deleting the NSSM binary the installer placed in
+the program directory — the uninstaller needs it to remove the service, so losing
+it leaves an install that cannot be uninstalled cleanly. Runtime data is
+unaffected (it all lives in `C:\ProgramData\ARICHDS`) and migrations run at
+service start, exactly as they would after a real upgrade.
 
 ## Uninstalling
 

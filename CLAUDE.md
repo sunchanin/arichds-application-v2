@@ -61,10 +61,16 @@ python -m alembic upgrade head     # manual; app also auto-migrates at startup
 pnpm dev                           # proxies /api -> localhost:8000
 pnpm lint && pnpm build            # build fails on type errors
 
-# Packaging
-pwsh app/packaging/build.ps1       # PyInstaller onedir -> arichds.exe
-iscc installer/arichds.iss         # Inno Setup (requires nssm.exe vendor drop)
+# Packaging  (this machine has no pwsh — PowerShell 5.1 only; build.ps1 is 5.1-compatible)
+powershell -File app/packaging/build.ps1   # PyInstaller onedir -> arichds.exe
+iscc installer/arichds.iss                 # Inno Setup 6 (requires nssm.exe vendor drop)
 ```
+
+Updating an install = run the newer `setup.exe` over it (bump `AppVersion` in
+`installer/arichds.iss` first — it is hardcoded and drives what Programs and Features
+reports). Re-testing a build locally needs no installer: stop the service, `robocopy` the
+onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
+`installer/README.md` → Upgrading has the exact commands.
 
 ## Invariants (load-bearing — violating these is a bug even if tests pass)
 
