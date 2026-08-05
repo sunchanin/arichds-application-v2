@@ -1,0 +1,184 @@
+"""The ``/api/auth`` surface — Setup, Login, Logout, Me (M2-1).
+
+Setup → Login → Activation is the first-run walk (SPEC §3.2), so most of these
+run against a fresh, unlicensed machine: the auth endpoints are on the Limited
+Mode allow-list precisely so a lapsed machine can still be logged into and
+re-activated.
+"""
+
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+
+from arichds.config import get_settings
+from tests.conftest import ADMIN_CREDENTIALS, login_token
+
+
+class TestCheckSetup:
+    def test_setup_is_required_on_a_fresh_machine(self, unlicensed_client: TestClient) -> None:
+        response = unlicensed_client.get("/api/auth/check-setup")
+
+        assert response.status_code == 200
+        assert response.json()["data"] == {"setup_required": True}
+
+    def test_setup_is_not_required_once_an_account_exists(self, unlicensed_client: TestClient) -> None:
+        unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS)
+
+        assert unlicensed_client.get("/api/auth/check-setup").json()["data"] == {"setup_required": False}
+
+
+class TestSetup:
+    def test_creates_the_bootstrap_admin(self, unlicensed_client: TestClient) -> None:
+        response = unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS)
+
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert data["username"] == "admin"
+        assert data["role"] == "admin"
+
+    def test_never_returns_the_password_or_its_hash(self, unlicensed_client: TestClient) -> None:
+        response = unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS)
+
+        assert "password" not in response.json()["data"]
+        assert "password_hash" not in response.json()["data"]
+        assert ADMIN_CREDENTIALS["password"] not in response.text
+
+    def test_a_second_setup_is_409(self, unlicensed_client: TestClient) -> None:
+        """ "Already done" is a conflict, not a permissions problem."""
+        unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS)
+
+        response = unlicensed_client.post(
+            "/api/auth/setup", json={"username": "intruder", "password": "another-password"}
+        )
+
+        assert response.status_code == 409
+
+    def test_a_short_password_is_422(self, unlicensed_client: TestClient) -> None:
+        response = unlicensed_client.post("/api/auth/setup", json={"username": "admin", "password": "short"})
+
+        assert response.status_code == 422
+
+    def test_a_password_over_72_bytes_is_422_not_500(self, unlicensed_client: TestClient) -> None:
+        """40 characters, 120 bytes — a character limit would let this through
+        and bcrypt 5.0 would then raise inside the hash call."""
+        password = "é" * 40
+        assert len(password) < 72
+        assert len(password.encode("utf-8")) > 72
+
+        response = unlicensed_client.post("/api/auth/setup", json={"username": "admin", "password": password})
+
+        assert response.status_code == 422
+
+    def test_a_72_byte_password_is_accepted(self, unlicensed_client: TestClient) -> None:
+        """The boundary is inclusive — bcrypt accepts exactly 72 bytes."""
+        response = unlicensed_client.post("/api/auth/setup", json={"username": "admin", "password": "x" * 72})
+
+        assert response.status_code == 201
+
+    def test_a_short_username_is_422(self, unlicensed_client: TestClient) -> None:
+        response = unlicensed_client.post("/api/auth/setup", json={"username": "ab", "password": "long-enough"})
+
+        assert response.status_code == 422
+
+
+class TestLogin:
+    def test_valid_credentials_return_a_token_and_the_user(self, unlicensed_client: TestClient) -> None:
+        unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS)
+
+        response = unlicensed_client.post("/api/auth/login", json=ADMIN_CREDENTIALS)
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["access_token"]
+        assert data["token_type"] == "bearer"
+        assert data["user"]["username"] == "admin"
+        assert data["user"]["role"] == "admin"
+
+    def test_a_wrong_password_is_401(self, unlicensed_client: TestClient) -> None:
+        unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS)
+
+        response = unlicensed_client.post("/api/auth/login", json={"username": "admin", "password": "not-the-password"})
+
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Invalid username or password"
+
+    def test_an_unknown_username_gives_the_same_401(self, unlicensed_client: TestClient) -> None:
+        """Same status, same words — no account-enumeration oracle."""
+        unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS)
+
+        response = unlicensed_client.post(
+            "/api/auth/login", json={"username": "nobody", "password": "not-the-password"}
+        )
+
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Invalid username or password"
+
+    def test_the_401_carries_the_bearer_challenge(self, unlicensed_client: TestClient) -> None:
+        unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS)
+
+        response = unlicensed_client.post("/api/auth/login", json={"username": "admin", "password": "wrong-one"})
+
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+class TestMe:
+    def test_returns_the_authenticated_user(self, admin_client: TestClient) -> None:
+        response = admin_client.get("/api/auth/me")
+
+        assert response.status_code == 200
+        assert response.json()["data"]["username"] == "admin"
+
+    def test_is_401_without_a_token(self, anon_client: TestClient) -> None:
+        assert anon_client.get("/api/auth/me").status_code == 401
+
+    def test_is_401_with_a_garbage_token(self, activated_client: TestClient) -> None:
+        response = activated_client.get("/api/auth/me", headers={"Authorization": "Bearer not-a-jwt"})
+
+        assert response.status_code == 401
+
+    def test_is_401_with_a_non_bearer_scheme(self, activated_client: TestClient) -> None:
+        response = activated_client.get("/api/auth/me", headers={"Authorization": "Basic YWRtaW46YWRtaW4="})
+
+        assert response.status_code == 401
+
+    def test_created_at_is_reported_the_same_way_as_setup_reported_it(self, unlicensed_client: TestClient) -> None:
+        """One account, two endpoints — the same instant must render identically."""
+        from_setup = unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS).json()["data"]
+        token = unlicensed_client.post("/api/auth/login", json=ADMIN_CREDENTIALS).json()["data"]["access_token"]
+
+        from_me = unlicensed_client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"}).json()["data"]
+
+        assert from_me == from_setup
+
+
+class TestLogout:
+    def test_revokes_the_presenting_token(self, admin_client: TestClient) -> None:
+        assert admin_client.post("/api/auth/logout").json()["data"] is True
+
+        assert admin_client.get("/api/auth/me").status_code == 401
+
+    def test_is_401_without_a_token(self, anon_client: TestClient) -> None:
+        assert anon_client.post("/api/auth/logout").status_code == 401
+
+    def test_another_session_survives(self, activated_client: TestClient) -> None:
+        """Logging out of one browser must not log the wall display out."""
+        first = login_token(activated_client, ADMIN_CREDENTIALS)
+        second = login_token(activated_client, ADMIN_CREDENTIALS)
+
+        activated_client.post("/api/auth/logout", headers={"Authorization": f"Bearer {first}"})
+
+        still_valid = activated_client.get("/api/auth/me", headers={"Authorization": f"Bearer {second}"})
+        assert still_valid.status_code == 200
+
+    def test_an_expired_token_is_401(self, activated_client: TestClient, monkeypatch) -> None:
+        """End-to-end through the API, because the stored expiry comes back from
+        SQLite naive and comparing it to an aware `now` is a TypeError trap."""
+        monkeypatch.setenv("ARICHDS_TOKEN_EXPIRE_MINUTES", "-1")
+        get_settings.cache_clear()
+        expired = login_token(activated_client, ADMIN_CREDENTIALS)
+        monkeypatch.delenv("ARICHDS_TOKEN_EXPIRE_MINUTES")
+        get_settings.cache_clear()
+
+        response = activated_client.get("/api/auth/me", headers={"Authorization": f"Bearer {expired}"})
+
+        assert response.status_code == 401

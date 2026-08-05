@@ -26,7 +26,7 @@ from fastapi import FastAPI
 
 from arichds import __version__
 from arichds.acquisition.poller import Poller
-from arichds.api import devices, health, license
+from arichds.api import auth, devices, health, license
 from arichds.config import Settings, get_settings
 from arichds.db.migrate import upgrade_to_head
 from arichds.db.session import dispose_engine, init_engine
@@ -83,6 +83,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(license.router)
     app.include_router(devices.router)
 

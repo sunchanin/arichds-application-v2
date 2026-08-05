@@ -22,8 +22,8 @@ MySQL, and ~30 tables.
 - `CONTEXT.md` — the glossary. Use these exact terms in code, comments, and UI
   (Interval Reading, Source, Transport Endpoint, Machine ID, Activation Code, Limited
   Mode, Output Parity …).
-- `docs/adr/` — currently 0001 (license applies live, no restart — never cache
-  license-derived state at import/startup).
+- `docs/adr/` — 0001 (license applies live, no restart — never cache license-derived state at
+  import/startup) · 0002 (DLMS scaler read correctly) · 0003 (JWT secret generated per install).
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
 
@@ -32,13 +32,16 @@ MySQL, and ~30 tables.
 - `app/` — Python 3.14 backend (floor `>=3.13`; the dev/build machine runs 3.14.6)
   (`src/arichds/`): FastAPI (API + serves the built SPA, one origin, no CORS) ·
   **SQLAlchemy 2** ORM + SQLite WAL + one Alembic setup (`render_as_batch=True`) · poller ·
-  job-registry scheduler · licensing. Venv at `app/.venv`, `pyproject.toml` + pip.
+  job-registry scheduler · licensing · `auth/` (bcrypt + PyJWT, Role enum, token service —
+  HTTP-free; the guard dependencies live in `api/deps.py`). Venv at `app/.venv`,
+  `pyproject.toml` + pip.
 - `web/` — Vite + React + TS + **AntD v6 re-themed** (deep teal `#0f766e`, compact, light,
   English-only UI). No Tailwind — AntD tokens + its layout primitives cover the UI. pnpm.
 - `installer/` — Inno Setup script + NSSM service wrapper (`installer/vendor/nssm.exe` is a
   vendor drop, never committed). Installs to `Program Files\ARICHDS`, data at
-  `%ProgramData%\ARICHDS`, port 8000, firewall rule. Migration runs at service start —
-  no installer migrate step.
+  `%ProgramData%\ARICHDS` (`arichds.db`, `license\`, `logs\`, and `secret\jwt_secret.key` —
+  generated on first run, ADR 0003; deleting it signs everyone out). Port 8000, firewall
+  rule. Migration runs at service start — no installer migrate step.
 - `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code signing. Private keys are
   NEVER committed.
 - `mockups/` — throwaway comparison app that decided D4 (AntD). Do not extend.

@@ -29,8 +29,15 @@ from arichds.licensing.service import LicenseService
 
 #: Path prefixes that stay open in Limited Mode. Health so monitoring and the
 #: installer can probe a limited machine; the license endpoints so the
-#: Activation page can read the Machine ID and post a code.
-ALWAYS_ALLOWED_PREFIXES: tuple[str, ...] = ("/api/health", "/api/license")
+#: Activation page can read the Machine ID and post a code; the auth endpoints
+#: because activation is admin-only from M2-1 on — gate login behind the license
+#: and a machine whose lease lapsed could never be logged into, and therefore
+#: never re-activated (SPEC §3.2).
+#:
+#: Passing this gate is not the same as being unauthenticated: ``/api/auth`` and
+#: ``/api/license`` still carry their own JWT guard, which this middleware knows
+#: nothing about.
+ALWAYS_ALLOWED_PREFIXES: tuple[str, ...] = ("/api/health", "/api/license", "/api/auth")
 
 #: The gate only covers the API. Non-API paths (the SPA, its assets, the docs)
 #: always pass.

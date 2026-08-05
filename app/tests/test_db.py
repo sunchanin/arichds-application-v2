@@ -34,10 +34,10 @@ class TestMigration:
         tables = set(inspect(get_engine()).get_table_names())
         assert {"devices", "interval_readings"} <= tables
 
-    def test_only_m1_tables_exist(self, migrated_db: Settings) -> None:
-        """M1 lands two tables; the other 11 arrive with their own modules."""
+    def test_only_the_shipped_modules_tables_exist(self, migrated_db: Settings) -> None:
+        """M1 landed two tables and M2-1 two more; the other 9 arrive with their own modules."""
         tables = set(inspect(get_engine()).get_table_names()) - {"alembic_version"}
-        assert tables == {"devices", "interval_readings"}
+        assert tables == {"devices", "interval_readings", "users", "user_tokens"}
 
     def test_wal_is_enabled(self, migrated_db: Settings) -> None:
         with get_engine().connect() as connection:

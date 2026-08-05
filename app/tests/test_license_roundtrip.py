@@ -32,6 +32,7 @@ from arichds.config import Settings
 from arichds.constants import ERROR_LICENSE_INVALID
 from arichds.licensing import activation_code as ac
 from arichds.licensing.service import LicenseService
+from tests.conftest import ADMIN_CREDENTIALS, login_token
 
 TEST_MACHINE_ID = "c" * 64
 OTHER_MACHINE_ID = "d" * 64
@@ -195,11 +196,26 @@ class TestLicenseService:
 
 @pytest.fixture
 def client(migrated_db: Settings, this_machine: str, vendor_keys: Path) -> Iterator[TestClient]:
-    """A TestClient over the real app, on a temporary data directory."""
+    """A TestClient over the real app on a limited machine, signed in as admin.
+
+    From M2-1 the license endpoints need a token and activation needs an
+    ``admin``, so the fixture walks Setup → Login before it can touch them.
+    That both endpoints answer here at all — on a machine with no license — is
+    the point of putting ``/api/auth`` on the Limited Mode allow-list: a machine
+    whose lease lapsed must still be loggable-into, or it could never be
+    re-activated.
+
+    These tests are about the *license* gate, so the auth gate is satisfied and
+    then kept out of the way. ``tests/test_auth_guard.py`` covers the other
+    side: the same endpoints answering 401 with no token.
+    """
     from arichds.main import create_app
 
     app = create_app()
     with TestClient(app) as test_client:
+        assert test_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS).status_code == 201
+        token = login_token(test_client, ADMIN_CREDENTIALS)
+        test_client.headers["Authorization"] = f"Bearer {token}"
         yield test_client
 
 

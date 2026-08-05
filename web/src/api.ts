@@ -4,7 +4,12 @@
  * Every call is a same-origin relative URL: in production FastAPI serves both
  * the SPA and the API, and in development Vite proxies `/api` to the backend.
  * There is no base-URL configuration to get wrong.
+ *
+ * One place attaches the Access Token and one place reacts to a 401, so no page
+ * has to remember to do either.
  */
+
+import { clearSession, getSession } from "./auth";
 
 /** The `{success, data, error}` envelope every endpoint returns. */
 export interface ApiResponse<T> {
@@ -65,6 +70,28 @@ export interface NewDevice {
   password: string;
 }
 
+export interface SetupStatus {
+  setup_required: boolean;
+}
+
+export interface User {
+  id: number;
+  username: string;
+  role: "admin" | "user";
+  created_at: string;
+}
+
+export interface LoginResult {
+  access_token: string;
+  token_type: string;
+  user: User;
+}
+
+export interface Credentials {
+  username: string;
+  password: string;
+}
+
 /** Raised when a request fails; carries the API's own error code when present. */
 export class ApiRequestError extends Error {
   constructor(
@@ -78,10 +105,24 @@ export class ApiRequestError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const session = getSession();
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(session ? { Authorization: `Bearer ${session.token}` } : {}),
+      ...init?.headers,
+    },
   });
+
+  // A 401 on a request that *carried* a token means that token is no longer
+  // good — expired, revoked, or issued under a since-rotated signing secret —
+  // so drop the session and let the app fall back to Login. A 401 on a request
+  // that carried no token is just the Login form being told the password was
+  // wrong; clearing there would turn a typo into a "session expired" loop.
+  if (response.status === 401 && session) {
+    clearSession();
+  }
 
   let body: ApiResponse<T> | { detail?: unknown } | null = null;
   try {
@@ -111,6 +152,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  checkSetup: () => request<SetupStatus>("/api/auth/check-setup"),
+
+  setup: (credentials: Credentials) =>
+    request<User>("/api/auth/setup", {
+      method: "POST",
+      body: JSON.stringify(credentials),
+    }),
+
+  login: (credentials: Credentials) =>
+    request<LoginResult>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify(credentials),
+    }),
+
+  logout: () => request<boolean>("/api/auth/logout", { method: "POST" }),
+
+  me: () => request<User>("/api/auth/me"),
+
   licenseStatus: () => request<LicenseStatus>("/api/license/status"),
 
   activate: (code: string) =>

@@ -4,12 +4,15 @@ Minimal by intent: M1 proves the chain, M3 turns this into the real Device
 Manager (catalog of nine models, serial transport, pause/reconnect, quota
 checks). Adding fields here now would be inventing M3's shape early.
 
-Guarded by Limited Mode: everything in this router is under ``/api`` and not on
-the allow-list, so an unlicensed machine gets 403 ``LICENSE_INVALID`` before any
-handler runs.
+Two independent gates sit in front of every handler here:
 
-**No authentication** — deliberately, per SPEC §3.1. M2 fits the guard
-retroactively to every endpoint M1 leaves open.
+* **Limited Mode** — everything in this router is under ``/api`` and not on the
+  license allow-list, so an unlicensed machine gets 403 ``LICENSE_INVALID``
+  before any handler runs.
+* **Authentication** (M2-1) — the router-level dependency means an
+  unauthenticated request is refused with 401 *before* its body is validated,
+  so a ``POST`` with no body answers 401 rather than 422. Changing a device is
+  admin-only; reading is open to any authenticated user (SPEC §3.2).
 """
 
 from __future__ import annotations
@@ -18,18 +21,18 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 
 from arichds.acquisition.drivers.factory import supported_models
-from arichds.api.deps import PollerDep, SessionDep
+from arichds.api.deps import AdminDep, PollerDep, SessionDep, get_current_user
 from arichds.api.envelope import ApiResponse
 from arichds.db.models import Device, IntervalReading
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/devices", tags=["devices"])
+router = APIRouter(prefix="/api/devices", tags=["devices"], dependencies=[Depends(get_current_user)])
 
 
 class DeviceCreate(BaseModel):
@@ -159,14 +162,19 @@ def list_supported_models(session: SessionDep) -> ApiResponse[list[str]]:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-def create_device(payload: DeviceCreate, session: SessionDep, poller: PollerDep) -> ApiResponse[DeviceOut]:
+def create_device(
+    payload: DeviceCreate, session: SessionDep, poller: PollerDep, admin: AdminDep
+) -> ApiResponse[DeviceOut]:
     """Add a device and put it into the Poller rotation immediately.
+
+    Admin only (SPEC §3.2): managing meters is an administrator's job.
 
     The Poller restarts so the new device gets a worker without waiting for a
     process restart — the same "applies live" principle as activation.
 
     Raises:
-        HTTPException: 409 if the name is taken, 422 if the model is unknown.
+        HTTPException: 403 for a non-admin, 409 if the name is taken, 422 if the
+            model is unknown.
     """
     if payload.model.lower() not in supported_models():
         raise HTTPException(
@@ -195,11 +203,15 @@ def create_device(payload: DeviceCreate, session: SessionDep, poller: PollerDep)
 
 
 @router.delete("/{device_id}")
-def delete_device(device_id: DeviceIdPath, session: SessionDep, poller: PollerDep) -> ApiResponse[bool]:
+def delete_device(
+    device_id: DeviceIdPath, session: SessionDep, poller: PollerDep, admin: AdminDep
+) -> ApiResponse[bool]:
     """Delete a device and its readings, then rebuild the Poller rotation.
 
+    Admin only (SPEC §3.2).
+
     Raises:
-        HTTPException: 404 if no such device.
+        HTTPException: 403 for a non-admin, 404 if no such device.
     """
     device = session.get(Device, device_id)
     if device is None:

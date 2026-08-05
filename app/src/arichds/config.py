@@ -28,6 +28,11 @@ class Settings(BaseSettings):
         log_level: Root logger level. ``ARICHDS_LOG_LEVEL``.
         poll_enabled: Master switch for the Poller — off in tests that do not
             want background threads. ``ARICHDS_POLL_ENABLED``.
+        token_expire_minutes: Access Token lifetime (SPEC §3.2 — 8 hours).
+            ``ARICHDS_TOKEN_EXPIRE_MINUTES``.
+        jwt_secret: Explicit JWT signing secret. ``ARICHDS_JWT_SECRET``. When
+            unset the secret is generated per install and persisted under
+            :attr:`jwt_secret_path` (ADR 0003).
     """
 
     model_config = SettingsConfigDict(env_prefix="ARICHDS_", env_file=".env", extra="ignore")
@@ -37,6 +42,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     log_level: str = "INFO"
     poll_enabled: bool = True
+    token_expire_minutes: int = 480
+    jwt_secret: str | None = None
 
     # ── Derived paths (single source of truth for "where does X live") ────────
 
@@ -65,13 +72,27 @@ class Settings(BaseSettings):
         """Directory for rotating application logs."""
         return self.data_dir.resolve() / "logs"
 
+    @property
+    def secret_dir(self) -> Path:
+        """Directory holding process secrets generated on this install."""
+        return self.data_dir.resolve() / "secret"
+
+    @property
+    def jwt_secret_path(self) -> Path:
+        """Absolute path to the per-install JWT signing secret (ADR 0003).
+
+        Deleting this file invalidates every issued Access Token — that is the
+        rotation mechanism.
+        """
+        return self.secret_dir / "jwt_secret.key"
+
     def ensure_directories(self) -> None:
         """Create the data directory tree. Safe to call repeatedly.
 
         SQLite will not create a missing parent directory, and neither will the
         rotating log handler — so this runs before either is opened.
         """
-        for directory in (self.data_dir.resolve(), self.license_dir, self.log_dir):
+        for directory in (self.data_dir.resolve(), self.license_dir, self.log_dir, self.secret_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
 

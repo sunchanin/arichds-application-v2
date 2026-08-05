@@ -9,7 +9,7 @@ ARICHDS install — with no database questions (SPEC §2: install in under
 | Step | Detail |
 |---|---|
 | Program files | `C:\Program Files\ARICHDS` (the PyInstaller onedir build + `nssm.exe`) |
-| Data | `C:\ProgramData\ARICHDS\` — `arichds.db`, `license\`, `logs\`, `backups\`, `captures\` |
+| Data | `C:\ProgramData\ARICHDS\` — `arichds.db`, `license\`, `logs\`, `secret\` (the generated JWT signing key — ADR 0003; deleting it signs every user out), `backups\`, `captures\` |
 | Service | `arichds`, wrapped by NSSM: auto-start, restart on exit, stdout/stderr to `logs\service.log` rotated at 50 MB |
 | Port | TCP **8000**, bound on all interfaces |
 | Firewall | Inbound allow rule `ARICHDS Web UI (TCP 8000)` so other machines on the site LAN can open `http://<ip>:8000` |
@@ -78,14 +78,18 @@ really mean it.
 ## After installing
 
 1. Open `http://localhost:8000/` (the installer offers this at the end).
-2. The machine is in **Limited Mode**. The Activation page shows its
+2. The **Setup** page appears while the machine has no accounts. Create the
+   administrator (username + password, 8 characters minimum), then sign in.
+   Setup closes permanently once that account exists.
+3. The machine is in **Limited Mode**. The Activation page shows its
    **Machine ID** — copy it and send it to the vendor.
-3. The vendor issues an Activation Code:
+4. The vendor issues an Activation Code:
    ```
    python tools\arichds_vendor.py sign --customer "Customer Name" --machine-id <64-hex>
    ```
-4. Paste the code into the Activation page. It takes effect immediately — the
-   poller starts and the Monitor page appears with no service restart.
+5. Paste the code into the Activation page (an administrator account is required
+   to do this). It takes effect immediately — the poller starts and the Monitor
+   page appears with no service restart.
 
 ## Troubleshooting
 

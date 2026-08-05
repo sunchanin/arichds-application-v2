@@ -30,12 +30,18 @@ Open <http://localhost:5173> (or build once with `pnpm build` and use
 
 ## Using the app (first run)
 
-The app boots in **Limited Mode** — everything except activation is locked until a
-license is applied.
+The walk is **Setup → Login → Activation → Monitor**. The app boots in **Limited
+Mode** — everything except the auth endpoints and activation is locked until a
+license is applied — and activating needs an administrator, so the account comes
+first.
 
-1. **Get the Machine ID.** The Activation page shows it (copy button). It is derived
+1. **Set up the administrator.** The Setup page appears while no account exists;
+   choose a username and a password (8 characters minimum). It is shown once and
+   never again — from then on the app opens on Login.
+2. **Sign in** with that account.
+3. **Get the Machine ID.** The Activation page shows it (copy button). It is derived
    from this machine's hardware and every license is bound to it.
-2. **Issue an Activation Code** (vendor side — needs the private key, first run
+4. **Issue an Activation Code** (vendor side — needs the private key, first run
    `keygen` once):
 
    ```powershell
@@ -45,9 +51,9 @@ license is applied.
    .\.venv\Scripts\python.exe ..\tools\arichds_vendor.py sign --customer "Acme Co" --machine-id <64-hex>
    ```
 
-3. **Paste the code** into the Activation page. It applies **immediately** — no service
+5. **Paste the code** into the Activation page. It applies **immediately** — no service
    restart (ADR 0001). The Monitor page appears and the Poller starts.
-4. **Add a meter** on the Monitor page:
+6. **Add a meter** on the Monitor page:
    - a real CEWE Prometer100 over TCP — host, port (default 4059), password; values
      refresh every 10 s, polled every 60 s, or
    - model **SIM** — a simulated meter, to see the whole chain without hardware.

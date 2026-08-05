@@ -111,6 +111,9 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
 - เก็บเฉพาะ **SHA-256 hash ของ token** ใน `user_tokens` (INV-AUTH-04 ของ v1) ·
   revoke ตอน logout · เปลี่ยนรหัส = revoke token อื่นทั้งหมดของ user นั้น
 - bcrypt + constant-time login (dummy-hash path เมื่อไม่พบ user — INV-AUTH-02/03 ของ v1)
+- **JWT secret สร้างเองตอนติดตั้งแล้วเก็บที่ `%ProgramData%\ARICHDS\secret\jwt_secret.key`**
+  (ต่างจาก v1 ที่บังคับ env — ดู ADR 0003) · override ได้ด้วย `ARICHDS_JWT_SECRET` และ
+  `ARICHDS_TOKEN_EXPIRE_MINUTES` · ลบไฟล์ key = revoke ทุก token (คือกลไก rotate)
 
 **Role** (2 ระดับ, enum column — เส้นแบ่งตาม v1 เป๊ะ):
 - `admin`: จัดการมิเตอร์ (เพิ่ม/แก้/ลบ) · จัดการ user · ตั้งค่าระบบ · license

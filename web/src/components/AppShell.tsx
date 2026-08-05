@@ -3,10 +3,12 @@ import {
   DashboardOutlined,
   DatabaseOutlined,
   FileTextOutlined,
+  LogoutOutlined,
   SettingOutlined,
   ThunderboltOutlined,
+  UserOutlined,
 } from "@ant-design/icons";
-import { Layout, Menu, Tag, theme, Typography } from "antd";
+import { Button, Layout, Menu, Space, Tag, theme, Typography } from "antd";
 import type { ReactNode } from "react";
 
 import { HEADER_HEIGHT } from "../theme";
@@ -20,8 +22,21 @@ const { Header, Sider, Content } = Layout;
  * §3.1 — "so the skeleton looks like the product"). Seeing the real shape from
  * M1 is what makes this a walking skeleton rather than a demo page, and each
  * milestone lights up its own entry rather than redesigning navigation.
+ *
+ * The header carries who is signed in and the way out. There is no User
+ * Management entry yet — that page belongs to M2-2.
  */
-export function AppShell({ children, licensedTo }: { children: ReactNode; licensedTo?: string | null }) {
+export function AppShell({
+  children,
+  licensedTo,
+  username,
+  onSignOut,
+}: {
+  children: ReactNode;
+  licensedTo?: string | null;
+  username: string;
+  onSignOut: () => void;
+}) {
   // The shell wraps every page M2–M7 will add, so its colours must come from
   // the theme rather than literals — otherwise a later re-theme silently
   // strands the header text at whatever white looked right in M1.
@@ -45,11 +60,25 @@ export function AppShell({ children, licensedTo }: { children: ReactNode; licens
         >
           ARICHDS
         </Typography.Text>
-        {licensedTo ? (
-          <Tag color="green" style={{ marginInlineEnd: 0 }}>
-            Licensed to {licensedTo}
-          </Tag>
-        ) : null}
+        <Space size="middle" align="center">
+          {licensedTo ? (
+            <Tag color="green" style={{ marginInlineEnd: 0 }}>
+              Licensed to {licensedTo}
+            </Tag>
+          ) : null}
+          <Typography.Text style={{ color: token.colorTextLightSolid }}>
+            <UserOutlined /> {username}
+          </Typography.Text>
+          <Button
+            type="text"
+            size="small"
+            icon={<LogoutOutlined />}
+            onClick={onSignOut}
+            style={{ color: token.colorTextLightSolid }}
+          >
+            Sign out
+          </Button>
+        </Space>
       </Header>
       <Layout>
         <Sider width={200} theme="light" breakpoint="lg" collapsedWidth={0}>
