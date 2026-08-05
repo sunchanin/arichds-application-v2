@@ -122,6 +122,25 @@ Two rules that keep the pipeline honest — apply them when running `/to-issues`
 Issue tracker: GitHub `sunchanin/arichds-application-v2` via `gh` CLI. Triage labels follow
 v1's five: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`.
 
+### Branch naming — name the work, never the ticket
+
+`<prefix>/<kebab-slug>` where the slug says what the branch *does*, in 1–4 words, ≤40 chars,
+with **no issue numbers, no dates, no milestone codes**:
+
+| Prefix | Use when | Example |
+|---|---|---|
+| `feature/` | new capability (module slices off the ladder) | `feature/authentication` |
+| `fix/` | correcting broken behavior | `fix/poller-worker-leak` |
+| `hotfix/` | an urgent break the owner flagged as such | `hotfix/license-lockout` |
+| `cr/` | change request — altering agreed behavior that is not a defect | `cr/change-username-to-phone` |
+| `refactor/` | internal restructuring, no behavior change | `refactor/driver-registry` |
+| `chore/` | tooling, deps, packaging, CI | `chore/packaging` |
+| `docs/` | documentation only | `docs/install-guide` |
+
+Never `batch/issues-1-2`, `feature/m2`, or `feature/issue-3`. The issue number belongs in the
+commit message (`feat: add login (#1)`), not in the branch name — a branch is read by humans
+scanning `git branch`, and a number tells them nothing.
+
 ## Coding behavior
 
 - **Think before coding.** State assumptions; if several interpretations exist, surface

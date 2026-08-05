@@ -1,6 +1,6 @@
 ---
 description: Run a contiguous range of GitHub issues through the full implement → scrutinize → review → fix pipeline, sequentially, committing each approved issue to a single working branch and skipping any that fail.
-argument-hint: <start-issue> <end-issue> [branch-name]
+argument-hint: <start-issue> <end-issue> [branch-name e.g. feature/authentication]
 allowed-tools: Bash, Read, Write, Glob, Grep, Task, SendMessage
 ---
 
@@ -12,7 +12,35 @@ You are the **batch orchestrator**. You will process GitHub issues **#$1 through
 
 ## Setup (once, before the loop)
 
-1. **Determine the working branch.** If `$3` is provided, use it; otherwise default to `batch/issues-$1-$2`.
+1. **Determine the working branch — a name that says what the work IS, never the issue numbers.**
+
+   If `$3` is provided, use it verbatim. Otherwise **derive** one:
+   - First run `gh issue view N --json number,title,labels` for each issue in the range (you need
+     them in Step 1 of the loop anyway — do it once here and reuse). Read their titles and labels.
+   - Pick the **prefix** from what the batch actually does:
+
+     | Prefix | Use when |
+     |---|---|
+     | `feature/` | new capability — `enhancement` labels, or a module slice off the ladder (M2–M8) |
+     | `fix/` | correcting broken behavior — `bug` labels |
+     | `hotfix/` | an urgent break the owner flagged as such (never assume this one) |
+     | `cr/` | change request — deliberately altering agreed behavior that is not a defect (e.g. "change username to phone") |
+     | `refactor/` | internal restructuring, no behavior change |
+     | `chore/` | tooling, deps, packaging, CI |
+     | `docs/` | documentation only |
+
+   - Pick the **slug** from the shared subject of the issues: lowercase kebab-case, 1–4 words,
+     ≤ 40 chars, **no issue numbers, no dates, no milestone codes**. Name the thing, not the ticket.
+     - `feature/authentication` · `feature/device-manager` · `fix/poller-worker-leak` ·
+       `cr/change-username-to-phone` · `chore/packaging`
+     - NOT `batch/issues-1-2`, NOT `feature/m2`, NOT `feature/issue-1-and-2`
+   - Mixed batch: name it after the **dominant** theme; if the issues genuinely share nothing but
+     their numbers, use the module they belong to (`feature/device-manager`) — and say in the final
+     report that the batch was heterogeneous.
+   - **Announce the chosen name and the one-line reason before creating it**, so the owner sees
+     the decision in the transcript.
+
+   Then:
    - Check current git state: `git status --porcelain` and `git branch --show-current`.
    - If the working tree is dirty, STOP and report — do not run a batch on a dirty tree.
    - Create and switch to the branch: `git switch -c <branch>` (or `git switch <branch>` if it already exists). All issues commit onto this same branch, in sequence.
