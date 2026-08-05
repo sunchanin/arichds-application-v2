@@ -42,7 +42,13 @@ installer needs this drop, and the Inno compile fails with a clear
 
 ### 3. Install Inno Setup
 
-Inno Setup 6 from <https://jrsoftware.org/isdl.php>. The compiler is `iscc.exe`.
+Inno Setup **6** (6.7.x) from <https://jrsoftware.org/isdl.php>. The compiler is `iscc.exe`.
+
+> **Deliberately v6, not v7.** Inno Setup 7 exists (7.0.x, first released 2026-07) but is a
+> weeks-old major whose only new capabilities (64-bit compiler, long-path support) this
+> installer doesn't use — and the installer is the one component that must be boring on
+> unattended customer machines. `.iss` scripts are backward compatible and v6/v7 coexist,
+> so revisit v7 after a few patch releases (sensible point: before the M10 pilot).
 
 ## Building the installer
 
