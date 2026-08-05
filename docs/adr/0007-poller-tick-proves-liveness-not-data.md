@@ -66,6 +66,20 @@ That answer collapses the rest.
    readings, but nothing will ever read them, and leaving them means two kinds of row live in one
    table forever with every future reader having to know which is which.
 
+6. **`MeterDriver.read_instantaneous()` and `health_check()` go with it.** `health_check()` has
+   no caller anywhere in `src/` or `tests/` today — it has been dead since M1. `read_instantaneous()`
+   has exactly one production caller, the Poller, which this decision removes. Leaving either as an
+   `@abstractmethod` would make every future base class implement code nothing calls: the seven
+   remaining DLMS-over-TCP models inherit `TcpDlmsDriver`'s implementation and pay nothing, but the
+   serial (SMW110) and Modbus bases that M4 introduces would each have to. That is a small cost,
+   not a large one — the reason to remove them is simply that an abstract method with no callers
+   is not a contract, it is a leftover. **It does mean this ADR must be implemented before M4**,
+   which is where those new base classes get written.
+
+   The three scaler cases in `tests/test_dlms_scaler.py` that exercise ADR 0002 through
+   `read_instantaneous()` move to `read_register()` — coverage of ADR 0002 must not shrink to pay
+   for this.
+
 ## What stays, and why
 
 - **The 60-second cadence.** ADR 0004 deleted v1's separate health-check loop on the grounds that
@@ -74,9 +88,8 @@ That answer collapses the rest.
 - **`volt_*`, `current_*`, `freq` on `interval_readings`.** SPEC §3.5's Logger 2 (Premier 550)
   records V/I/PF/freq **as load profile** — meter-recorded intervals, which is exactly what the
   table is for.
-- **`MeterDriver.read_instantaneous()`, for now.** Issue #4 is landing an interface change
-  alongside it; cutting it in the same breath would collide. M5 decides its fate once the
-  load-profile read methods exist and it is clear whether anything still calls it.
+- **`InstantaneousReading`, the dataclass.** M5 may well use the same shape for a load-profile
+  row, so the decision belongs there. The *method* does not survive — see below.
 
 ## Consequences
 
