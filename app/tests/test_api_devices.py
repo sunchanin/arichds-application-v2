@@ -1296,17 +1296,17 @@ def write_readings(device_id: int, count: int) -> None:
     """Write *count* Interval Readings straight into the table."""
     from datetime import UTC
 
-    from arichds.db.models import IntervalReading
+    from arichds.db.models import LoadProfileReading
     from arichds.db.session import session_scope
 
     with session_scope() as session:
         for index in range(count):
             session.add(
-                IntervalReading(
+                LoadProfileReading(
                     device_id=device_id,
                     read_at=datetime.now(UTC),
                     source="dlms",
-                    interval="60s",
+                    interval="15m",
                     import_active_kwh=100.0 + index,
                 )
             )
@@ -1321,13 +1321,13 @@ def count_readings(device_id: int) -> int:
     """
     from sqlalchemy import func, select
 
-    from arichds.db.models import IntervalReading
+    from arichds.db.models import LoadProfileReading
     from arichds.db.session import session_scope
 
     with session_scope() as session:
         return (
             session.scalar(
-                select(func.count()).select_from(IntervalReading).where(IntervalReading.device_id == device_id)
+                select(func.count()).select_from(LoadProfileReading).where(LoadProfileReading.device_id == device_id)
             )
             or 0
         )

@@ -69,8 +69,10 @@ Every knob is an `ARICHDS_*` environment variable:
 ## Talking to a real meter
 
 `scripts/probe_meter.py` is a read-only operator diagnostic — it connects,
-reads the instantaneous set and disconnects, touching neither the meter's
-settings nor the database:
+reads the Meter Serial (the one register the Poller's liveness tick reads,
+ADR 0007) and then the instantaneous set, and disconnects, touching neither the
+meter's settings nor the database. The app itself no longer reads that set;
+the script keeps it because Output Parity against v1 is argued in those numbers:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\probe_meter.py --host 203.0.113.10 --port 4059 --password ABCD0001

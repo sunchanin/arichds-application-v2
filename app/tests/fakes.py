@@ -20,11 +20,10 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers.base import InstantaneousReading, MeterDriver
+from arichds.acquisition.drivers.base import MeterDriver
 from arichds.constants import SOURCE_DLMS
 
 #: The serial the fake meter reports unless a test says otherwise.
@@ -40,26 +39,23 @@ class FakeMeterState:
             already decoded and trimmed, as the contract requires. ``None``
             means "the meter answered with nothing".
         connect_error: Raised by ``connect()`` when set.
-        serial_error: Raised by ``read_meter_serial()`` when set.
-        read_error: Raised by ``read_instantaneous()`` when set.
+        serial_error: Raised by ``read_meter_serial()`` when set — the meter
+            that accepts an association but cannot serve a register.
         entered_read: Set as soon as a read begins — how a test knows the fake
             is inside the endpoint lock.
         hold_read: When set, a read parks on this event until the test releases
             it. Lets a test hold the endpoint and observe the priority rule.
         connects: How many times ``connect()`` was called.
         disconnects: How many times ``disconnect()`` was called.
-        ticks: How many instantaneous reads have happened.
     """
 
     meter_serial: str | None = DEFAULT_FAKE_SERIAL
     connect_error: Exception | None = None
     serial_error: Exception | None = None
-    read_error: Exception | None = None
     entered_read: threading.Event = field(default_factory=threading.Event)
     hold_read: threading.Event | None = None
     connects: int = 0
     disconnects: int = 0
-    ticks: int = 0
 
 
 _STATE = FakeMeterState()
@@ -139,24 +135,3 @@ class FakeMeterDriver(MeterDriver):
         if _STATE.serial_error is not None:
             raise _STATE.serial_error
         return _STATE.meter_serial
-
-    def read_instantaneous(self) -> InstantaneousReading:
-        """Return a plausible normalized sample — UTC and kWh, like any driver."""
-        self._park()
-        if _STATE.read_error is not None:
-            raise _STATE.read_error
-        with _GUARD:
-            _STATE.ticks += 1
-            tick = _STATE.ticks
-        return InstantaneousReading(
-            read_at=datetime.now(UTC),
-            source=self.source,
-            volt_l1=230.0 + tick,
-            volt_l2=231.0 + tick,
-            volt_l3=229.0 + tick,
-            current_l1=12.0,
-            current_l2=12.5,
-            current_l3=11.5,
-            freq=50.0,
-            import_active_kwh=100.0 + tick,
-        )

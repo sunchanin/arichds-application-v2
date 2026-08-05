@@ -7,8 +7,17 @@ or on a class-level capability flag; the Poller, the API and the DB layer never
 learn which meter they are talking to.
 
 The driver is also where **normalization happens** (REMAKE-PLAN §6.1): whatever
-the wire says, :meth:`MeterDriver.read_instantaneous` returns UTC timestamps and
-kWh energy. Nothing downstream converts anything.
+the wire says, a driver hands back UTC timestamps and kWh energy. Nothing
+downstream converts anything.
+
+There is deliberately **no read method for live values here, and no reachability
+probe** (ADR 0007). Both left with issue #8: v2 displays no live value and stores
+nothing instantaneous, so the Poller's tick reads
+:meth:`MeterDriver.read_meter_serial` — one register, the same seam the Probe
+uses — and discards the answer. An abstract method with no caller is not a
+contract, it is a leftover, and every base class M4 adds would have had to
+implement it. The remaining read paths are the load profile (M5) and billing
+(M6), both of which read intervals the *meter* recorded.
 """
 
 from __future__ import annotations
@@ -21,10 +30,15 @@ from typing import Any
 
 @dataclass(frozen=True)
 class InstantaneousReading:
-    """One normalized instantaneous sample, ready to persist.
+    """One normalized sample, ready to persist.
 
-    Field names match ``interval_readings`` columns exactly, and the units match
-    the names — that is the normalization contract, not a coincidence.
+    Field names match ``load_profile_readings`` columns exactly, and the units
+    match the names — that is the normalization contract, not a coincidence.
+
+    **Nothing produces one of these today.** ADR 0007 removed the read method
+    that did, and issue #8 kept the dataclass on purpose: M5 may well use the
+    same shape for a load-profile row, so the decision belongs to M5 rather than
+    to the change that stopped storing instantaneous values.
 
     Attributes:
         read_at: When the value was taken — **timezone-aware UTC, always**.
@@ -47,7 +61,7 @@ class InstantaneousReading:
     import_active_kwh: float | None = None
 
     def as_columns(self) -> dict[str, Any]:
-        """Return the measurement fields as ``interval_readings`` column values."""
+        """Return the measurement fields as ``load_profile_readings`` column values."""
         return {
             "volt_l1": self.volt_l1,
             "volt_l2": self.volt_l2,
@@ -119,35 +133,6 @@ class MeterDriver(ABC):
             a blank — which is indistinguishable from a failed probe for the
             caller.
         """
-
-    @abstractmethod
-    def read_instantaneous(self) -> InstantaneousReading:
-        """Read the instantaneous set and return it **already normalized**.
-
-        Assumes :meth:`connect` succeeded. UTC and kWh are this method's
-        responsibility, not the caller's.
-
-        Returns:
-            The normalized sample.
-        """
-
-    def health_check(self) -> bool:
-        """Cheap reachability probe: connect, read something small, disconnect.
-
-        Default implementation reads the instantaneous set, which every model
-        supports. Models with a cheaper probe override this.
-
-        Returns:
-            True if the meter answered, False on any error.
-        """
-        try:
-            self.connect()
-            self.read_instantaneous()
-            return True
-        except Exception:  # noqa: BLE001 — a probe reports False, never raises.
-            return False
-        finally:
-            self.disconnect()
 
 
 class MeterConnectionError(RuntimeError):

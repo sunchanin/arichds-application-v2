@@ -1,14 +1,16 @@
 """Poller — the acquisition chain, exercised with the test-only fake meter (M3-1).
 
-Step 5's exit condition: a tick writes a row with a UTC ``read_at`` and kWh
-energy. Also pins the decisions that matter architecturally — the lock keys on
-the Transport Endpoint, polling follows license state (ADR 0001), a Manual Read
-outranks a background tick (ADR 0006), and a device whose model has no driver
-never gets a worker.
+**A tick proves liveness and writes nothing** (ADR 0007, M3-4). It reads one
+register — the Meter Serial — and discards it, so ``TestPollOnce`` asserts
+against *row counts*: an empty table is what proves the decision, where a return
+value only proves the enum. Also pins the decisions that matter architecturally
+— the lock keys on the Transport Endpoint, polling follows license state
+(ADR 0001), a Manual Read outranks a background tick (ADR 0006), and a device
+whose model has no driver never gets a worker.
 
 M3-2 adds the other half: what a tick's outcome does to the device's status
 (ADR 0004). The state machine itself is tested in ``test_device_status.py``;
-what belongs here is the *wiring* — that ``STORED`` and ``FAILED`` reach the
+what belongs here is the *wiring* — that ``OK`` and ``FAILED`` reach the
 recorder, that ``SKIPPED`` reaches nothing at all, and that the strike counter
 survives ``restart()`` respawning every worker.
 
@@ -20,7 +22,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import UTC, datetime
 
 import pytest
 from fakes import FakeMeterDriver, FakeMeterState
@@ -29,11 +30,11 @@ from sqlalchemy import select
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers.factory import create_driver, supported_models
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
-from arichds.acquisition.poller import Poller, TickOutcome, build_driver, poll_once, store_reading
+from arichds.acquisition.poller import Poller, TickOutcome, build_driver, poll_once
 from arichds.acquisition.status import DeviceEventKind, DeviceStatus, record_failure
 from arichds.config import Settings
-from arichds.constants import INTERVAL_LABEL_INSTANTANEOUS, OFFLINE_AFTER_CONSECUTIVE_FAILURES, SOURCE_DLMS
-from arichds.db.models import Device, DeviceEvent, IntervalReading
+from arichds.constants import OFFLINE_AFTER_CONSECUTIVE_FAILURES
+from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 from arichds.db.session import session_scope
 from arichds.licensing.service import STATE_ACTIVE, STATE_LIMITED, LicenseState
 
@@ -84,33 +85,52 @@ class TestBuildDriver:
 
 
 class TestPollOnce:
-    def test_tick_writes_one_row(self, meter_device: Device) -> None:
-        assert poll_once(meter_device, EndpointLocks(), threading.Event()) is TickOutcome.STORED
+    """ADR 0007 — the tick proves liveness and stores nothing at all.
+
+    Every assertion here counts rows rather than reading a return value: the
+    outcome enum could be renamed again tomorrow, but "a tick writes no row" is
+    the decision, and an empty table is the only thing that proves it.
+    """
+
+    def test_a_successful_tick_writes_no_row(self, meter_device: Device) -> None:
+        assert poll_once(meter_device, EndpointLocks(), threading.Event()) is TickOutcome.OK
 
         with session_scope() as session:
-            assert len(session.scalars(select(IntervalReading)).all()) == 1
+            assert session.scalars(select(LoadProfileReading)).all() == []
 
-    def test_stored_row_is_utc_and_kwh(self, meter_device: Device) -> None:
-        poll_once(meter_device, EndpointLocks(), threading.Event())
-
-        with session_scope() as session:
-            row = session.scalars(select(IntervalReading)).one()
-            # UTC: SQLite drops tzinfo, so compare the wall clock against now.
-            stored = row.read_at.replace(tzinfo=UTC)
-            assert abs((datetime.now(UTC) - stored).total_seconds()) < 60
-            # kWh: the column name promises kWh and the value is plausible.
-            assert row.import_active_kwh is not None
-            assert row.import_active_kwh > 0
-            assert row.interval == INTERVAL_LABEL_INSTANTANEOUS
-            assert row.source == SOURCE_DLMS
-
-    def test_two_ticks_write_two_rows(self, meter_device: Device) -> None:
+    def test_two_ticks_still_write_no_rows(self, meter_device: Device) -> None:
         locks = EndpointLocks()
         poll_once(meter_device, locks, threading.Event())
         poll_once(meter_device, locks, threading.Event())
 
         with session_scope() as session:
-            assert len(session.scalars(select(IntervalReading)).all()) == 2
+            assert session.scalars(select(LoadProfileReading)).all() == []
+
+    def test_a_meter_that_cannot_serve_the_register_fails(
+        self, meter_device: Device, fake_meter: FakeMeterState
+    ) -> None:
+        """Association accepted, register read refused — that is not Online.
+
+        The whole reason the tick reads a register at all (ADR 0007 item 2):
+        merely connecting would report a useless meter as Online.
+        """
+        fake_meter.serial_error = RuntimeError("undefined object")
+
+        assert poll_once(meter_device, EndpointLocks(), threading.Event()) is TickOutcome.FAILED
+        with session_scope() as session:
+            assert session.scalars(select(LoadProfileReading)).all() == []
+
+    def test_a_blank_answer_is_not_proof_of_life(self, meter_device: Device, fake_meter: FakeMeterState) -> None:
+        """A ``None`` serial proves the association, not the read.
+
+        ``probe_meter`` already treats it as ``ProbeFailure.NO_SERIAL``; a tick
+        that counted it as success would report Online off an empty answer.
+        """
+        fake_meter.meter_serial = None
+
+        assert poll_once(meter_device, EndpointLocks(), threading.Event()) is TickOutcome.FAILED
+        with session_scope() as session:
+            assert session.scalars(select(LoadProfileReading)).all() == []
 
     def test_a_failing_meter_does_not_raise(self, meter_device: Device, fake_meter: FakeMeterState) -> None:
         """One unreachable meter must not take the Poller down."""
@@ -118,7 +138,7 @@ class TestPollOnce:
 
         assert poll_once(meter_device, EndpointLocks(), threading.Event()) is TickOutcome.FAILED
         with session_scope() as session:
-            assert session.scalars(select(IntervalReading)).all() == []
+            assert session.scalars(select(LoadProfileReading)).all() == []
 
     def test_a_failing_meter_is_still_disconnected(self, meter_device: Device, fake_meter: FakeMeterState) -> None:
         fake_meter.connect_error = ConnectionError("meter is down")
@@ -153,7 +173,7 @@ class TestManualReadsOutrankTicks:
 
         assert outcome is TickOutcome.SKIPPED
         with session_scope() as session:
-            assert session.scalars(select(IntervalReading)).all() == []
+            assert session.scalars(select(LoadProfileReading)).all() == []
 
     def test_skipped_is_not_failed(self, meter_device: Device) -> None:
         """Issue #5's 3-consecutive-failures rule depends on exactly this."""
@@ -176,16 +196,16 @@ class TestManualReadsOutrankTicks:
 
         assert outcomes == [TickOutcome.SKIPPED] * 5
         with session_scope() as session:
-            assert session.scalars(select(IntervalReading)).all() == []
+            assert session.scalars(select(LoadProfileReading)).all() == []
 
     def test_a_tick_runs_again_once_the_manual_read_lets_go(self, meter_device: Device) -> None:
         locks = EndpointLocks()
         with locks.get("127.0.0.1:4059").manual():
             assert poll_once(meter_device, locks, threading.Event()) is TickOutcome.SKIPPED
-        assert poll_once(meter_device, locks, threading.Event()) is TickOutcome.STORED
+        assert poll_once(meter_device, locks, threading.Event()) is TickOutcome.OK
 
     def test_a_tick_in_flight_is_never_interrupted(self, meter_device: Device, fake_meter: FakeMeterState) -> None:
-        """The Manual Read waits its turn; the tick still stores its row."""
+        """The Manual Read waits its turn; the tick still completes its read."""
         locks = EndpointLocks()
         fake_meter.hold_read = threading.Event()
         outcome: list[TickOutcome] = []
@@ -213,21 +233,7 @@ class TestManualReadsOutrankTicks:
         assert manual_in.wait(timeout=5)
         reader.join(timeout=5)
 
-        assert outcome == [TickOutcome.STORED]
-
-
-class TestStoreReading:
-    def test_persists_every_column(self, meter_device: Device, fake_meter: FakeMeterState) -> None:
-        driver = FakeMeterDriver(ConnectionParams.net("127.0.0.1", 4059))
-        reading = driver.read_instantaneous()
-        store_reading(meter_device.id, reading)
-
-        with session_scope() as session:
-            row = session.scalars(select(IntervalReading)).one()
-            assert row.volt_l1 == reading.volt_l1
-            assert row.current_l3 == reading.current_l3
-            assert row.freq == reading.freq
-            assert row.import_active_kwh == reading.import_active_kwh
+        assert outcome == [TickOutcome.OK]
 
 
 class TestPollerLifecycle:
@@ -256,7 +262,13 @@ class TestPollerLifecycle:
         poller.stop()
         assert not poller.running
 
-    def test_worker_ticks_and_writes(self, meter_device: Device) -> None:
+    def test_worker_ticks_and_writes_nothing(self, meter_device: Device) -> None:
+        """The worker really does drive ``poll_once`` — and stores no row.
+
+        Asserted through the whole thread path, not just the function: this is
+        the test that would have caught a tick that still wrote rows because the
+        worker called something other than the ``poll_once`` under test.
+        """
         ticked = threading.Event()
 
         def fake_poll(device, locks, shutdown):  # noqa: ANN001
@@ -272,7 +284,7 @@ class TestPollerLifecycle:
             poller.stop()
 
         with session_scope() as session:
-            assert len(session.scalars(select(IntervalReading)).all()) >= 1
+            assert session.scalars(select(LoadProfileReading)).all() == []
 
     def test_disabled_devices_get_no_worker(self, migrated_db: Settings, fake_meter: FakeMeterState) -> None:
         with session_scope() as session:
@@ -499,8 +511,8 @@ def wait_until(predicate, *, timeout: float = 5.0) -> bool:  # noqa: ANN001
 class TestTheWorkerRecordsWhatItsTickProved:
     """ADR 0004 — the tick's outcome is the status signal, mapped in ``_worker``."""
 
-    def test_a_stored_tick_reports_online(self, meter_device: Device) -> None:
-        poller = Poller(interval_sec=0.05, poll_fn=lambda d, locks, s: TickOutcome.STORED, locks=EndpointLocks())
+    def test_an_ok_tick_reports_online(self, meter_device: Device) -> None:
+        poller = Poller(interval_sec=0.05, poll_fn=lambda d, locks, s: TickOutcome.OK, locks=EndpointLocks())
         try:
             poller.start()
             assert wait_until(lambda: device_row(meter_device.id).status == DeviceStatus.ONLINE)

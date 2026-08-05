@@ -268,7 +268,12 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 | backup ด้วย `mysqldump` | → `VACUUM INTO` ไฟล์เดียว (เปิด WAL แล้วมี `.db`+`-wal`+`-shm` จึงคัดลอกดิบ ๆ ตอนโปรแกรมรันไม่ได้) |
 
 **ปริมาณงานอยู่ห่างจากขีดจำกัดของ SQLite มาก**: modbus 1,440 แถว/วัน/มิเตอร์ + DLMS LP 96 แถว/วัน/มิเตอร์
-→ 20 มิเตอร์ ≈ 0.3 write/วินาที, retention 90 วัน ≈ 2.6 ล้านแถว ≈ 500 MB
+→ **เคสแย่สุด (20 มิเตอร์ modbus ทั้งหมด)** 28,800 แถว/วัน ≈ 0.3 write/วินาที, retention 90 วัน
+≈ 2.6 ล้านแถว ≈ 500 MB · ส่วนเคสที่คาดจริง (18 DLMS + 2 Modbus) อยู่ที่ 4,608 แถว/วัน — ดู §6.1
+
+> **Poller ไม่ได้เพิ่มแถวเข้าตัวเลขพวกนี้เลย** (ADR 0007, M3-4) — tick พิสูจน์ว่ามิเตอร์ยังตอบอยู่
+> แล้วทิ้งค่า ไม่เขียนอะไรลง DB · ตัวเลขทั้งสองชุดข้างบนนับเฉพาะ interval ที่ **มิเตอร์เป็นคนบันทึกเอง**
+> ซึ่งเป็นสิ่งเดียวที่ `load_profile_readings` เก็บ
 
 **ราคาที่ต้องจ่าย** (ห้ามตีเป็นศูนย์):
 - `DELETE ... LIMIT` 4 จุด (`storage_service.py:117-122`) — `sqlite3` ที่มากับ CPython ไม่รองรับ ต้องเขียน retention ใหม่เป็น subquery
@@ -285,7 +290,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 |---|---|
 | `devices` | `devices` + `device_settings` + `device_status` + `device_capture_objects` (→ JSON column) |
 | `device_events` | `device_heartbeats` (+ แนวคิดจาก `alarms` / `device_connection_log` ที่ตายไปแล้ว) — **ไม่ใช่การพอร์ต 1:1**: v1 เขียนทุก tick, v2 เขียนเฉพาะตอนเปลี่ยนสถานะ + การกระทำของคน (ADR 0004) |
-| `interval_readings` | `logger_readings` + `meter_readings_<brand>_1m/_5m/_15m` — **หน้าตา COSEM ~24 คอลัมน์ + `source` + `interval`** (D10, §6.1) |
+| `load_profile_readings` | `logger_readings` + `meter_readings_<brand>_1m/_5m/_15m` — **หน้าตา COSEM ~24 คอลัมน์ + `source` + `interval`** (D10, §6.1) · ชื่อเดิมตอน M1–M3 คือ `interval_readings` เปลี่ยนที่ M3-4 พร้อม ADR 0007 เมื่อแถว 60 วิหายไปแล้วเหลือ load profile ล้วน |
 | `interval_read_jobs` | `load_profile_reads` |
 | `billing_readings` | `billing_readings` |
 | `billing_captures` | (เก็บเฉพาะถ้ายังต้องใช้ — `logger_exports`/`logger_confirmations` ตายแล้ว) |
@@ -329,12 +334,12 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 
 | ชนิด | พฤติกรรม | วิธี sync |
 |---|---|---|
-| `interval_readings` | append-only | watermark ตาม rowid/`read_at` ตรง ๆ |
+| `load_profile_readings` | append-only | watermark ตาม rowid/`read_at` ตรง ๆ |
 | `billing_readings` | **ไม่ append-only** — open period คือแถวเดียวที่ถูก upsert ซ้ำในที่เดิม (ADR 0018) และ backfill แทรกแถว `bill_date` *เก่ากว่า* watermark (ADR 0012) | track ด้วย `updated_at` หรือส่ง open slot ซ้ำทุกรอบ ให้ server upsert ด้วย key `(device, bill_date)` |
 
 > ถ้าใช้ watermark เดียวกันหมด: เว็บไซต์จะไม่เห็นบิลงวดปัจจุบันขยับ และไม่เห็นประวัติที่ backfill — โดยที่ sync ไม่ error เลย
 
-> เพราะ `interval_readings` เก็บหน้าตา COSEM อยู่แล้ว (§6.1) payload จึงเป็นการ serialize แถวตรง ๆ ไม่ต้อง pivot
+> เพราะ `load_profile_readings` เก็บหน้าตา COSEM อยู่แล้ว (§6.1) payload จึงเป็นการ serialize แถวตรง ๆ ไม่ต้อง pivot
 
 **ข้อมูลประกอบที่เพิ่งพบ**: v1 มี M2M auth แบบ `X-API-Key` อยู่แล้วบนเกือบทุก router
 (`api/dependencies.py:143,174` ใช้ใน `devices`, `billing`, `load_profile`, `energy_summary`, `fs`, `holidays`, `settings`, `battery`)
@@ -437,7 +442,7 @@ Read now / Test connection ได้คิวก่อน poller + เทสผ�
 **M4a (ภายในวันที่ 5) — เส้นทาง DLMS/COSEM ครบทุกรุ่น**:
 Saral305 / Premier550 / SMART TCC ×5 / SMW110-serial (Prometer100 มีแล้วจาก M1) ·
 manual-priority gate (ADR 0020) · ปิดเรื่อง scaler (§5)
-**Exit**: อ่านมิเตอร์จริงครบ 3 ยี่ห้อผ่าน DLMS ลงตาราง `interval_readings` ตัวเดียวกัน
+**Exit**: อ่านมิเตอร์จริงครบ 3 ยี่ห้อผ่าน DLMS ลงตาราง `load_profile_readings` ตัวเดียวกัน
 
 **M4b (วันที่ 6–14) — เส้นทาง Modbus** *(gate: mapping — เดินด้วย DERIVED ของ ADR 0005 ระหว่างรอลูกค้ายืนยัน)*:
 SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register → COSEM ตอนเขียน** (§6.1) + modbus billing cut (ADR ใหม่)
@@ -486,7 +491,7 @@ Business logic ของ v1 ผ่านหน้างานลูกค้า�
 - ADR 0018 open-period upsert slot · ADR 0020 manual-priority gate · ADR 0016 holiday/TOU
 
 > ⚠️ **ADR 0019 (modbus billing cut) ยกมาทั้งดุ้นไม่ได้** — มันอ่านจากตาราง modbus ที่ §6.1 ลบทิ้ง
-> v2 ต้องอ่านจาก `interval_readings` แทน (ช่วง 15 นาทีเพียงพอสำหรับจุดตัด 00:00) และหลัง normalize แล้ว
+> v2 ต้องอ่านจาก `load_profile_readings` แทน (ช่วง 15 นาทีเพียงพอสำหรับจุดตัด 00:00) และหลัง normalize แล้ว
 > ประโยค *"NO ÷10000 scaling"* ในตัว ADR จะไม่จริงอีกต่อไป → **เขียน ADR ใหม่ ไม่ใช่ก๊อบ** เก็บเฉพาะ *กฎทางธุรกิจ*
 > (ระบบเป็นคนตัดบิลให้ modbus, snapshot ที่ 00:00 ของวันบิล, ตามทันย้อนหลังได้, idempotent ด้วย `(device_id, bill_date)`)
 - Ed25519 verify primitive + golden vectors (แต่ **ชื่อ** เปลี่ยนได้ เพราะยังไม่มี license ออกไป)
@@ -516,14 +521,14 @@ v2 เขียน scaler ให้ถูกต้องได้ ตราบ�
 | D3 | รูปแบบ installer | **exe ตัวเดียว** แทนกอง `.ps1` + `.bat` 24 ไฟล์ |
 | D8 | สเกลจริงต่อไซต์ | **DLMS/COSEM เป็นหลัก · Modbus เป็นส่วนน้อยมาก** → อย่าออกแบบ schema ให้เข้าข้าง Modbus (ดู §6.1) |
 | D9 | contract ของ push | **JSON · ทุก 15 นาที · JWT** — ตรงกับจังหวะ LP พอดี ส่งได้ทันทีที่มีแถวใหม่ |
-| D10 | รูปทรงของ `interval_readings` | **ตารางเดียว หน้าตา COSEM แปลงตอนเขียน** — §6.1 |
+| D10 | รูปทรงของ `load_profile_readings` | **ตารางเดียว หน้าตา COSEM แปลงตอนเขียน** — §6.1 |
 | D4 | ไลบรารี frontend | **AntD v6 แบบ re-theme** — ตัดสิน 2026-08-03 หลังเทียบ mockup layout-parity กับ Mantine/shadcn (`mockups/devices-lib-compare/`); ความ "ทันสมัย" แก้ด้วย theme tokens ใหม่ ไม่ใช่เปลี่ยนไลบรารี — ได้ component ครบ (Table/DatePicker/Form) และความคุ้นเคยจาก v1 ซึ่งสำคัญกับกรอบ 5 วัน |
 
 ### ยังค้าง
 
 *(ปิดครบแล้ว — D11/D12 ปิดใน SPEC grilling 2026-08-03: ตัด X-API-Key ทิ้ง · ตัด divide_by_1000 ทิ้ง แสดง kWh เสมอ)*
 
-### 6.1 D10 — `interval_readings` : ตารางเดียว หน้าตา COSEM แปลงตอนเขียน
+### 6.1 D10 — `load_profile_readings` : ตารางเดียว หน้าตา COSEM แปลงตอนเขียน
 
 **โจทย์**: ข้อมูลช่วงเวลามาจาก 2 ทางที่หน้าตาไม่เหมือนกันเลย
 
@@ -546,7 +551,7 @@ v2 เขียน scaler ให้ถูกต้องได้ ตราบ�
 
 #### ตัดสิน: เก็บในหน้าตาที่โปรแกรมใช้จริง — **แปลงตอนเขียน แทนแปลงตอนอ่าน**
 
-`interval_readings` = ตารางเดียว หน้าตา COSEM ~24 คอลัมน์ + `source` (`dlms`/`modbus`) + `interval`
+`load_profile_readings` = ตารางเดียว หน้าตา COSEM ~24 คอลัมน์ + `source` (`dlms`/`modbus`) + `interval`
 driver ฝั่ง Modbus map register → field ของ COSEM **ตั้งแต่ตอน poll** ไม่ใช่ตอน query
 
 ```mermaid
@@ -565,7 +570,7 @@ flowchart LR
         direction TB
         E1["DLMS"] --> X["driver แปลงเป็นหน้าตา COSEM"]
         E2["Modbus"] --> X
-        X --> F[("interval_readings<br/>~24 คอลัมน์")]
+        X --> F[("load_profile_readings<br/>~24 คอลัมน์")]
         F --> G["หน้า LP · CSV · push"]
     end
     style F fill:#238636,color:#fff
@@ -579,9 +584,13 @@ flowchart LR
 
 | | v1 | v2 |
 |---|---|---|
-| แถว/วัน | 1,728 + 2,880 + 576 + 192 = **5,376** | 20 × 96 = **1,920** |
+| แถว/วัน | 1,728 + 2,880 + 576 + 192 = **5,376** | 1,728 + 2,880 = **4,608** |
 | ตาราง | 4 | **1** |
 | คอลัมน์กว้างสุด | 91 | ~24 |
+
+ที่ลดลงคือ **ตาราง aggregate** (`_5m` 576 + `_15m` 192) ไม่ใช่จังหวะการอ่าน — modbus ยังเก็บนาทีละแถว
+เหมือนเดิม แค่ลงตารางเดียว · **Poller ไม่เพิ่มแถวใด ๆ เข้าตารางนี้** (ADR 0007, M3-4): tick พิสูจน์ว่ามิเตอร์
+ยังตอบอยู่แล้วทิ้งค่า ทุกแถวในตารางนี้เป็น interval ที่มิเตอร์บันทึกเอง
 
 #### ⚠️ Normalization contract — ส่วนที่ห้ามลืม
 

@@ -32,7 +32,7 @@ from arichds.acquisition.locks import EndpointLocks
 from arichds.acquisition.probe import ProbeError, ProbeFailure, probe_meter
 from arichds.config import Settings
 from arichds.constants import METER_SERIAL_OBIS_ATTR, METER_SERIAL_OBIS_CODE
-from arichds.db.models import IntervalReading
+from arichds.db.models import LoadProfileReading
 from arichds.db.session import session_scope
 
 PROBE_ARGS = {"model": "prometer100", "host": "127.0.0.1", "port": 4059, "password": "ABCD0001"}
@@ -268,12 +268,12 @@ class TestTheWaitForTheEndpointIsBounded:
 class TestAProbeIsNotAReading:
     def test_it_writes_no_interval_reading(self, migrated_db: Settings, fake_meter: FakeMeterState) -> None:
         with session_scope() as session:
-            before = len(session.scalars(select(IntervalReading)).all())
+            before = len(session.scalars(select(LoadProfileReading)).all())
 
         probe()
 
         with session_scope() as session:
-            after = len(session.scalars(select(IntervalReading)).all())
+            after = len(session.scalars(select(LoadProfileReading)).all())
         assert before == after == 0
 
 

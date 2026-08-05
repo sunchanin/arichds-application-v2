@@ -28,8 +28,9 @@ MySQL, and ~30 tables.
   0005 (meter identity comes from the meter — probe before the row exists) ·
   0006 (Manual Reads outrank background polling on the Transport Endpoint lock) ·
   0007 (the Poller tick proves liveness, not data — no live-value display, nothing
-  instantaneous persisted; **item 1 landed with issue #6** — Monitor and `/readings/latest`
-  are gone; **items 2/3/5/6 land with issue #8**).
+  instantaneous persisted; **fully implemented**: item 1 with issue #6 — Monitor and
+  `/readings/latest` are gone; items 2/3/5/6 with issue #8 — the tick reads the Meter Serial and
+  discards it, and `interval_readings` became `load_profile_readings`, empty until M5).
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
 - `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,

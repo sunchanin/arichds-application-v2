@@ -1,17 +1,26 @@
 # The Poller's tick proves liveness, not data — v2 has no live-value display
 
-Status: accepted (2026-08-05, owner decision after grilling). **Partly implemented.**
+Status: accepted (2026-08-05, owner decision after grilling). **Fully implemented.**
 **Decision item 1 landed in issue #6 (M3-3)**: the Devices page replaced the Monitor page as
 the app's landing screen, `web/src/pages/Monitor.tsx` and `api.latestReading` are gone, and
 `GET /api/devices/{id}/readings/latest` and its `ReadingOut` model are gone from
 `app/src/arichds/api/devices.py`. Nothing in `web/src` displays an electrical value any more.
-**Items 2, 3, 5 and 6 remain with issue #8**, which stops the writing, changes what the tick
-reads, deletes the `interval='60s'` rows and removes `read_instantaneous()`/`health_check()`.
-Item 4 (no cache) needed no code — the cache was never built. Issue #5 was deliberately
+**Items 2, 3, 5 and 6 landed in issue #8 (M3-4)**: `poll_once` now reads the Meter Serial and
+discards it, `store_reading()` and `INTERVAL_LABEL_INSTANTANEOUS` are gone, migration `0005`
+deleted the `interval='60s'` rows and renamed `interval_readings` to `load_profile_readings`
+(class `LoadProfileReading`), and `read_instantaneous()`/`health_check()` are gone from both
+`MeterDriver` and `TcpDlmsDriver`. `TickOutcome.STORED` became `TickOutcome.OK` in the same
+change. Item 4 (no cache) needed no code — the cache was never built. Issue #5 was deliberately
 untouched by any of this: the Poller kept behaving exactly as it did until #6 had removed the
-last reader, so no intermediate state left the product without a working screen. **Until #8
-lands, the Poller still reads the instantaneous set and writes a row per tick — those rows now
-have no reader at all.**
+last reader, so no intermediate state left the product without a working screen.
+
+Two things #8 decided that this ADR had left open. A `read_meter_serial()` that returns
+**`None`** is a *failed* tick, not a successful one — the association succeeded and the
+register came back empty, which is precisely the "answers but cannot serve a read" state item 2
+exists to catch, and `probe_meter` already classifies the same answer as
+`ProbeFailure.NO_SERIAL`. And `poll_once` does **not** reuse `probe_meter()` despite reading the
+same register: the probe takes the endpoint as a *Manual Read*, and a background tick holding
+the manual lock would invert ADR 0006 and starve the buttons a person is waiting on.
 
 Reverses: v2's own M1 decision in `SPEC.md` §3.1 — both the "หน้า monitor" and the practice of
 storing an instantaneous reading every 60 seconds.
@@ -108,14 +117,18 @@ That answer collapses the rest.
 
 - **v2 ships with no live-values screen.** If a customer asks for one later it is a new feature
   with its own storage decision — not a reason to keep this one.
-- **`interval_readings` is empty from M3 until M5.** Accepted: load profile arrives at M5, and the
-  day-5 demo runs Devices → Load Profile → Billing.
-- **`TickOutcome.STORED`** (issue #4) becomes a lie the moment nothing is stored. Rename it in the
-  same change; do not leave an enum describing behaviour the code no longer has.
+- **The readings table is empty from M3 until M5** — and while it was empty, #8 renamed it from
+  `interval_readings` to `load_profile_readings`, because after the 60 s rows go what it holds
+  genuinely is load profile and there will never be a cheaper moment. Accepted: load profile
+  arrives at M5, and the day-5 demo runs Devices → Load Profile → Billing.
+- **`TickOutcome.STORED`** (issue #4) became a lie the moment nothing was stored, so #8 renamed it
+  to `TickOutcome.OK`. It is never persisted and never crosses the API, so the value was free.
 - Removing `/readings/latest` is an API removal. Nothing outside `Monitor.tsx` calls it, so it
   leaves with the page rather than lingering as an unused route.
 - `SPEC.md` §3.1, §3.3, §3.5 and §3.7's page count, plus `REMAKE-PLAN.md` §6.1's row-count table,
-  all describe the old behaviour and must be corrected in the change that implements this.
+  all described the old behaviour and were corrected in #8, the change that implements this.
+  §6.1's v2 row-count was also wrong on its own terms — it read `20 × 96` against a stated mix of
+  18 DLMS + 2 Modbus meters, ignoring Modbus's own cadence — and is now `1,728 + 2,880 = 4,608`.
 - **Storage stops being a question.** At 30 meters the old shape wrote 43,200 rows/day (measured:
   239 rows from one meter in four hours on the installed machine); what remains is 2,880/day of
   meter-recorded intervals. The saving is a side effect — the reason is that nothing read them.

@@ -6,8 +6,9 @@ Pause/Resume, Read now and Delete all data (M3-2).
 only caller: v2 has no live-value display, so an endpoint serving one had
 nobody to serve. Read now reports whether the meter *answered*, never what it
 read. Nothing else in this module ever touched
-:class:`~arichds.db.models.IntervalReading` except Delete all data, which
-counts rows it destroys.
+:class:`~arichds.db.models.LoadProfileReading` except Delete all data, which
+counts rows it destroys — and from M3-4 until M5 that table is empty, because
+nothing writes to it at all.
 
 Three independent gates sit in front of every handler here:
 
@@ -70,7 +71,7 @@ from arichds.acquisition.status import (
 from arichds.api.deps import AdminDep, CurrentUserDep, LicenseServiceDep, PollerDep, SessionDep, get_current_user
 from arichds.api.envelope import ApiResponse
 from arichds.constants import JOB_LIVENESS
-from arichds.db.models import Device, DeviceEvent, IntervalReading
+from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 
 logger = logging.getLogger(__name__)
 
@@ -1016,6 +1017,12 @@ def clear_readings(
 ) -> ApiResponse[int]:
     """Delete every Interval Reading of one device, keeping the device and its history.
 
+    **It deletes nothing until M5.** ADR 0007 stopped the Poller writing rows
+    (M3-4) and the load-profile reader that fills ``load_profile_readings``
+    arrives at M5, so today this always answers ``0``. The endpoint, the
+    confirmation ritual and the Device Event it records all stay: they are the
+    contract M5 lands against, and the button is already on the Devices page.
+
     Admin only (SPEC §3.2). The device's Device Events are kept **on purpose**:
     they are the evidence of who deleted the data, and destroying that evidence
     in the same click as the data would be the one thing an audit trail exists to
@@ -1042,7 +1049,7 @@ def clear_readings(
         )
 
     result = session.execute(
-        delete(IntervalReading).where(IntervalReading.device_id == device_id),
+        delete(LoadProfileReading).where(LoadProfileReading.device_id == device_id),
         execution_options={"synchronize_session": False},
     )
     deleted = result.rowcount

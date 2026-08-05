@@ -5,10 +5,12 @@ skeleton needs, M2-1 adds the two auth needs and M3-2 adds ``device_events``.
 The rest arrive module by module, each via its own Alembic migration — never by
 widening this file speculatively.
 
-``interval_readings`` is deliberately a *subset* of the COSEM shape defined in
-REMAKE-PLAN §6.1. Its normalization contract is absolute and applies from row
+``load_profile_readings`` is deliberately a *subset* of the COSEM shape defined
+in REMAKE-PLAN §6.1. Its normalization contract is absolute and applies from row
 one: **always UTC, always kWh, column names match the unit actually stored**.
-The conversion happens in the driver at write time, never at read time.
+The conversion happens in the driver at write time, never at read time. It is
+empty from M3-4 until M5: ADR 0007 stopped the Poller writing to it, and the
+load-profile reader that fills it properly arrives with its own schema grill.
 """
 
 from __future__ import annotations
@@ -132,7 +134,7 @@ class Device(Base):
     consecutive_failures: Mapped[int] = mapped_column(default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    readings: Mapped[list[IntervalReading]] = relationship(
+    readings: Mapped[list[LoadProfileReading]] = relationship(
         back_populates="device",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -157,12 +159,19 @@ class Device(Base):
         return f"{transport.get('host', '')}:{transport.get('port', '')}"
 
 
-class IntervalReading(Base):
-    """One row of time-series meter data in COSEM shape.
+class LoadProfileReading(Base):
+    """One Interval Reading — time-series meter data in COSEM shape.
 
     Always UTC, always kWh, regardless of whether the Source was DLMS or Modbus
-    (CONTEXT.md — Interval Reading). M1 stores the instantaneous subset: V/I per
-    phase, frequency, and the total import energy register.
+    (CONTEXT.md — Interval Reading; the glossary term names the row, this class
+    and its table name what holds it).
+
+    **Every row here is an interval the meter itself recorded.** The name
+    changed with the contents at M3-4: ADR 0007 deleted the ``interval='60s'``
+    rows the Poller used to write each tick, and what remains — 15-minute load
+    profile (M5) and the Modbus cadences (M4b) — genuinely is load profile.
+    Renaming was cheapest here, with the table empty and no reader, no push
+    payload and no customer data attached to it yet.
 
     Attributes:
         id: Surrogate primary key.
@@ -170,8 +179,8 @@ class IntervalReading(Base):
         read_at: When the meter reported the value — **UTC, timezone-aware**.
         source: Which acquisition path produced it (``dlms`` / ``modbus``). A
             property of the reading, never a branch in read-path code.
-        interval: Cadence label, e.g. ``"60s"`` for the M1 monitor poll and
-            ``"15m"`` for load profile later.
+        interval: Cadence label, e.g. ``"15m"`` for load profile. M4b's Modbus
+            cadences share this table and this column tells them apart.
         volt_l1/volt_l2/volt_l3: Phase-to-neutral voltage (V).
         current_l1/current_l2/current_l3: Line current (A).
         freq: Frequency (Hz).
@@ -180,7 +189,7 @@ class IntervalReading(Base):
         created_at: When this row was written (UTC).
     """
 
-    __tablename__ = "interval_readings"
+    __tablename__ = "load_profile_readings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
@@ -202,8 +211,8 @@ class IntervalReading(Base):
     device: Mapped[Device] = relationship(back_populates="readings")
 
     __table_args__ = (
-        # The monitor page's only query: latest row per device.
-        Index("ix_interval_readings_device_read_at", "device_id", "read_at"),
+        # Load Profile's page query (M5): one device's rows over a date range.
+        Index("ix_load_profile_readings_device_read_at", "device_id", "read_at"),
     )
 
 

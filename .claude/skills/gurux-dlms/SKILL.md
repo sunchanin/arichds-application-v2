@@ -145,12 +145,21 @@ Gurux documents both access paths and warns that **not every meter supports both
 - **`read_register(obis, attr=2)`** with correct scaler handling.
 - **`read_meter_serial()`** — one register, driven by the `METER_SERIAL_OBIS` class
   attribute on `TcpDlmsDriver` so a model with a different serial OBIS overrides the
-  attribute, not the method.
-- **`read_instantaneous()`** — the eight-register live set. ADR 0007 stops persisting its
-  output; check that ADR before building anything on it.
+  attribute, not the method. **It is the only register any read path reads today**: both
+  `probe.py` and the Poller's liveness tick go through it.
+- **There is no live-value read and no reachability probe.** The eight-register
+  instantaneous set and the driver-level `bool` reachability check were both removed by
+  ADR 0007 (issue #8, M3-4): v2 displays no live value and stores nothing instantaneous, so
+  an abstract method nothing called was a leftover, not a contract. `INSTANTANEOUS_OBIS` and
+  `get_obis_map()` survive — field-proven, reused by M5 and by `scripts/probe_meter.py` —
+  but nothing in the app walks them. **Do not reintroduce either method for a new model in
+  M4**; if you need one register, add it the way `METER_SERIAL_OBIS` was added.
 - **`probe.py`** — connect, read the serial, disconnect. It classifies failures into four
   operator-facing reasons, and `GXDLMSException` maps to `AUTH_FAILED`: a rejected
-  association is what that exception means in practice.
+  association is what that exception means in practice. **The Poller does not call it**: the
+  probe takes the endpoint as a *Manual Read* and a background tick holding that lock would
+  invert ADR 0006. `poll_once` drives the same driver call under its own `.background()`
+  acquisition instead.
 
 ## Before you write reader or driver code, read the reference files
 

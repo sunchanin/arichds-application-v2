@@ -77,7 +77,13 @@ class TestDeviceEventsTable:
         assert nullable["actor"] == 0
 
     def test_both_indexes_exist(self, upgraded: str) -> None:
-        """Mirrors what ``interval_readings`` already does, for consistency."""
+        """Mirrors the readings table's index shape, for consistency.
+
+        That table was ``interval_readings`` when 0004 was written; 0005 renamed
+        it to ``load_profile_readings`` and renamed both of its indexes with it.
+        The shape being mirrored — one index on ``device_id``, one on
+        ``(device_id, <time column>)`` — is what did not change.
+        """
         names = {row["name"] for row in rows(upgraded, "SELECT name FROM sqlite_master WHERE type = 'index'")}
         assert "ix_device_events_device_id" in names
         assert "ix_device_events_device_created_at" in names

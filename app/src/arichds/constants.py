@@ -13,16 +13,16 @@ from typing import Final
 PRODUCT_NAME: Final[str] = "arichds"
 
 # ─── Poller (SPEC §3.1) ───────────────────────────────────────────────────────
-# M1's monitor cadence: read the instantaneous set every 60 s.
+# The liveness cadence: prove every meter still answers a register, every 60 s.
+# The tick stores nothing (ADR 0007); this is how often device status is
+# refreshed, and ADR 0004's 3-strikes rule is written against it (~3 minutes to
+# Offline), which is why SPEC §3.3 keeps it non-configurable.
 POLL_INTERVAL_SEC: Final[int] = 60
 # How long `Poller.stop()` waits for each worker to finish its current tick.
 # Deliberately shorter than a worst-case DLMS read (TCP_READ_TIMEOUT_SEC): a
 # worker mid-read is expected to outlast this and exit on its own afterwards,
 # so shutdown and device add/remove stay responsive.
 POLLER_STOP_JOIN_TIMEOUT_SEC: Final[float] = 5.0
-# Interval label written to `interval_readings.interval` for the M1 monitor
-# cadence. Load-profile rows (M5) will carry "15m".
-INTERVAL_LABEL_INSTANTANEOUS: Final[str] = "60s"
 # How long a Manual Read waits for a Transport Endpoint held by a background
 # tick before giving up. Longer than one worst-case association
 # (CONNECT_ASSOC_RETRY_ATTEMPTS x TCP_CONNECT_TIMEOUT_SEC) so a probe still
@@ -60,7 +60,13 @@ TCP_CONNECT_TIMEOUT_SEC: Final[int] = 30
 TCP_READ_TIMEOUT_SEC: Final[int] = 60
 DLMS_INTER_REQUEST_DELAY_MS: Final[int] = 200
 
-# ─── Health-check OBIS (v1 constants.py) ──────────────────────────────────────
+# ─── Clock OBIS (v1 constants.py) ─────────────────────────────────────────────
+# The DLMS clock object. **Nothing reads it today**: the driver-level
+# reachability probe that did left with ADR 0007 (issue #8), and the liveness
+# tick reads the Meter Serial instead — one register that proves both the
+# association and a real read.
+# Kept, not deleted, because it is a field-proven OBIS code from v1 and M6's
+# billing period logic needs the meter's own clock.
 HEALTH_CHECK_OBIS_CODE: Final[str] = "0.0.1.0.0.255"
 HEALTH_CHECK_OBIS_ATTR: Final[int] = 2
 
@@ -69,8 +75,8 @@ METER_SERIAL_OBIS_CODE: Final[str] = "0.0.96.1.0.255"  # Device Serial Number (D
 METER_SERIAL_OBIS_ATTR: Final[int] = 2
 
 # ─── Unit normalization (REMAKE-PLAN §6.1 normalization contract) ─────────────
-# DLMS registers report active energy in Wh; `interval_readings` is ALWAYS kWh.
-# The division happens in the driver, at write time.
+# DLMS registers report active energy in Wh; `load_profile_readings` is ALWAYS
+# kWh. The division happens in the driver, at write time.
 WH_TO_KWH_DIVISOR: Final[int] = 1000
 
 # ─── Licensing ────────────────────────────────────────────────────────────────
