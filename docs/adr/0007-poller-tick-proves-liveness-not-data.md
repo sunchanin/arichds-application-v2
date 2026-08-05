@@ -26,7 +26,7 @@ justify itself.
 ## The consequence nobody had traced
 
 The Monitor page is the **only** consumer of instantaneous data — verified across the whole
-repository: `GET /api/devices/{id}/readings/latest` is called from `web/src/pages/Monitor.tsx:60`
+repository: `GET /api/devices/{id}/readings/latest` is called from `web/src/pages/Monitor.tsx`
 and from nowhere else, in either the backend or the frontend.
 
 Meanwhile the M3 grill (2026-08-05) redefined the "Instantaneous" page as a data-coverage grid —
@@ -66,15 +66,22 @@ That answer collapses the rest.
    readings, but nothing will ever read them, and leaving them means two kinds of row live in one
    table forever with every future reader having to know which is which.
 
-6. **`MeterDriver.read_instantaneous()` and `health_check()` go with it.** `health_check()` has
-   no caller anywhere in `src/` or `tests/` today — it has been dead since M1. `read_instantaneous()`
-   has exactly one production caller, the Poller, which this decision removes. Leaving either as an
+6. **`MeterDriver.read_instantaneous()` and `health_check()` go with it.** `read_instantaneous()`
+   has exactly one production caller, the Poller, which this decision removes. Leaving it as an
    `@abstractmethod` would make every future base class implement code nothing calls: the seven
    remaining DLMS-over-TCP models inherit `TcpDlmsDriver`'s implementation and pay nothing, but the
    serial (SMW110) and Modbus bases that M4 introduces would each have to. That is a small cost,
-   not a large one — the reason to remove them is simply that an abstract method with no callers
-   is not a contract, it is a leftover. **It does mean this ADR must be implemented before M4**,
-   which is where those new base classes get written.
+   not a large one — the reason to remove it is simply that an abstract method with no callers
+   is not a contract, it is a leftover.
+
+   `health_check()` is different mechanics, same verdict. It is **concrete** — a default
+   implementation on the base (`base.py`), overridden in `TcpDlmsDriver` — so no future base class
+   would be forced to implement it. It goes because it has no caller anywhere in `src/` or `tests/`
+   today (dead since M1), and because its default body **calls `read_instantaneous()`**: removing
+   one breaks the other, so they leave together.
+
+   **This does mean the ADR must be implemented before M4**, which is where those new base classes
+   get written.
 
    The three scaler cases in `tests/test_dlms_scaler.py` that exercise ADR 0002 through
    `read_instantaneous()` move to `read_register()` — coverage of ADR 0002 must not shrink to pay
