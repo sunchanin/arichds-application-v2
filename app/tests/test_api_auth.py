@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from arichds.config import get_settings
-from tests.conftest import ADMIN_CREDENTIALS, login_token
+from tests.conftest import ADMIN_CREDENTIALS, USER_CREDENTIALS, bearer_client, login_token
 
 
 class TestCheckSetup:
@@ -182,3 +182,118 @@ class TestLogout:
         response = activated_client.get("/api/auth/me", headers={"Authorization": f"Bearer {expired}"})
 
         assert response.status_code == 401
+
+
+class TestChangePassword:
+    """Changing your own password (M2-2).
+
+    The only non-admin endpoint of this slice, which is why it lives on
+    ``/api/auth`` rather than the admin-only ``/api/users`` router — and being
+    on the Limited Mode allow-list means an operator on a lapsed machine can
+    still change their password.
+    """
+
+    def test_replaces_the_password(self, admin_client: TestClient) -> None:
+        response = admin_client.post(
+            "/api/auth/change-password",
+            json={"current_password": ADMIN_CREDENTIALS["password"], "new_password": "a-brand-new-pass"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"] is True
+
+    def test_the_old_password_stops_working_and_the_new_one_starts(self, admin_client: TestClient) -> None:
+        admin_client.post(
+            "/api/auth/change-password",
+            json={"current_password": ADMIN_CREDENTIALS["password"], "new_password": "a-brand-new-pass"},
+        )
+
+        assert admin_client.post("/api/auth/login", json=ADMIN_CREDENTIALS).status_code == 401
+        assert login_token(admin_client, {"username": "admin", "password": "a-brand-new-pass"})
+
+    def test_a_wrong_current_password_is_400_not_401(self, admin_client: TestClient) -> None:
+        response = admin_client.post(
+            "/api/auth/change-password",
+            json={"current_password": "not-the-password", "new_password": "a-brand-new-pass"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Current password is incorrect."
+
+    def test_a_wrong_current_password_does_not_sign_the_operator_out(self, admin_client: TestClient) -> None:
+        """A 401 here would be read by the SPA's request helper as a bad token
+        and would clear the session — a typo must not sign anyone out."""
+        admin_client.post(
+            "/api/auth/change-password",
+            json={"current_password": "not-the-password", "new_password": "a-brand-new-pass"},
+        )
+
+        assert admin_client.get("/api/auth/me").status_code == 200
+
+    def test_the_presenting_session_survives_and_the_others_do_not(self, activated_client: TestClient) -> None:
+        """v1 INV-DATA-04: sessions opened under the old password go, but not
+        the browser the operator is standing in front of."""
+        first = login_token(activated_client, ADMIN_CREDENTIALS)
+        second = login_token(activated_client, ADMIN_CREDENTIALS)
+        changing = bearer_client(activated_client, first)
+
+        changing.post(
+            "/api/auth/change-password",
+            json={"current_password": ADMIN_CREDENTIALS["password"], "new_password": "a-brand-new-pass"},
+        )
+
+        assert changing.get("/api/auth/me").status_code == 200
+        assert bearer_client(activated_client, second).get("/api/auth/me").status_code == 401
+
+    def test_a_user_role_account_can_change_its_own_password(self, user_client: TestClient) -> None:
+        """Not admin-only — it is the one non-admin endpoint of this slice."""
+        response = user_client.post(
+            "/api/auth/change-password",
+            json={"current_password": USER_CREDENTIALS["password"], "new_password": "a-brand-new-pass"},
+        )
+
+        assert response.status_code == 200
+        assert user_client.get("/api/auth/me").status_code == 200
+
+    def test_is_401_without_a_token(self, anon_client: TestClient) -> None:
+        """A well-formed body with no token must be refused before it is read —
+        a 422 here would mean the guard is attached too deep."""
+        response = anon_client.post(
+            "/api/auth/change-password",
+            json={"current_password": "whatever-it-is", "new_password": "a-brand-new-pass"},
+        )
+
+        assert response.status_code == 401
+
+    def test_a_new_password_equal_to_the_current_one_is_422(self, admin_client: TestClient) -> None:
+        response = admin_client.post(
+            "/api/auth/change-password",
+            json={"current_password": ADMIN_CREDENTIALS["password"], "new_password": ADMIN_CREDENTIALS["password"]},
+        )
+
+        assert response.status_code == 422
+
+    def test_a_short_new_password_is_422(self, admin_client: TestClient) -> None:
+        response = admin_client.post(
+            "/api/auth/change-password",
+            json={"current_password": ADMIN_CREDENTIALS["password"], "new_password": "short"},
+        )
+
+        assert response.status_code == 422
+
+    def test_a_new_password_over_72_bytes_is_422(self, admin_client: TestClient) -> None:
+        response = admin_client.post(
+            "/api/auth/change-password",
+            json={"current_password": ADMIN_CREDENTIALS["password"], "new_password": "é" * 40},
+        )
+
+        assert response.status_code == 422
+
+    def test_no_response_carries_either_password(self, admin_client: TestClient) -> None:
+        response = admin_client.post(
+            "/api/auth/change-password",
+            json={"current_password": ADMIN_CREDENTIALS["password"], "new_password": "a-brand-new-pass"},
+        )
+
+        assert ADMIN_CREDENTIALS["password"] not in response.text
+        assert "a-brand-new-pass" not in response.text

@@ -45,8 +45,7 @@ TEST_MACHINE_ID = "e" * 64
 #: The bootstrap admin every activated-app fixture creates through Setup.
 ADMIN_CREDENTIALS = {"username": "admin", "password": "admin-password"}
 
-#: A second, non-admin account. There is no user-creation API until M2-2, so
-#: it is inserted straight through a Session.
+#: A second, non-admin account, created by the admin through ``POST /api/users``.
 USER_CREDENTIALS = {"username": "operator", "password": "operator-password"}
 
 
@@ -178,25 +177,15 @@ def admin_client(activated_client: TestClient) -> TestClient:
 
 
 @pytest.fixture
-def user_client(activated_client: TestClient) -> TestClient:
+def user_client(admin_client: TestClient, activated_client: TestClient) -> TestClient:
     """The activated app, as a plain ``user``.
 
-    The account is inserted directly through a Session: there is no
-    user-creation API until M2-2, and inventing one here would be building that
-    slice early.
+    The account is created the way the product creates one — the admin posting
+    to ``/api/users`` (M2-2). There is one path to a new account, and this
+    fixture exercises it rather than reaching past it into a Session.
     """
-    from arichds.auth.security import hash_password
-    from arichds.db.models import User
-    from arichds.db.session import session_scope
-
-    with session_scope() as session:
-        session.add(
-            User(
-                username=USER_CREDENTIALS["username"],
-                password_hash=hash_password(USER_CREDENTIALS["password"]),
-                role=Role.USER,
-            )
-        )
+    response = admin_client.post("/api/users", json={**USER_CREDENTIALS, "role": Role.USER.value})
+    assert response.status_code == 201, response.text
 
     return bearer_client(activated_client, login_token(activated_client, USER_CREDENTIALS))
 

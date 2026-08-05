@@ -23,8 +23,10 @@ interface SetupForm {
  *
  * A successful Setup deliberately does **not** sign the new admin in. Typing
  * the password once more against the real Login form is the cheapest possible
- * proof that it was recorded as intended, on the one account that cannot be
- * reset from inside the app.
+ * proof that it was recorded as intended — and at this moment it matters most,
+ * because this is the only account on the machine and an admin may not reset
+ * its own password (M2-2). Until a second admin exists there is nobody who
+ * could rescue a mistyped one.
  */
 export function Setup({ onComplete }: { onComplete: (username: string) => void }) {
   const { message } = App.useApp();

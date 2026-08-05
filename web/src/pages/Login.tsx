@@ -31,6 +31,7 @@ export function Login({ notice }: { notice?: string | null }) {
       const result = await api.login(values);
       // Setting the session is what re-routes the app: App subscribes to it.
       setSession({
+        id: result.user.id,
         token: result.access_token,
         username: result.user.username,
         role: result.user.role,

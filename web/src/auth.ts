@@ -15,8 +15,16 @@
 /** The storage key. Namespaced so it cannot collide with anything else on the origin. */
 const SESSION_KEY = "arichds.session";
 
-/** Who is signed in, as far as the browser knows. */
+/**
+ * Who is signed in, as far as the browser knows.
+ *
+ * `id` is here from M2-2 because every User Management endpoint takes an id,
+ * and the page has to know which row is *yours* to disable its own controls.
+ * Keying that off the username instead would work only until someone is
+ * renamed.
+ */
 export interface Session {
+  id: number;
   token: string;
   username: string;
   role: "admin" | "user";
@@ -37,7 +45,11 @@ export function getSession(): Session | null {
       typeof parsed === "object" &&
       parsed !== null &&
       typeof (parsed as Session).token === "string" &&
-      typeof (parsed as Session).username === "string"
+      typeof (parsed as Session).username === "string" &&
+      // A session stored before M2-2 has no `id`, so it is discarded here and
+      // the operator signs in once more. Acceptable on an unreleased product,
+      // and far cheaper than making `id` optional everywhere downstream.
+      typeof (parsed as Session).id === "number"
     ) {
       return parsed as Session;
     }

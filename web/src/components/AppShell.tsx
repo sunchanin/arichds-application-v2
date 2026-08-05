@@ -3,15 +3,19 @@ import {
   DashboardOutlined,
   DatabaseOutlined,
   FileTextOutlined,
+  KeyOutlined,
   LogoutOutlined,
   SettingOutlined,
+  TeamOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 import { Button, Layout, Menu, Space, Tag, theme, Typography } from "antd";
-import type { ReactNode } from "react";
+import type { ItemType, MenuItemType } from "antd/es/menu/interface";
+import { type ReactNode, useState } from "react";
 
 import { HEADER_HEIGHT } from "../theme";
+import { ChangePasswordModal } from "./ChangePasswordModal";
 
 const { Header, Sider, Content } = Layout;
 
@@ -23,24 +27,51 @@ const { Header, Sider, Content } = Layout;
  * M1 is what makes this a walking skeleton rather than a demo page, and each
  * milestone lights up its own entry rather than redesigning navigation.
  *
- * The header carries who is signed in and the way out. There is no User
- * Management entry yet — that page belongs to M2-2.
+ * M2-2 lights up **User Management**, and does so only for an `admin`: the
+ * entry is *absent* for a `user`, not disabled. A disabled entry here means
+ * "a later milestone owns this", which would be a lie — the page exists, that
+ * account simply may not use it.
+ *
+ * The header carries who is signed in, the way to change your own password
+ * (every role — the modal is owned here, so no page has to pass a prop for it),
+ * and the way out.
  */
 export function AppShell({
   children,
   licensedTo,
   username,
+  role,
+  activeKey,
+  onNavigate,
   onSignOut,
 }: {
   children: ReactNode;
   licensedTo?: string | null;
   username: string;
+  role: "admin" | "user";
+  activeKey: string;
+  onNavigate: (key: string) => void;
   onSignOut: () => void;
 }) {
+  const [changingPassword, setChangingPassword] = useState(false);
   // The shell wraps every page M2–M7 will add, so its colours must come from
   // the theme rather than literals — otherwise a later re-theme silently
   // strands the header text at whatever white looked right in M1.
   const { token } = theme.useToken();
+
+  const items: ItemType<MenuItemType>[] = [
+    { key: "monitor", icon: <DashboardOutlined />, label: "Monitor" },
+    // Owned by later milestones — visible so the shape is honest, disabled so
+    // nothing pretends to work yet.
+    { key: "devices", icon: <DatabaseOutlined />, label: "Devices", disabled: true },
+    { key: "load-profile", icon: <AreaChartOutlined />, label: "Load Profile", disabled: true },
+    { key: "billing", icon: <FileTextOutlined />, label: "Billing", disabled: true },
+    { key: "energy", icon: <ThunderboltOutlined />, label: "Energy", disabled: true },
+    ...(role === "admin"
+      ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]
+      : []),
+    { key: "settings", icon: <SettingOutlined />, label: "Settings", disabled: true },
+  ];
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -72,6 +103,15 @@ export function AppShell({
           <Button
             type="text"
             size="small"
+            icon={<KeyOutlined />}
+            onClick={() => setChangingPassword(true)}
+            style={{ color: token.colorTextLightSolid }}
+          >
+            Change password
+          </Button>
+          <Button
+            type="text"
+            size="small"
             icon={<LogoutOutlined />}
             onClick={onSignOut}
             style={{ color: token.colorTextLightSolid }}
@@ -80,22 +120,15 @@ export function AppShell({
           </Button>
         </Space>
       </Header>
+      <ChangePasswordModal open={changingPassword} onClose={() => setChangingPassword(false)} />
       <Layout>
         <Sider width={200} theme="light" breakpoint="lg" collapsedWidth={0}>
           <Menu
             mode="inline"
-            selectedKeys={["monitor"]}
+            selectedKeys={[activeKey]}
             style={{ height: "100%", borderInlineEnd: 0 }}
-            items={[
-              { key: "monitor", icon: <DashboardOutlined />, label: "Monitor" },
-              // Owned by later milestones — visible so the shape is honest,
-              // disabled so nothing pretends to work yet.
-              { key: "devices", icon: <DatabaseOutlined />, label: "Devices", disabled: true },
-              { key: "load-profile", icon: <AreaChartOutlined />, label: "Load Profile", disabled: true },
-              { key: "billing", icon: <FileTextOutlined />, label: "Billing", disabled: true },
-              { key: "energy", icon: <ThunderboltOutlined />, label: "Energy", disabled: true },
-              { key: "settings", icon: <SettingOutlined />, label: "Settings", disabled: true },
-            ]}
+            items={items}
+            onClick={({ key }) => onNavigate(key)}
           />
         </Sider>
         <Content style={{ padding: 20, overflow: "auto" }}>{children}</Content>

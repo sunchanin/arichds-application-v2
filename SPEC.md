@@ -119,10 +119,32 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
 - `admin`: จัดการมิเตอร์ (เพิ่ม/แก้/ลบ) · จัดการ user · ตั้งค่าระบบ · license
 - `user`: ดูข้อมูลทุกหน้า · สั่งอ่าน manual · export CSV/PDF
 
-**Password**: ขั้นต่ำ 8 ตัวอักษร ไม่บังคับ complexity · ลืมรหัส = admin ตั้งใหม่ให้จากหน้า
-User Management (ไม่มี email infra) · admin คนเดียวลืมเอง = ทางหนีไฟผ่าน vendor CLI บนเครื่อง ·
-**ไม่มี lockout/rate-limit** — บันทึก failed login ลง log (โผล่ App Log ใน M7); bcrypt ช้าพอ
-เป็น rate-limit ธรรมชาติ และเครื่องอยู่ใน LAN ปิด
+**Password**: ขั้นต่ำ 8 ตัวอักษร (และไม่เกิน 72 **ไบต์** — ขีดจำกัดของ bcrypt 5) ไม่บังคับ complexity ·
+ลืมรหัส = admin ตั้งใหม่ให้จากหน้า User Management (ไม่มี email infra) · admin คนเดียวลืมเอง =
+ทางหนีไฟผ่าน vendor CLI บนเครื่อง (**ยังไม่ได้ทำ** — `tools/arichds_vendor.py` มีแค่
+keygen/sign/fingerprint) · **ไม่มี lockout/rate-limit** — บันทึก failed login ลง log
+(โผล่ App Log ใน M7); bcrypt ช้าพอเป็น rate-limit ธรรมชาติ และเครื่องอยู่ใน LAN ปิด
+
+**User Management** (M2-2 — admin เท่านั้นทุก endpoint):
+- CRUD: list · create (ระบุ role เสมอ ไม่มี default) · เปลี่ยน role · reset password · delete
+  (v2 ไม่มีคอลัมน์ `is_active` — "ปิดการใช้งาน" ของ v1 คือ **ลบแถวจริง** แล้ว token ของคนนั้น
+  หายไปด้วย FK cascade → session ที่เปิดค้างตาย 401 ทันที)
+- **กฎกันล็อกตัวเอง 3 ข้อ (400 ทั้งหมด)** — admin ห้าม **ลบตัวเอง** (INV-AUTHZ-02 ของ v1) ·
+  ห้าม **เปลี่ยน role ตัวเอง** · ห้าม **reset password ตัวเอง** (ต้องใช้ Change password ซึ่งถาม
+  รหัสเดิม) · **ไม่ต้องนับ admin** — ทุก endpoint ต้องเป็น admin อยู่แล้วและ actor ถอดความเป็น
+  admin ของตัวเองไม่ได้ จำนวน admin จึงลงถึง 0 ไม่ได้ · **ไม่มีสิทธิพิเศษให้ admin คนแรก** —
+  id 1 เป็นแถวธรรมดา admin อีกคนลบ/ลดขั้นได้ (ไม่งั้นบัญชีแรกที่ลืมรหัส/ถูกยึดจะลบไม่ได้ตลอดกาล)
+- **admin reset password ให้คนอื่น = revoke ทุก token ของ user นั้น** (ต่างจาก v1 ที่ไม่ revoke
+  อะไรเลย) — คนเปลี่ยนไม่ใช่เจ้าของรหัส จึงเป็นเคสลืมรหัสหรือสงสัยว่าถูกยึด ปล่อย session ค้างไว้
+  เสียเป้าหมายทั้งสองทาง · session ของ admin ผู้สั่งไม่ถูกแตะ
+- **เปลี่ยน role ไม่ revoke token** — `require_admin` อ่าน role จากแถวใน DB ทุก request
+  (claim `role` ใน JWT เป็นข้อมูลประกอบ ไม่ใช้ตัดสินสิทธิ์) การลด/เพิ่มขั้นจึงมีผลที่ request
+  ถัดไปด้วย token เดิม ไม่ต้อง login ใหม่
+- **เปลี่ยนรหัสตัวเอง** (`POST /api/auth/change-password`, ทุก role ใช้ได้): ตรวจรหัสเดิมก่อนเสมอ
+  (INV-DATA-04 ของ v1) · รหัสใหม่ต้องต่างจากเดิม (422) · **revoke token อื่นทั้งหมดของ user นั้น
+  แต่เก็บ token ที่ยื่นมาไว้** — คนที่เพิ่งกดเปลี่ยนต้องไม่หลุด session · รหัสเดิมผิดตอบ **400 ไม่ใช่
+  401** (SPA เคลียร์ session ทุก 401 ที่มี token — ตอบ 401 = พิมพ์ผิดแล้วถูก sign out) ·
+  อยู่ใต้ `/api/auth` จึงใช้ได้แม้เครื่องอยู่ใน limited mode ส่วน `/api/users` ถูก license gate ปกติ
 
 **หน้า**: Setup (first-run) · Login · User Management
 

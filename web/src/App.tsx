@@ -2,12 +2,13 @@ import { Flex, Result, Spin } from "antd";
 import { useCallback, useEffect, useState } from "react";
 
 import { api, type LicenseStatus } from "./api";
-import { type Session, clearSession, getSession, onSessionChange } from "./auth";
+import { type Session, clearSession, getSession, onSessionChange, setSession } from "./auth";
 import { AppShell } from "./components/AppShell";
 import { Activation } from "./pages/Activation";
 import { Login } from "./pages/Login";
 import { Monitor } from "./pages/Monitor";
 import { Setup } from "./pages/Setup";
+import { Users } from "./pages/Users";
 import { LICENSE_POLL_MS } from "./theme";
 
 /**
@@ -22,7 +23,12 @@ import { LICENSE_POLL_MS } from "./theme";
  *
  * A stored token is *validated* with `GET /api/auth/me` rather than trusted:
  * an 8-hour token sitting in localStorage may well have expired or been revoked
- * since the tab was last open.
+ * since the tab was last open. That same answer also *refreshes* the stored
+ * role and id, so an account another admin demoted loses the User Management
+ * menu entry on the next reload rather than keeping a stale one.
+ *
+ * In-shell navigation is state, not a URL — `react-router` is not a dependency
+ * and the top-level gate above stays state-driven either way.
  */
 export default function App() {
   const [session, setSessionState] = useState<Session | null>(() => getSession());
@@ -31,6 +37,7 @@ export default function App() {
   const [status, setStatus] = useState<LicenseStatus | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [page, setPage] = useState<"monitor" | "users">("monitor");
 
   // A 401 anywhere in the app clears the session; this is what turns that into
   // a re-render back to Login, without any page knowing about any other page.
@@ -73,7 +80,14 @@ export default function App() {
     if (!session || tokenChecked) return;
     void api
       .me()
-      .then(() => setTokenChecked(true))
+      .then((user) => {
+        // The server is the authority on both. Guarded by the inequality so
+        // setSession cannot notify its way into a render loop.
+        if (user.role !== session.role || user.id !== session.id) {
+          setSession({ ...session, id: user.id, role: user.role });
+        }
+        setTokenChecked(true);
+      })
       .catch(() => setTokenChecked(true));
   }, [session, tokenChecked]);
 
@@ -114,6 +128,7 @@ export default function App() {
     setStatus(null);
     setTokenChecked(false);
     setNotice(null);
+    setPage("monitor");
   }, []);
 
   if (unreachable) {
@@ -147,9 +162,21 @@ export default function App() {
     return <Activation status={status} role={session.role} onActivated={() => void refreshStatus()} />;
   }
 
+  // A `user` never reaches the Users page: the menu entry is absent for them,
+  // and this second check is what keeps a stale `page` from surviving a
+  // demotion that landed while the page was open.
+  const showUsers = page === "users" && session.role === "admin";
+
   return (
-    <AppShell licensedTo={status.customer} username={session.username} onSignOut={() => void signOut()}>
-      <Monitor />
+    <AppShell
+      licensedTo={status.customer}
+      username={session.username}
+      role={session.role}
+      activeKey={showUsers ? "users" : "monitor"}
+      onNavigate={(key) => setPage(key === "users" ? "users" : "monitor")}
+      onSignOut={() => void signOut()}
+    >
+      {showUsers ? <Users currentUserId={session.id} /> : <Monitor />}
     </AppShell>
   );
 }

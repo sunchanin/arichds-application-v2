@@ -1,4 +1,4 @@
-"""Auth endpoints — Setup, Login, Logout, Me (M2-1).
+"""Auth endpoints — Setup, Login, Logout, Me (M2-1) and Change password (M2-2).
 
 The first-run walk is **Setup → Login → Activation** (SPEC §3.2). Setup is open
 only while zero users exist and is permanently closed afterwards; re-running it
@@ -10,10 +10,23 @@ This whole router is on the Limited Mode allow-list
 oversight: if login were license-gated, a machine whose lease lapsed could never
 be logged into, and therefore never re-activated.
 
+``POST /change-password`` lives here rather than on ``/api/users`` for two
+reasons: it is the only endpoint of M2-2 that is *not* admin-only, so it would
+break that router's clean router-level ``require_admin``; and being on the
+allow-list above means a user on a lapsed machine can still change their
+password, while ``/api/users`` is deliberately frozen by Limited Mode.
+
 Error style follows M1 — ``HTTPException`` with a ``detail`` string, no new
 error-code taxonomy. The status code carries the meaning: 401 for any credential
 or token failure, 403 for the wrong role, 409 for Setup-already-done, 422 for
 validation.
+
+**One exception to "401 for any credential failure"** (M2-2): a wrong
+``current_password`` on ``POST /change-password`` answers **400**, not 401. The
+SPA's request helper clears the stored session on any 401 that carried a token,
+so a 401 there would sign the operator out over a typo — and it would be
+misleading anyway: the token is perfectly good, a submitted *field* is wrong.
+401 is reserved for "your token is bad".
 """
 
 from __future__ import annotations
@@ -23,13 +36,13 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from arichds.api.deps import BearerDep, CurrentUserDep, SessionDep
 from arichds.api.envelope import ApiResponse
 from arichds.auth import service
 from arichds.auth.roles import Role
-from arichds.auth.security import hash_token
+from arichds.auth.security import hash_token, verify_password
 from arichds.constants import BCRYPT_MAX_PASSWORD_BYTES
 
 logger = logging.getLogger(__name__)
@@ -108,6 +121,29 @@ class UserOut(BaseModel):
         SQLite).
         """
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+class PasswordChange(BaseModel):
+    """Request body for changing your own password.
+
+    ``current_password`` is a plain ``str`` on purpose: it is only ever
+    compared, never hashed, and length-validating it would turn a wrong guess
+    into a 422 that leaks the shape of the stored password.
+
+    Attributes:
+        current_password: The password in force right now.
+        new_password: The password to replace it with.
+    """
+
+    current_password: str
+    new_password: Password
+
+    @model_validator(mode="after")
+    def _must_differ(self) -> PasswordChange:
+        """Reject a "change" that changes nothing (v1 INV-DATA-04's companion rule)."""
+        if self.new_password == self.current_password:
+            raise ValueError("New password must differ from the current password.")
+        return self
 
 
 class LoginResult(BaseModel):
@@ -193,6 +229,44 @@ def logout(current_user: CurrentUserDep, credentials: BearerDep, session: Sessio
     if credentials is not None:
         service.revoke_token(session, hash_token(credentials.credentials))
     logger.info("User %r logged out", current_user.username)
+    return ApiResponse.ok(True)
+
+
+@router.post("/change-password")
+def change_password(
+    payload: PasswordChange,
+    current_user: CurrentUserDep,
+    credentials: BearerDep,
+    session: SessionDep,
+) -> ApiResponse[bool]:
+    """Change your own password, keeping this session and ending the others.
+
+    The current password is verified first (v1 INV-DATA-04) — that check is the
+    only thing standing between a stolen token and a permanent account takeover.
+    Every other live session of this user is then revoked, because they were
+    opened under a password that is no longer in force; the presenting one
+    survives so the operator is not signed out of the form they just submitted.
+
+    Available to every role. Admins do **not** reset their own password through
+    ``/api/users/{id}/reset-password`` — that path is refused for the actor's own
+    id precisely so it cannot be used to bypass the check above.
+
+    Raises:
+        HTTPException: 400 when the current password is wrong.
+    """
+    if not verify_password(payload.current_password, current_user.password_hash):
+        # Deliberately **400, not v1's 401**. A 401 here would be read by the
+        # SPA's request helper as "your token went bad" and would clear the
+        # session, signing the operator out over a typo. The token is fine; a
+        # submitted *field* is wrong.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect.",
+        )
+
+    keep = hash_token(credentials.credentials) if credentials is not None else None
+    service.set_password(session, current_user, payload.new_password, keep_token_hash=keep)
+    logger.info("User id=%s changed their own password", current_user.id)
     return ApiResponse.ok(True)
 
 

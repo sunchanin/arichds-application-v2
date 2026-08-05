@@ -92,6 +92,13 @@ export interface Credentials {
   password: string;
 }
 
+/** Request body for `POST /api/users`. The role is required — there is no default. */
+export interface NewUser {
+  username: string;
+  password: string;
+  role: "admin" | "user";
+}
+
 /** Raised when a request fails; carries the API's own error code when present. */
 export class ApiRequestError extends Error {
   constructor(
@@ -170,6 +177,16 @@ export const api = {
 
   me: () => request<User>("/api/auth/me"),
 
+  // Changing your own password lives on /api/auth, not /api/users: it is the
+  // one non-admin endpoint of User Management, and /api/auth stays reachable in
+  // Limited Mode. A wrong current password comes back 400, so the request
+  // helper above leaves the session alone.
+  changeOwnPassword: (currentPassword: string, newPassword: string) =>
+    request<boolean>("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+
   licenseStatus: () => request<LicenseStatus>("/api/license/status"),
 
   activate: (code: string) =>
@@ -191,4 +208,26 @@ export const api = {
   deleteDevice: (id: number) => request<boolean>(`/api/devices/${id}`, { method: "DELETE" }),
 
   latestReading: (id: number) => request<Reading | null>(`/api/devices/${id}/readings/latest`),
+
+  listUsers: () => request<User[]>("/api/users"),
+
+  createUser: (user: NewUser) =>
+    request<User>("/api/users", {
+      method: "POST",
+      body: JSON.stringify(user),
+    }),
+
+  setUserRole: (id: number, role: "admin" | "user") =>
+    request<User>(`/api/users/${id}/role`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    }),
+
+  resetUserPassword: (id: number, newPassword: string) =>
+    request<boolean>(`/api/users/${id}/reset-password`, {
+      method: "POST",
+      body: JSON.stringify({ new_password: newPassword }),
+    }),
+
+  deleteUser: (id: number) => request<boolean>(`/api/users/${id}`, { method: "DELETE" }),
 };
