@@ -413,10 +413,12 @@ fingerprint (เขียนใหม่ใน Python), poller, FastAPI, FE, one
 > **M1 ไม่มี auth โดยเจตนา** — หน้าเว็บเปิดโล่ง ไม่มี login เพื่อไม่ลากโมดูล M2 เข้ามาใน skeleton
 > M2 คือคนติด guard ย้อนหลังลง endpoint ทุกตัวที่ M1 สร้าง (งานชิ้นหนึ่งของ M2 ไม่ใช่ของแถม)
 
-### M2 — Auth & Login
+### M2 — Auth & Login ✅ *(เสร็จ 2026-08-05 — commit `026bd8e` + `7b75a3a`)*
 `users` + `user_tokens` + role เป็น enum column (§1.1 — ไม่มีตาราง roles/permissions อีก) · JWT ·
 **ติด auth guard ลง endpoint ทั้งหมดที่ M1 เปิดโล่งไว้** · หน้า Login + User Management (สองหน้าแรกที่ใช้ design system จริง)
 **Exit**: login/logout/จัดการ user ครบผ่าน UI · ไม่มี endpoint ไหนเข้าได้โดยไม่ authenticate + เทสผ่าน
+→ ทำได้ครบ: เทส 313 ตัว · route-table sweep กันไม่ให้ router ใหม่หลุด guard · กฎกันล็อกตัวเอง 3 ข้อ
+(v1 ไม่มีเลยสักข้อ — ดู `.claude/run-logs/issue-2.md`)
 
 ### M3 — Device Manager
 device CRUD (devices ตารางรวม §3.4) · `device_events` · health-check loop — **job แรกของ job registry (§3.2)** ·

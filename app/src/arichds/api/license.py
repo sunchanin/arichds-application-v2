@@ -1,7 +1,11 @@
 """License endpoints — the Activation page's whole backend.
 
 Open in Limited Mode (``/api/license/*`` is on the enforcement allow-list), for
-the obvious reason: this is how a limited machine stops being limited.
+the obvious reason: this is how a limited machine stops being limited. Passing
+that gate is not the same as being public, though — from M2-1 both endpoints
+require a token, and activation additionally requires an ``admin`` (SPEC §3.2),
+so nobody on the site LAN can read this machine's Machine ID or replace its
+license without an account.
 
 Activation applies **immediately** (ADR 0001). The endpoint verifies, persists,
 re-evaluates in place and lets the license listeners run — by the time the
@@ -14,17 +18,17 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from arichds.api.deps import LicenseServiceDep
+from arichds.api.deps import AdminDep, LicenseServiceDep, get_current_user
 from arichds.api.envelope import ApiResponse
 from arichds.constants import ERROR_LICENSE_INVALID
 from arichds.licensing.service import LicenseState
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/license", tags=["license"])
+router = APIRouter(prefix="/api/license", tags=["license"], dependencies=[Depends(get_current_user)])
 
 
 class LicenseStatus(BaseModel):
@@ -77,16 +81,23 @@ def _to_status(machine_id: str, state: LicenseState) -> LicenseStatus:
 def get_license_status(license_service: LicenseServiceDep) -> ApiResponse[LicenseStatus]:
     """Return the Machine ID and the current license state.
 
-    The SPA polls this to decide whether to show the Activation page or the
-    Monitor page, so it must always answer — including in Limited Mode.
+    Any authenticated user (SPEC §3.2). The SPA polls this to decide whether to
+    show the Activation page or the Monitor page, so it must always answer —
+    including in Limited Mode — but only to someone who has logged in: the
+    Machine ID identifies this computer and is not for every device on the LAN.
     """
     state = license_service.current_state()
     return ApiResponse.ok(_to_status(license_service.machine_id, state))
 
 
 @router.post("/activate")
-def activate_license(payload: ActivateRequest, license_service: LicenseServiceDep) -> ApiResponse[LicenseStatus]:
+def activate_license(
+    payload: ActivateRequest, license_service: LicenseServiceDep, admin: AdminDep
+) -> ApiResponse[LicenseStatus]:
     """Verify and install an Activation Code. Takes effect immediately.
+
+    Admin only (SPEC §3.2) — replacing the license is not something a viewer on
+    the site LAN should be able to do.
 
     A rejected code changes nothing: the stored license and the current state
     are left exactly as they were, and the reason code comes back so the page

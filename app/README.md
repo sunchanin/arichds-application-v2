@@ -15,9 +15,11 @@ src/arichds/
 ├── db/                models, engine/session, programmatic `alembic upgrade head`
 ├── migrations/        the single Alembic set (render_as_batch=True from 0001)
 ├── licensing/         Machine ID, Activation Codes, Limited Mode enforcement
+├── auth/              Role enum, bcrypt/PyJWT primitives, token service — no HTTP types
 ├── acquisition/       ConnectionParams, drivers, Poller
 │   └── drivers/       MeterDriver ABC, Prometer100 (DLMS/TCP), simulated, factory
-├── api/               health, license, devices routers + the {success,data,error} envelope
+├── api/               health, auth, license, devices routers + the {success,data,error}
+│                      envelope; deps.py holds the JWT guard dependencies
 └── vendor/gurux/      GX*.py copied verbatim from v1 — never edited, never linted
 ```
 
@@ -40,12 +42,14 @@ Every knob is an `ARICHDS_*` environment variable:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ARICHDS_DATA_DIR` | `./data` | Root of the database, license and logs. The installer sets `%ProgramData%\ARICHDS` |
+| `ARICHDS_DATA_DIR` | `./data` | Root of the database, license, logs and secret. The installer sets `%ProgramData%\ARICHDS` |
 | `ARICHDS_PORT` | `8000` | HTTP port |
 | `ARICHDS_HOST` | `0.0.0.0` | Bind address (LAN-reachable by default) |
 | `ARICHDS_LOG_LEVEL` | `INFO` | Root logger level |
 | `ARICHDS_POLL_ENABLED` | `true` | Master switch for the Poller |
 | `ARICHDS_FE_DIST` | *(unset)* | Override the SPA directory |
+| `ARICHDS_TOKEN_EXPIRE_MINUTES` | `480` | Access Token lifetime (8 hours) |
+| `ARICHDS_JWT_SECRET` | *(unset)* | Overrides the per-install key at `<data>\secret\jwt_secret.key` (ADR 0003) |
 
 ## Quality gate
 

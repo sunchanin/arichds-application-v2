@@ -1,8 +1,9 @@
-"""SQLAlchemy 2 models — M1 tables only.
+"""SQLAlchemy 2 models — M1 and M2-1 tables.
 
-The full v2 schema is 13 tables (SPEC §4); M1 lands the two that the walking
-skeleton needs. The rest arrive module by module, each via its own Alembic
-migration — never by widening this file speculatively.
+The full v2 schema is 13 tables (SPEC §4); M1 landed the two the walking
+skeleton needs and M2-1 adds the two auth needs. The rest arrive module by
+module, each via its own Alembic migration — never by widening this file
+speculatively.
 
 ``interval_readings`` is deliberately a *subset* of the COSEM shape defined in
 REMAKE-PLAN §6.1. Its normalization contract is absolute and applies from row
@@ -16,8 +17,11 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
+
+from arichds.auth.roles import Role
 
 
 class Base(DeclarativeBase):
@@ -126,3 +130,84 @@ class IntervalReading(Base):
         # The monitor page's only query: latest row per device.
         Index("ix_interval_readings_device_read_at", "device_id", "read_at"),
     )
+
+
+class User(Base):
+    """An operator account on this machine (M2-1).
+
+    Two levels only, carried in :attr:`role` — SPEC §3.2 collapses v1's
+    roles/permissions tables into this one column. There is deliberately no
+    ``api_token`` column (CLAUDE.md: no inbound M2M surface) and no
+    ``is_active`` column: M2-2 locks an account out by *deleting* it, which
+    cascades its tokens away in the same statement.
+
+    Attributes:
+        id: Surrogate primary key.
+        username: Login name, unique per machine.
+        password_hash: bcrypt hash. Never logged, never returned by the API.
+        role: ``admin`` or ``user``.
+        created_at: Row creation time (UTC).
+        tokens: Every Access Token ever issued to this user.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(128))
+    # VARCHAR with Python-side coercion rather than a native enum: SQLite would
+    # otherwise get an unnamed CHECK constraint, which batch migrations
+    # (render_as_batch=True) cannot reference when the table is later rebuilt.
+    #
+    # `values_callable` is load-bearing: without it SQLAlchemy persists the enum
+    # member *names* (`ADMIN`/`USER`), which would put the column at odds with
+    # every other place a Role is named — the API payload, the JWT `role` claim,
+    # SPEC §3.2 and CONTEXT.md's Role entry all say `admin`/`user`.
+    role: Mapped[Role] = mapped_column(
+        SAEnum(
+            Role,
+            native_enum=False,
+            length=16,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        )
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    tokens: Mapped[list[UserToken]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class UserToken(Base):
+    """One issued Access Token, stored **only** as a hash (M2-1).
+
+    SPEC §3.2 / v1 INV-AUTH-04: the raw JWT never touches the database, so a
+    stolen copy of ``arichds.db`` cannot be replayed as a session. Verification
+    hashes the presented token and looks the digest up here.
+
+    No ``ip_address`` / ``user_agent`` columns: the login log line carries the
+    client IP, which is what the App Log (M7) actually shows, and the 13-table
+    target stays lean.
+
+    Attributes:
+        id: Surrogate primary key.
+        user_id: Owning user.
+        token_hash: SHA-256 hex digest of the raw token.
+        expires_at: When the token stops being accepted (UTC).
+        revoked_at: When logout revoked it (UTC), or None while live.
+        created_at: When it was issued (UTC).
+    """
+
+    __tablename__ = "user_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    user: Mapped[User] = relationship(back_populates="tokens")

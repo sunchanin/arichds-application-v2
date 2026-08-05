@@ -35,8 +35,21 @@ time. Slots are not returned when a device is deleted.
 
 **Setup**:
 The one-time first-run step that creates the bootstrap admin account — open only while zero
-users exist, then permanently closed. Precedes Login, which precedes Activation.
+users exist, then permanently closed. Precedes Login, which precedes Activation. Re-running
+Setup after it is closed returns 409 — "already done" is a conflict, not a permissions problem.
 _Avoid_: registration, sign-up
+
+**Role**:
+A user's authorization level: `admin` (manage meters, users, settings, license) or `user`
+(read every page, manual read, export). An enum column on `users` — there are no roles or
+permissions tables.
+_Avoid_: permission, group
+
+**Access Token**:
+The 8-hour JWT a Login returns, sent as `Authorization: Bearer …` on every request. Only its
+SHA-256 hash is stored, in `user_tokens`; logout revokes that row. Expiry means signing in
+again — there is no refresh.
+_Avoid_: session cookie, API key
 
 ### Data
 

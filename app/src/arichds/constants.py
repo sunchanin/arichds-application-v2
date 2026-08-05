@@ -59,6 +59,12 @@ WH_TO_KWH_DIVISOR: Final[int] = 1000
 # the process runs takes effect without a restart.
 LICENSE_RECHECK_INTERVAL_SEC: Final[float] = 60.0
 
+# ─── Auth (SPEC §3.2) ─────────────────────────────────────────────────────────
+# bcrypt 5.0 RAISES ValueError past this many *bytes* (older versions truncated
+# silently). Passwords are validated against the UTF-8 encoded length, not the
+# character count, so a short non-ASCII password cannot 500 the hash call.
+BCRYPT_MAX_PASSWORD_BYTES: Final[int] = 72
+
 # ─── Logging ──────────────────────────────────────────────────────────────────
 LOG_FILE_MAX_BYTES: Final[int] = 10 * 1024 * 1024  # 10 MB
 LOG_FILE_BACKUP_COUNT: Final[int] = 5

@@ -4,9 +4,10 @@ Windows-installed meter-monitoring app: reads electricity meters (DLMS/COSEM + M
 9 models, 3 brands), stores readings locally in SQLite, serves a local web UI, and pushes
 data to the team's central server. One process · one exe · one database · one license.
 
-> Status: **M1 (walking skeleton) complete** — install → offline activation → live readings
-> from a real CEWE Prometer100 on the web UI. Auth arrives in M2; the full module ladder is
-> in [SPEC.md](SPEC.md) §5.
+> Status: **M1 + M2 complete** — install → first-run Setup → Login → offline activation →
+> live readings from a real CEWE Prometer100, with every API route behind a JWT and admin
+> user management in the UI. Device Manager (M3) is next; the full module ladder is in
+> [SPEC.md](SPEC.md) §5.
 
 ## Quick start (development)
 
@@ -30,12 +31,18 @@ Open <http://localhost:5173> (or build once with `pnpm build` and use
 
 ## Using the app (first run)
 
-The app boots in **Limited Mode** — everything except activation is locked until a
-license is applied.
+The walk is **Setup → Login → Activation → Monitor**. The app boots in **Limited
+Mode** — everything except the auth endpoints and activation is locked until a
+license is applied — and activating needs an administrator, so the account comes
+first.
 
-1. **Get the Machine ID.** The Activation page shows it (copy button). It is derived
+1. **Set up the administrator.** The Setup page appears while no account exists;
+   choose a username and a password (8 characters minimum). It is shown once and
+   never again — from then on the app opens on Login.
+2. **Sign in** with that account.
+3. **Get the Machine ID.** The Activation page shows it (copy button). It is derived
    from this machine's hardware and every license is bound to it.
-2. **Issue an Activation Code** (vendor side — needs the private key, first run
+4. **Issue an Activation Code** (vendor side — needs the private key, first run
    `keygen` once):
 
    ```powershell
@@ -45,9 +52,9 @@ license is applied.
    .\.venv\Scripts\python.exe ..\tools\arichds_vendor.py sign --customer "Acme Co" --machine-id <64-hex>
    ```
 
-3. **Paste the code** into the Activation page. It applies **immediately** — no service
+5. **Paste the code** into the Activation page. It applies **immediately** — no service
    restart (ADR 0001). The Monitor page appears and the Poller starts.
-4. **Add a meter** on the Monitor page:
+6. **Add a meter** on the Monitor page:
    - a real CEWE Prometer100 over TCP — host, port (default 4059), password; values
      refresh every 10 s, polled every 60 s, or
    - model **SIM** — a simulated meter, to see the whole chain without hardware.
@@ -75,9 +82,15 @@ Build the frozen exe + installer, then run `setup.exe` on the target machine —
 10 minutes, no database questions:
 
 ```powershell
-pwsh app\packaging\build.ps1        # PyInstaller onedir + built SPA
-iscc installer\arichds.iss          # needs Inno Setup + installer\vendor\nssm.exe drop
+powershell -File app\packaging\build.ps1   # PyInstaller onedir + built SPA (pwsh works too)
+iscc installer\arichds.iss                 # needs Inno Setup 6 + installer\vendor\nssm.exe drop
 ```
+
+**Updating an existing install** means running the newer `setup.exe` over it — the service
+stops, the files are replaced, and `C:\ProgramData\ARICHDS` (database, license, logs)
+survives. Bump `AppVersion` in `installer\arichds.iss` first, or every release reports
+itself as the same version. To re-test a build on your *own* machine without compiling an
+installer, see [installer/README.md](installer/README.md) → Upgrading.
 
 Full steps, prerequisites, upgrade/uninstall behavior, and troubleshooting:
 [installer/README.md](installer/README.md). After installing, the usage flow is the same

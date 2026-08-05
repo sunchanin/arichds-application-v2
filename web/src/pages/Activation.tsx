@@ -29,10 +29,23 @@ function reasonText(reason: string | null): string {
  * On success the app moves straight to Monitor — activation applies live, with
  * no service restart (ADR 0001), so there is nothing to wait for.
  *
+ * From M2-1 activating is admin-only (SPEC §3.2). A `user` still sees the
+ * Machine ID — reading it is allowed, and being able to send it to the vendor
+ * is exactly what someone on site needs to do — but the form is disabled rather
+ * than left live to fail with a 403 on submit.
+ *
  * The same page is reused later for renewing or replacing a license, and is
  * where online activation lands in M9.
  */
-export function Activation({ status, onActivated }: { status: LicenseStatus; onActivated: () => void }) {
+export function Activation({
+  status,
+  role,
+  onActivated,
+}: {
+  status: LicenseStatus;
+  role: "admin" | "user";
+  onActivated: () => void;
+}) {
   const { message } = App.useApp();
   // This page is permanent — reused for renewal and the home of M9's online
   // activation — so its backdrop tracks the theme, not a literal. `colorBgLayout`
@@ -41,6 +54,7 @@ export function Activation({ status, onActivated }: { status: LicenseStatus; onA
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const canActivate = role === "admin";
 
   const copyMachineId = async () => {
     try {
@@ -90,6 +104,15 @@ export function Activation({ status, onActivated }: { status: LicenseStatus; onA
 
           <Alert type="warning" showIcon message="Limited Mode" description={reasonText(status.reason)} />
 
+          {canActivate ? null : (
+            <Alert
+              type="info"
+              showIcon
+              message="An administrator must activate this machine"
+              description="Send the Machine ID below to your vendor, then ask an administrator to sign in and enter the code."
+            />
+          )}
+
           <div>
             <Text strong>Machine ID</Text>
             <Space.Compact style={{ width: "100%", marginTop: 8 }}>
@@ -108,6 +131,7 @@ export function Activation({ status, onActivated }: { status: LicenseStatus; onA
             <Input.TextArea
               rows={4}
               value={code}
+              disabled={!canActivate}
               onChange={(event) => setCode(event.target.value)}
               placeholder="Paste the single-line Activation Code here"
               style={{ marginTop: 8, fontFamily: "monospace", fontSize: 12 }}
@@ -116,7 +140,14 @@ export function Activation({ status, onActivated }: { status: LicenseStatus; onA
 
           {error ? <Alert type="error" showIcon message={error} /> : null}
 
-          <Button type="primary" size="large" block loading={submitting} onClick={activate}>
+          <Button
+            type="primary"
+            size="large"
+            block
+            disabled={!canActivate}
+            loading={submitting}
+            onClick={activate}
+          >
             Activate
           </Button>
         </Space>
