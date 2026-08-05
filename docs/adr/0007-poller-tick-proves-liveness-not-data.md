@@ -1,8 +1,11 @@
 # The Poller's tick proves liveness, not data — v2 has no live-value display
 
-Status: accepted (2026-08-05, owner decision after grilling). **Not yet implemented.** The pieces
-land with the slice that owns device status (issue #5) and with issue #6, which retires the
-Monitor page. Until then the Poller still reads the instantaneous set and writes a row per tick.
+Status: accepted (2026-08-05, owner decision after grilling). **Not yet implemented.** It lands
+in two places: **issue #6** retires the Monitor page and the `/readings/latest` endpoint, then
+**issue #8** stops the writing, changes what the tick reads, and renames the table. Issue #5 is
+deliberately untouched by it — the Poller keeps behaving exactly as it does today until #6 has
+removed the last reader, so no intermediate state leaves the product without a working screen.
+Until #8 lands, the Poller still reads the instantaneous set and writes a row per tick.
 
 Reverses: v2's own M1 decision in `SPEC.md` §3.1 — both the "หน้า monitor" and the practice of
 storing an instantaneous reading every 60 seconds.
@@ -57,7 +60,7 @@ That answer collapses the rest.
 
 4. **No cache.** An earlier draft of this ADR proposed an in-process latest-reading cache so the
    Monitor page would still have values to show. With no page to show them, the cache has no
-   reason to exist. What issue #5 needs from a tick is its **outcome**, not its payload.
+   reason to exist. What issue #5 needs from a tick is its **outcome**, not its payload — and #4 already gave it that.
 
 5. **The migration that lands this deletes the existing `interval='60s'` rows.** They are real
    readings, but nothing will ever read them, and leaving them means two kinds of row live in one
