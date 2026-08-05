@@ -26,9 +26,21 @@ MySQL, and ~30 tables.
   import/startup) · 0002 (DLMS scaler read correctly) · 0003 (JWT secret generated per install) ·
   0004 (device status derived from the Poller — no health-check loop, no heartbeat table) ·
   0005 (meter identity comes from the meter — probe before the row exists) ·
-  0006 (Manual Reads outrank background polling on the Transport Endpoint lock).
+  0006 (Manual Reads outrank background polling on the Transport Endpoint lock) ·
+  0007 (the Poller tick proves liveness, not data — no live-value display, nothing
+  instantaneous persisted; **accepted, not yet implemented** — lands with issue #8).
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
+- `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,
+  vendored `GX*.py`, the probe and poller read paths, anything importing `gurux_dlms` /
+  `gurux_net` / `gurux_common`. Copied from v1, so its paths still name v1's layout
+  (`src/drivers/…`, `RULES.md`, `INV-SOCK-*`, a `cewe-docs` sibling that does not exist
+  here) — read it for the library patterns, map the paths onto v2's.
+- `docs/meter-notes/` — OBIS and capture-object maps **scanned off real meters**, not vendor
+  datasheets: `load-profile-capture-objects.md` (CEWE ×3, 2026-08-05 — including the evidence
+  that SPEC §3.5's Logger-1/2 merge is impossible), plus `tcc-obis-scan-partial.md` and
+  `mitsu-obis-scan.md` ported from v1. The skill above says *how* to read a register; these
+  say *which*. Each carries its own limitations section — read it before trusting a value.
 
 ## Layout
 
