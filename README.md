@@ -4,9 +4,10 @@ Windows-installed meter-monitoring app: reads electricity meters (DLMS/COSEM + M
 9 models, 3 brands), stores readings locally in SQLite, serves a local web UI, and pushes
 data to the team's central server. One process · one exe · one database · one license.
 
-> Status: **M1 (walking skeleton) complete** — install → offline activation → live readings
-> from a real CEWE Prometer100 on the web UI. Auth arrives in M2; the full module ladder is
-> in [SPEC.md](SPEC.md) §5.
+> Status: **M1 + M2 complete** — install → first-run Setup → Login → offline activation →
+> live readings from a real CEWE Prometer100, with every API route behind a JWT and admin
+> user management in the UI. Device Manager (M3) is next; the full module ladder is in
+> [SPEC.md](SPEC.md) §5.
 
 ## Quick start (development)
 
