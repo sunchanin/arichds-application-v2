@@ -26,7 +26,7 @@ function reasonText(reason: string | null): string {
  * First-run Activation page.
  *
  * Shows the Machine ID with a copy button and takes a pasted Activation Code.
- * On success the app moves straight to Monitor — activation applies live, with
+ * On success the app moves straight to Devices — activation applies live, with
  * no service restart (ADR 0001), so there is nothing to wait for.
  *
  * From M2-1 activating is admin-only (SPEC §3.2). A `user` still sees the

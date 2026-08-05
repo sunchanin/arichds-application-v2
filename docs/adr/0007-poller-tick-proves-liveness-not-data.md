@@ -1,11 +1,17 @@
 # The Poller's tick proves liveness, not data — v2 has no live-value display
 
-Status: accepted (2026-08-05, owner decision after grilling). **Not yet implemented.** It lands
-in two places: **issue #6** retires the Monitor page and the `/readings/latest` endpoint, then
-**issue #8** stops the writing, changes what the tick reads, and renames the table. Issue #5 is
-deliberately untouched by it — the Poller keeps behaving exactly as it does today until #6 has
-removed the last reader, so no intermediate state leaves the product without a working screen.
-Until #8 lands, the Poller still reads the instantaneous set and writes a row per tick.
+Status: accepted (2026-08-05, owner decision after grilling). **Partly implemented.**
+**Decision item 1 landed in issue #6 (M3-3)**: the Devices page replaced the Monitor page as
+the app's landing screen, `web/src/pages/Monitor.tsx` and `api.latestReading` are gone, and
+`GET /api/devices/{id}/readings/latest` and its `ReadingOut` model are gone from
+`app/src/arichds/api/devices.py`. Nothing in `web/src` displays an electrical value any more.
+**Items 2, 3, 5 and 6 remain with issue #8**, which stops the writing, changes what the tick
+reads, deletes the `interval='60s'` rows and removes `read_instantaneous()`/`health_check()`.
+Item 4 (no cache) needed no code — the cache was never built. Issue #5 was deliberately
+untouched by any of this: the Poller kept behaving exactly as it did until #6 had removed the
+last reader, so no intermediate state left the product without a working screen. **Until #8
+lands, the Poller still reads the instantaneous set and writes a row per tick — those rows now
+have no reader at all.**
 
 Reverses: v2's own M1 decision in `SPEC.md` §3.1 — both the "หน้า monitor" and the practice of
 storing an instantaneous reading every 60 seconds.

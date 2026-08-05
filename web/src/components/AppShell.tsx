@@ -1,6 +1,5 @@
 import {
   AreaChartOutlined,
-  DashboardOutlined,
   DatabaseOutlined,
   FileTextOutlined,
   KeyOutlined,
@@ -32,6 +31,11 @@ const { Header, Sider, Content } = Layout;
  * "a later milestone owns this", which would be a lie — the page exists, that
  * account simply may not use it.
  *
+ * M3-3 lights up **Devices** and removes **Monitor**, which was M1 scaffolding
+ * rather than a product page (ADR 0007). Devices is where a meter is added,
+ * edited, paused, read and deleted, and it is what the app opens on. Load
+ * Profile, Billing, Energy and Settings stay disabled until M5-M7 own them.
+ *
  * The header carries who is signed in, the way to change your own password
  * (every role — the modal is owned here, so no page has to pass a prop for it),
  * and the way out.
@@ -60,10 +64,9 @@ export function AppShell({
   const { token } = theme.useToken();
 
   const items: ItemType<MenuItemType>[] = [
-    { key: "monitor", icon: <DashboardOutlined />, label: "Monitor" },
+    { key: "devices", icon: <DatabaseOutlined />, label: "Devices" },
     // Owned by later milestones — visible so the shape is honest, disabled so
     // nothing pretends to work yet.
-    { key: "devices", icon: <DatabaseOutlined />, label: "Devices", disabled: true },
     { key: "load-profile", icon: <AreaChartOutlined />, label: "Load Profile", disabled: true },
     { key: "billing", icon: <FileTextOutlined />, label: "Billing", disabled: true },
     { key: "energy", icon: <ThunderboltOutlined />, label: "Energy", disabled: true },

@@ -4,10 +4,12 @@ Windows-installed meter-monitoring app: reads electricity meters (DLMS/COSEM + M
 9 models, 3 brands), stores readings locally in SQLite, serves a local web UI, and pushes
 data to the team's central server. One process · one exe · one database · one license.
 
-> Status: **M1 + M2 complete** — install → first-run Setup → Login → offline activation →
-> live readings from a real CEWE Prometer100, with every API route behind a JWT and admin
-> user management in the UI. Device Manager (M3) is next; the full module ladder is in
-> [SPEC.md](SPEC.md) §5.
+> Status: **M1–M3 complete** — install → first-run Setup → Login → offline activation →
+> the Devices page, where a real CEWE Prometer100 is added (its serial read off the meter),
+> paused, read on demand and deleted, with every API route behind a JWT and admin user
+> management in the UI. v2 shows **no live electrical values** — the 60-second poll proves
+> a meter answers, it is not a display (ADR 0007). Acquisition (M4) is next; the full
+> module ladder is in [SPEC.md](SPEC.md) §5.
 
 ## Quick start (development)
 
@@ -31,7 +33,7 @@ Open <http://localhost:5173> (or build once with `pnpm build` and use
 
 ## Using the app (first run)
 
-The walk is **Setup → Login → Activation → Monitor**. The app boots in **Limited
+The walk is **Setup → Login → Activation → Devices**. The app boots in **Limited
 Mode** — everything except the auth endpoints and activation is locked until a
 license is applied — and activating needs an administrator, so the account comes
 first.
@@ -53,16 +55,21 @@ first.
    ```
 
 5. **Paste the code** into the Activation page. It applies **immediately** — no service
-   restart (ADR 0001). The Monitor page appears and the Poller starts.
-6. **Add a meter** on the Monitor page — a real CEWE Prometer100 over TCP: name, site
-   name, model, host, port (default 4059) and password (prefilled `ABCD0001` for CEWE).
+   restart (ADR 0001). The Devices page appears and the Poller starts.
+6. **Add a meter** on the Devices page — a real CEWE Prometer100 over TCP. The form is
+   in four groups: **Identity** (device name, site name, and the record-only labels),
+   **Meter** (brand and model), **Connection** (IP address, port — default 4059 — and
+   password, prefilled `ABCD0001` for CEWE) and **Billing** (the bill days, stored now
+   and used by M6). Press **Create Device**.
 
    Adding **connects to the meter first** and reads its serial number off it (ADR 0005),
    so the button takes a few seconds and the meter has to be reachable — there is no
    "add it now, identify it later". A refusal says which problem it was (credentials
    rejected, timed out, unreachable) and writes no row at all.
 
-   Once added, values refresh every 10 s and the meter is polled every 60 s.
+   Once added, the meter is polled every 60 s and its status dot in the site tree follows
+   what those polls prove. **Read now** asks it immediately instead of waiting for the
+   next cycle.
 
 To reset to a clean first run in development: stop the backend and delete `app/data/`.
 

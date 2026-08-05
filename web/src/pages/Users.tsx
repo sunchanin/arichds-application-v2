@@ -19,7 +19,7 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiRequestError, api, type NewUser, type User } from "../api";
+import { ApiRequestError, api, isLicenseLapsed, type NewUser, type User } from "../api";
 
 const { Text, Title } = Typography;
 
@@ -65,11 +65,11 @@ export function Users({ currentUserId }: { currentUserId: number }) {
     try {
       setUsers(await api.listUsers());
     } catch (err) {
-      if (err instanceof ApiRequestError && err.code === "LICENSE_INVALID") {
+      if (isLicenseLapsed(err)) {
         // `/api/users` is not on the Limited Mode allow-list, so a lease that
         // lapsed while this page was open kills every call here. Reload so the
         // app falls back to the Activation page rather than showing a dead
-        // grid — the same move Monitor makes.
+        // grid — the same move the Devices page makes.
         window.location.reload();
         return;
       }

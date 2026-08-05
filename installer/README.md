@@ -112,7 +112,7 @@ really mean it.
    python tools\arichds_vendor.py sign --customer "Customer Name" --machine-id <64-hex>
    ```
 5. Paste the code into the Activation page (an administrator account is required
-   to do this). It takes effect immediately — the poller starts and the Monitor
+   to do this). It takes effect immediately — the poller starts and the Devices
    page appears with no service restart.
 
 ## Troubleshooting

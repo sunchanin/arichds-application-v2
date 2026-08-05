@@ -20,8 +20,14 @@ export const arichdsTheme: ThemeConfig = {
 /** Header height, shared by the shell layout and its spacer. */
 export const HEADER_HEIGHT = 48;
 
-/** How often the Monitor page refetches the latest readings, in milliseconds. */
-export const MONITOR_REFRESH_MS = 10_000;
+/**
+ * How often the Devices page re-reads `GET /api/devices`, in milliseconds.
+ *
+ * Status is Poller-derived and a device needs three missed 60-second ticks to
+ * go Offline, so 15 s is well inside the resolution the data actually has —
+ * and it is one cheap list call, not a request per meter.
+ */
+export const DEVICES_REFRESH_MS = 15_000;
 
 /** How often the app re-checks license state while sitting on Activation. */
 export const LICENSE_POLL_MS = 5_000;

@@ -89,6 +89,9 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
 - หน้า Activation + หน้า monitor เดียว: เพิ่มมิเตอร์ Prometer100 แบบ minimal →
   **poller อ่าน instantaneous set เล็ก ๆ (V/I รายเฟส, freq, total import kWh) ทุก 60 วิ →
   เก็บ DB → API → หน้าเว็บ auto-refresh** โชว์ค่าล่าสุด + เวลาอ่าน — พิสูจน์ chain เต็มเส้น
+  — **เลิกใช้แล้วตาม ADR 0007 (issue #6, M3-3)**: หน้า monitor เป็นนั่งร้าน M1 ไม่ใช่หน้า product
+  ถูกถอดพร้อม `GET /api/devices/{id}/readings/latest` เมื่อหน้า Devices เข้ามาแทน · v2 ไม่มีหน้าแสดงค่า
+  live · เก็บข้อความเดิมไว้เป็นประวัติของการตัดสินใจ ไม่ใช่ของที่ยังมีอยู่
 - SPA เสิร์ฟจาก FastAPI origin เดียวกัน — ไม่มี nginx, ไม่มี CORS
 - **M1 ไม่มี auth โดยเจตนา** — M2 ติด guard ย้อนหลัง
 - เช็คคุณภาพเป็น local ทั้งหมด (ruff + pytest + build ตาม gate ต่อโมดูล) — **CI เพิ่มหลังพ้นช่วงเร่ง**
@@ -171,6 +174,9 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - auth: `password` + `block_cipher_key` + `authentication_key` ครบตั้งแต่ M3 (M3 ใช้แค่ password
   แต่ M4 ต้องใช้ทั้งสาม จึงไม่ต้องกลับมาแก้ model/ฟอร์ม/API รอบสอง) · สร้างใหม่ prefill password ด้วย
   `fixed_password` ของยี่ห้อ (CEWE = `ABCD0001`) · **ตอนแก้ เว้นว่าง = คงรหัสเดิม** (พฤติกรรม v1)
+  — **ช่องกรอก 2 คีย์เลื่อนไป M4** (issue #6): คอลัมน์กับ API พร้อมแล้วตั้งแต่ M3 แต่ฟอร์ม M3-3 มีแค่
+  IP / Port / Password เพราะ M3 ยังไม่มีรุ่นที่ auth ด้วยคีย์ให้ทดสอบ · ฟอร์มไม่ส่ง 2 ฟิลด์นี้ไปเลย
+  และ API ถือว่า "ไม่ส่ง = คงของเดิม" ดังนั้น Update ลบคีย์ที่เก็บไว้ไม่ได้
 - billing: `first_bill_date` + `bill_day_feb28/29/30/31` — ช่องอยู่ที่นี่ ตรรกะการตัดงวดอยู่ M6
 
 **Probe-first identity (ADR 0005)** — `meter_serial` มาจากมิเตอร์เสมอ:

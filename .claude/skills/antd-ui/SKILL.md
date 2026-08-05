@@ -58,9 +58,10 @@ CORS, **no SSR, no Next.js**). This skill holds the project's locked UI decision
    `Form.Item` rules.
 5. **Tables:** for any list that can grow (readings, events, devices across
    sites), paginate **server-side** — pass `total`, refetch on `onChange`.
-   Never dump a full dataset into a client-side table. (M1's Monitor shows a
-   handful of live devices and is fine unpaginated; the domain-module lists are
-   not.)
+   Never dump a full dataset into a client-side table. (M3's Devices tree holds
+   10–30 meters from one list call and filters them client-side, which is
+   correct at that size; the History drawer beside it pages server-side, and so
+   must every domain-module list.)
 6. **Subcomponents via props:** feed `Select`/`Menu` through `options`/`items`,
    not `.Option`/`.Item` children (in v6 the installed `.d.ts` marks `.Option`
    `@deprecated`). If you need the columns type, import it as

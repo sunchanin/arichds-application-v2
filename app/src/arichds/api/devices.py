@@ -1,6 +1,14 @@
 """Device Manager — probe-first CRUD and catalog (M3-1); status, history,
 Pause/Resume, Read now and Delete all data (M3-2).
 
+**No handler here reports a measured value (ADR 0007).** M3-3 removed
+``GET /{device_id}/readings/latest`` along with the Monitor page that was its
+only caller: v2 has no live-value display, so an endpoint serving one had
+nobody to serve. Read now reports whether the meter *answered*, never what it
+read. Nothing else in this module ever touched
+:class:`~arichds.db.models.IntervalReading` except Delete all data, which
+counts rows it destroys.
+
 Three independent gates sit in front of every handler here:
 
 * **Limited Mode** — everything in this router is under ``/api`` and not on the
@@ -285,8 +293,8 @@ class QuotaOut(BaseModel):
     """How many meters this machine may have, and how many it has.
 
     Its own endpoint rather than a field on the device list: ``GET /api/devices``
-    must keep returning a plain list (Monitor depends on it), and
-    ``/api/license/status`` knows ``max_meters`` but not the count.
+    must keep returning a plain list — the Devices tree maps straight over it —
+    and ``/api/license/status`` knows ``max_meters`` but not the count.
 
     Attributes:
         used: How many devices exist right now.
@@ -389,47 +397,6 @@ class ClearReadingsRequest(BaseModel):
     """
 
     confirm_name: str = Field(min_length=1, max_length=128)
-
-
-class ReadingOut(BaseModel):
-    """One Interval Reading — always UTC, always kWh.
-
-    SQLite has no timezone type, so ``read_at`` comes back off the database as a
-    naive datetime even though the stored wall clock is UTC by contract. The
-    validator re-attaches UTC here so the JSON carries an explicit offset and no
-    client ever has to assume one.
-
-    Attributes:
-        device_id: Owning device.
-        read_at: When the value was taken (UTC).
-        source: Which acquisition path produced it.
-        interval: Cadence label.
-        volt_l1/volt_l2/volt_l3: Phase-to-neutral voltage (V).
-        current_l1/current_l2/current_l3: Line current (A).
-        freq: Frequency (Hz).
-        import_active_kwh: Cumulative active energy import (kWh).
-    """
-
-    model_config = ConfigDict(from_attributes=True)
-
-    device_id: int
-    read_at: datetime
-    source: str
-    interval: str
-    volt_l1: float | None = None
-    volt_l2: float | None = None
-    volt_l3: float | None = None
-    current_l1: float | None = None
-    current_l2: float | None = None
-    current_l3: float | None = None
-    freq: float | None = None
-    import_active_kwh: float | None = None
-
-    @field_validator("read_at")
-    @classmethod
-    def _ensure_utc(cls, value: datetime) -> datetime:
-        """Re-attach UTC to the naive datetime SQLite hands back."""
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 DeviceIdPath = Annotated[int, Path(ge=1, description="Device id")]
@@ -1128,26 +1095,3 @@ def list_device_events(
             offset=offset,
         )
     )
-
-
-@router.get("/{device_id}/readings/latest")
-def get_latest_reading(device_id: DeviceIdPath, session: SessionDep) -> ApiResponse[ReadingOut | None]:
-    """Return the most recent Interval Reading for a device.
-
-    ``data`` is null when the Poller has not completed a tick yet — a new
-    device with no readings is a normal state, not an error.
-
-    Raises:
-        HTTPException: 404 if no such device.
-    """
-    if session.get(Device, device_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No device with id {device_id}")
-
-    reading = session.scalars(
-        select(IntervalReading)
-        .where(IntervalReading.device_id == device_id)
-        .order_by(IntervalReading.read_at.desc(), IntervalReading.id.desc())
-        .limit(1)
-    ).first()
-
-    return ApiResponse.ok(ReadingOut.model_validate(reading) if reading is not None else None)

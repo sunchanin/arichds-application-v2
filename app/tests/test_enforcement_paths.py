@@ -22,7 +22,7 @@ from arichds.licensing.middleware import is_guarded_path
     [
         "/api/devices",
         "/api/devices/1",
-        "/api/devices/1/readings/latest",
+        "/api/devices/1/events",
         "/api/anything-future",
     ],
 )

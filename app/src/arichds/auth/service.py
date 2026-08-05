@@ -197,7 +197,7 @@ def resolve_token(session: Session, raw_token: str) -> User | None:
 
     # SQLite hands `expires_at` back naive even though it was written as UTC;
     # comparing that to an aware `now` raises TypeError. Re-attach UTC first —
-    # the same trap ReadingOut._ensure_utc works around in the devices API.
+    # the same trap DeviceOut._ensure_utc works around in the devices API.
     expires_at = stored.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)

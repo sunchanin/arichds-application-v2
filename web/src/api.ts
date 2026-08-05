@@ -34,6 +34,28 @@ export interface LicenseStatus {
   max_meters: number | null;
 }
 
+/**
+ * What a device's last read proved (ADR 0004). `paused` is computed from
+ * `enabled` rather than stored, so this can never say `online` for a device
+ * nobody is reading.
+ */
+export type DeviceStatus = "online" | "offline" | "paused" | "unknown";
+
+/** The seven things a Device Event records (CONTEXT.md — Device Event). */
+export type DeviceEventKind =
+  | "online"
+  | "offline"
+  | "created"
+  | "updated"
+  | "paused"
+  | "resumed"
+  | "data_cleared";
+
+/**
+ * A device as `GET /api/devices` returns it — every field the Devices page
+ * needs, status included, so the tree paints from **one** call rather than an
+ * N+1 per meter.
+ */
 export interface Device {
   id: number;
   name: string;
@@ -42,11 +64,77 @@ export interface Device {
   /** Read off the meter (ADR 0005). Null only for rows created before M3. */
   meter_serial: string | null;
   site_name: string;
+  site_code: string | null;
+  customer: string | null;
+  meter_number: string | null;
+  group_name: string | null;
   host: string;
   port: number;
   endpoint: string;
   enabled: boolean;
+  status: DeviceStatus;
+  /** A sentence explaining a non-online status, or null. */
+  status_detail: string | null;
+  /** When a read last reported on this device (UTC), or null when none has. */
+  status_checked_at: string | null;
+  first_bill_date: string | null;
+  bill_day_feb28: number | null;
+  bill_day_feb29: number | null;
+  bill_day_30: number | null;
+  bill_day_31: number | null;
   created_at: string;
+}
+
+/** One row of a device's history, from `GET /api/devices/{id}/events`. */
+export interface DeviceEvent {
+  id: number;
+  kind: DeviceEventKind;
+  detail: string | null;
+  /** Who did it, or **null for an automatic transition** — nobody took a meter offline. */
+  actor: string | null;
+  created_at: string;
+}
+
+/** One page of history. `total` is the unpaged count the pager needs. */
+export interface DeviceEventPage {
+  items: DeviceEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** How many meters this machine has and may have, from `GET /api/devices/quota`. */
+export interface Quota {
+  used: number;
+  /** Null means unlimited. */
+  max_meters: number | null;
+  /** True when an existing set exceeds a newly reduced limit. */
+  over_quota: boolean;
+}
+
+/** What Test connection learned. Always arrives on a 200 — the verdict is in here. */
+export interface TestConnectionResult {
+  reachable: boolean;
+  meter_serial: string | null;
+  reason: string | null;
+  message: string;
+}
+
+/** What one job of a Read now did. `detail` is a sentence, never a measured value. */
+export interface ReadNowJobResult {
+  job: string;
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * What a Read now produced — a **list**, because M5 adds `load_profile` and M6
+ * adds `billing`, and a multi-job read can be partially successful.
+ */
+export interface ReadNowResult {
+  results: ReadNowJobResult[];
+  status: DeviceStatus;
+  checked_at: string | null;
 }
 
 /**
@@ -68,27 +156,39 @@ export interface CatalogEntry {
   supports_special_days: boolean;
 }
 
-export interface Reading {
-  device_id: number;
-  read_at: string;
-  source: string;
-  interval: string;
-  volt_l1: number | null;
-  volt_l2: number | null;
-  volt_l3: number | null;
-  current_l1: number | null;
-  current_l2: number | null;
-  current_l3: number | null;
-  freq: number | null;
-  import_active_kwh: number | null;
-}
-
-export interface NewDevice {
+/**
+ * The body `POST /api/devices` and `PUT /api/devices/{id}` take.
+ *
+ * `meter_serial` is deliberately absent: it is read off the meter, never
+ * submitted (ADR 0005). Omitting `password` on an update **keeps the stored
+ * one** — the API never returns a secret, so a blank field cannot mean "clear
+ * it". The two cipher keys are omitted entirely at M3: their inputs land with
+ * M4's key-authenticated models, and an absent secret is a kept secret.
+ */
+export interface DeviceInput {
   name: string;
   brand: string;
   model: string;
   /** Required — the Devices tree groups by it (SPEC §3.3). */
   site_name: string;
+  host: string;
+  port: number;
+  password?: string;
+  site_code?: string | null;
+  customer?: string | null;
+  meter_number?: string | null;
+  group_name?: string | null;
+  /** `YYYY-MM-DD`. Stored only — the period logic is M6. */
+  first_bill_date?: string | null;
+  bill_day_feb28?: number | null;
+  bill_day_feb29?: number | null;
+  bill_day_30?: number | null;
+  bill_day_31?: number | null;
+}
+
+/** The transport values `POST /api/devices/test-connection` tries. */
+export interface TestConnectionInput {
+  model: string;
   host: string;
   port: number;
   password: string;
@@ -135,6 +235,45 @@ export class ApiRequestError extends Error {
   }
 }
 
+/**
+ * True when a call failed because this machine's license lapsed.
+ *
+ * Every page checks this **first** in its catch and reloads: `/api/devices` and
+ * `/api/users` are not on the Limited Mode allow-list, so a lease that ran out
+ * while the page was open kills every call on it. Reloading drops the app back
+ * to the Activation page, which is the only screen that can fix the machine —
+ * swallowing it into a toast would leave the operator staring at a dead page.
+ */
+export function isLicenseLapsed(err: unknown): boolean {
+  return err instanceof ApiRequestError && err.code === "LICENSE_INVALID";
+}
+
+/**
+ * Turn a FastAPI error body's `detail` into something a person can act on.
+ *
+ * A 422 carries `detail` as an **array** of validation errors, one object per
+ * offending field. `String(...)` on that array yields
+ * `[object Object],[object Object]` — which tells the operator nothing at all,
+ * and is exactly what a rule the form does not mirror (a name over 128
+ * characters, say) would have shown them. Each entry becomes `<loc>: <msg>`,
+ * one per line. A plain string `detail` — what every deliberate
+ * `HTTPException` in this backend raises — passes straight through.
+ */
+function formatDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (!Array.isArray(detail)) return String(detail);
+
+  return detail
+    .map((entry: unknown) => {
+      if (entry === null || typeof entry !== "object") return String(entry);
+      const { loc, msg } = entry as { loc?: unknown; msg?: unknown };
+      const where = Array.isArray(loc) ? loc.map(String).join(" > ") : "";
+      const what = typeof msg === "string" ? msg : JSON.stringify(entry);
+      return where ? `${where}: ${what}` : what;
+    })
+    .join("\n");
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const session = getSession();
   const response = await fetch(path, {
@@ -175,7 +314,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const detail =
-      body && typeof body === "object" && "detail" in body ? String(body.detail) : response.statusText;
+      body && typeof body === "object" && "detail" in body ? formatDetail(body.detail) : response.statusText;
     throw new ApiRequestError(detail || `HTTP ${response.status}`);
   }
 
@@ -223,15 +362,42 @@ export const api = {
 
   catalog: () => request<CatalogEntry[]>("/api/devices/catalog"),
 
-  createDevice: (device: NewDevice) =>
+  quota: () => request<Quota>("/api/devices/quota"),
+
+  createDevice: (device: DeviceInput) =>
     request<Device>("/api/devices", {
       method: "POST",
       body: JSON.stringify(device),
     }),
 
+  updateDevice: (id: number, device: DeviceInput) =>
+    request<Device>(`/api/devices/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(device),
+    }),
+
   deleteDevice: (id: number) => request<boolean>(`/api/devices/${id}`, { method: "DELETE" }),
 
-  latestReading: (id: number) => request<Reading | null>(`/api/devices/${id}/readings/latest`),
+  testConnection: (input: TestConnectionInput) =>
+    request<TestConnectionResult>("/api/devices/test-connection", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  pauseDevice: (id: number) => request<Device>(`/api/devices/${id}/pause`, { method: "POST" }),
+
+  resumeDevice: (id: number) => request<Device>(`/api/devices/${id}/resume`, { method: "POST" }),
+
+  readNow: (id: number) => request<ReadNowResult>(`/api/devices/${id}/read-now`, { method: "POST" }),
+
+  deviceEvents: (id: number, limit: number, offset: number) =>
+    request<DeviceEventPage>(`/api/devices/${id}/events?limit=${limit}&offset=${offset}`),
+
+  clearReadings: (id: number, confirmName: string) =>
+    request<number>(`/api/devices/${id}/readings/clear`, {
+      method: "POST",
+      body: JSON.stringify({ confirm_name: confirmName }),
+    }),
 
   listUsers: () => request<User[]>("/api/users"),
 

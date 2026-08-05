@@ -456,7 +456,7 @@ class TestQuota:
         listed = admin_client.get("/api/devices").json()["data"]
         assert len(listed) == 2
         for device in listed:
-            assert admin_client.get(f"/api/devices/{device['id']}/readings/latest").status_code == 200
+            assert admin_client.get(f"/api/devices/{device['id']}/events").status_code == 200
 
     def test_over_quota_is_reported(self, admin_client: TestClient, fake_meter: FakeMeterState, relicense) -> None:
         add_device(admin_client, fake_meter, serial="SN-1")
@@ -553,43 +553,6 @@ class TestDeleteDevice:
 
     def test_unknown_id_is_404(self, admin_client: TestClient) -> None:
         assert admin_client.delete("/api/devices/999").status_code == 404
-
-
-class TestLatestReading:
-    def test_null_before_the_first_tick(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
-        device_id = add_device(admin_client, fake_meter).json()["data"]["id"]
-
-        response = admin_client.get(f"/api/devices/{device_id}/readings/latest")
-
-        assert response.status_code == 200
-        assert response.json()["success"] is True
-        assert response.json()["data"] is None
-
-    def test_returns_the_newest_reading(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
-        import threading
-
-        from arichds.acquisition.locks import EndpointLocks
-        from arichds.acquisition.poller import poll_once
-        from arichds.db.models import Device
-        from arichds.db.session import session_scope
-
-        device_id = add_device(admin_client, fake_meter).json()["data"]["id"]
-        with session_scope() as session:
-            device = session.get(Device, device_id)
-            session.expunge(device)
-        poll_once(device, EndpointLocks(), threading.Event())
-
-        data = admin_client.get(f"/api/devices/{device_id}/readings/latest").json()["data"]
-
-        assert data is not None
-        assert data["device_id"] == device_id
-        assert data["source"] == "dlms"
-        assert data["interval"] == "60s"
-        assert data["volt_l1"] > 200
-        assert data["import_active_kwh"] > 0
-
-    def test_unknown_device_is_404(self, admin_client: TestClient) -> None:
-        assert admin_client.get("/api/devices/999/readings/latest").status_code == 404
 
 
 class TestStatusIsReportedByTheList:
@@ -875,7 +838,7 @@ class TestReadNow:
     def test_it_writes_no_interval_reading(self, admin_client: TestClient, device_id: int) -> None:
         """ADR 0007 — a liveness read is not a data read."""
         admin_client.post(f"/api/devices/{device_id}/read-now")
-        assert admin_client.get(f"/api/devices/{device_id}/readings/latest").json()["data"] is None
+        assert count_readings(device_id) == 0
 
     def test_it_never_puts_the_serial_in_the_detail(
         self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
@@ -993,7 +956,7 @@ class TestClearReadings:
 
         assert response.status_code == 200
         assert response.json()["data"] == 3
-        assert admin_client.get(f"/api/devices/{device_id}/readings/latest").json()["data"] is None
+        assert count_readings(device_id) == 0
 
     def test_the_device_row_survives(self, admin_client: TestClient, device_id: int) -> None:
         self.clear(admin_client, device_id, "Main Incomer")
@@ -1013,7 +976,7 @@ class TestClearReadings:
 
     def test_a_wrong_name_deletes_nothing(self, admin_client: TestClient, device_id: int) -> None:
         self.clear(admin_client, device_id, "Wrong Name")
-        assert admin_client.get(f"/api/devices/{device_id}/readings/latest").json()["data"] is not None
+        assert count_readings(device_id) == 3
 
     def test_the_message_does_not_echo_the_correct_name(self, admin_client: TestClient, device_id: int) -> None:
         """D14 — echoing it turns the typed confirmation into copy-paste."""
@@ -1038,7 +1001,7 @@ class TestClearReadings:
 
         self.clear(admin_client, device_id, "Main Incomer")
 
-        assert admin_client.get(f"/api/devices/{other}/readings/latest").json()["data"] is not None
+        assert count_readings(other) == 2
 
     def test_an_unknown_device_is_404(self, admin_client: TestClient) -> None:
         assert self.clear(admin_client, 999, "whatever").status_code == 404
@@ -1126,12 +1089,10 @@ class TestM32RoleBoundary:
         response = user_client.post(f"/api/devices/{device_id}/readings/clear", json={"confirm_name": "Main Incomer"})
         assert response.status_code == 403
 
-    def test_a_refused_clear_deletes_nothing(
-        self, admin_client: TestClient, user_client: TestClient, device_id: int
-    ) -> None:
+    def test_a_refused_clear_deletes_nothing(self, user_client: TestClient, device_id: int) -> None:
         write_readings(device_id, 2)
         user_client.post(f"/api/devices/{device_id}/readings/clear", json={"confirm_name": "Main Incomer"})
-        assert admin_client.get(f"/api/devices/{device_id}/readings/latest").json()["data"] is not None
+        assert count_readings(device_id) == 2
 
     def test_a_user_can_read_now(self, user_client: TestClient, device_id: int) -> None:
         """Read now is granted to every role (SPEC §3.2)."""
@@ -1220,13 +1181,6 @@ class TestRoleBoundary:
 
     def test_a_user_can_read_the_quota(self, user_client: TestClient) -> None:
         assert user_client.get("/api/devices/quota").status_code == 200
-
-    def test_a_user_can_read_the_latest_reading(
-        self, admin_client: TestClient, user_client: TestClient, fake_meter: FakeMeterState
-    ) -> None:
-        device_id = add_device(admin_client, fake_meter).json()["data"]["id"]
-
-        assert user_client.get(f"/api/devices/{device_id}/readings/latest").status_code == 200
 
     def test_the_403_is_not_a_401(self, user_client: TestClient) -> None:
         """Authenticated-but-not-allowed is a different answer from unauthenticated."""
@@ -1356,6 +1310,27 @@ def write_readings(device_id: int, count: int) -> None:
                     import_active_kwh=100.0 + index,
                 )
             )
+
+
+def count_readings(device_id: int) -> int:
+    """How many Interval Readings a device has, straight from the table.
+
+    The API stopped exposing readings when M3-3 removed ``/readings/latest``
+    (ADR 0007), so counting rows is now the only way to assert that Read now
+    wrote nothing and that Delete all data deleted exactly what it claimed.
+    """
+    from sqlalchemy import func, select
+
+    from arichds.db.models import IntervalReading
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        return (
+            session.scalar(
+                select(func.count()).select_from(IntervalReading).where(IntervalReading.device_id == device_id)
+            )
+            or 0
+        )
 
 
 def schema_property_names(model: type) -> set[str]:
