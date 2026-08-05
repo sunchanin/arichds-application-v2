@@ -150,13 +150,84 @@ keygen/sign/fingerprint) · **ไม่มี lockout/rate-limit** — บัน
 
 ### 3.3 Device Manager (M3)
 
-- CRUD มิเตอร์: ชื่อ, ยี่ห้อ/รุ่น (จาก catalog 9 รุ่น), transport (TCP: host:port · Serial: COM port
-  + baud + slave address), พารามิเตอร์ auth ของมิเตอร์
-- สถานะ online/offline จาก health-check loop (job แรกของ job registry) + ประวัติเหตุการณ์
-  (`device_events`)
-- Pause/Reconnect ราย device — หยุด polling ทุกชนิดของ device นั้นแบบ persistent (ADR 0009)
-- การเพิ่ม device ตรวจ quota จาก license (`max_meters` + Meter Key — ดู §3.9)
-- หน้า: Devices · Instantaneous (อ่านค่าสดตามสั่ง)
+grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้างอิง v1 `devices` (30 คอลัมน์), ADR 0009 ของ v1,
+`catalog.py`, `meter_slots.py` และหน้า Devices ของ v1
+
+**ตัวตนของ device** — ยกชุดฟิลด์ v1 มาครบ:
+- `name` (unique) · `meter_serial` (unique, **อ่านจากมิเตอร์ ไม่ใช่คนกรอก**) · `site_name` (**บังคับกรอก**
+  ใช้จัดกลุ่มใน tree) · `site_code` · `customer` · `meter_number` · `group_name`
+- **สามช่อง `site_code` / `customer` / `meter_number` เป็นช่องบันทึกล้วน ๆ** — v1 ไม่มี logic ใดผูกอยู่
+  (มีแค่ validator แล้วเก็บ) ห้ามประดิษฐ์พฤติกรรมให้ · `group_name` มี query ดึงค่า distinct ไปทำ dropdown
+- brand/model จาก catalog 9 รุ่น (ยก `catalog.py` ของ v1 มาพร้อม capability flags) แต่ช่อง Model
+  **แสดงเฉพาะรุ่นที่มี driver จริง** — M3 = `prometer100` เท่านั้น อีก 8 รุ่นโผล่เมื่อ M4 ลง driver
+- **ไม่มีรุ่น SIM อีกต่อไป** — ยกเลิกจาก M1: `simulated.py` ออกจาก driver registry / catalog / README
+  เหลือเป็น fake driver ที่เทส monkeypatch เข้าไปเท่านั้น (เทสห้ามยิงมิเตอร์จริง)
+- **device ที่สร้างก่อน M3**: migration **ไม่ลบอะไร** — แถวที่ `model` ไม่มี driver แล้ว (เช่น `sim` เก่า)
+  ถูกตั้ง `enabled=0` และ `site_name` เติมค่า placeholder ส่วน `meter_serial` ปล่อยว่างไว้
+  = "ยังไม่ยืนยันตัวตน" จนกว่าคนจะกด Update (ซึ่ง probe เสมอ) · โค้ดห้ามสมมติว่า serial ไม่มีวันว่าง
+- transport: **TCP อย่างเดียวใน M3** — ช่อง Serial (COM/baud/data bits/parity/stop bits/flow control)
+  มาพร้อม SMW110 ที่ M4 เพราะ M3 ไม่มีรุ่น serial ให้เลือก จึงเทสไม่ได้ · คอลัมน์ `transport` เป็น JSON
+  อยู่แล้วจึงไม่ต้อง migrate ตอนเพิ่ม · **ไม่มีช่อง Source (dlms/modbus) ใน M3** — modbus มาหลังวันที่ 5
+- auth: `password` + `block_cipher_key` + `authentication_key` ครบตั้งแต่ M3 (M3 ใช้แค่ password
+  แต่ M4 ต้องใช้ทั้งสาม จึงไม่ต้องกลับมาแก้ model/ฟอร์ม/API รอบสอง) · สร้างใหม่ prefill password ด้วย
+  `fixed_password` ของยี่ห้อ (CEWE = `ABCD0001`) · **ตอนแก้ เว้นว่าง = คงรหัสเดิม** (พฤติกรรม v1)
+- billing: `first_bill_date` + `bill_day_feb28/29/30/31` — ช่องอยู่ที่นี่ ตรรกะการตัดงวดอยู่ M6
+
+**Probe-first identity (ADR 0005)** — `meter_serial` มาจากมิเตอร์เสมอ:
+- **Create ต่อมิเตอร์จริงก่อนเขียนแถว** อ่าน serial มาใส่ให้ · probe ล้ม (timeout / auth / unreachable)
+  = **ปฏิเสธพร้อมสาเหตุ ไม่สร้างแถว** ⇒ ทุกแถวใน DB มี serial เสมอ
+- serial ซ้ำกับ device ที่**ยังอยู่** = 409 บอกชื่อ device เดิม (ย้าย IP ต้องแก้ที่แถวเดิม) ·
+  ลบ device ไปแล้ว serial นั้นเพิ่มใหม่ได้ — **ไม่มี tombstone** (ไม่งั้นกรอกผิดครั้งเดียวตันถาวร)
+- **Update ก็ probe ซ้ำ** — ถ้า serial ที่ได้ต่างจากเดิม = ชี้ไปมิเตอร์คนละตัว ปฏิเสธ (กันข้อมูล 2 มิเตอร์
+  ปนกันในแถวเดียว) · แก้ได้ทุกช่องรวม brand/model
+
+**สถานะ — มาจาก Poller ไม่มี health-check loop แยก (ADR 0004)**:
+- v1 มี health-check thread ของตัวเองทุก 5 นาที + ตาราง `device_status` + `device_heartbeats` ·
+  v2 ตัดทิ้งทั้งชุด: poller อ่านค่าจริงทุก 60 วิอยู่แล้ว **ผลของ tick นั้นคือสัญญาณสถานะ** —
+  ไม่เปิด connection ซ้ำไปที่มิเตอร์ และไม่มี job เพิ่มใน registry
+- 4 สถานะ: **Online · Offline · Paused · Unknown** — ไม่มี `Error` แยก (อ่านไม่สำเร็จคืออ่านไม่สำเร็จ
+  สาเหตุอยู่ใน `detail`) · `Unknown` = ยังไม่มี tick หลัง Resume
+- **Offline เมื่อพลาด 3 tick ติด** (~3 นาที) — กันสถานะกระพริบจาก timeout ชั่วคราว
+- สร้างสำเร็จ = **Online ทันที** (probe เพิ่งต่อติดไปเมื่อกี้ ไม่ต้องรอ 60 วิ) · Resume = **Unknown**
+  จนกว่า tick แรก (ระหว่าง pause ไม่มีใครคุยกับมิเตอร์ จึงไม่มีใครรู้ว่ามันยังอยู่ไหม)
+- cadence **คงที่ 60 วิ ตั้งค่าไม่ได้** (env override ไว้แก้ปัญหาเท่านั้น) — ไม่มีคอลัมน์ `poll_interval_sec`
+
+**`device_events` — เก็บเฉพาะตอนเปลี่ยน**:
+- status transition (Online↔Offline) + การกระทำของคน (created / updated / paused / resumed /
+  data cleared) พร้อมชื่อผู้สั่ง — **ไม่ใช่ heartbeat ทุก tick แบบ v1** (30 มิเตอร์ × 288 ครั้ง/วัน
+  ≈ 8,600 แถว/วัน จะกลายเป็นตารางที่ใหญ่ที่สุดรองจาก `interval_readings` โดยไม่มีใครอ่าน)
+- แลกมาด้วย: คำนวณ uptime % ย้อนหลังแบบละเอียดไม่ได้ — ยอมรับ ไม่มีใครขอ
+- แสดงผ่าน **drawer** ที่เปิดจากปุ่ม History บน panel ขวา (เลย์เอาต์ tree+form ไม่มีที่ว่างเหลือ)
+
+**Pause / Resume — คอลัมน์เดียว**:
+- ใช้ `enabled` ที่มีอยู่แล้ว **ไม่มี `polling_paused` แยก** — v1 ต้องมี 2 คอลัมน์เพราะ `is_active`
+  คือ soft-delete ที่ซ่อน device ออกจากทุก list ส่วน v2 ลบคือลบจริง เจตนาของ ADR 0009
+  (หยุด background ทุกชนิดแบบ persistent ข้าม restart, ไม่ปิด socket กลางคัน) คงไว้ครบ
+- คำสั่งอ่านที่คนสั่ง **ไม่ถูก pause บัง** (ตาม v1) — pause คุมเฉพาะ background
+
+**คำสั่งคนมาก่อน background (ADR 0006)**:
+- M3 มี 4 เส้นทางที่คนสั่งคุยกับมิเตอร์: probe ตอน Create · re-probe ตอน Update · Test connection ·
+  Read now — ทุกเส้นแย่ง lock ต่อ Transport Endpoint กับ poller
+- **priority lock: งานที่คนสั่งได้คิวก่อน background tick เสมอ** (tick ที่ข้ามไปคือค่าที่ขาดไป 1 นาที
+  ไม่ใช่เรื่องใหญ่ ส่วนคนที่กดปุ่มค้างรอคือเรื่องใหญ่) — ยก ADR 0020 ของ v1 มาทำที่ M3 ไม่ใช่ M4
+  ตามที่ §3.4 เคยเขียนไว้ · ต้องมีเทสเรื่อง starvation
+
+**Quota — นับจำนวนอย่างเดียวใน M3**:
+- เพิ่ม device ได้เมื่อ `count(devices) < max_meters` (ไม่มี `max_meters` = ไม่จำกัด) —
+  **ไม่มีช่อง Meter Key ในฟอร์ม M3** เพราะ redeem ต้องใช้ portal ซึ่งมาที่ M9 (ดู §3.9)
+- ลบ device แล้ว slot คืนทันที — ข้อ "slot ไม่คืน" ใน §3.9 เป็นกติกาของ portal ไม่ใช่ของ count backstop
+- license ใหม่ที่ `max_meters` น้อยกว่าจำนวนที่มีอยู่: **ของเดิมทำงานต่อครบทุกตัว ห้ามเพิ่มใหม่**
+  หัว tree ขึ้นเตือน `10 / 5 — over quota` (ตัดข้อมูลลูกค้ากลางคันเพราะเลข license เปลี่ยนคือสิ่งที่ห้ามทำ)
+
+**หน้า Devices** — tree ซ้าย + ฟอร์มขวา (โครงเดิมของ v1 คนหน้างานใช้ต่อได้ทันที):
+- tree: กลุ่มตาม `site_name` · จุดสถานะสี · หัว tree มี ช่องค้นหา + กรองสถานะ + กรองรุ่น/ยี่ห้อ +
+  ชิปโควต้า `X / Y meters`
+- ปุ่ม: Create · Update · New Device (copy) · Pause/Resume · **Read now** (สั่งอ่านทันที) ·
+  **Test connection** (ทดสอบค่าในฟอร์มโดยไม่เขียนแถว) · History · Delete ·
+  **Delete all data** (ลบเฉพาะ `interval_readings` ของ device นั้น เก็บ `device_events` ไว้เป็น
+  หลักฐานว่าใครลบ · **ต้องพิมชื่อ device ให้ตรงก่อนกดยืนยัน** เพราะกู้คืนไม่ได้)
+- สิทธิ์: อ่าน/Read now = ทุก role · เพิ่ม/แก้/ลบ/pause/Delete all data = admin (§3.2)
+- **หน้า: Devices หน้าเดียว** — หน้า Instantaneous ย้ายไป M5 (ดู §3.5)
 
 ### 3.4 Acquisition (M4)
 
@@ -169,7 +240,8 @@ keygen/sign/fingerprint) · **ไม่มี lockout/rate-limit** — บัน
 - ทุก driver เขียนลง `interval_readings` ตารางเดียว หน้าตา COSEM (แปลงตอนเขียน):
   **UTC เสมอ · kWh เสมอ · ชื่อคอลัมน์ตรงหน่วยจริง** (normalization contract — REMAKE-PLAN §6.1)
 - Lock ต่อ **transport endpoint** (TCP: host:port · Serial: ชื่อ COM port) — อุปกรณ์บนสายเดียวกัน
-  เข้าคิวกัน · manual read มี priority เหนือ background (ADR 0020)
+  เข้าคิวกัน · manual read มี priority เหนือ background (ADR 0020 ของ v1) — **ทำไปแล้วที่ M3**
+  (ADR 0006 ของ v2) เพราะ Read now / Test connection / probe เกิดขึ้นตั้งแต่ M3
 - Scaler: เขียนให้ถูกต้องตั้งแต่ต้น โดยล็อกด้วย test case จากค่าที่ลูกค้ายืนยันแล้ว
   (ไม่ยกพฤติกรรม phantom ×10 ของ ADR 0010 มา แต่ผลลัพธ์สุดท้ายต้องตรง v1)
 
@@ -180,7 +252,12 @@ keygen/sign/fingerprint) · **ไม่มี lockout/rate-limit** — บัน
 - CSV auto-export ต่อ device (watermark pattern) + manual read-now
 - Retention: LP 90 วัน · billing 365 วัน · events 90 วัน (ตัวเลขเดิม v1) — job รายวัน
 - Backup อัตโนมัติรายวัน: `VACUUM INTO` ไปโฟลเดอร์ backup + หมุนเวียนลบของเก่า
-- หน้า: Load Profile
+- **Records** (ย้ายมาจาก M3 — grill M3 2026-08-05): ตารางตรวจความครบของข้อมูล แถว = มิเตอร์
+  คอลัมน์ = วันที่ ช่อง = จำนวน interval ที่เก็บได้วันนั้น (ครบวัน = **96**, ขาด = `N (-X)`,
+  ไม่มีเลย = `0 (Missing)`) — v1 เรียกหน้านี้ว่า **Instantaneous Records** (เมนู "Records")
+  แต่เป็นหน้าเปล่า: `DATES`/`DEVICE_ROWS` hardcode ว่าง ไม่มี API call และ worker ไม่มี endpoint รองรับ
+  ⇒ v2 เป็นผู้เขียนหน้านี้ครั้งแรก และต้องมี load profile ก่อนจึงจะมีอะไรให้นับ จึงอยู่ที่ M5 ไม่ใช่ M3
+- หน้า: Load Profile · Records
 
 ### 3.6 Billing (M6)
 
@@ -220,7 +297,8 @@ keygen/sign/fingerprint) · **ไม่มี lockout/rate-limit** — บัน
 - Limited mode เมื่อ license ขาด/หมด/fingerprint ไม่ตรง: API ตอบ 403 `LICENSE_INVALID`
   (health + SPA ยังเข้าถึงได้เพื่อแสดง error) · polling หยุด · process ไม่ตาย
 - **Meter Key** (โมเดลเดิม v1 #145): 1 key = 1 device slot ผูก serial มิเตอร์ผ่าน probe-first redeem ·
-  ลบ device แล้ว slot ไม่คืน · เกิน `max_meters` ต้องใช้ key
+  ลบ device แล้ว slot ไม่คืน · เกิน `max_meters` ต้องใช้ key — **ทั้งย่อหน้านี้เริ่มมีผลที่ M9**
+  (redeem ต้องมี portal) · **M3 บังคับด้วยการนับจำนวนอย่างเดียว ไม่มีช่อง Meter Key ในฟอร์ม** (§3.3)
 - **Feature entitlement**: enabled = `.env FEATURES ∩ license features` · sellable 8 ตัว (เท่า v1):
   `billing` `load_profile` `energy_summary` `special_days` `instantaneous` `battery` `auto_capture`
   `billing_excel_export` · ops-only (ใน .env เท่านั้น): `auto_read_billing` `auto_backfill` `app_log`
@@ -241,7 +319,8 @@ keygen/sign/fingerprint) · **ไม่มี lockout/rate-limit** — บัน
   Gurux DLMS (vendored `GX*.py` ห้ามแก้ API) · pymodbus · Ed25519 (`cryptography`)
 - **สถาปัตยกรรม**: 1 process — main thread (uvicorn) + poller pool (1 thread/มิเตอร์, lock ต่อ
   transport endpoint) + scheduler thread เดียวรันทุก periodic job จาก registry
-  `[(name, interval, fn)]` (health-check, LP scheduler, billing auto-read, retention, backup, sync, license recheck)
+  `[(name, interval, fn)]` (LP scheduler, billing auto-read, retention, backup, sync, license recheck)
+  — **ไม่มี health-check job**: สถานะมิเตอร์เป็นผลพลอยได้จาก poller tick (ADR 0004)
 - **Data model** (13 ตาราง): `devices` (รวม settings/status/capture_objects เป็น JSON columns) ·
   `device_events` · `interval_readings` (COSEM shape + `source` + `interval`) · `interval_read_jobs` ·
   `billing_readings` · `billing_captures` · `energy_register_readings` · `battery_readings` ·
@@ -283,3 +362,8 @@ keygen/sign/fingerprint) · **ไม่มี lockout/rate-limit** — บัน
   offline mode ไม่มี lease หรือ lease ยาวพิเศษ — **ต้องเลือกก่อนออก license จริงตัวแรก**)
 - (assumed) **SMW110 DLMS-over-serial อยู่ในเป้า 5 วัน** — เป็นรุ่น DLMS จึงจัดอยู่เฟสแรก
   แต่ถ้าการต่อ serial จริงช้ากว่าแผน ให้เลื่อนไปกับเฟส modbus ได้โดยไม่กระทบรุ่น TCP
+- **ชื่อ feature key `instantaneous`** — หน้าที่มันคุมถูกเปลี่ยนชื่อเป็น **Records** และย้ายไป M5
+  (grill M3) แต่ key ยังชื่อเดิมตาม v1 · CONTEXT.md บังคับให้ใช้คำเดียวกันทุกชั้น ⇒ ควรเปลี่ยนเป็น
+  `records` หรือไม่ — เป็นการแก้ contract กับ portal ที่ v2 เป็นผู้นิยาม (§3.9) จึงเปลี่ยนได้ฟรี
+  **ตราบใดที่ยังไม่มี license ตัวไหนระบุ `features`** · ต้องตัดสินก่อน M5 และก่อนออก license
+  ที่ใส่ features จริงตัวแรก
