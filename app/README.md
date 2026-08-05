@@ -23,6 +23,12 @@ src/arichds/
 └── vendor/gurux/      GX*.py copied verbatim from v1 — never edited, never linted
 ```
 
+Anything under `acquisition/drivers/`, `vendor/gurux/`, or the probe and poller read paths
+is DLMS work: read `.claude/skills/gurux-dlms/` first. The library is a camelCase C# port
+with no upstream API docs, and that skill is where its lifecycle, scaler handling and
+traps are written down. For *which* OBIS code to read rather than *how*, see
+`docs/meter-notes/`.
+
 ## Development
 
 ```powershell

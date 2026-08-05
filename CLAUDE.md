@@ -33,9 +33,9 @@ MySQL, and ~30 tables.
   entrypoint, lifespan). Read before writing any FastAPI code.
 - `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,
   vendored `GX*.py`, the probe and poller read paths, anything importing `gurux_dlms` /
-  `gurux_net` / `gurux_common`. Copied from v1, so its paths still name v1's layout
-  (`src/drivers/…`, `RULES.md`, `INV-SOCK-*`, a `cewe-docs` sibling that does not exist
-  here) — read it for the library patterns, map the paths onto v2's.
+  `gurux_net` / `gurux_common`. Ported to v2 (2026-08-05) with every import verified against
+  the installed `gurux_dlms 1.0.201`; patterns are marked *in v2 today* vs *v1-proven, not
+  in v2 yet* so nobody cites v1 code as if it were ours.
 - `docs/meter-notes/` — OBIS and capture-object maps **scanned off real meters**, not vendor
   datasheets: `load-profile-capture-objects.md` (CEWE ×3, 2026-08-05 — including the evidence
   that SPEC §3.5's Logger-1/2 merge is impossible), plus `tcc-obis-scan-partial.md` and
