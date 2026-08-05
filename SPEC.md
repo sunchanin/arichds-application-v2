@@ -250,8 +250,19 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 
 ### 3.5 Load Profile (M5)
 
-- อ่าน load profile 15 นาที ทั้ง Logger 1 (energy) และ Logger 2 (V/I/PF/freq — Premier 550)
-  รวมแถวด้วย `read_at` — ตาม logic v1
+- อ่าน load profile จาก Logger 1 (`1.0.99.1.0.255`) และ Logger 2 (`1.0.99.2.0.255`)
+  **เก็บเป็นคนละแถว** มี `logger_id` เป็นตัวแยก unique key = `(device_id, logger_id, read_at)`
+  ตามที่ v1 ทำ (ADR-6 ของ v1) — **ประโยคเดิมที่เขียนว่า "รวมแถวด้วย `read_at`" ผิด**
+  พิสูจน์แล้วด้วยการ probe มิเตอร์จริง 3 รุ่นเมื่อ 2026-08-05
+  (`docs/meter-notes/load-profile-capture-objects.md`) — merge ไม่ได้ทั้งสามรุ่น คนละเหตุผล:
+  - **Prometer 100**: Logger 1 = **900 วิ** · Logger 2 = **300 วิ** ⇒ timestamp ไม่ตรงกันเลย
+    ไม่มี `read_at` ร่วมให้ merge · และความถี่ (`1.0.14.27.0.255`) อยู่ใน**ทั้งสอง** logger
+  - **Premier 550**: รอบตรงกันทั้งคู่ (900 วิ) แต่ Logger 1 เก็บ `1.0.1.29.0.255` ส่วน Logger 2
+    เก็บ `1.0.1.8.0.255` ซึ่ง v1 แมป**ลงคอลัมน์เดียวกัน** (ค่าช่วง vs ค่าสะสม) ⇒ merge = ทับกันเงียบ ๆ
+  - **Saral 305**: ไม่มี Logger 2
+  ⇒ ข้อความเดิมที่ว่า "Logger 2 เป็นของ Premier 550" และ "Logger 1 = energy, Logger 2 = V/I/PF"
+  **ผิดทั้งคู่** — Prometer 100 ก็มี Logger 2 · และ Logger 1 ของมันมีทั้งพลังงานและ V/I/PF/freq
+- **ห้ามสมมติว่า capture period คือ 900 วิ** — อ่าน attr 4 ของ ProfileGeneric ทุกครั้ง
 - CSV auto-export ต่อ device (watermark pattern) + manual read-now
 - Retention: LP 90 วัน · billing 365 วัน · events 90 วัน (ตัวเลขเดิม v1) — job รายวัน
 - Backup อัตโนมัติรายวัน: `VACUUM INTO` ไปโฟลเดอร์ backup + หมุนเวียนลบของเก่า

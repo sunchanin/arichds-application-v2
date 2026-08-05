@@ -50,7 +50,7 @@ ADMIN_CREDENTIALS = {"username": "admin", "password": "admin-password"}
 USER_CREDENTIALS = {"username": "operator", "password": "operator-password"}
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def fake_meter(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeMeterState]:
     """Install the test-only fake meter as the ``prometer100`` driver (M3-1).
 
@@ -63,6 +63,12 @@ def fake_meter(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeMeterState]:
 
     Registered under the **real** model string so the catalog endpoint, the
     registry and the API tests all agree on the product's vocabulary.
+
+    **Autouse on purpose.** A test that creates a device without asking for this
+    fixture would fall through to the real driver and open a TCP socket to
+    whatever host its payload happens to name. Nothing in the suite wants that,
+    and the failure mode is silent, so the safe default is applied everywhere
+    rather than remembered per test.
 
     Yields:
         The knob-set the fake reads — set ``connect_error``, ``meter_serial``,

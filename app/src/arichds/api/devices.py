@@ -440,6 +440,16 @@ def _kept(new: str | None, stored: str) -> str:
 # ─── Static routes ────────────────────────────────────────────────────────────
 #
 # Declared BEFORE ``/{device_id}`` so ``/catalog`` is not parsed as a device id.
+#
+# A *mistyped* path under this prefix — ``/api/devices/models``, say, which M3-1
+# removed — answers **405, not 404**, because Starlette matches the ``/{device_id}``
+# template (which carries PUT and DELETE) before FastAPI converts the segment to an
+# int. Declaring the routes as ``/{device_id:int}`` would fix that, and was tried:
+# it makes the router's own path string disagree with the one OpenAPI documents,
+# which breaks ``test_the_sweep_sees_everything_openapi_documents`` — the guard that
+# stops a new router from escaping the JWT sweep. A cosmetic status code on a route
+# with no callers is not worth normalising converter spellings inside that guard,
+# so 405 stands. Don't re-try it without reading that test first.
 
 
 @router.get("")
@@ -450,8 +460,12 @@ def list_devices(session: SessionDep) -> ApiResponse[list[DeviceOut]]:
 
 
 @router.get("/catalog")
-def list_catalog(session: SessionDep) -> ApiResponse[list[CatalogEntry]]:
+def list_catalog() -> ApiResponse[list[CatalogEntry]]:
     """List the meter models this build can actually drive, in dropdown order.
+
+    Takes no ``SessionDep``: the answer is a constant derived from the catalog and
+    the driver registry, so opening a database session per request would buy
+    nothing. (The router-level JWT guard still applies.)
 
     Filtered against the **driver registry**, which is the single source of
     truth for what can be driven — so the Model dropdown can never offer a model
