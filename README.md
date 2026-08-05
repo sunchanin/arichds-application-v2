@@ -54,10 +54,15 @@ first.
 
 5. **Paste the code** into the Activation page. It applies **immediately** — no service
    restart (ADR 0001). The Monitor page appears and the Poller starts.
-6. **Add a meter** on the Monitor page:
-   - a real CEWE Prometer100 over TCP — host, port (default 4059), password; values
-     refresh every 10 s, polled every 60 s, or
-   - model **SIM** — a simulated meter, to see the whole chain without hardware.
+6. **Add a meter** on the Monitor page — a real CEWE Prometer100 over TCP: name, site
+   name, model, host, port (default 4059) and password (prefilled `ABCD0001` for CEWE).
+
+   Adding **connects to the meter first** and reads its serial number off it (ADR 0005),
+   so the button takes a few seconds and the meter has to be reachable — there is no
+   "add it now, identify it later". A refusal says which problem it was (credentials
+   rejected, timed out, unreachable) and writes no row at all.
+
+   Once added, values refresh every 10 s and the meter is polled every 60 s.
 
 To reset to a clean first run in development: stop the backend and delete `app/data/`.
 

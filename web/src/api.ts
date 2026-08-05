@@ -39,11 +39,33 @@ export interface Device {
   name: string;
   brand: string;
   model: string;
+  /** Read off the meter (ADR 0005). Null only for rows created before M3. */
+  meter_serial: string | null;
+  site_name: string;
   host: string;
   port: number;
   endpoint: string;
   enabled: boolean;
   created_at: string;
+}
+
+/**
+ * One selectable meter model, from `GET /api/devices/catalog`.
+ *
+ * Only models that resolve to a real driver are listed, so the dropdown can
+ * never offer something that will fail to connect. `fixed_password` is a
+ * documented brand-wide default the form prefills, not a per-site secret.
+ */
+export interface CatalogEntry {
+  model: string;
+  brand: string;
+  ui_label: string;
+  default_port: number | null;
+  fixed_password: string | null;
+  supports_serial: boolean;
+  supports_battery: boolean;
+  supports_energy_summary: boolean;
+  supports_special_days: boolean;
 }
 
 export interface Reading {
@@ -65,6 +87,8 @@ export interface NewDevice {
   name: string;
   brand: string;
   model: string;
+  /** Required — the Devices tree groups by it (SPEC §3.3). */
+  site_name: string;
   host: string;
   port: number;
   password: string;
@@ -197,7 +221,7 @@ export const api = {
 
   listDevices: () => request<Device[]>("/api/devices"),
 
-  supportedModels: () => request<string[]>("/api/devices/models"),
+  catalog: () => request<CatalogEntry[]>("/api/devices/catalog"),
 
   createDevice: (device: NewDevice) =>
     request<Device>("/api/devices", {

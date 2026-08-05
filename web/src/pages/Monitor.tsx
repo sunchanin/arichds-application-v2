@@ -20,7 +20,14 @@ import {
 import dayjs from "dayjs";
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiRequestError, api, type Device, type NewDevice, type Reading } from "../api";
+import {
+  ApiRequestError,
+  api,
+  type CatalogEntry,
+  type Device,
+  type NewDevice,
+  type Reading,
+} from "../api";
 import { MONITOR_REFRESH_MS } from "../theme";
 
 const { Text, Title } = Typography;
@@ -36,16 +43,22 @@ function show(value: number | null | undefined, digits = 1, unit = ""): string {
 /**
  * The monitor page: add a meter, watch its values arrive.
  *
- * This is the whole point of M1 — it proves the full chain end to end
- * (meter → driver → Poller → SQLite → API → browser). It refreshes on a timer
- * rather than a socket because 10 seconds is plenty for a 60-second poll
- * cadence, and a polling page has no reconnect logic to get wrong.
+ * It proves the full chain end to end (meter → driver → Poller → SQLite → API →
+ * browser). It refreshes on a timer rather than a socket because 10 seconds is
+ * plenty for a 60-second poll cadence, and a polling page has no reconnect
+ * logic to get wrong.
+ *
+ * Adding a meter **connects to it** before the row exists (ADR 0005), so the
+ * button takes seconds and can fail for reasons that have nothing to do with
+ * the form. The hint below the form says so, and a refusal shows the API's own
+ * sentence — which distinguishes a wrong password from no route to host,
+ * because the operator's next action differs completely.
  */
 export function Monitor() {
   const { message } = App.useApp();
   const [devices, setDevices] = useState<Device[]>([]);
   const [readings, setReadings] = useState<ReadingsByDevice>({});
-  const [models, setModels] = useState<string[]>([]);
+  const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [form] = Form.useForm<NewDevice>();
@@ -84,12 +97,23 @@ export function Monitor() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
     api
-      .supportedModels()
-      .then(setModels)
-      .catch(() => setModels([]));
+      .catalog()
+      .then(setCatalog)
+      .catch(() => setCatalog([]));
     const timer = window.setInterval(() => void refresh(), MONITOR_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  /** Prefill the fields the catalog knows the answer to. */
+  const onModelChange = (model: string) => {
+    const entry = catalog.find((candidate) => candidate.model === model);
+    if (!entry) return;
+    form.setFieldsValue({
+      brand: entry.brand,
+      ...(entry.default_port !== null ? { port: entry.default_port } : {}),
+      ...(entry.fixed_password !== null ? { password: entry.fixed_password } : {}),
+    });
+  };
 
   const addDevice = async (values: NewDevice) => {
     setAdding(true);
@@ -99,6 +123,9 @@ export function Monitor() {
       form.resetFields();
       await refresh();
     } catch (err) {
+      // The API's message names the endpoint and the cause (wrong password,
+      // timeout, no route). Showing it verbatim is the point — a generic
+      // "could not add" would send the operator looking in the wrong place.
       message.error(err instanceof ApiRequestError ? err.message : "Could not add the device");
     } finally {
       setAdding(false);
@@ -132,51 +159,62 @@ export function Monitor() {
       </Row>
 
       <Card size="small" title="Add a meter">
-        <Form form={form} layout="vertical" onFinish={addDevice} initialValues={{ port: 4059, brand: "CEWE" }}>
+        <Form form={form} layout="vertical" onFinish={addDevice} initialValues={{ port: 4059 }}>
           <Row gutter={12}>
             <Col xs={24} sm={12} md={5}>
               <Form.Item name="name" label="Name" rules={[{ required: true }]}>
                 <Input placeholder="Main incomer" />
               </Form.Item>
             </Col>
-            <Col xs={12} sm={6} md={4}>
-              <Form.Item name="brand" label="Brand" rules={[{ required: true }]}>
-                <Input placeholder="CEWE" />
+            <Col xs={24} sm={12} md={5}>
+              <Form.Item name="site_name" label="Site name" rules={[{ required: true }]}>
+                <Input placeholder="Plant A" />
               </Form.Item>
             </Col>
-            <Col xs={12} sm={6} md={4}>
+            <Col xs={12} sm={8} md={4}>
               <Form.Item name="model" label="Model" rules={[{ required: true }]}>
                 <Select
                   placeholder="Select"
-                  options={models.map((model) => ({ value: model, label: model }))}
+                  onChange={onModelChange}
+                  options={catalog.map((entry) => ({ value: entry.model, label: entry.ui_label }))}
                 />
               </Form.Item>
             </Col>
-            <Col xs={14} sm={8} md={5}>
+            <Col xs={12} sm={8} md={4}>
+              <Form.Item name="brand" label="Brand" rules={[{ required: true }]}>
+                <Input placeholder="cewe" />
+              </Form.Item>
+            </Col>
+            <Col xs={14} sm={8} md={4}>
               <Form.Item name="host" label="Host" rules={[{ required: true }]}>
                 <Input placeholder="192.168.1.100" />
               </Form.Item>
             </Col>
-            <Col xs={10} sm={4} md={2}>
+            <Col xs={10} sm={6} md={2}>
               <Form.Item name="port" label="Port" rules={[{ required: true }]}>
                 <InputNumber min={1} max={65535} style={{ width: "100%" }} />
               </Form.Item>
             </Col>
-            <Col xs={24} sm={8} md={4}>
+            <Col xs={24} sm={10} md={4}>
               <Form.Item name="password" label="Password">
                 <Input.Password placeholder="Meter password" />
               </Form.Item>
             </Col>
           </Row>
-          <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={adding}>
-            Add meter
-          </Button>
+          <Space size="middle" align="center" wrap>
+            <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={adding}>
+              Add meter
+            </Button>
+            <Text type="secondary">
+              Adding connects to the meter to read its serial number — this can take a few seconds.
+            </Text>
+          </Space>
         </Form>
       </Card>
 
       {devices.length === 0 && !loading ? (
         <Card>
-          <Empty description="No meters yet. Add one above — pick model SIM to see the chain work without hardware." />
+          <Empty description="No meters yet. Add one above — the meter must be reachable, because its serial number is read from it." />
         </Card>
       ) : null}
 
@@ -193,6 +231,9 @@ export function Monitor() {
                     <Tag>{device.model}</Tag>
                     <Text type="secondary" style={{ fontWeight: 400, fontSize: 12 }}>
                       {device.endpoint}
+                      {/* Null only for a row created before M3, which the next
+                          Update identifies (ADR 0005). */}
+                      {device.meter_serial ? ` · serial ${device.meter_serial}` : ""}
                     </Text>
                   </Space>
                 }

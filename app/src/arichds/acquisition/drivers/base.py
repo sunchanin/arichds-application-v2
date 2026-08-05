@@ -28,7 +28,7 @@ class InstantaneousReading:
 
     Attributes:
         read_at: When the value was taken — **timezone-aware UTC, always**.
-        source: Which acquisition path produced it (``dlms`` / ``modbus`` / ``sim``).
+        source: Which acquisition path produced it (``dlms`` / ``modbus``).
         volt_l1/volt_l2/volt_l3: Phase-to-neutral voltage (V).
         current_l1/current_l2/current_l3: Line current (A).
         freq: Frequency (Hz).
@@ -104,6 +104,20 @@ class MeterDriver(ABC):
 
         MUST be called from a ``finally`` block and MUST NOT raise — swallow and
         log any error so the caller's ``finally`` always completes.
+        """
+
+    @abstractmethod
+    def read_meter_serial(self) -> str | None:
+        """Read the Meter Serial off the meter. Assumes connect() succeeded.
+
+        Abstract on purpose: ADR 0005 says a device's identity comes from the
+        meter, so a driver that cannot supply one is a driver that must not
+        compile — not one that fails at 3am on a customer machine.
+
+        Returns:
+            The trimmed serial, or None when the meter answered with nothing or
+            a blank — which is indistinguishable from a failed probe for the
+            caller.
         """
 
     @abstractmethod

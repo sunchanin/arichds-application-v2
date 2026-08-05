@@ -243,7 +243,7 @@ class TestLimitedModeEnforcement:
     def test_post_devices_is_also_guarded(self, client: TestClient) -> None:
         response = client.post(
             "/api/devices",
-            json={"name": "X", "brand": "SIM", "model": "sim", "host": "127.0.0.1", "port": 4059},
+            json={"name": "X", "brand": "cewe", "model": "prometer100", "host": "127.0.0.1", "port": 4059},
         )
         assert response.status_code == 403
         assert response.json()["error"]["code"] == ERROR_LICENSE_INVALID

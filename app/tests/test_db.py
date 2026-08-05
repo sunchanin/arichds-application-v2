@@ -12,16 +12,16 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import inspect, select, text
 
 from arichds.config import Settings
-from arichds.constants import INTERVAL_LABEL_INSTANTANEOUS, SOURCE_SIMULATED
+from arichds.constants import INTERVAL_LABEL_INSTANTANEOUS, SOURCE_DLMS
 from arichds.db.models import Device, IntervalReading
 from arichds.db.session import get_engine, session_scope
 
 
-def make_device(name: str = "Meter A", model: str = "sim") -> Device:
+def make_device(name: str = "Meter A", model: str = "prometer100") -> Device:
     """Build an unsaved device row."""
     return Device(
         name=name,
-        brand="SIM",
+        brand="cewe",
         model=model,
         transport={"kind": "net", "host": "127.0.0.1", "port": 4059},
         password="secret",
@@ -62,7 +62,7 @@ class TestDeviceAndReading:
                 IntervalReading(
                     device_id=device_id,
                     read_at=datetime.now(UTC),
-                    source=SOURCE_SIMULATED,
+                    source=SOURCE_DLMS,
                     interval=INTERVAL_LABEL_INSTANTANEOUS,
                     volt_l1=230.1,
                     volt_l2=229.8,
@@ -92,7 +92,7 @@ class TestDeviceAndReading:
                 IntervalReading(
                     device_id=device.id,
                     read_at=moment,
-                    source=SOURCE_SIMULATED,
+                    source=SOURCE_DLMS,
                     interval=INTERVAL_LABEL_INSTANTANEOUS,
                 )
             )
@@ -125,7 +125,7 @@ class TestDeviceAndReading:
                 IntervalReading(
                     device_id=device.id,
                     read_at=datetime.now(UTC),
-                    source=SOURCE_SIMULATED,
+                    source=SOURCE_DLMS,
                     interval=INTERVAL_LABEL_INSTANTANEOUS,
                 )
             )
@@ -147,7 +147,7 @@ class TestDeviceAndReading:
                     IntervalReading(
                         device_id=device.id,
                         read_at=now - timedelta(minutes=offset),
-                        source=SOURCE_SIMULATED,
+                        source=SOURCE_DLMS,
                         interval=INTERVAL_LABEL_INSTANTANEOUS,
                         volt_l1=volts,
                     )

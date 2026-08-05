@@ -23,11 +23,16 @@ POLLER_STOP_JOIN_TIMEOUT_SEC: Final[float] = 5.0
 # Interval label written to `interval_readings.interval` for the M1 monitor
 # cadence. Load-profile rows (M5) will carry "15m".
 INTERVAL_LABEL_INSTANTANEOUS: Final[str] = "60s"
+# How long a Manual Read waits for a Transport Endpoint held by a background
+# tick before giving up. Longer than one worst-case association
+# (CONNECT_ASSOC_RETRY_ATTEMPTS x TCP_CONNECT_TIMEOUT_SEC) so a probe still
+# waits out a slow-but-alive meter, and short enough that a wedged endpoint
+# answers the operator instead of hanging the request (ADR 0006).
+MANUAL_READ_LOCK_TIMEOUT_SEC: Final[float] = 120.0
 
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"
 SOURCE_MODBUS: Final[str] = "modbus"
-SOURCE_SIMULATED: Final[str] = "sim"
 
 # ─── Retry / backoff (v1 constants.py) ────────────────────────────────────────
 # INNER association retry: absorbs a transient DLMS-association abort in place

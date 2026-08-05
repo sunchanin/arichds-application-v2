@@ -82,6 +82,11 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
   is data, not control flow.
 - **Concurrency locks key on the Transport Endpoint** (`host:port` / COM port), not
   `device_id` — devices sharing a serial line queue behind one lock.
+- **Manual Reads outrank background ticks on that lock** (ADR 0006) — a background tick
+  that cannot have the endpoint is *skipped*, never queued, and never preempts one in
+  flight. The registry lives in `acquisition/locks.py` and is **process-wide**, never
+  Poller-private: a probe must take the same lock with the Poller switched off and
+  across `poller.restart()`.
 - **License state is read through the re-evaluatable license service** (ADR 0001) — never
   cached at import/startup. Activation takes effect without a restart.
 - **No `if/elif` on meter model in generic code** — model differences live behind

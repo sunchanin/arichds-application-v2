@@ -226,7 +226,10 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   **Test connection** (ทดสอบค่าในฟอร์มโดยไม่เขียนแถว) · History · Delete ·
   **Delete all data** (ลบเฉพาะ `interval_readings` ของ device นั้น เก็บ `device_events` ไว้เป็น
   หลักฐานว่าใครลบ · **ต้องพิมชื่อ device ให้ตรงก่อนกดยืนยัน** เพราะกู้คืนไม่ได้)
-- สิทธิ์: อ่าน/Read now = ทุก role · เพิ่ม/แก้/ลบ/pause/Delete all data = admin (§3.2)
+- สิทธิ์: อ่าน/Read now = ทุก role · เพิ่ม/แก้/ลบ/pause/Delete all data = admin (§3.2) ·
+  **Test connection = admin** — §3.2 ให้ทุก role อ่านได้และให้ admin เท่านั้นแก้ได้ แต่ Test connection
+  ไม่ใช่ทั้งสองอย่าง จึงตัดสินแยก: มันคือครึ่งวินิจฉัยของฟอร์ม Create/Update ที่เป็น admin อยู่แล้ว และมันเล็ง
+  socket ของเครื่องนี้ไปที่ `host:port` อะไรก็ได้ที่คนกรอก
 - **หน้า: Devices หน้าเดียว** — หน้า Instantaneous ย้ายไป M5 (ดู §3.5)
 
 ### 3.4 Acquisition (M4)

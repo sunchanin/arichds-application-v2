@@ -16,8 +16,8 @@ src/arichds/
 ├── migrations/        the single Alembic set (render_as_batch=True from 0001)
 ├── licensing/         Machine ID, Activation Codes, Limited Mode enforcement
 ├── auth/              Role enum, bcrypt/PyJWT primitives, token service — no HTTP types
-├── acquisition/       ConnectionParams, drivers, Poller
-│   └── drivers/       MeterDriver ABC, Prometer100 (DLMS/TCP), simulated, factory
+├── acquisition/       ConnectionParams, drivers, Poller, catalog, probe, endpoint locks
+│   └── drivers/       MeterDriver ABC, Prometer100 (DLMS/TCP), factory
 ├── api/               health, auth, license, devices routers + the {success,data,error}
 │                      envelope; deps.py holds the JWT guard dependencies
 └── vendor/gurux/      GX*.py copied verbatim from v1 — never edited, never linted
