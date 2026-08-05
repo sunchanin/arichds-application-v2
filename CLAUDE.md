@@ -23,7 +23,10 @@ MySQL, and ~30 tables.
   (Interval Reading, Source, Transport Endpoint, Machine ID, Activation Code, Limited
   Mode, Output Parity …).
 - `docs/adr/` — 0001 (license applies live, no restart — never cache license-derived state at
-  import/startup) · 0002 (DLMS scaler read correctly) · 0003 (JWT secret generated per install).
+  import/startup) · 0002 (DLMS scaler read correctly) · 0003 (JWT secret generated per install) ·
+  0004 (device status derived from the Poller — no health-check loop, no heartbeat table) ·
+  0005 (meter identity comes from the meter — probe before the row exists) ·
+  0006 (Manual Reads outrank background polling on the Transport Endpoint lock).
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
 

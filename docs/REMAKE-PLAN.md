@@ -67,7 +67,7 @@ flowchart TD
     M0["<b>M0 · Spec & Decisions</b><br/>SPEC.md · ล็อกตาราง · นิยาม license contract ของ v2"]
     M1["<b>M1 · Walking Skeleton</b> ⭐<br/>เครื่องเปล่า → ติดตั้ง 1 ขั้นตอน → offline activate<br/>→ มิเตอร์ CEWE 1 ตัว → เห็นค่าสดบนเว็บ<br/><i>exit: ติดตั้ง &lt; 10 นาที ไม่มีคำถามเรื่อง DB</i>"]
     M2["<b>M2 · Auth & Login</b><br/>JWT · หน้า Login + User Mgmt"]
-    M3["<b>M3 · Device Manager</b><br/>CRUD · events · health-check<br/>pause/reconnect · หน้า Devices + Instantaneous"]
+    M3["<b>M3 · Device Manager</b><br/>CRUD + probe-first · events · สถานะจาก poller<br/>pause/resume · priority lock · หน้า Devices"]
     M4["<b>M4 · Acquisition</b><br/>a: DLMS ครบทุกรุ่น (≤ วันที่ 5)<br/>b: Modbus + billing cut (วันที่ 6–14)<br/>ปิดเรื่อง scaler ×10 ที่ M4a"]
     M5["<b>M5 · Load Profile</b><br/>2 logger · CSV · retention<br/><i>exit: parity กับ v1</i>"]
     M6["<b>M6 · Billing</b><br/>open period · backfill · capture<br/><i>exit: parity กับ v1</i>"]
@@ -284,7 +284,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 | v2 | รวมมาจาก v1 |
 |---|---|
 | `devices` | `devices` + `device_settings` + `device_status` + `device_capture_objects` (→ JSON column) |
-| `device_events` | `device_heartbeats` (+ แนวคิดจาก `alarms` / `device_connection_log` ที่ตายไปแล้ว) |
+| `device_events` | `device_heartbeats` (+ แนวคิดจาก `alarms` / `device_connection_log` ที่ตายไปแล้ว) — **ไม่ใช่การพอร์ต 1:1**: v1 เขียนทุก tick, v2 เขียนเฉพาะตอนเปลี่ยนสถานะ + การกระทำของคน (ADR 0004) |
 | `interval_readings` | `logger_readings` + `meter_readings_<brand>_1m/_5m/_15m` — **หน้าตา COSEM ~24 คอลัมน์ + `source` + `interval`** (D10, §6.1) |
 | `interval_read_jobs` | `load_profile_reads` |
 | `billing_readings` | `billing_readings` |
@@ -420,11 +420,17 @@ fingerprint (เขียนใหม่ใน Python), poller, FastAPI, FE, one
 → ทำได้ครบ: เทส 313 ตัว · route-table sweep กันไม่ให้ router ใหม่หลุด guard · กฎกันล็อกตัวเอง 3 ข้อ
 (v1 ไม่มีเลยสักข้อ — ดู `.claude/run-logs/issue-2.md`)
 
-### M3 — Device Manager
-device CRUD (devices ตารางรวม §3.4) · `device_events` · health-check loop — **job แรกของ job registry (§3.2)** ·
-pause/reconnect (ADR 0009) · transport-endpoint lock (§3.2) · หน้า Devices เต็มรูป (ต่อยอดจากหน้า skeleton) ·
-**หน้า Instantaneous** (อ่านค่าสดตามสั่ง — คือ "ดูค่าสดของ device" จึงอยู่โมดูลนี้ ไม่ใช่ acquisition)
-**Exit**: เพิ่ม/แก้/หยุด/ต่อมิเตอร์ CEWE ได้จริงผ่าน UI เห็นสถานะ online/offline ถูกต้อง + เทสผ่าน
+### M3 — Device Manager *(grill 2026-08-05 — 31 ข้อตัดสิน ดู SPEC §3.3)*
+device CRUD ครบฟิลด์ v1 (devices ตารางรวม §3.4) · **probe-first identity** — อ่าน `meter_serial`
+จากมิเตอร์ก่อนเขียนแถว probe ล้ม = ไม่สร้าง (ADR 0005) · `device_events` เฉพาะตอนเปลี่ยน ·
+**ไม่มี health-check loop** — สถานะมาจากผล Poller ที่เดินอยู่แล้ว (ADR 0004 — job registry ไม่ได้ job แรกที่นี่) ·
+pause/resume คอลัมน์เดียว (เจตนา ADR 0009 ของ v1 คงไว้ครบ) · **priority lock** ให้คำสั่งคนมาก่อน
+background (ADR 0006 — ยกจาก ADR 0020 ของ v1 มาเร็วขึ้น 1 milestone) · quota นับจำนวนจาก license ·
+**ถอดรุ่น SIM ออกจากตัวสินค้า** เหลือ fake driver ในเทส · หน้า Devices เต็มรูป (tree + form ตาม v1)
+**Exit**: เพิ่ม/แก้/หยุด/ลบมิเตอร์ CEWE จริงได้ผ่าน UI · เห็นสถานะ Online/Offline ถูกต้อง ·
+Read now / Test connection ได้คิวก่อน poller + เทสผ่าน
+*(หน้า Instantaneous เคยอยู่ที่นี่ — ย้ายไป M5 ในชื่อ **Records** เพราะของจริง v1 คือตารางนับความครบ
+ของ interval ไม่ใช่หน้าอ่านค่าสด และต้องมี load profile ก่อนจึงมีอะไรให้นับ)*
 
 ### M4 — Acquisition ครบทุกยี่ห้อ — สองเฟส
 
