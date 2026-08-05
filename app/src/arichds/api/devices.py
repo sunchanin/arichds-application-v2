@@ -1,4 +1,5 @@
-"""Device Manager — probe-first CRUD, the model catalog, and the device quota (M3-1).
+"""Device Manager — probe-first CRUD and catalog (M3-1); status, history,
+Pause/Resume, Read now and Delete all data (M3-2).
 
 Three independent gates sit in front of every handler here:
 
@@ -8,8 +9,17 @@ Three independent gates sit in front of every handler here:
 * **Authentication** (M2-1) — the router-level dependency means an
   unauthenticated request is refused with 401 *before* its body is validated,
   so a ``POST`` with no body answers 401 rather than 422.
-* **Role** (SPEC §3.2) — changing a device, and testing a connection, are
-  admin-only; reading is open to any authenticated user.
+* **Role** (SPEC §3.2) — changing a device (including Pause/Resume and Delete
+  all data), and testing a connection, are admin-only; reading **and Read now**
+  are open to any authenticated user.
+
+**Status is not asked for, it is remembered (ADR 0004).** Nothing in this module
+polls, schedules or health-checks anything: the Poller's ticks and the Manual
+Reads below write what they proved through
+:mod:`arichds.acquisition.status`, and every read path here just projects the
+columns. ``paused`` is the one status computed rather than stored, which is what
+makes it impossible for this API to report ``online`` for a device nobody is
+reading.
 
 **Identity comes from the meter (ADR 0005).** Create and Update both Probe
 before they write, so ``meter_serial`` is never typed by a person and never
@@ -33,16 +43,26 @@ import logging
 from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from arichds.acquisition.catalog import CATALOG, ModelSpec
 from arichds.acquisition.drivers.factory import supported_models
 from arichds.acquisition.probe import ProbeError, ProbeResult, probe_meter
-from arichds.api.deps import AdminDep, LicenseServiceDep, PollerDep, SessionDep, get_current_user
+from arichds.acquisition.status import (
+    DeviceEventKind,
+    DeviceStatus,
+    display_status,
+    record_event,
+    record_failure,
+    record_no_driver,
+    record_success,
+)
+from arichds.api.deps import AdminDep, CurrentUserDep, LicenseServiceDep, PollerDep, SessionDep, get_current_user
 from arichds.api.envelope import ApiResponse
-from arichds.db.models import Device, IntervalReading
+from arichds.constants import JOB_LIVENESS
+from arichds.db.models import Device, DeviceEvent, IntervalReading
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +153,13 @@ class DeviceOut(BaseModel):
         port: TCP port.
         endpoint: The Transport Endpoint (``host:port``) — the Poller lock key.
         enabled: Whether the Poller reads it.
+        status: What to show — ``paused`` whenever *enabled* is false, otherwise
+            the last thing a read proved (ADR 0004). Computed by
+            :func:`~arichds.acquisition.status.display_status`, so this field can
+            never report ``online`` for a device nobody is reading.
+        status_detail: A sentence explaining a non-online status, or None.
+        status_checked_at: When a read last reported on this device (UTC), or
+            None when none ever has.
         first_bill_date: Billing anchor date (M6 logic).
         bill_day_feb28/bill_day_feb29/bill_day_30/bill_day_31: M6 logic.
         created_at: When it was added (UTC).
@@ -154,12 +181,73 @@ class DeviceOut(BaseModel):
     port: int
     endpoint: str
     enabled: bool
+    status: DeviceStatus
+    status_detail: str | None
+    status_checked_at: datetime | None
     first_bill_date: date | None
     bill_day_feb28: int | None
     bill_day_feb29: int | None
     bill_day_30: int | None
     bill_day_31: int | None
     created_at: datetime
+
+    @field_validator("status_checked_at")
+    @classmethod
+    def _ensure_utc(cls, value: datetime | None) -> datetime | None:
+        """Re-attach UTC to the naive datetime SQLite hands back (D15).
+
+        Without it the SPA computes freshness ("checked 40 s ago") against a
+        timestamp with no offset, and is wrong by the machine's timezone.
+        """
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+class DeviceEventOut(BaseModel):
+    """One Device Event as the API exposes it.
+
+    Attributes:
+        id: Surrogate key — also the tiebreak the drawer pages on.
+        kind: What happened (:class:`~arichds.acquisition.status.DeviceEventKind`).
+        detail: A sentence for a person, or None.
+        actor: Who did it, or **None for an automatic transition** (D11) — a
+            meter going offline was nobody's action.
+        created_at: When it was recorded (UTC).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: DeviceEventKind
+    detail: str | None
+    actor: str | None
+    created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def _ensure_utc(cls, value: datetime) -> datetime:
+        """Re-attach UTC to the naive datetime SQLite hands back (D15)."""
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+class DeviceEventPage(BaseModel):
+    """One page of a device's history.
+
+    ``total`` is the **unpaged** count, which is what lets the drawer show
+    "1-50 of 214" and know whether another page exists.
+
+    Attributes:
+        items: The events, newest first.
+        total: How many events this device has in total.
+        limit: The page size that was applied.
+        offset: How many rows were skipped.
+    """
+
+    items: list[DeviceEventOut]
+    total: int
+    limit: int
+    offset: int
 
 
 class CatalogEntry(BaseModel):
@@ -248,6 +336,61 @@ class TestConnectionOut(BaseModel):
     message: str
 
 
+class ReadNowJobResult(BaseModel):
+    """What one job of a Read now did.
+
+    Attributes:
+        job: Which job ran — :data:`~arichds.constants.JOB_LIVENESS` at M3.
+        ok: Whether it succeeded. A meter that refuses reports ``False`` here,
+            not through an HTTP status (D10).
+        detail: A sentence for a person. **Never a measured value** (ADR 0007):
+            v2 has no live-value display, and a liveness read has none to report.
+    """
+
+    job: str
+    ok: bool
+    detail: str
+
+
+class ReadNowOut(BaseModel):
+    """What a Read now produced.
+
+    A **list** of job results, with one entry at M3, because M5 adds
+    ``load_profile`` and M6 adds ``billing`` — and a multi-job read can be
+    partially successful, which is exactly what a single HTTP status cannot say.
+
+    Attributes:
+        results: One entry per job that ran.
+        status: The device's status after the read, re-read from the row, so the
+            caller sees the state its own click produced.
+        checked_at: When that status was established (UTC), or None when nothing
+            checked anything.
+    """
+
+    results: list[ReadNowJobResult]
+    status: DeviceStatus
+    checked_at: datetime | None
+
+    @field_validator("checked_at")
+    @classmethod
+    def _ensure_utc(cls, value: datetime | None) -> datetime | None:
+        """Re-attach UTC to the naive datetime SQLite hands back (D15)."""
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+class ClearReadingsRequest(BaseModel):
+    """The typed confirmation that guards an irreversible delete.
+
+    Attributes:
+        confirm_name: The device's name, typed by the operator. It must match
+            exactly — deleting a device's history cannot be undone (SPEC §3.3).
+    """
+
+    confirm_name: str = Field(min_length=1, max_length=128)
+
+
 class ReadingOut(BaseModel):
     """One Interval Reading — always UTC, always kWh.
 
@@ -310,6 +453,9 @@ def _to_out(device: Device) -> DeviceOut:
         port=int(transport.get("port", 0)),
         endpoint=device.transport_endpoint,
         enabled=device.enabled,
+        status=display_status(device),
+        status_detail=device.status_detail,
+        status_checked_at=device.status_checked_at,
         first_bill_date=device.first_bill_date,
         bill_day_feb28=device.bill_day_feb28,
         bill_day_feb29=device.bill_day_feb29,
@@ -430,6 +576,18 @@ def _enforce_quota(session: SessionDep, max_meters: int | None) -> None:
                 "Delete a device or ask the vendor for a larger license."
             ),
         )
+
+
+def _require_device(session: SessionDep, device_id: int) -> Device:
+    """Load a device or refuse with 404.
+
+    Raises:
+        HTTPException: 404 if no such device.
+    """
+    device = session.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No device with id {device_id}")
+    return device
 
 
 def _kept(new: str | None, stored: str) -> str:
@@ -584,8 +742,17 @@ def create_device(
         bill_day_30=payload.bill_day_30,
         bill_day_31=payload.bill_day_31,
         enabled=True,
+        # Online immediately, not Unknown-until-the-first-tick: the probe above
+        # held a conversation with this meter seconds ago, so making the operator
+        # watch Unknown for a minute would report less than we know (ADR 0004).
+        status=DeviceStatus.ONLINE.value,
+        status_detail=None,
+        status_checked_at=datetime.now(UTC),
+        consecutive_failures=0,
     )
     session.add(device)
+    session.flush()
+    record_event(session, device_id=device.id, kind=DeviceEventKind.CREATED, actor=admin.username)
     session.commit()
     session.refresh(device)
     logger.info("Device %s added at %s (serial %s)", device.name, device.transport_endpoint, device.meter_serial)
@@ -663,6 +830,7 @@ def update_device(
     device.bill_day_feb29 = payload.bill_day_feb29
     device.bill_day_30 = payload.bill_day_30
     device.bill_day_31 = payload.bill_day_31
+    record_event(session, device_id=device.id, kind=DeviceEventKind.UPDATED, actor=admin.username)
     session.commit()
     session.refresh(device)
     logger.info("Device %s updated at %s", device.name, device.transport_endpoint)
@@ -716,6 +884,250 @@ def delete_device(
 
     poller.restart()
     return ApiResponse.ok(True)
+
+
+@router.post("/{device_id}/pause")
+def pause_device(
+    device_id: DeviceIdPath, session: SessionDep, poller: PollerDep, admin: AdminDep
+) -> ApiResponse[DeviceOut]:
+    """Stop every background read of one device, leaving it fully visible.
+
+    Admin only (SPEC §3.2). Pause is one column — the existing ``enabled``
+    (CONTEXT.md — Pause). There is no ``polling_paused`` beside it: v1 needed two
+    because its ``is_active`` was a soft-delete that hid the device from every
+    list, and v2 deletes for real.
+
+    **Writing the column is not enough.** ``Device.enabled`` is read in exactly
+    one place in the Poller — ``_enabled_devices()``, called only from
+    ``start()`` — and a worker loops over a snapshot it never re-reads. Without
+    the restart below, a paused meter would keep being read until somebody
+    happened to add or delete a device. Restarting rather than adding a per-tick
+    check is also what preserves v1 ADR 0009's intent: ``stop()`` waits for the
+    in-flight read instead of cutting the socket.
+
+    The stored status columns are deliberately left alone: the API already
+    reports ``paused`` because ``enabled`` is false, and what the last read
+    proved stays on the row for Resume to discard.
+
+    Raises:
+        HTTPException: 403 for a non-admin, 404 for an unknown device.
+
+    Returns:
+        The device as it now reads.
+    """
+    device = _require_device(session, device_id)
+    if not device.enabled:
+        # Already paused. 200 with the unchanged device, no event (nothing
+        # changed) and no restart — there is no reason to respawn every worker
+        # on the site because somebody clicked twice.
+        return ApiResponse.ok(_to_out(device))
+
+    device.enabled = False
+    record_event(session, device_id=device_id, kind=DeviceEventKind.PAUSED, actor=admin.username)
+    session.commit()
+    session.refresh(device)
+    logger.info("Device %s paused by %s", device.name, admin.username)
+
+    # After the commit, always: start() re-reads the enabled devices from the
+    # database, so an uncommitted change would be invisible to it.
+    poller.restart()
+    return ApiResponse.ok(_to_out(device))
+
+
+@router.post("/{device_id}/resume")
+def resume_device(
+    device_id: DeviceIdPath, session: SessionDep, poller: PollerDep, admin: AdminDep
+) -> ApiResponse[DeviceOut]:
+    """Put a paused device back into the Poller rotation.
+
+    Admin only (SPEC §3.2). It resumes into **Unknown**, not into the status it
+    had before the pause: while paused nobody talked to the meter, so nobody
+    knows whether it is still there (ADR 0004). ``status_checked_at`` is cleared
+    for the same reason — a pre-pause check time shown as current would present a
+    stale fact as fresh — and the strike counter starts over, because three
+    failures from before an operator intervened are not evidence about now.
+
+    Raises:
+        HTTPException: 403 for a non-admin, 404 for an unknown device.
+
+    Returns:
+        The device as it now reads.
+    """
+    device = _require_device(session, device_id)
+    if device.enabled:
+        # Already running: 200, unchanged, no event, no restart (D13). In
+        # particular it must NOT reset an online device to unknown for nothing.
+        return ApiResponse.ok(_to_out(device))
+
+    device.enabled = True
+    device.status = DeviceStatus.UNKNOWN.value
+    device.status_detail = "Resumed — waiting for the first tick."
+    device.status_checked_at = None
+    device.consecutive_failures = 0
+    record_event(session, device_id=device_id, kind=DeviceEventKind.RESUMED, actor=admin.username)
+    session.commit()
+    session.refresh(device)
+    logger.info("Device %s resumed by %s", device.name, admin.username)
+
+    poller.restart()
+    return ApiResponse.ok(_to_out(device))
+
+
+@router.post("/{device_id}/read-now")
+def read_now(device_id: DeviceIdPath, session: SessionDep, user: CurrentUserDep) -> ApiResponse[ReadNowOut]:
+    """Read a device now, ahead of the Poller, and report what happened.
+
+    **Every authenticated role** (SPEC §3.2), and it works on a **paused**
+    device: Pause governs background reads only, and a person asking whether a
+    meter they just fixed is answering is precisely what Read now is for.
+
+    At M3 there is exactly one job, ``liveness``: the same
+    :func:`~arichds.acquisition.probe.probe_meter` Create and Update use — one
+    association, one register (the Meter Serial), disconnect. That is what
+    ADR 0007 §2 calls a liveness read, and it **cannot** return an electrical
+    value by construction, so it also writes no Interval Reading. M5 and M6 add
+    their jobs to the same list without changing this contract.
+
+    The serial it reads is deliberately ignored beyond "it answered" (D9).
+    Serial-mismatch handling belongs to Update (ADR 0005); doing it here would
+    let Read now fail for a reason its button does not promise.
+
+    Always answers **200** (D10) — a meter that refuses is a successful
+    execution of a diagnostic, exactly as ``POST /test-connection`` decided. The
+    verdict is in ``results[].ok``.
+
+    Raises:
+        HTTPException: 404 if no such device.
+
+    Returns:
+        The job results plus the device's status as this call left it.
+    """
+    device = _require_device(session, device_id)
+    endpoint = device.transport_endpoint
+    transport = device.transport or {}
+
+    if device.model.lower() not in supported_models():
+        # Not a meter failure and therefore not a strike: nothing was asked of
+        # the meter. `record_no_driver` parks it at Unknown with the reason.
+        record_no_driver(device_id, device.model)
+        result = ReadNowJobResult(
+            job=JOB_LIVENESS,
+            ok=False,
+            detail=(f"Model {device.model!r} has no driver in this build — press Update to re-identify this device."),
+        )
+    else:
+        try:
+            probe_meter(
+                model=device.model,
+                host=str(transport.get("host", "")),
+                port=int(transport.get("port", 0)),
+                password=device.password,
+            )
+        except ProbeError as exc:
+            # `str(exc)` is already operator-facing and already free of the
+            # password — that is ProbeError's contract, so it is passed straight
+            # through rather than reworded here.
+            record_failure(device_id, str(exc))
+            result = ReadNowJobResult(job=JOB_LIVENESS, ok=False, detail=str(exc))
+        else:
+            record_success(device_id)
+            result = ReadNowJobResult(job=JOB_LIVENESS, ok=True, detail=f"The meter answered at {endpoint}.")
+
+    # Re-read: the recorders wrote through their own session (they have to — the
+    # Poller calls them with no request session), so this request's identity map
+    # still holds the pre-read row. Without this the caller would be told the
+    # state its own click *replaced*.
+    session.refresh(device)
+    return ApiResponse.ok(
+        ReadNowOut(results=[result], status=display_status(device), checked_at=device.status_checked_at)
+    )
+
+
+@router.post("/{device_id}/readings/clear")
+def clear_readings(
+    device_id: DeviceIdPath, payload: ClearReadingsRequest, session: SessionDep, admin: AdminDep
+) -> ApiResponse[int]:
+    """Delete every Interval Reading of one device, keeping the device and its history.
+
+    Admin only (SPEC §3.2). The device's Device Events are kept **on purpose**:
+    they are the evidence of who deleted the data, and destroying that evidence
+    in the same click as the data would be the one thing an audit trail exists to
+    prevent.
+
+    The typed confirmation is the guard, because this cannot be undone. A
+    mismatch answers 409 — a conflict, consistent with this router's rule — and
+    the message does **not** repeat the correct name: echoing it would turn the
+    ritual into copy-paste and remove the only thing it was protecting.
+
+    Raises:
+        HTTPException: 403 for a non-admin · 404 for an unknown device · 409 if
+            the confirmation name does not match, in which case **nothing was
+            deleted**.
+
+    Returns:
+        How many Interval Readings were deleted, so the toast can say.
+    """
+    device = _require_device(session, device_id)
+    if payload.confirm_name != device.name:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The confirmation name does not match this device. Nothing was deleted.",
+        )
+
+    result = session.execute(
+        delete(IntervalReading).where(IntervalReading.device_id == device_id),
+        execution_options={"synchronize_session": False},
+    )
+    deleted = result.rowcount
+    record_event(
+        session,
+        device_id=device_id,
+        kind=DeviceEventKind.DATA_CLEARED,
+        detail=f"Deleted {deleted} interval readings.",
+        actor=admin.username,
+    )
+    session.commit()
+    logger.info("Deleted %d interval readings of device %s by %s", deleted, device.name, admin.username)
+
+    return ApiResponse.ok(deleted)
+
+
+@router.get("/{device_id}/events")
+def list_device_events(
+    device_id: DeviceIdPath,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=200, description="Page size")] = 50,
+    offset: Annotated[int, Query(ge=0, description="Rows to skip")] = 0,
+) -> ApiResponse[DeviceEventPage]:
+    """Return one page of a device's history, newest first. Any authenticated role.
+
+    The ``id`` tiebreak in the ordering is load-bearing, not decoration: SQLite's
+    ``CURRENT_TIMESTAMP`` has one-second resolution, so several events written
+    while an operator clicks share a timestamp exactly, and without the tiebreak
+    their order — and therefore which page they land on — is undefined.
+
+    Raises:
+        HTTPException: 404 if no such device.
+    """
+    _require_device(session, device_id)
+
+    total = session.scalar(select(func.count()).select_from(DeviceEvent).where(DeviceEvent.device_id == device_id)) or 0
+    events = session.scalars(
+        select(DeviceEvent)
+        .where(DeviceEvent.device_id == device_id)
+        .order_by(DeviceEvent.created_at.desc(), DeviceEvent.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+
+    return ApiResponse.ok(
+        DeviceEventPage(
+            items=[DeviceEventOut.model_validate(event) for event in events],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+    )
 
 
 @router.get("/{device_id}/readings/latest")

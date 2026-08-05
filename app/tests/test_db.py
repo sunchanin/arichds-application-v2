@@ -35,9 +35,16 @@ class TestMigration:
         assert {"devices", "interval_readings"} <= tables
 
     def test_only_the_shipped_modules_tables_exist(self, migrated_db: Settings) -> None:
-        """M1 landed two tables and M2-1 two more; the other 9 arrive with their own modules."""
+        """M1 landed two tables, M2-1 two more and M3-2 one; the other 8 arrive
+        with their own modules.
+
+        ``device_events`` is the only table M3 adds. There is deliberately no
+        ``device_status`` and no ``device_heartbeats`` beside it (ADR 0004):
+        status lives in columns on ``devices``, and a per-tick heartbeat row is
+        exactly what v2 refused to carry over.
+        """
         tables = set(inspect(get_engine()).get_table_names()) - {"alembic_version"}
-        assert tables == {"devices", "interval_readings", "users", "user_tokens"}
+        assert tables == {"devices", "interval_readings", "users", "user_tokens", "device_events"}
 
     def test_wal_is_enabled(self, migrated_db: Settings) -> None:
         with get_engine().connect() as connection:

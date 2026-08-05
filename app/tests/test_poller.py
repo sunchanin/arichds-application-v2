@@ -6,6 +6,12 @@ the Transport Endpoint, polling follows license state (ADR 0001), a Manual Read
 outranks a background tick (ADR 0006), and a device whose model has no driver
 never gets a worker.
 
+M3-2 adds the other half: what a tick's outcome does to the device's status
+(ADR 0004). The state machine itself is tested in ``test_device_status.py``;
+what belongs here is the *wiring* — that ``STORED`` and ``FAILED`` reach the
+recorder, that ``SKIPPED`` reaches nothing at all, and that the strike counter
+survives ``restart()`` respawning every worker.
+
 Nothing here touches a real meter: ``fake_meter`` swaps the driver registry.
 """
 
@@ -24,9 +30,10 @@ from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers.factory import create_driver, supported_models
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
 from arichds.acquisition.poller import Poller, TickOutcome, build_driver, poll_once, store_reading
+from arichds.acquisition.status import DeviceEventKind, DeviceStatus, record_failure
 from arichds.config import Settings
-from arichds.constants import INTERVAL_LABEL_INSTANTANEOUS, SOURCE_DLMS
-from arichds.db.models import Device, IntervalReading
+from arichds.constants import INTERVAL_LABEL_INSTANTANEOUS, OFFLINE_AFTER_CONSECUTIVE_FAILURES, SOURCE_DLMS
+from arichds.db.models import Device, DeviceEvent, IntervalReading
 from arichds.db.session import session_scope
 from arichds.licensing.service import STATE_ACTIVE, STATE_LIMITED, LicenseState
 
@@ -461,6 +468,219 @@ class TestRestartDoesNotLeakWorkers:
         finally:
             release.set()
             poller.stop()
+
+
+def device_row(device_id: int) -> Device:
+    """A detached snapshot of one device row."""
+    with session_scope() as session:
+        device = session.get(Device, device_id)
+        session.expunge(device)
+        return device
+
+
+def event_kinds(device_id: int) -> list[str]:
+    """Every Device Event kind recorded for *device_id*, oldest first."""
+    with session_scope() as session:
+        return list(
+            session.scalars(select(DeviceEvent.kind).where(DeviceEvent.device_id == device_id).order_by(DeviceEvent.id))
+        )
+
+
+def wait_until(predicate, *, timeout: float = 5.0) -> bool:  # noqa: ANN001
+    """Poll *predicate* until it is true or *timeout* elapses."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+class TestTheWorkerRecordsWhatItsTickProved:
+    """ADR 0004 — the tick's outcome is the status signal, mapped in ``_worker``."""
+
+    def test_a_stored_tick_reports_online(self, meter_device: Device) -> None:
+        poller = Poller(interval_sec=0.05, poll_fn=lambda d, locks, s: TickOutcome.STORED, locks=EndpointLocks())
+        try:
+            poller.start()
+            assert wait_until(lambda: device_row(meter_device.id).status == DeviceStatus.ONLINE)
+        finally:
+            poller.stop()
+
+    def test_a_failed_tick_is_a_strike(self, meter_device: Device) -> None:
+        poller = Poller(interval_sec=0.05, poll_fn=lambda d, locks, s: TickOutcome.FAILED, locks=EndpointLocks())
+        try:
+            poller.start()
+            assert wait_until(lambda: device_row(meter_device.id).status == DeviceStatus.OFFLINE)
+        finally:
+            poller.stop()
+
+    def test_a_driver_that_raises_can_still_reach_offline(self, meter_device: Device) -> None:
+        """D6 — an unhandled exception is a failure, not a hole in the rule."""
+
+        def exploding_poll(device, locks, shutdown):  # noqa: ANN001
+            raise RuntimeError("the driver blew up")
+
+        poller = Poller(interval_sec=0.05, poll_fn=exploding_poll, locks=EndpointLocks())
+        try:
+            poller.start()
+            assert wait_until(lambda: device_row(meter_device.id).status == DeviceStatus.OFFLINE)
+        finally:
+            poller.stop()
+        assert event_kinds(meter_device.id) == [DeviceEventKind.OFFLINE]
+
+
+class TestASkippedTickIsInert:
+    """ADR 0006 — a tick that never ran must report nothing at all (D3)."""
+
+    def test_it_touches_no_status_column(self, meter_device: Device) -> None:
+        locks = EndpointLocks()
+        outcomes: list[TickOutcome] = []
+
+        def counting_poll(device, locks_, shutdown):  # noqa: ANN001
+            outcome = poll_once(device, locks_, shutdown)
+            outcomes.append(outcome)
+            return outcome
+
+        poller = Poller(interval_sec=0.02, poll_fn=counting_poll, locks=locks)
+        # A Manual Read holds the endpoint for the whole run, so every tick skips.
+        with locks.get("127.0.0.1:4059").manual():
+            try:
+                poller.start()
+                assert wait_until(lambda: len(outcomes) >= 3), "the poller never ticked"
+            finally:
+                poller.stop()
+
+        assert set(outcomes) == {TickOutcome.SKIPPED}
+        device = device_row(meter_device.id)
+        assert device.status == DeviceStatus.UNKNOWN
+        assert device.status_checked_at is None
+        assert device.consecutive_failures == 0
+        assert event_kinds(meter_device.id) == []
+
+    def test_a_skip_does_not_reset_the_streak(self, meter_device: Device) -> None:
+        """FAILED, FAILED, SKIPPED, FAILED still reaches Offline."""
+        script = [TickOutcome.FAILED, TickOutcome.FAILED, TickOutcome.SKIPPED, TickOutcome.FAILED]
+        remaining = list(script)
+        finished = threading.Event()
+
+        def scripted_poll(device, locks, shutdown):  # noqa: ANN001
+            if not remaining:
+                finished.set()
+                return TickOutcome.SKIPPED
+            return remaining.pop(0)
+
+        poller = Poller(interval_sec=0.02, poll_fn=scripted_poll, locks=EndpointLocks())
+        try:
+            poller.start()
+            assert finished.wait(timeout=5), "the poller never ran the script"
+        finally:
+            poller.stop()
+
+        device = device_row(meter_device.id)
+        assert device.status == DeviceStatus.OFFLINE
+        assert device.consecutive_failures == OFFLINE_AFTER_CONSECUTIVE_FAILURES
+        assert event_kinds(meter_device.id) == [DeviceEventKind.OFFLINE]
+
+
+class TestTheStrikeCounterSurvivesARestart:
+    """Trap 2 — ``restart()`` builds brand-new threads (D1).
+
+    If the counter lived in a worker's local variable, adding one device would
+    reset the streak of every device on the site and a genuinely dead meter would
+    never reach three.
+    """
+
+    def test_deterministically(self, meter_device: Device) -> None:
+        # An inert poll_fn: the Poller must be genuinely running for restart()
+        # to respawn anything, but its ticks must not disturb the counter.
+        poller = Poller(interval_sec=0.02, poll_fn=lambda d, locks, s: TickOutcome.SKIPPED, locks=EndpointLocks())
+        try:
+            poller.start()
+            record_failure(meter_device.id)
+            record_failure(meter_device.id)
+            assert device_row(meter_device.id).status != DeviceStatus.OFFLINE
+
+            poller.restart()
+
+            record_failure(meter_device.id)
+        finally:
+            poller.stop()
+
+        assert device_row(meter_device.id).status == DeviceStatus.OFFLINE
+        assert event_kinds(meter_device.id) == [DeviceEventKind.OFFLINE]
+
+    def test_through_a_running_poller(self, meter_device: Device) -> None:
+        # One permit per tick, so the number of recorded failures is exactly the
+        # number the test released — whichever worker happens to take it.
+        permits = threading.Semaphore(0)
+
+        def gated_poll(device, locks, shutdown):  # noqa: ANN001
+            if not permits.acquire(timeout=2):
+                return TickOutcome.SKIPPED  # inert — never a strike
+            return TickOutcome.FAILED
+
+        poller = Poller(interval_sec=0.02, stop_timeout=0.2, poll_fn=gated_poll, locks=EndpointLocks())
+        try:
+            poller.start()
+            permits.release()
+            permits.release()
+            assert wait_until(lambda: device_row(meter_device.id).consecutive_failures == 2)
+            assert device_row(meter_device.id).status != DeviceStatus.OFFLINE
+
+            poller.restart()
+
+            permits.release()
+            assert wait_until(lambda: device_row(meter_device.id).status == DeviceStatus.OFFLINE)
+        finally:
+            poller.stop()
+
+        assert event_kinds(meter_device.id) == [DeviceEventKind.OFFLINE]
+
+
+class TestADeviceWithNoDriverSaysWhy:
+    """An operator who resumes a parked pre-M3 row must see a reason, not silence."""
+
+    @pytest.fixture
+    def orphan_id(self, migrated_db: Settings, fake_meter: FakeMeterState) -> int:
+        with session_scope() as session:
+            device = Device(
+                name="Old Sim",
+                brand="SIM",
+                model="sim",
+                site_name="Plant A",
+                transport={"kind": "net", "host": "127.0.0.1", "port": 4059},
+                enabled=True,
+            )
+            session.add(device)
+            session.flush()
+            return device.id
+
+    def test_it_ends_at_unknown_with_a_reason(self, orphan_id: int) -> None:
+        poller = Poller(interval_sec=0.05, locks=EndpointLocks())
+        try:
+            poller.start()
+        finally:
+            poller.stop()
+
+        device = device_row(orphan_id)
+        assert device.status == DeviceStatus.UNKNOWN
+        assert device.status_detail is not None
+        assert "sim" in device.status_detail
+
+    def test_it_never_drifts_to_offline(self, orphan_id: int) -> None:
+        """No worker ever runs for it, so no tick can ever strike it out."""
+        poller = Poller(interval_sec=0.05, locks=EndpointLocks())
+        try:
+            poller.start()
+            time.sleep(0.2)
+        finally:
+            poller.stop()
+
+        device = device_row(orphan_id)
+        assert device.status != DeviceStatus.OFFLINE
+        assert device.consecutive_failures == 0
+        assert event_kinds(orphan_id) == []
 
 
 class TestPollerMasterSwitch:

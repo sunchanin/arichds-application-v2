@@ -97,6 +97,13 @@ device probes first: no serial, no row. A probe is not a reading — it writes n
 Reading.
 _Avoid_: test, ping, health check
 
+**Liveness**:
+The job a tick and Read now run to prove a meter answers a real register read — one
+association, one identity register, disconnect. It is not a data read: it produces no Interval
+Reading, and it never reports a measured value. M5 and M6 name their jobs (`load_profile`,
+`billing`) against this one.
+_Avoid_: ping, health check
+
 **Manual Read**:
 A read a person asked for — Read now, Test connection, or the probe behind Create/Update.
 Manual Reads take the Transport Endpoint lock ahead of the Poller: a skipped background tick

@@ -30,6 +30,21 @@ INTERVAL_LABEL_INSTANTANEOUS: Final[str] = "60s"
 # answers the operator instead of hanging the request (ADR 0006).
 MANUAL_READ_LOCK_TIMEOUT_SEC: Final[float] = 120.0
 
+# ─── Device status (ADR 0004) ─────────────────────────────────────────────────
+# How many consecutive failed reads flip a device Offline. Three, not one: a
+# single timeout on a GPRS link is normal, and flipping on it would flap the tree
+# and write paired transition rows all day. At the fixed 60 s cadence this is
+# ~3 minutes, and the cadence is deliberately not configurable (SPEC §3.3) so the
+# two cannot drift apart.
+OFFLINE_AFTER_CONSECUTIVE_FAILURES: Final[int] = 3
+
+# ─── Read now jobs (SPEC §3.3) ────────────────────────────────────────────────
+# The one job Read now runs at M3: an identity read that proves the meter
+# answers a real register read, writing no Interval Reading (ADR 0007).
+# M5 adds "load_profile" and M6 adds "billing" to this same list — the naming is
+# fixed here now precisely so those two modules do not each invent one.
+JOB_LIVENESS: Final[str] = "liveness"
+
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"
 SOURCE_MODBUS: Final[str] = "modbus"

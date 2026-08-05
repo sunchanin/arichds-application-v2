@@ -19,6 +19,13 @@ Reads in the API take the very same locks (ADR 0006).
 "polling หยุด · process ไม่ตาย". It subscribes to the LicenseService rather than
 checking a flag it captured at startup (ADR 0001), so activation starts it
 immediately and a lapsed lease stops it — both without a restart.
+
+**A tick's outcome is also the device's status** (ADR 0004), which is why there
+is no health-check job anywhere in v2: this connection has already answered the
+question a connectivity probe would ask, more recently and more thoroughly. The
+mapping lives in :meth:`Poller._record` and the rules behind it in
+:mod:`arichds.acquisition.status` — nothing in this file decides what "offline"
+means.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers.base import InstantaneousReading, MeterDriver
 from arichds.acquisition.drivers.factory import create_driver, supported_models
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
+from arichds.acquisition.status import record_failure, record_no_driver, record_success
 from arichds.constants import (
     INTERVAL_LABEL_INSTANTANEOUS,
     POLL_INTERVAL_SEC,
@@ -251,6 +259,10 @@ class Poller:
                     device.name,
                     device.model,
                 )
+                # Say so on the device too, not just in the log. Without this an
+                # operator who resumes a parked pre-M3 row watches a permanent
+                # Unknown with no explanation anywhere they can see.
+                record_no_driver(device.id, device.model)
         return usable
 
     def start(self) -> None:
@@ -341,14 +353,52 @@ class Poller:
         logger.info("Poller worker for %s started (every %ss)", device.name, self._interval_sec)
         while not shutdown.is_set():
             try:
-                self._poll_fn(device, self._locks, shutdown)
+                outcome = self._poll_fn(device, self._locks, shutdown)
+                self._record(device, outcome)
             except Exception:  # noqa: BLE001 — a worker must never die on one bad tick.
                 logger.exception("Unhandled error polling %s", device.name)
+                # A driver that raises must still be able to reach Offline: from
+                # the operator's side "it threw" and "it timed out" are the same
+                # fact — this machine could not read that meter.
+                #
+                # Guarded because this call is in the handler of last resort: a
+                # database error here would otherwise escape the loop and kill
+                # the worker, and "a worker must never die on one bad tick" is
+                # the whole reason this except exists.
+                try:
+                    record_failure(device.id)
+                except Exception:  # noqa: BLE001 — see above.
+                    logger.exception("Could not record the failed tick for %s", device.name)
             # Event.wait doubles as the sleep and the shutdown check, so stopping
             # never waits out a full interval.
             if shutdown.wait(self._interval_sec):
                 break
         logger.info("Poller worker for %s stopped", device.name)
+
+    def _record(self, device: Device, outcome: TickOutcome) -> None:
+        """Turn one tick outcome into device status (ADR 0004).
+
+        Called at the ``poll_fn`` seam rather than from inside :func:`poll_once`
+        for two reasons. ``poll_fn`` is the injection point the tests use, so
+        recording here lets a test drive the whole state machine with fabricated
+        outcomes and no threads-versus-meter timing. And it keeps
+        :mod:`arichds.acquisition.status` free of any import of this module, so
+        the outcome vocabulary can be renamed (ADR 0007, issue #8) without the
+        state machine noticing.
+
+        Args:
+            device: The device that was (or was not) read.
+            outcome: What the tick did.
+        """
+        if outcome is TickOutcome.STORED:
+            record_success(device.id)
+        elif outcome is TickOutcome.FAILED:
+            record_failure(device.id)
+        # SKIPPED is a total no-op — not a strike, not a reset, not even a fresh
+        # `status_checked_at`. A tick skipped because a Manual Read held the
+        # endpoint (ADR 0006) checked nothing, so it has nothing to report; if it
+        # counted as a failure, pressing Read now three times in a row would be a
+        # way to mark your own meter Offline.
 
     # ── License integration (ADR 0001) ───────────────────────────────────────
 

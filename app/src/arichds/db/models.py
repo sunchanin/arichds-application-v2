@@ -1,9 +1,9 @@
-"""SQLAlchemy 2 models — M1 and M2-1 tables.
+"""SQLAlchemy 2 models — the M1, M2-1 and M3-2 tables.
 
 The full v2 schema is 13 tables (SPEC §4); M1 landed the two the walking
-skeleton needs and M2-1 adds the two auth needs. The rest arrive module by
-module, each via its own Alembic migration — never by widening this file
-speculatively.
+skeleton needs, M2-1 adds the two auth needs and M3-2 adds ``device_events``.
+The rest arrive module by module, each via its own Alembic migration — never by
+widening this file speculatively.
 
 ``interval_readings`` is deliberately a *subset* of the COSEM shape defined in
 REMAKE-PLAN §6.1. Its normalization contract is absolute and applies from row
@@ -71,7 +71,17 @@ class Device(Base):
         bill_day_feb28/bill_day_feb29/bill_day_30/bill_day_31: Which day of the
             month closes a period, per month length. Columns only until M6.
         enabled: Whether the Poller should read this device (CONTEXT.md — Pause).
+        status: The last thing a read told us about this meter — one of
+            ``online`` / ``offline`` / ``unknown``. ``paused`` is **not** storable:
+            it is computed at read time from :attr:`enabled`
+            (:class:`arichds.acquisition.status.DeviceStatus`).
+        status_detail: A sentence explaining a non-online status, or None.
+        status_checked_at: When a read last reported on this device (UTC), or
+            None when nothing has (a resumed device, a model with no driver).
+        consecutive_failures: How many failed reads in a row (ADR 0004's
+            3-strikes rule).
         created_at: Row creation time (UTC).
+        events: Every Device Event recorded for this device.
     """
 
     __tablename__ = "devices"
@@ -103,9 +113,31 @@ class Device(Base):
     bill_day_30: Mapped[int | None] = mapped_column(default=None)
     bill_day_31: Mapped[int | None] = mapped_column(default=None)
     enabled: Mapped[bool] = mapped_column(default=True)
+    # Three observable values — "online", "offline", "unknown" — named by
+    # `arichds.acquisition.status.DeviceStatus`, which is deliberately NOT
+    # imported here: that module imports this one, so the enum would close a
+    # cycle. The literal default is duplicated verbatim in migration 0004 for
+    # the same reason `site_name`'s "Unknown site" is (see above).
+    status: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
+    status_detail: Mapped[str | None] = mapped_column(String(255), default=None)
+    status_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # The strike counter behind ADR 0004's "offline after 3 consecutive failed
+    # ticks". It lives in the database rather than in a worker's local variable
+    # because `Poller.restart()` respawns every worker — adding one device would
+    # otherwise reset the streak of every device on the site, and a genuinely
+    # dead meter would never reach 3. A non-skipped tick already has to UPDATE
+    # this row to refresh `status_checked_at`, so the counter rides that same
+    # statement at no extra cost and can never disagree with the status it
+    # produced. It also survives a Windows service restart.
+    consecutive_failures: Mapped[int] = mapped_column(default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     readings: Mapped[list[IntervalReading]] = relationship(
+        back_populates="device",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    events: Mapped[list[DeviceEvent]] = relationship(
         back_populates="device",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -172,6 +204,49 @@ class IntervalReading(Base):
     __table_args__ = (
         # The monitor page's only query: latest row per device.
         Index("ix_interval_readings_device_read_at", "device_id", "read_at"),
+    )
+
+
+class DeviceEvent(Base):
+    """One row recorded when something about a device *changes* (M3-2).
+
+    CONTEXT.md — Device Event: *"One row recorded when something changes: a
+    status transition, or an operator action (created, updated, paused, resumed,
+    data cleared) with the name of who did it. Not a per-tick heartbeat — a meter
+    that stays online all month writes no rows."*
+
+    That is why there is no ``device_heartbeats`` table in v2 (ADR 0004): at 30
+    meters a per-tick row would be 43,200 rows a day that nobody reads, while
+    transitions alone answer both operator questions ("what is down now", "when
+    did it drop").
+
+    Attributes:
+        id: Surrogate primary key.
+        device_id: Owning device. The row goes when the device does.
+        kind: What happened — the values of
+            :class:`arichds.acquisition.status.DeviceEventKind`. A plain string
+            column for the same cycle reason :attr:`Device.status` is.
+        detail: A sentence for a person, or None.
+        actor: The username that caused it, or **None for an automatic
+            transition** — nobody changed the device, the meter changed state.
+        created_at: When it was recorded (UTC).
+        device: The owning device.
+    """
+
+    __tablename__ = "device_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    detail: Mapped[str | None] = mapped_column(String(255), default=None)
+    actor: Mapped[str | None] = mapped_column(String(64), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    device: Mapped[Device] = relationship(back_populates="events")
+
+    __table_args__ = (
+        # The History drawer's only query: this device's events, newest first.
+        Index("ix_device_events_device_created_at", "device_id", "created_at"),
     )
 
 
