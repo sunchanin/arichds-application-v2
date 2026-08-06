@@ -11,8 +11,10 @@ The **instantaneous set** is no longer read by the app at all — nothing in v2
 displays or stores a live value — and survives here because settling an Output
 Parity argument against v1 needs those numbers in front of a person.
 
-Mirrors the role of v1's ``cewe-worker/scripts/`` probes. Not part of the pytest
-suite: it needs a reachable meter, which CI will never have.
+Mirrors the role of v1's ``cewe-worker/scripts/`` probes. The meter-facing path
+itself still needs real hardware, which CI will never have; the report-formatting
+logic below — how a refused or empty Meter Serial is rendered — is covered against
+a stub driver by ``tests/test_probe_meter_script.py``.
 
 Usage (from ``app/``)::
 
@@ -107,7 +109,17 @@ def main() -> int:
         # Poller's liveness tick reads (ADR 0007), so if it fails here it will
         # fail there, and the device will never leave Unknown.
         print("\n=== METER SERIAL (the register the liveness tick reads) ===")
-        print(f"  meter_serial      : {driver.read_meter_serial()}")
+        try:
+            serial = driver.read_meter_serial()
+        except Exception as exc:  # noqa: BLE001 — a refused serial must not end the report either.
+            serial_line = f"!! {type(exc).__name__}: {exc}"
+        else:
+            serial_line = (
+                serial
+                if serial is not None
+                else "<none> (associated, but the meter served no serial - a FAILED tick per ADR 0007)"
+            )
+        print(f"  meter_serial      : {serial_line}")
 
         # Then the instantaneous set, register by register. The app itself no
         # longer reads this set — it is here because settling an Output Parity
