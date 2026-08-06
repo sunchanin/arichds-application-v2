@@ -62,7 +62,9 @@ MySQL, and ~30 tables.
 - `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code signing. Private keys are
   NEVER committed.
 - `mockups/` — throwaway comparison app that decided D4 (AntD). Do not extend.
-- `docs/` — REMAKE-PLAN + ADRs.
+- `docs/` — REMAKE-PLAN + ADRs, plus `lib-notes/` (per-module API digests), `meter-notes/`
+  (register maps scanned off real meters) and `issues/` (local issue files for work that does
+  not warrant a GitHub issue — `/run-issue docs/issues/NNN-*.md` runs them without touching `gh`).
 
 ## Commands
 
@@ -144,13 +146,19 @@ Two rules that keep the pipeline honest — apply them when running `/to-issues`
   against the issue, so a gate that lives only here won't be enforced. `/to-issues` adds them.
 - **Docs digest per module, not per issue.** If a module introduces a library the repo hasn't
   used yet, produce ONE current-API digest for it and commit it under `docs/lib-notes/` so every
-  issue's delegation prompt can cite it — don't re-fetch docs per issue. **Context7 is NOT
-  connected here** (verified — any "use context7" step silently degrades); use WebFetch on
-  official docs + read installed package sources (`node_modules/*/…d.ts`, `site-packages/`).
+  issue's delegation prompt can cite it — don't re-fetch docs per issue. **Context7 IS connected
+  now** (re-verified 2026-08-06 from both the main session and a subagent; the earlier "not
+  connected" finding was wrong because its tools are *deferred* — they never appear in the initial
+  tool list and must be loaded with `ToolSearch` before the first call). For a library this repo
+  already pins, still prefer the installed source (`node_modules/*/…d.ts`, `site-packages/`) —
+  it matches the pinned version and Context7 may not; use Context7 for standards and protocols
+  with nothing local to read.
   Skip the digest for modules that only reuse the established stack (FastAPI, SQLAlchemy 2,
   AntD v6 — those are covered by `.claude/skills/fastapi/` and `antd-ui`).
 
-Issue tracker: GitHub `sunchanin/arichds-application-v2` via `gh` CLI. Triage labels follow
+Issue tracker: GitHub `sunchanin/arichds-application-v2` via `gh` CLI — with `docs/issues/NNN-*.md`
+as the local alternative for small leftovers (a nit an audit log parked for the owner), which
+`/run-issue` and `/run-batch` accept directly. Triage labels follow
 v1's five: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`.
 
 ### Branch naming — name the work, never the ticket

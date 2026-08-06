@@ -74,12 +74,11 @@ CORS, **no SSR, no Next.js**). This skill holds the project's locked UI decision
    transitions live on activation (ADR 0001) — no reload. Later modules add
    in-shell navigation, but the top-level gate stays state-driven.
 
-## Fetching current AntD docs (Context7 is NOT available here)
+## Fetching current AntD docs
 
 When you need a prop, token name, or API the local code doesn't show, do **NOT**
-rely on training memory and do **NOT** try Context7 MCP tools — they are not
-connected in this environment (verified 2026-08-04; any "use context7"
-instruction silently degrades). Use the proven fallbacks:
+rely on training memory. For AntD specifically, prefer these two — the installed
+copy is the pinned version, which no external source can guarantee:
 
 - **WebFetch** the official docs: `https://ant.design/components/<name>` (append
   the component, e.g. `/table`, `/form`, `/config-provider`). For v6-specific
