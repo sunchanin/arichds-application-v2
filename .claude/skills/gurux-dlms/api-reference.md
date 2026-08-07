@@ -84,7 +84,7 @@ Construct with the OBIS code string; `read(obj, attr)` fills the matching Python
 | Class | COSEM id | Key attributes (index) | Notes |
 |---|---|---|---|
 | `GXDLMSData` | 1 | `value` (2) | Generic fallback for anything not a register or profile. |
-| `GXDLMSRegister` | 3 | `value` (2), `scaler`/`unit` (3) | attr 2 is **raw**; scale by `value * 10**scaler` (ADR 0002). |
+| `GXDLMSRegister` | 3 | `value` (2), `scaler`/`unit` (3) | attr 2 is **raw** if read before attr 3; `scaler` is already the multiplier (`10**exponent`), not the exponent — read attr 3 first and Gurux scales attr 2 for you (ADR 0002). |
 | `GXDLMSExtendedRegister` | 4 | `value` (2), `scaler`/`unit` (3), `captureTime` (5) | Demand registers (D=6 max, D=2 cumulative) carry a capture time. |
 | `GXDLMSClock` | 8 | `time` (2) | The clock object `0.0.1.0.0.255` — also the timestamp column of every load profile. |
 | `GXDLMSProfileGeneric` | 7 | `buffer` (2), `captureObjects` (3), `capturePeriod` (4), `entriesInUse` (7), `profileEntries` (8) | Read attr 3 first for the column layout. |

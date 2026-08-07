@@ -1042,15 +1042,15 @@ class TestReadNow:
     def test_it_carries_no_electrical_value_at_all(self) -> None:
         """Asserted against the schema, not one example (ADR 0007).
 
-        Derived from ``InstantaneousReading`` rather than hardcoded, so a
+        Derived from ``IntervalReading`` rather than hardcoded, so a
         measurement added later is covered without anyone remembering to.
         """
         from dataclasses import fields
 
-        from arichds.acquisition.drivers.base import InstantaneousReading
+        from arichds.acquisition.drivers.base import IntervalReading
         from arichds.api.devices import ReadNowOut
 
-        measurements = {f.name for f in fields(InstantaneousReading)} - {"read_at", "source"}
+        measurements = {f.name for f in fields(IntervalReading)} - {"read_at", "source"}
         assert measurements, "the measurement set must not be empty, or this test proves nothing"
         assert schema_property_names(ReadNowOut) & measurements == set()
 

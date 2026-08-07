@@ -14,7 +14,8 @@ Two provenances are marked throughout, and the difference matters:
 - [Connect / disconnect lifecycle](#connect--disconnect-lifecycle) — *in v2*
 - [Register + scaler (the #1 trap)](#register--scaler-the-1-trap) — *in v2*
 - [Reading one identity register](#reading-one-identity-register) — *in v2*
-- [ProfileGeneric by entry (billing)](#profilegeneric-by-entry-billing) — *v1-proven*
+- [ProfileGeneric by entry (billing)](#profilegeneric-by-entry-billing) — *mechanism in v2
+  today (SMW110 load profile); billing subject still v1-proven*
 - [ProfileGeneric by range (load profile)](#profilegeneric-by-range-load-profile) — *v1-proven*
 - [GXDateTime handling](#gxdatetime-handling) — *v1-proven*
 - [Meter-local time in selective access](#meter-local-time-in-selective-access) — *v1-proven*
@@ -54,22 +55,29 @@ other device on that line.
 *In v2*: `_dlms.py` → `read_register()`. Pinned by `app/tests/test_dlms_scaler.py`.
 
 `reader.read(register, 2)` returns the **raw integer** stored in the meter. The real value
-is `raw * 10**scaler`, where `scaler` comes from **attr 3 (scaler_unit)**. Skipping it gives
-values off by orders of magnitude — and getting it subtly wrong is exactly what **ADR 0002**
-exists to stop v2 from reproducing (v1 carried a phantom ×10; v2 must be correct *and* still
-match v1's confirmed output at v1's default settings — Output Parity).
+is `raw * scaler`, where `scaler` comes from **attr 3 (scaler_unit)** and is already the
+*multiplier* (`10**exponent`), **not** the exponent itself. Skipping it gives values off by
+orders of magnitude — and treating it as an exponent (`10 ** int(obj.scaler)`) is exactly the
+v1 defect **ADR 0002** exists to stop v2 from reproducing: at exponent 0 that computes
+`10 ** int(1.0) == 10`, a phantom ×10 (v1 carried a compensating ÷10000 elsewhere to cancel
+it back out — do not carry either half over; v2 must be correct *and* still match v1's
+confirmed output at v1's default settings — Output Parity).
+
+**Read attr 3 *before* attr 2** — this is the order the whole scheme rests on:
 
 ```python
 obj = GXDLMSRegister(obis_code)
 client.objects.append(obj)
-raw = reader.read(obj, 2)
-if not isinstance(raw, (int, float, Decimal)):
-    return raw                       # e.g. a Register that actually holds a GXDateTime
-reader.read(obj, 3)                  # populates obj.scaler / obj.unit
-value = Decimal(str(raw)) * Decimal(10) ** int(obj.scaler)
+reader.read(obj, 3)                  # populates obj.scaler (a MULTIPLIER, not an exponent) / obj.unit
+value = reader.read(obj, 2)          # Gurux applies obj.scaler inside setValue — no manual arithmetic
 ```
 
-Treat an unreadable scaler as exponent 0 and log a warning rather than failing the read.
+Reading attr 2 first parses it with the default multiplier of 1 — `obj.scaler` has not been
+populated yet — which silently yields a raw, unscaled integer with no error to signal it.
+This page carried exactly that ordering bug (attr 2 then attr 3, plus the `10**` exponent
+treatment above) until issue #10 fixed it; `_dlms.py::read_register()` has always read attr 3
+first and is the pattern to copy. Treat an unreadable scaler as multiplier 1 and log a
+warning rather than failing the read.
 
 *v1-proven, not in v2 yet*: v1 cached the scaler per connection because attr 3 is constant
 for a register and re-reading it every cycle cost roughly **500 ms per field on Premier
@@ -89,7 +97,13 @@ answer means **no identity** — which the probe reports as `NO_SERIAL`, not as 
 
 ## ProfileGeneric by entry (billing)
 
-*v1-proven, not in v2 yet* — billing is **M6**. Source: v1
+**The read-by-entry mechanism itself is *in v2 today***, for the SMW110W4 load profile —
+`app/src/arichds/acquisition/drivers/smw110.py::Smw110Driver.read_load_profile()` (issue #10,
+M4a-2). What follows in this section is still *v1-proven, not in v2 yet* for its actual
+subject, **billing** (M6); read `read_load_profile()` for the load-profile version of this
+same access pattern, including live-schema handling (D7) and the scaler-borrowing resolver
+this meter needs because it denies `scaler_unit` on every load-profile capture column.
+Source for the billing pattern below: v1
 `src/drivers/_tcp_driver_base.py::read_billing_profile_row()`.
 
 ```python
@@ -113,7 +127,10 @@ physical unit).
 
 ## ProfileGeneric by range (load profile)
 
-*v1-proven, not in v2 yet* — load profile is **M5**. Source: v1
+*v1-proven, not in v2 yet* — this **by-range** mechanism specifically, not load profile as a
+whole: the SMW110W4 load profile is read in v2 today (see the callout above and
+`read_load_profile()`), but by *entry*, because this meter refuses `readRowsByRange`. A
+model that accepts range access still needs this pattern. Source: v1
 `src/worker/load_profile_reader.py`.
 
 ```python
@@ -212,8 +229,10 @@ rejected the credentials", sending them to fix a password that was never wrong.
   object or the read fails.
 - **Registers need attr 3 scaling.** The raw attr-2 value is unscaled. Use `Decimal` (ADR 0002).
 - **`entries_in_use` (attr 7) is read live**, never assumed from `profileEntries` (capacity).
-- **Entry 1 = newest** on Premier 550 billing per v1 — verify per model, do not assume
-  oldest-first.
+- **Entry order is a property of the profile, not the meter or model** — verify per profile,
+  do not assume. Entry 1 = newest on Premier 550 billing (v1). Entry 1 = **oldest** on the
+  SMW110W4 load profile (`smw110.py`, issue #10, field-confirmed 2026-08-07) — the opposite,
+  on the very same physical meter that also has a billing profile.
 - **`readRowsByRange` wants meter-local datetimes** (UTC+7), not UTC — and the conversion
   back happens in the driver.
 - **`GXDateTime` carries the datetime on `.value`**, not the object itself.

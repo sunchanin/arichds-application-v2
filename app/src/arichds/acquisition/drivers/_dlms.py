@@ -6,9 +6,12 @@ concrete driver or goes through the factory, never this module.
 Ported from ``cewe-worker/src/drivers/_tcp_driver_base.py``, reduced to the
 lifecycle M3 needs: connect / disconnect / read one register. The instantaneous
 set went with ADR 0007 (issue #8) — v2 stores nothing instantaneous, so the only
-register anything reads today is the Meter Serial, for the Probe and for the
-Poller's liveness tick. The load-profile and billing-profile read paths stay
-behind in v1 until M5/M6 ask for them.
+register anything reads today through *this* base is the Meter Serial, for the
+Probe and for the Poller's liveness tick. The SMW110W4's load-profile read path
+landed at M4a-2 (issue #10) — but on the leaf driver
+(:class:`~arichds.acquisition.drivers.smw110.Smw110Driver`), not here, per that
+issue's D1: one model's field evidence does not justify a shared method yet.
+The billing-profile read path stays behind in v1 until M6 asks for it.
 
 **Transport-agnostic since issue #9** (module renamed from ``_dlms_tcp.py``,
 class renamed from ``TcpDlmsDriver``): the transport fragment of the argv comes

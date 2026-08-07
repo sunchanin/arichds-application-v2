@@ -110,8 +110,10 @@ value = reader.read(obj, 2)       # attr 2 = value
 
 `reader.read` returns the parsed Python value (int / float / str / `GXDateTime` / bytes).
 The trap is that **Register and ExtendedRegister return a *raw* integer at attr 2** — you
-must also read **attr 3 (scaler_unit)** and apply `value * 10**scaler`. Getting this wrong
-is exactly the v1 defect that **ADR 0002** exists to prevent from being reproduced; the
+must also read **attr 3 (scaler_unit)** *first*, which is already the multiplier
+(`10**exponent`), not the exponent — Gurux then applies it for you when attr 2 is parsed.
+Reading attr 2 first, or treating `scaler` as an exponent (`10 ** int(obj.scaler)`), is
+exactly the v1 defect that **ADR 0002** exists to prevent from being reproduced; the
 scaler behaviour is pinned by `app/tests/test_dlms_scaler.py`. See
 [patterns.md](patterns.md) → "Register + scaler".
 
@@ -131,11 +133,15 @@ Gurux documents both access paths and warns that **not every meter supports both
 `captureObjects` (attr 3) for the column layout rather than calling
 `getAssociationView()`, which is far too slow on these meters.
 
-> **ARICHDS has no ProfileGeneric read path yet.** Load profile arrives at **M5**, billing
-> at **M6**. The patterns file documents how v1 did it — proven against the same meters —
-> so you have a worked reference when you build it, not because the code exists here.
+> **The SMW110W4 load profile has a real ProfileGeneric read path since issue #10 (M4a-2)**:
+> `smw110.py::Smw110Driver.read_load_profile()` — entry access only (this meter refuses
+> `readRowsByRange`), with a scaler-borrowing resolver because it also denies `scaler_unit`
+> on every load-profile capture column. No other model has one yet, and billing is still
+> **M6**. The patterns file documents how v1 did billing-by-entry — proven against the same
+> meters — as a worked reference, not as code that exists here.
 > `docs/meter-notes/load-profile-capture-objects.md` has the real capture lists and periods
-> for three CEWE models, read off the meters on 2026-08-05.
+> for three CEWE models, read off the meters on 2026-08-05; `docs/meter-notes/smw110w4-scan.md`
+> is the SMW110W4's own scan.
 
 ## What exists in v2 today
 
@@ -146,8 +152,17 @@ Gurux documents both access paths and warns that **not every meter supports both
 - **`read_register(obis, attr=2)`** with correct scaler handling.
 - **`read_meter_serial()`** — one register, driven by the `METER_SERIAL_OBIS` class
   attribute on `DlmsDriver` so a model with a different serial OBIS overrides the
-  attribute, not the method. **It is the only register any read path reads today**: both
-  `probe.py` and the Poller's liveness tick go through it.
+  attribute, not the method. **It is the only register `probe.py` and the Poller's
+  liveness tick read** — `read_load_profile()` (below) is a separate, wider read path
+  with no production caller yet.
+- **`Smw110Driver.read_load_profile(start_utc, end_utc)`** (issue #10, M4a-2) — the
+  ProfileGeneric read for this model's Logger 1, by entry access (this meter refuses
+  `readRowsByRange`), reading `captureObjects`/`capturePeriod`/`entriesInUse` live on
+  every call and resolving each mapped column's scaler from a sibling OBIS chosen by
+  **unit**, not by whichever answers first (see the callout above and `patterns.md` →
+  "Register + scaler" / "ProfileGeneric by entry"). Reads the ProfileGeneric plus up to
+  seven sibling registers at attr 3 in one call — more than one register, unlike every
+  other read path today.
 - **There is no live-value read and no reachability probe.** The eight-register
   instantaneous set and the driver-level `bool` reachability check were both removed by
   ADR 0007 (issue #8, M3-4): v2 displays no live value and stores nothing instantaneous, so
