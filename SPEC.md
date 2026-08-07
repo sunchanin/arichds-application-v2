@@ -408,9 +408,10 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
 > watermark ตัวนี้ **ไม่ขัด ADR 0008** — ADR นั้นห้าม marker ที่รายงานเกินจริงแล้วทำให้**ข้อมูลหายถาวร**
 > ส่วนตัวนี้ถ้าเพี้ยน แถวหายจากไฟล์ CSV แต่ยังอยู่ในฐาน กู้ได้เสมอ
 
-> 🔧 **`SPEC.md` §4 บรรทัด `devices` เขียนผิด** — บอกว่ารวม settings/status เป็น **JSON columns**
-> แต่โค้ดจริงเก็บ `status` · `status_detail` · `status_checked_at` · ตัวนับ strike เป็น**คอลัมน์มีชนิด**
-> (มีแค่ `transport` ที่เป็น JSON) ⇒ แก้ตอนทำ M5a
+> ✅ **แก้แล้วตอนปิด M5a (2026-08-07)** — §4 บรรทัด `devices` เคยบอกว่ารวม settings/status เป็น
+> **JSON columns** ซึ่งไม่ตรงกับโค้ด: `status` · `status_detail` · `status_checked_at` ·
+> `consecutive_failures` เป็น**คอลัมน์มีชนิด** มีแค่ `transport` ที่เป็น JSON และ `capture_objects`
+> ไม่มีอยู่บนตารางนี้เลย · บรรทัดนั้นถูกแก้ให้ตรงกับ `db/models.py` แล้ว
 
 - CSV auto-export → **ย้ายไป M7** (ดูเหตุผลด้านล่าง) · manual read-now → **M5b**
 - Retention (ตัวเลขเดิม v1) — job รายวัน → **M5c** (เคาะที่ grill M5):
@@ -514,7 +515,7 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
   transport endpoint) + scheduler thread เดียวรันทุก periodic job จาก registry
   `[(name, interval, fn)]` (LP scheduler, billing auto-read, retention, backup, sync, license recheck)
   — **ไม่มี health-check job**: สถานะมิเตอร์เป็นผลพลอยได้จาก poller tick (ADR 0004)
-- **Data model** (12 ตาราง): `devices` (รวม settings/status/capture_objects เป็น JSON columns) ·
+- **Data model** (12 ตาราง): `devices` (`transport` เป็น JSON column เดียว — status/strike เป็นคอลัมน์มีชนิด) ·
   `device_events` · `load_profile_readings` (COSEM shape 12 คอลัมน์วัดค่า + `source` + `interval_sec`) ·
   `billing_readings` · `billing_captures` · `energy_register_readings` · `battery_readings` ·
   `holidays` · `settings` (key/value) · `users` · `user_tokens` · `sync_state`
