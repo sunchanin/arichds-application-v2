@@ -1,53 +1,533 @@
-"""Device + readings API, over an activated app, as an authenticated user.
+"""Device Manager API — probe-first CRUD, catalog and quota (M3-1); status,
+history, Pause/Resume, Read now and Delete all data (M3-2).
 
-M1's step 6 exit condition, re-pointed at M2-1's fixtures: the machine is
-activated (Limited Mode is covered in ``test_license_roundtrip.py``) and the
-caller carries a token (the 401 side is covered in ``test_auth_guard.py``).
-What is left for this file is the device behaviour itself, plus the role
-boundary: managing meters is admin-only, reading them is not.
+The machine is activated (Limited Mode is covered in
+``test_license_roundtrip.py``) and the caller carries a token (the 401 side is
+covered in ``test_auth_guard.py``). What is left for this file is the device
+behaviour itself, plus the role boundary: managing meters is admin-only,
+reading them and Read now are not.
+
+Three rules decide almost every assertion here:
+
+* **ADR 0005** — identity comes from the meter, so a failed probe writes no row
+  at all, and a refused Update changes nothing.
+* **D7** — a client fault gets an HTTP status code; a meter fault gets a failure
+  envelope with 502, because the upstream device failed, not the request. Read
+  now is the deliberate exception (D10): it always answers 200 and reports the
+  meter's refusal inside the payload, exactly as Test connection does.
+* **ADR 0004** — status is whatever the last read proved, and ``paused`` is
+  computed from ``enabled`` rather than stored.
+
+``fake_meter`` swaps the driver registry for every test in this module, so
+nothing here touches a real meter.
 """
 
 from __future__ import annotations
 
+import logging
+import time
+from collections.abc import Callable
+from datetime import datetime
+
+import pytest
+from fakes import FakeMeterState
 from fastapi.testclient import TestClient
 
-SIM_DEVICE = {
-    "name": "Sim Meter",
-    "brand": "SIM",
-    "model": "sim",
+from arichds.acquisition.locks import EndpointLocks
+from arichds.acquisition.poller import Poller, TickOutcome
+from arichds.acquisition.probe import ProbeFailure
+
+pytestmark = pytest.mark.usefixtures("fake_meter")
+
+DEVICE = {
+    "name": "Main Incomer",
+    "brand": "cewe",
+    "model": "prometer100",
+    "site_name": "Plant A",
     "host": "127.0.0.1",
     "port": 4059,
     "password": "hunter2",
 }
 
 
+def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = "SN-1", **overrides: object):
+    """Create a device whose meter reports *serial*."""
+    fake_meter.meter_serial = serial
+    return client.post("/api/devices", json={**DEVICE, **overrides})
+
+
 class TestCreateDevice:
-    def test_creates_and_returns_the_device(self, admin_client: TestClient) -> None:
-        response = admin_client.post("/api/devices", json=SIM_DEVICE)
+    def test_creates_and_returns_the_device(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        response = add_device(admin_client, fake_meter)
 
         assert response.status_code == 201
         data = response.json()["data"]
-        assert data["name"] == "Sim Meter"
+        assert data["name"] == "Main Incomer"
         assert data["endpoint"] == "127.0.0.1:4059"
         assert data["enabled"] is True
+        assert data["site_name"] == "Plant A"
 
-    def test_never_returns_the_password(self, admin_client: TestClient) -> None:
-        response = admin_client.post("/api/devices", json=SIM_DEVICE)
+    def test_the_serial_comes_from_the_meter(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """ADR 0005 — never typed by an operator."""
+        data = add_device(admin_client, fake_meter, serial="SN-FROM-METER").json()["data"]
+        assert data["meter_serial"] == "SN-FROM-METER"
+
+    def test_it_probes_the_meter_before_inserting(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        add_device(admin_client, fake_meter)
+        assert fake_meter.connects == 1
+        assert fake_meter.disconnects == 1
+
+    def test_never_returns_the_password(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        response = add_device(admin_client, fake_meter)
         assert "password" not in response.json()["data"]
         assert "hunter2" not in response.text
 
-    def test_duplicate_name_is_409(self, admin_client: TestClient) -> None:
-        admin_client.post("/api/devices", json=SIM_DEVICE)
-        response = admin_client.post("/api/devices", json=SIM_DEVICE)
+    def test_never_returns_the_cipher_keys(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        response = add_device(
+            admin_client,
+            fake_meter,
+            block_cipher_key="0123456789ABCDEF",
+            authentication_key="FEDCBA9876543210",
+        )
+        assert response.status_code == 201
+        body = response.json()["data"]
+        assert "block_cipher_key" not in body
+        assert "authentication_key" not in body
+        assert "0123456789ABCDEF" not in response.text
+        assert "FEDCBA9876543210" not in response.text
+
+    def test_duplicate_name_is_409(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        add_device(admin_client, fake_meter, serial="SN-1")
+        response = add_device(admin_client, fake_meter, serial="SN-2")
         assert response.status_code == 409
 
-    def test_unknown_model_is_rejected(self, admin_client: TestClient) -> None:
-        response = admin_client.post("/api/devices", json={**SIM_DEVICE, "model": "not-a-meter"})
-        assert response.status_code == 422
+    def test_a_duplicate_name_never_reaches_the_meter(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """Cheap checks come first — a person should not wait seconds for a typo."""
+        add_device(admin_client, fake_meter, serial="SN-1")
+        connects_after_first = fake_meter.connects
+        add_device(admin_client, fake_meter, serial="SN-2")
+        assert fake_meter.connects == connects_after_first
 
-    def test_invalid_port_is_rejected(self, admin_client: TestClient) -> None:
-        response = admin_client.post("/api/devices", json={**SIM_DEVICE, "port": 0})
+    def test_unknown_model_is_rejected(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        response = add_device(admin_client, fake_meter, model="not-a-meter")
         assert response.status_code == 422
+        assert fake_meter.connects == 0
+
+    def test_invalid_port_is_rejected(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        assert add_device(admin_client, fake_meter, port=0).status_code == 422
+
+    def test_site_name_is_required(self, admin_client: TestClient) -> None:
+        payload = {key: value for key, value in DEVICE.items() if key != "site_name"}
+        assert admin_client.post("/api/devices", json=payload).status_code == 422
+
+    def test_a_blank_site_name_is_rejected(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        assert add_device(admin_client, fake_meter, site_name="").status_code == 422
+
+    def test_the_record_only_fields_round_trip(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        data = add_device(
+            admin_client,
+            fake_meter,
+            site_code="PA-01",
+            customer="Acme Co",
+            meter_number="MN-778",
+            group_name="Feeders",
+        ).json()["data"]
+        assert data["site_code"] == "PA-01"
+        assert data["customer"] == "Acme Co"
+        assert data["meter_number"] == "MN-778"
+        assert data["group_name"] == "Feeders"
+
+
+class TestCreateRefusedByTheMeter:
+    """D7 — a meter fault is a 502 with a failure envelope, and writes nothing."""
+
+    def test_no_row_is_written(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        response = add_device(admin_client, fake_meter)
+
+        assert response.json()["success"] is False
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_the_status_is_502(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        assert add_device(admin_client, fake_meter).status_code == 502
+
+    def test_the_envelope_carries_a_code_and_a_message(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        error = add_device(admin_client, fake_meter).json()["error"]
+        assert error["code"] == "PROBE_FAILED"
+        assert "127.0.0.1:4059" in error["message"]
+
+    @pytest.mark.parametrize(
+        ("knob", "error", "expected"),
+        [
+            ("connect_error", TimeoutError("slow"), ProbeFailure.TIMEOUT),
+            ("connect_error", ConnectionRefusedError("refused"), ProbeFailure.UNREACHABLE),
+            ("serial_error", None, ProbeFailure.NO_SERIAL),
+        ],
+        ids=["timeout", "unreachable", "no-serial"],
+    )
+    def test_each_reason_surfaces_distinctly(
+        self,
+        admin_client: TestClient,
+        fake_meter: FakeMeterState,
+        knob: str,
+        error: Exception | None,
+        expected: ProbeFailure,
+    ) -> None:
+        if error is None:
+            fake_meter.meter_serial = None
+            response = admin_client.post("/api/devices", json=DEVICE)
+        else:
+            setattr(fake_meter, knob, error)
+            response = add_device(admin_client, fake_meter)
+
+        assert response.json()["error"]["reason"] == expected.value
+
+    def test_rejected_credentials_are_auth_failed(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        from gurux_dlms import GXDLMSException
+
+        fake_meter.connect_error = GXDLMSException(1)
+        response = add_device(admin_client, fake_meter)
+        assert response.json()["error"]["reason"] == ProbeFailure.AUTH_FAILED.value
+
+
+class TestDuplicateSerial:
+    def test_a_second_device_on_the_same_meter_is_409(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        add_device(admin_client, fake_meter, serial="SN-SAME")
+        response = add_device(admin_client, fake_meter, name="Copy", host="10.0.0.9", serial="SN-SAME")
+        assert response.status_code == 409
+
+    def test_the_message_names_the_existing_device(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """So the operator moves the existing row instead of creating a second."""
+        add_device(admin_client, fake_meter, serial="SN-SAME")
+        response = add_device(admin_client, fake_meter, name="Copy", host="10.0.0.9", serial="SN-SAME")
+        assert "Main Incomer" in response.json()["detail"]
+
+    def test_no_second_row_is_written(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        add_device(admin_client, fake_meter, serial="SN-SAME")
+        add_device(admin_client, fake_meter, name="Copy", host="10.0.0.9", serial="SN-SAME")
+        assert len(admin_client.get("/api/devices").json()["data"]) == 1
+
+    def test_deleting_frees_the_serial(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """ADR 0005 — no tombstone: one mistyped meter must not block forever."""
+        device_id = add_device(admin_client, fake_meter, serial="SN-SAME").json()["data"]["id"]
+        assert admin_client.delete(f"/api/devices/{device_id}").status_code == 200
+
+        again = add_device(admin_client, fake_meter, serial="SN-SAME")
+        assert again.status_code == 201
+
+
+class TestUpdateDevice:
+    @pytest.fixture
+    def device_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        return add_device(admin_client, fake_meter, serial="SN-1").json()["data"]["id"]
+
+    def update(self, client: TestClient, device_id: int, **overrides: object):
+        """PUT the full device payload with *overrides* applied."""
+        return client.put(f"/api/devices/{device_id}", json={**DEVICE, **overrides})
+
+    def test_edits_are_saved(self, admin_client: TestClient, device_id: int) -> None:
+        data = self.update(admin_client, device_id, name="Renamed", site_name="Plant B").json()["data"]
+        assert data["name"] == "Renamed"
+        assert data["site_name"] == "Plant B"
+
+    def test_it_always_re_probes(self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int) -> None:
+        connects_after_create = fake_meter.connects
+        self.update(admin_client, device_id, name="Renamed")
+        assert fake_meter.connects == connects_after_create + 1
+
+    def test_unknown_device_is_404(self, admin_client: TestClient) -> None:
+        assert self.update(admin_client, 999).status_code == 404
+
+    def test_brand_and_model_are_editable(self, admin_client: TestClient, device_id: int) -> None:
+        data = self.update(admin_client, device_id, brand="CEWE Thailand").json()["data"]
+        assert data["brand"] == "CEWE Thailand"
+
+    def test_a_name_taken_by_another_device_is_409(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
+    ) -> None:
+        add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2")
+        assert self.update(admin_client, device_id, name="Second").status_code == 409
+
+    def test_keeping_its_own_name_is_fine(self, admin_client: TestClient, device_id: int) -> None:
+        assert self.update(admin_client, device_id).status_code == 200
+
+
+class TestUpdateRefusedOnSerialMismatch:
+    """ADR 0005 — a different serial means the row is being pointed elsewhere."""
+
+    @pytest.fixture
+    def stored(self, admin_client: TestClient, fake_meter: FakeMeterState) -> dict:
+        add_device(admin_client, fake_meter, serial="SN-1")
+        return admin_client.get("/api/devices").json()["data"][0]
+
+    def test_it_is_409(self, admin_client: TestClient, fake_meter: FakeMeterState, stored: dict) -> None:
+        fake_meter.meter_serial = "SN-OTHER"
+        response = admin_client.put(f"/api/devices/{stored['id']}", json={**DEVICE, "host": "10.0.0.5"})
+        assert response.status_code == 409
+
+    def test_the_message_names_both_serials(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, stored: dict
+    ) -> None:
+        fake_meter.meter_serial = "SN-OTHER"
+        detail = admin_client.put(f"/api/devices/{stored['id']}", json={**DEVICE, "host": "10.0.0.5"}).json()["detail"]
+        assert "SN-1" in detail
+        assert "SN-OTHER" in detail
+
+    def test_not_one_column_changes(self, admin_client: TestClient, fake_meter: FakeMeterState, stored: dict) -> None:
+        fake_meter.meter_serial = "SN-OTHER"
+        admin_client.put(
+            f"/api/devices/{stored['id']}",
+            json={**DEVICE, "name": "Renamed", "host": "10.0.0.5", "site_name": "Plant Z"},
+        )
+        assert admin_client.get("/api/devices").json()["data"][0] == stored
+
+    def test_the_stored_password_is_untouched(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, stored: dict
+    ) -> None:
+        fake_meter.meter_serial = "SN-OTHER"
+        admin_client.put(f"/api/devices/{stored['id']}", json={**DEVICE, "password": "changed-me"})
+        assert stored_password(stored["id"]) == "hunter2"
+
+    def test_a_serial_belonging_to_another_device_is_409(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, stored: dict
+    ) -> None:
+        """Two rows must never point at one physical meter, however they got there."""
+        add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2")
+        fake_meter.meter_serial = "SN-2"
+        # The first device now answers with the second device's serial.
+        response = admin_client.put(f"/api/devices/{stored['id']}", json={**DEVICE, "host": "10.0.0.2"})
+        assert response.status_code == 409
+
+
+class TestUpdateFillsInAMissingSerial:
+    def test_a_null_serial_row_is_identified_by_the_update(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """The pre-M3 row's way out (SPEC §3.3)."""
+        device_id = insert_unidentified_device()
+        fake_meter.meter_serial = "SN-NEW"
+
+        response = admin_client.put(f"/api/devices/{device_id}", json=DEVICE)
+
+        assert response.status_code == 200
+        assert response.json()["data"]["meter_serial"] == "SN-NEW"
+
+
+class TestUpdateSecretsDefaultToKeep:
+    """D10 / SPEC §3.3 — on edit, blank means keep."""
+
+    @pytest.fixture
+    def device_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        return add_device(
+            admin_client,
+            fake_meter,
+            serial="SN-1",
+            block_cipher_key="CIPHER-1",
+            authentication_key="AUTH-1",
+        ).json()["data"]["id"]
+
+    def test_an_empty_password_keeps_the_stored_one(self, admin_client: TestClient, device_id: int) -> None:
+        assert admin_client.put(f"/api/devices/{device_id}", json={**DEVICE, "password": ""}).status_code == 200
+        assert stored_password(device_id) == "hunter2"
+
+    def test_an_omitted_password_keeps_the_stored_one(self, admin_client: TestClient, device_id: int) -> None:
+        payload = {key: value for key, value in DEVICE.items() if key != "password"}
+        assert admin_client.put(f"/api/devices/{device_id}", json=payload).status_code == 200
+        assert stored_password(device_id) == "hunter2"
+
+    def test_a_new_password_replaces_it(self, admin_client: TestClient, device_id: int) -> None:
+        admin_client.put(f"/api/devices/{device_id}", json={**DEVICE, "password": "new-secret"})
+        assert stored_password(device_id) == "new-secret"
+
+    def test_the_re_probe_uses_the_new_password_when_given(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
+    ) -> None:
+        admin_client.put(f"/api/devices/{device_id}", json={**DEVICE, "password": "new-secret"})
+        assert stored_password(device_id) == "new-secret"
+
+    def test_blank_cipher_keys_keep_the_stored_ones(self, admin_client: TestClient, device_id: int) -> None:
+        admin_client.put(
+            f"/api/devices/{device_id}",
+            json={**DEVICE, "block_cipher_key": "", "authentication_key": ""},
+        )
+        assert stored_secret(device_id, "block_cipher_key") == "CIPHER-1"
+        assert stored_secret(device_id, "authentication_key") == "AUTH-1"
+
+
+class TestCatalog:
+    def test_only_models_with_a_driver_are_listed(self, admin_client: TestClient) -> None:
+        """SPEC §3.3 — M3 offers ``prometer100`` alone; the other eight land in M4."""
+        data = admin_client.get("/api/devices/catalog").json()["data"]
+        assert [entry["model"] for entry in data] == ["prometer100"]
+
+    def test_it_carries_what_the_form_prefills(self, admin_client: TestClient) -> None:
+        entry = admin_client.get("/api/devices/catalog").json()["data"][0]
+        assert entry["ui_label"] == "Prometer 100"
+        assert entry["default_port"] == 4059
+        assert entry["fixed_password"] == "ABCD0001"
+        assert entry["brand"] == "cewe"
+
+    def test_it_carries_the_capability_flags(self, admin_client: TestClient) -> None:
+        entry = admin_client.get("/api/devices/catalog").json()["data"][0]
+        assert entry["supports_serial"] is False
+        assert entry["supports_battery"] is True
+        assert entry["supports_energy_summary"] is False
+        assert entry["supports_special_days"] is False
+
+    def test_the_old_models_endpoint_is_gone(self, admin_client: TestClient) -> None:
+        """405, not 404: the path still matches ``/{device_id}``, which has no GET.
+
+        Either way it no longer serves a model list, which is what the SPA's
+        removed ``supportedModels()`` used to call.
+        """
+        response = admin_client.get("/api/devices/models")
+        assert response.status_code != 200
+
+
+class TestQuota:
+    def test_unlimited_when_the_license_sets_no_max(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        add_device(admin_client, fake_meter, serial="SN-1")
+        data = admin_client.get("/api/devices/quota").json()["data"]
+        assert data == {"used": 1, "max_meters": None, "over_quota": False}
+
+    def test_it_counts_devices(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        add_device(admin_client, fake_meter, serial="SN-1")
+        add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2")
+        assert admin_client.get("/api/devices/quota").json()["data"]["used"] == 2
+
+    def test_a_full_quota_refuses_a_new_device(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        relicense(admin_client, max_meters=1)
+        add_device(admin_client, fake_meter, serial="SN-1")
+
+        response = add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2")
+
+        assert response.status_code == 409
+        assert "1" in response.json()["detail"]
+
+    def test_exactly_at_the_limit_refuses_but_is_not_over_quota(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        """Two different questions, two different comparisons — on purpose.
+
+        Creating is refused at ``used >= max_meters`` (the slot is gone), while
+        ``over_quota`` is ``used > max_meters`` (SPEC §3.3's `10 / 5 — over
+        quota` warning is about genuinely exceeding a *reduced* license). At
+        exactly 1 / 1 a new device is refused and no warning is shown.
+        """
+        relicense(admin_client, max_meters=1)
+        add_device(admin_client, fake_meter, serial="SN-1")
+
+        assert add_device(admin_client, fake_meter, name="Second", serial="SN-2").status_code == 409
+        assert admin_client.get("/api/devices/quota").json()["data"] == {
+            "used": 1,
+            "max_meters": 1,
+            "over_quota": False,
+        }
+
+    def test_a_refused_create_never_reaches_the_meter(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        relicense(admin_client, max_meters=1)
+        add_device(admin_client, fake_meter, serial="SN-1")
+        connects = fake_meter.connects
+
+        add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2")
+
+        assert fake_meter.connects == connects
+
+    def test_over_quota_keeps_every_existing_device_working(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        """SPEC §3.3 — cutting a customer off because a number changed is forbidden."""
+        add_device(admin_client, fake_meter, serial="SN-1")
+        add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2")
+        relicense(admin_client, max_meters=1)
+
+        listed = admin_client.get("/api/devices").json()["data"]
+        assert len(listed) == 2
+        for device in listed:
+            assert admin_client.get(f"/api/devices/{device['id']}/events").status_code == 200
+
+    def test_over_quota_is_reported(self, admin_client: TestClient, fake_meter: FakeMeterState, relicense) -> None:
+        add_device(admin_client, fake_meter, serial="SN-1")
+        add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2")
+        relicense(admin_client, max_meters=1)
+
+        assert admin_client.get("/api/devices/quota").json()["data"] == {
+            "used": 2,
+            "max_meters": 1,
+            "over_quota": True,
+        }
+
+    def test_a_new_license_applies_without_a_restart(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        """ADR 0001 — quota is read live, never cached at import or startup."""
+        relicense(admin_client, max_meters=1)
+        assert admin_client.get("/api/devices/quota").json()["data"]["max_meters"] == 1
+
+        relicense(admin_client, max_meters=5)
+        assert admin_client.get("/api/devices/quota").json()["data"]["max_meters"] == 5
+
+    def test_deleting_frees_a_slot_immediately(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        relicense(admin_client, max_meters=1)
+        device_id = add_device(admin_client, fake_meter, serial="SN-1").json()["data"]["id"]
+        admin_client.delete(f"/api/devices/{device_id}")
+
+        assert add_device(admin_client, fake_meter, name="Second", serial="SN-2").status_code == 201
+
+
+class TestTestConnection:
+    BODY = {"model": "prometer100", "host": "127.0.0.1", "port": 4059, "password": "ABCD0001"}
+
+    def test_a_reachable_meter_reports_its_serial(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        fake_meter.meter_serial = "SN-DIAG"
+        response = admin_client.post("/api/devices/test-connection", json=self.BODY)
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["reachable"] is True
+        assert data["meter_serial"] == "SN-DIAG"
+        assert data["reason"] is None
+
+    def test_a_refusing_meter_is_still_a_200(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """A meter that refuses is a successful execution of a diagnostic."""
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        response = admin_client.post("/api/devices/test-connection", json=self.BODY)
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        data = response.json()["data"]
+        assert data["reachable"] is False
+        assert data["meter_serial"] is None
+        assert data["reason"] == ProbeFailure.UNREACHABLE.value
+        assert "127.0.0.1:4059" in data["message"]
+
+    def test_it_writes_no_row(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        admin_client.post("/api/devices/test-connection", json=self.BODY)
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_an_unknown_model_is_422(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        response = admin_client.post("/api/devices/test-connection", json={**self.BODY, "model": "nope"})
+        assert response.status_code == 422
+        assert fake_meter.connects == 0
+
+    def test_it_never_echoes_the_password(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        response = admin_client.post("/api/devices/test-connection", json={**self.BODY, "password": "hunter2"})
+        assert "hunter2" not in response.text
 
 
 class TestListDevices:
@@ -56,22 +536,17 @@ class TestListDevices:
         assert response.status_code == 200
         assert response.json()["data"] == []
 
-    def test_lists_created_devices(self, admin_client: TestClient) -> None:
-        admin_client.post("/api/devices", json=SIM_DEVICE)
-        admin_client.post("/api/devices", json={**SIM_DEVICE, "name": "Second", "port": 4060})
+    def test_lists_created_devices(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        add_device(admin_client, fake_meter, serial="SN-1")
+        add_device(admin_client, fake_meter, name="Second", port=4060, serial="SN-2")
 
         data = admin_client.get("/api/devices").json()["data"]
-        assert [d["name"] for d in data] == ["Sim Meter", "Second"]
-
-    def test_supported_models_include_sim_and_prometer100(self, admin_client: TestClient) -> None:
-        data = admin_client.get("/api/devices/models").json()["data"]
-        assert "sim" in data
-        assert "prometer100" in data
+        assert [d["name"] for d in data] == ["Main Incomer", "Second"]
 
 
 class TestDeleteDevice:
-    def test_deletes(self, admin_client: TestClient) -> None:
-        device_id = admin_client.post("/api/devices", json=SIM_DEVICE).json()["data"]["id"]
+    def test_deletes(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        device_id = add_device(admin_client, fake_meter).json()["data"]["id"]
 
         assert admin_client.delete(f"/api/devices/{device_id}").status_code == 200
         assert admin_client.get("/api/devices").json()["data"] == []
@@ -80,41 +555,551 @@ class TestDeleteDevice:
         assert admin_client.delete("/api/devices/999").status_code == 404
 
 
-class TestLatestReading:
-    def test_null_before_the_first_tick(self, admin_client: TestClient) -> None:
-        device_id = admin_client.post("/api/devices", json=SIM_DEVICE).json()["data"]["id"]
+class TestStatusIsReportedByTheList:
+    """ADR 0004 — status comes from the Poller, and the list carries it (4a).
 
-        response = admin_client.get(f"/api/devices/{device_id}/readings/latest")
+    Issue #6 draws the whole Devices tree from ``GET /api/devices``, so every
+    status field has to be in that one response: an N+1 per device would make
+    the tree's first paint scale with the meter count.
+    """
+
+    def test_a_created_device_is_online_immediately(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """The probe held a conversation with the meter seconds ago (ADR 0004)."""
+        data = add_device(admin_client, fake_meter).json()["data"]
+        assert data["status"] == "online"
+        assert data["status_detail"] is None
+        assert data["status_checked_at"] is not None
+
+    def test_the_list_carries_all_three_fields_for_every_device(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        add_device(admin_client, fake_meter, serial="SN-1")
+        add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2")
+
+        listed = admin_client.get("/api/devices").json()["data"]
+
+        assert len(listed) == 2
+        for device in listed:
+            assert {"status", "status_detail", "status_checked_at"} <= set(device)
+            assert device["status"] == "online"
+
+    def test_the_check_time_carries_an_explicit_utc_offset(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """D15 — SQLite hands back a naive datetime; the client must not guess."""
+        checked_at = add_device(admin_client, fake_meter).json()["data"]["status_checked_at"]
+        assert datetime.fromisoformat(checked_at).tzinfo is not None
+
+    def test_a_pre_m3_row_reads_unknown(self, admin_client: TestClient) -> None:
+        """Nothing has ever reported on it, so nothing is claimed about it."""
+        insert_unidentified_device()
+        device = admin_client.get("/api/devices").json()["data"][0]
+        assert device["status"] == "paused"  # it is parked, and pause wins
+        assert stored_status(device["id"]) == "unknown"
+
+
+class TestOperatorActionsAreRecorded:
+    """CONTEXT.md — a Device Event is written when something *changes* (4b)."""
+
+    def test_creating_records_a_created_event_with_the_actor(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter).json()["data"]["id"]
+        items = admin_client.get(f"/api/devices/{device_id}/events").json()["data"]["items"]
+
+        assert [item["kind"] for item in items] == ["created"]
+        assert items[0]["actor"] == "admin"
+
+    def test_updating_records_an_updated_event(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        device_id = add_device(admin_client, fake_meter).json()["data"]["id"]
+        admin_client.put(f"/api/devices/{device_id}", json={**DEVICE, "site_name": "Plant B"})
+
+        kinds = [item["kind"] for item in events_of(admin_client, device_id)]
+        assert kinds == ["updated", "created"]  # newest first
+
+    def test_a_refused_create_records_nothing(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """No row, so no event about a row (ADR 0005)."""
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        add_device(admin_client, fake_meter)
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+
+class TestPauseAndResume:
+    """CONTEXT.md — Pause stops every *background* read of one device (4c)."""
+
+    @pytest.fixture
+    def device_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        return add_device(admin_client, fake_meter).json()["data"]["id"]
+
+    def test_pausing_reports_paused(self, admin_client: TestClient, device_id: int) -> None:
+        response = admin_client.post(f"/api/devices/{device_id}/pause")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["enabled"] is False
+        assert data["status"] == "paused"
+
+    def test_paused_is_computed_not_stored(self, admin_client: TestClient, device_id: int) -> None:
+        """The stored column still says what the last read proved."""
+        admin_client.post(f"/api/devices/{device_id}/pause")
+
+        assert stored_status(device_id) == "online"
+        assert admin_client.get("/api/devices").json()["data"][0]["status"] == "paused"
+
+    @pytest.mark.parametrize("storable", ["online", "offline", "unknown"])
+    def test_a_disabled_device_never_reads_online(
+        self, admin_client: TestClient, device_id: int, storable: str
+    ) -> None:
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        set_stored_status(device_id, storable)
+
+        assert admin_client.get("/api/devices").json()["data"][0]["status"] == "paused"
+
+    def test_pausing_records_an_event_with_the_actor(self, admin_client: TestClient, device_id: int) -> None:
+        admin_client.post(f"/api/devices/{device_id}/pause")
+
+        event = events_of(admin_client, device_id)[0]
+        assert event["kind"] == "paused"
+        assert event["actor"] == "admin"
+
+    def test_resuming_goes_back_to_unknown(self, admin_client: TestClient, device_id: int) -> None:
+        """ADR 0004 — while paused nobody talked to the meter, so nobody knows."""
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        data = admin_client.post(f"/api/devices/{device_id}/resume").json()["data"]
+
+        assert data["enabled"] is True
+        assert data["status"] == "unknown"
+        assert data["status_detail"] is not None
+
+    def test_resuming_clears_the_stale_check_time(self, admin_client: TestClient, device_id: int) -> None:
+        """Reporting a pre-pause check time as current presents a stale fact as fresh."""
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        data = admin_client.post(f"/api/devices/{device_id}/resume").json()["data"]
+
+        assert data["status_checked_at"] is None
+
+    def test_resuming_clears_the_strike_counter(self, admin_client: TestClient, device_id: int) -> None:
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        admin_client.post(f"/api/devices/{device_id}/resume")
+
+        assert stored_secret(device_id, "consecutive_failures") == 0
+
+    def test_resuming_records_an_event(self, admin_client: TestClient, device_id: int) -> None:
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        admin_client.post(f"/api/devices/{device_id}/resume")
+
+        assert [event["kind"] for event in events_of(admin_client, device_id)] == ["resumed", "paused", "created"]
+
+    def test_an_unknown_device_is_404(self, admin_client: TestClient) -> None:
+        assert admin_client.post("/api/devices/999/pause").status_code == 404
+        assert admin_client.post("/api/devices/999/resume").status_code == 404
+
+
+class TestPauseAndResumeAreIdempotent:
+    """D13 — a Device Event is recorded when something *changes*."""
+
+    @pytest.fixture
+    def device_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        return add_device(admin_client, fake_meter).json()["data"]["id"]
+
+    def test_pausing_twice_is_still_a_200(self, admin_client: TestClient, device_id: int) -> None:
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        response = admin_client.post(f"/api/devices/{device_id}/pause")
+
+        assert response.status_code == 200
+        assert response.json()["data"]["status"] == "paused"
+
+    def test_pausing_twice_records_one_event(self, admin_client: TestClient, device_id: int) -> None:
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        admin_client.post(f"/api/devices/{device_id}/pause")
+
+        assert [event["kind"] for event in events_of(admin_client, device_id)].count("paused") == 1
+
+    def test_resuming_a_running_device_records_nothing(self, admin_client: TestClient, device_id: int) -> None:
+        admin_client.post(f"/api/devices/{device_id}/resume")
+
+        assert [event["kind"] for event in events_of(admin_client, device_id)] == ["created"]
+
+    def test_a_no_op_resume_does_not_disturb_the_status(self, admin_client: TestClient, device_id: int) -> None:
+        """It must not reset an online device to unknown for nothing."""
+        admin_client.post(f"/api/devices/{device_id}/resume")
+
+        assert stored_status(device_id) == "online"
+
+    def test_a_no_op_never_respawns_every_worker_on_the_site(self, admin_client: TestClient, device_id: int) -> None:
+        poller = RestartCountingPoller()
+        admin_client.app.state.poller = poller
+
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        assert poller.restarts == 1
+
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        assert poller.restarts == 1
+
+
+class TestPauseStopsTheBackgroundWorker:
+    """Trap 1 — writing ``enabled = False`` alone stops nothing.
+
+    ``Device.enabled`` is read in exactly one place, ``_enabled_devices()``,
+    which only ``start()`` calls. A worker loops over a snapshot and never
+    re-reads it, so without the restart the meter keeps being read forever.
+    """
+
+    @pytest.fixture
+    def device_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        return add_device(admin_client, fake_meter).json()["data"]["id"]
+
+    def test_a_running_worker_stops_ticking(self, admin_client: TestClient, device_id: int) -> None:
+        ticks: list[float] = []
+        poller = Poller(interval_sec=0.05, poll_fn=count_tick(ticks), locks=EndpointLocks())
+        admin_client.app.state.poller = poller
+        try:
+            poller.start()
+            assert wait_for(lambda: len(ticks) >= 1), "the poller never ticked before the pause"
+
+            assert admin_client.post(f"/api/devices/{device_id}/pause").status_code == 200
+
+            # A tick already inside poll_fn when stop() was signalled is allowed
+            # to finish — that is stop()'s designed behaviour — so sample after
+            # the call rather than asserting zero ticks since it.
+            settled = len(ticks)
+            time.sleep(0.5)
+            assert len(ticks) == settled
+        finally:
+            poller.stop()
+
+    def test_resume_brings_the_worker_back(self, admin_client: TestClient, device_id: int) -> None:
+        ticks: list[float] = []
+        poller = Poller(interval_sec=0.05, poll_fn=count_tick(ticks), locks=EndpointLocks())
+        admin_client.app.state.poller = poller
+        try:
+            poller.start()
+            admin_client.post(f"/api/devices/{device_id}/pause")
+            time.sleep(0.2)
+            settled = len(ticks)
+
+            assert admin_client.post(f"/api/devices/{device_id}/resume").status_code == 200
+
+            assert wait_for(lambda: len(ticks) > settled), "no tick was recorded after the resume"
+        finally:
+            poller.stop()
+
+    def test_the_pause_survives_a_process_restart(self, admin_client: TestClient, device_id: int) -> None:
+        """It is a persisted column, not an in-memory flag (CONTEXT.md — Pause)."""
+        admin_client.post(f"/api/devices/{device_id}/pause")
+
+        fresh = Poller(interval_sec=0.05, locks=EndpointLocks())
+        try:
+            fresh.start()
+            assert fresh._threads == []
+        finally:
+            fresh.stop()
+
+
+class TestReadNow:
+    """SPEC §3.3 — the Manual Read behind the Read now button (4d).
+
+    At M3 the list holds one job, ``liveness``: an identity read that proves the
+    meter answers a real register read and writes no Interval Reading (ADR 0007).
+    """
+
+    @pytest.fixture
+    def device_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        return add_device(admin_client, fake_meter).json()["data"]["id"]
+
+    def test_a_reachable_meter_answers_ok(self, admin_client: TestClient, device_id: int) -> None:
+        response = admin_client.post(f"/api/devices/{device_id}/read-now")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["results"] == [{"job": "liveness", "ok": True, "detail": "The meter answered at 127.0.0.1:4059."}]
+        assert data["status"] == "online"
+        assert data["checked_at"] is not None
+
+    def test_it_reads_the_meter(self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int) -> None:
+        connects = fake_meter.connects
+        admin_client.post(f"/api/devices/{device_id}/read-now")
+        assert fake_meter.connects == connects + 1
+
+    def test_a_refusing_meter_is_still_a_200(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
+    ) -> None:
+        """D10 — from M5 the list can be partially successful, which no single
+        HTTP status can express."""
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        response = admin_client.post(f"/api/devices/{device_id}/read-now")
 
         assert response.status_code == 200
         assert response.json()["success"] is True
-        assert response.json()["data"] is None
+        result = response.json()["data"]["results"][0]
+        assert result["ok"] is False
+        assert "127.0.0.1:4059" in result["detail"]
 
-    def test_returns_the_newest_reading(self, admin_client: TestClient) -> None:
-        import threading
+    def test_it_writes_no_interval_reading(self, admin_client: TestClient, device_id: int) -> None:
+        """ADR 0007 — a liveness read is not a data read."""
+        admin_client.post(f"/api/devices/{device_id}/read-now")
+        assert count_readings(device_id) == 0
 
-        from arichds.acquisition.poller import EndpointLocks, poll_once
-        from arichds.db.models import Device
-        from arichds.db.session import session_scope
+    def test_it_never_puts_the_serial_in_the_detail(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
+    ) -> None:
+        """D9 — Read now never re-identifies the meter; that is Update's job."""
+        fake_meter.meter_serial = "SN-SOMETHING-ELSE"
+        response = admin_client.post(f"/api/devices/{device_id}/read-now")
 
-        device_id = admin_client.post("/api/devices", json=SIM_DEVICE).json()["data"]["id"]
-        with session_scope() as session:
-            device = session.get(Device, device_id)
-            session.expunge(device)
-        poll_once(device, EndpointLocks(), threading.Event())
+        assert response.status_code == 200
+        assert "SN-SOMETHING-ELSE" not in response.text
 
-        data = admin_client.get(f"/api/devices/{device_id}/readings/latest").json()["data"]
+    def test_it_carries_no_electrical_value_at_all(self) -> None:
+        """Asserted against the schema, not one example (ADR 0007).
 
-        assert data is not None
-        assert data["device_id"] == device_id
-        assert data["source"] == "sim"
-        assert data["interval"] == "60s"
-        assert 200 < data["volt_l1"] < 260
-        assert 45 < data["freq"] < 55
-        assert data["import_active_kwh"] > 0
+        Derived from ``InstantaneousReading`` rather than hardcoded, so a
+        measurement added later is covered without anyone remembering to.
+        """
+        from dataclasses import fields
 
-    def test_unknown_device_is_404(self, admin_client: TestClient) -> None:
-        assert admin_client.get("/api/devices/999/readings/latest").status_code == 404
+        from arichds.acquisition.drivers.base import InstantaneousReading
+        from arichds.api.devices import ReadNowOut
+
+        measurements = {f.name for f in fields(InstantaneousReading)} - {"read_at", "source"}
+        assert measurements, "the measurement set must not be empty, or this test proves nothing"
+        assert schema_property_names(ReadNowOut) & measurements == set()
+
+    def test_the_results_are_a_list(self, admin_client: TestClient, device_id: int) -> None:
+        """M5 adds ``load_profile`` and M6 ``billing`` to this same list."""
+        data = admin_client.post(f"/api/devices/{device_id}/read-now").json()["data"]
+        assert isinstance(data["results"], list)
+
+    def test_it_works_on_a_paused_device(self, admin_client: TestClient, device_id: int) -> None:
+        """Pause governs background reads only (CONTEXT.md — Pause)."""
+        admin_client.post(f"/api/devices/{device_id}/pause")
+
+        response = admin_client.post(f"/api/devices/{device_id}/read-now")
+
+        assert response.status_code == 200
+        assert response.json()["data"]["results"][0]["ok"] is True
+        # The device is still paused, and the API still says so.
+        assert response.json()["data"]["status"] == "paused"
+
+    def test_three_failures_take_it_offline(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
+    ) -> None:
+        """A Manual Read is a real read, so it is real evidence (ADR 0004)."""
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        for _ in range(3):
+            response = admin_client.post(f"/api/devices/{device_id}/read-now")
+
+        assert response.json()["data"]["status"] == "offline"
+        assert stored_status(device_id) == "offline"
+
+    def test_the_offline_transition_has_no_actor(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
+    ) -> None:
+        """D11 — a person pressed the button, but nobody changed the meter."""
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        for _ in range(3):
+            admin_client.post(f"/api/devices/{device_id}/read-now")
+
+        offline = [event for event in events_of(admin_client, device_id) if event["kind"] == "offline"]
+        assert len(offline) == 1
+        assert offline[0]["actor"] is None
+
+    def test_a_success_after_that_comes_back_online(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
+    ) -> None:
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        for _ in range(3):
+            admin_client.post(f"/api/devices/{device_id}/read-now")
+        fake_meter.connect_error = None
+
+        assert admin_client.post(f"/api/devices/{device_id}/read-now").json()["data"]["status"] == "online"
+
+    def test_a_model_with_no_driver_is_not_a_strike(self, admin_client: TestClient) -> None:
+        """A configuration problem, not a meter failure — it must not reach offline."""
+        device_id = insert_undrivable_device()
+
+        for _ in range(3):
+            response = admin_client.post(f"/api/devices/{device_id}/read-now")
+
+        result = response.json()["data"]["results"][0]
+        assert response.status_code == 200
+        assert result["ok"] is False
+        assert "sim" in result["detail"]
+        assert response.json()["data"]["status"] != "offline"
+        assert stored_status(device_id) == "unknown"
+
+    def test_an_unknown_device_is_404(self, admin_client: TestClient) -> None:
+        assert admin_client.post("/api/devices/999/read-now").status_code == 404
+
+    def test_it_never_echoes_the_password(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
+    ) -> None:
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        assert "hunter2" not in admin_client.post(f"/api/devices/{device_id}/read-now").text
+
+
+class TestClearReadings:
+    """SPEC §3.3 — Delete all data keeps the evidence of who deleted it (4f)."""
+
+    @pytest.fixture
+    def device_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        device_id = add_device(admin_client, fake_meter).json()["data"]["id"]
+        write_readings(device_id, 3)
+        return device_id
+
+    def clear(self, client: TestClient, device_id: int, name: str):
+        """POST the typed-confirmation body."""
+        return client.post(f"/api/devices/{device_id}/readings/clear", json={"confirm_name": name})
+
+    def test_it_deletes_the_readings_and_says_how_many(self, admin_client: TestClient, device_id: int) -> None:
+        response = self.clear(admin_client, device_id, "Main Incomer")
+
+        assert response.status_code == 200
+        assert response.json()["data"] == 3
+        assert count_readings(device_id) == 0
+
+    def test_the_device_row_survives(self, admin_client: TestClient, device_id: int) -> None:
+        self.clear(admin_client, device_id, "Main Incomer")
+        assert len(admin_client.get("/api/devices").json()["data"]) == 1
+
+    def test_the_history_survives_and_records_who_did_it(self, admin_client: TestClient, device_id: int) -> None:
+        """The events are kept precisely as evidence of the deletion."""
+        self.clear(admin_client, device_id, "Main Incomer")
+
+        event = events_of(admin_client, device_id)[0]
+        assert event["kind"] == "data_cleared"
+        assert event["actor"] == "admin"
+        assert event["detail"] == "Deleted 3 interval readings."
+
+    def test_a_wrong_name_is_a_409(self, admin_client: TestClient, device_id: int) -> None:
+        assert self.clear(admin_client, device_id, "main incomer").status_code == 409
+
+    def test_a_wrong_name_deletes_nothing(self, admin_client: TestClient, device_id: int) -> None:
+        self.clear(admin_client, device_id, "Wrong Name")
+        assert count_readings(device_id) == 3
+
+    def test_the_message_does_not_echo_the_correct_name(self, admin_client: TestClient, device_id: int) -> None:
+        """D14 — echoing it turns the typed confirmation into copy-paste."""
+        detail = self.clear(admin_client, device_id, "Wrong Name").json()["detail"]
+        assert "Main Incomer" not in detail
+        assert detail == "The confirmation name does not match this device. Nothing was deleted."
+
+    def test_clearing_an_empty_device_reports_zero(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        device_id = add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2").json()["data"][
+            "id"
+        ]
+        response = self.clear(admin_client, device_id, "Second")
+
+        assert response.json()["data"] == 0
+        assert events_of(admin_client, device_id)[0]["detail"] == "Deleted 0 interval readings."
+
+    def test_it_leaves_another_device_alone(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
+    ) -> None:
+        other = add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2").json()["data"]["id"]
+        write_readings(other, 2)
+
+        self.clear(admin_client, device_id, "Main Incomer")
+
+        assert count_readings(other) == 2
+
+    def test_an_unknown_device_is_404(self, admin_client: TestClient) -> None:
+        assert self.clear(admin_client, 999, "whatever").status_code == 404
+
+
+class TestDeviceHistory:
+    """The History drawer's page (4e)."""
+
+    @pytest.fixture
+    def device_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        device_id = add_device(admin_client, fake_meter).json()["data"]["id"]
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        admin_client.post(f"/api/devices/{device_id}/resume")
+        return device_id
+
+    def test_newest_first(self, admin_client: TestClient, device_id: int) -> None:
+        """The id tiebreak carries this: SQLite's clock has one-second resolution."""
+        assert [event["kind"] for event in events_of(admin_client, device_id)] == ["resumed", "paused", "created"]
+
+    def test_total_is_the_unpaged_count(self, admin_client: TestClient, device_id: int) -> None:
+        page = admin_client.get(f"/api/devices/{device_id}/events?limit=1").json()["data"]
+
+        assert page["total"] == 3
+        assert len(page["items"]) == 1
+        assert page["limit"] == 1
+        assert page["offset"] == 0
+
+    def test_offset_pages_through(self, admin_client: TestClient, device_id: int) -> None:
+        page = admin_client.get(f"/api/devices/{device_id}/events?limit=1&offset=2").json()["data"]
+
+        assert [event["kind"] for event in page["items"]] == ["created"]
+        assert page["offset"] == 2
+
+    def test_an_automatic_transition_has_no_actor(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
+    ) -> None:
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        for _ in range(3):
+            admin_client.post(f"/api/devices/{device_id}/read-now")
+
+        events = events_of(admin_client, device_id)
+        assert events[0]["kind"] == "offline"
+        assert events[0]["actor"] is None
+        assert all(event["actor"] == "admin" for event in events[1:])
+
+    def test_the_timestamp_carries_an_explicit_utc_offset(self, admin_client: TestClient, device_id: int) -> None:
+        created_at = events_of(admin_client, device_id)[0]["created_at"]
+        assert datetime.fromisoformat(created_at).tzinfo is not None
+
+    def test_a_device_with_no_history_pages_cleanly(self, admin_client: TestClient) -> None:
+        device_id = insert_unidentified_device()
+        page = admin_client.get(f"/api/devices/{device_id}/events").json()["data"]
+
+        assert page == {"items": [], "total": 0, "limit": 50, "offset": 0}
+
+    def test_the_page_size_is_bounded(self, admin_client: TestClient, device_id: int) -> None:
+        assert admin_client.get(f"/api/devices/{device_id}/events?limit=201").status_code == 422
+        assert admin_client.get(f"/api/devices/{device_id}/events?limit=0").status_code == 422
+        assert admin_client.get(f"/api/devices/{device_id}/events?offset=-1").status_code == 422
+
+    def test_an_unknown_device_is_404(self, admin_client: TestClient) -> None:
+        assert admin_client.get("/api/devices/999/events").status_code == 404
+
+    def test_deleting_the_device_takes_its_history(self, admin_client: TestClient, device_id: int) -> None:
+        admin_client.delete(f"/api/devices/{device_id}")
+        assert admin_client.get(f"/api/devices/{device_id}/events").status_code == 404
+
+
+class TestM32RoleBoundary:
+    """SPEC §3.2 — read and Read now for everyone, mutations for admins."""
+
+    @pytest.fixture
+    def device_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        return add_device(admin_client, fake_meter).json()["data"]["id"]
+
+    def test_a_user_cannot_pause(self, user_client: TestClient, device_id: int) -> None:
+        assert user_client.post(f"/api/devices/{device_id}/pause").status_code == 403
+
+    def test_a_user_cannot_resume(self, admin_client: TestClient, user_client: TestClient, device_id: int) -> None:
+        admin_client.post(f"/api/devices/{device_id}/pause")
+        assert user_client.post(f"/api/devices/{device_id}/resume").status_code == 403
+
+    def test_a_user_cannot_clear_the_readings(self, user_client: TestClient, device_id: int) -> None:
+        write_readings(device_id, 2)
+        response = user_client.post(f"/api/devices/{device_id}/readings/clear", json={"confirm_name": "Main Incomer"})
+        assert response.status_code == 403
+
+    def test_a_refused_clear_deletes_nothing(self, user_client: TestClient, device_id: int) -> None:
+        write_readings(device_id, 2)
+        user_client.post(f"/api/devices/{device_id}/readings/clear", json={"confirm_name": "Main Incomer"})
+        assert count_readings(device_id) == 2
+
+    def test_a_user_can_read_now(self, user_client: TestClient, device_id: int) -> None:
+        """Read now is granted to every role (SPEC §3.2)."""
+        assert user_client.post(f"/api/devices/{device_id}/read-now").status_code == 200
+
+    def test_a_user_can_read_the_history(self, user_client: TestClient, device_id: int) -> None:
+        assert user_client.get(f"/api/devices/{device_id}/events").status_code == 200
 
 
 class TestEnvelope:
@@ -125,37 +1110,264 @@ class TestEnvelope:
         assert body["error"] is None
 
 
+class TestSecretsNeverLeak:
+    def test_no_log_line_carries_a_password_or_a_key(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG):
+            device_id = add_device(
+                admin_client,
+                fake_meter,
+                block_cipher_key="CIPHER-1",
+                authentication_key="AUTH-1",
+            ).json()["data"]["id"]
+            admin_client.put(f"/api/devices/{device_id}", json={**DEVICE, "password": "another-secret"})
+            admin_client.post(
+                "/api/devices/test-connection",
+                json={"model": "prometer100", "host": "127.0.0.1", "port": 4059, "password": "diag-secret"},
+            )
+
+        for secret in ("hunter2", "CIPHER-1", "AUTH-1", "another-secret", "diag-secret"):
+            assert secret not in caplog.text
+
+    def test_the_list_never_carries_them(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        add_device(admin_client, fake_meter, block_cipher_key="CIPHER-1", authentication_key="AUTH-1")
+        response = admin_client.get("/api/devices")
+        for secret in ("hunter2", "CIPHER-1", "AUTH-1"):
+            assert secret not in response.text
+
+
 class TestRoleBoundary:
     """SPEC §3.2 — a ``user`` sees everything and changes nothing."""
 
     def test_a_user_cannot_create_a_device(self, user_client: TestClient) -> None:
-        assert user_client.post("/api/devices", json=SIM_DEVICE).status_code == 403
+        assert user_client.post("/api/devices", json=DEVICE).status_code == 403
 
-    def test_a_user_cannot_delete_a_device(self, admin_client: TestClient, user_client: TestClient) -> None:
-        device_id = admin_client.post("/api/devices", json=SIM_DEVICE).json()["data"]["id"]
+    def test_a_user_cannot_update_a_device(
+        self, admin_client: TestClient, user_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter).json()["data"]["id"]
+        assert user_client.put(f"/api/devices/{device_id}", json=DEVICE).status_code == 403
+
+    def test_a_user_cannot_delete_a_device(
+        self, admin_client: TestClient, user_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter).json()["data"]["id"]
 
         assert user_client.delete(f"/api/devices/{device_id}").status_code == 403
         assert len(admin_client.get("/api/devices").json()["data"]) == 1
 
-    def test_a_user_can_list_devices(self, admin_client: TestClient, user_client: TestClient) -> None:
-        admin_client.post("/api/devices", json=SIM_DEVICE)
+    def test_a_user_cannot_test_a_connection(self, user_client: TestClient) -> None:
+        """D9 — the diagnostic half of an admin-only form, and it aims this
+        machine's socket at an arbitrary host:port."""
+        response = user_client.post(
+            "/api/devices/test-connection",
+            json={"model": "prometer100", "host": "127.0.0.1", "port": 4059, "password": ""},
+        )
+        assert response.status_code == 403
+
+    def test_a_user_can_list_devices(
+        self, admin_client: TestClient, user_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        add_device(admin_client, fake_meter)
 
         response = user_client.get("/api/devices")
 
         assert response.status_code == 200
-        assert [d["name"] for d in response.json()["data"]] == ["Sim Meter"]
+        assert [d["name"] for d in response.json()["data"]] == ["Main Incomer"]
 
-    def test_a_user_can_read_the_supported_models(self, user_client: TestClient) -> None:
-        assert user_client.get("/api/devices/models").status_code == 200
+    def test_a_user_can_read_the_catalog(self, user_client: TestClient) -> None:
+        assert user_client.get("/api/devices/catalog").status_code == 200
 
-    def test_a_user_can_read_the_latest_reading(self, admin_client: TestClient, user_client: TestClient) -> None:
-        device_id = admin_client.post("/api/devices", json=SIM_DEVICE).json()["data"]["id"]
-
-        assert user_client.get(f"/api/devices/{device_id}/readings/latest").status_code == 200
+    def test_a_user_can_read_the_quota(self, user_client: TestClient) -> None:
+        assert user_client.get("/api/devices/quota").status_code == 200
 
     def test_the_403_is_not_a_401(self, user_client: TestClient) -> None:
         """Authenticated-but-not-allowed is a different answer from unauthenticated."""
-        response = user_client.post("/api/devices", json=SIM_DEVICE)
+        response = user_client.post("/api/devices", json=DEVICE)
 
         assert response.status_code == 403
         assert "WWW-Authenticate" not in response.headers
+
+
+# ─── Helpers that reach into the database ─────────────────────────────────────
+#
+# Passwords and cipher keys are never returned by any endpoint, so the only
+# honest way to assert "the stored value is unchanged" is to read the column.
+
+
+def stored_password(device_id: int) -> str:
+    """Return the password column of *device_id*."""
+    return stored_secret(device_id, "password")
+
+
+def stored_status(device_id: int) -> str:
+    """Return the raw ``status`` column — what is *stored*, not what is shown."""
+    return stored_secret(device_id, "status")
+
+
+def set_stored_status(device_id: int, value: str) -> None:
+    """Force the raw ``status`` column, to prove what the API does with it."""
+    from arichds.db.models import Device
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        session.get(Device, device_id).status = value
+
+
+class RestartCountingPoller(Poller):
+    """A Poller that counts :meth:`restart` calls instead of running anything.
+
+    ``enabled=False`` so ``start()`` is a no-op — the question these tests ask
+    is whether a handler decided to respawn every worker on the site, which is a
+    decision, not a thread.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(enabled=False, locks=EndpointLocks())
+        self.restarts = 0
+
+    def restart(self) -> None:
+        """Count the call."""
+        self.restarts += 1
+        super().restart()
+
+
+def count_tick(ticks: list[float]) -> Callable[..., TickOutcome]:
+    """A ``poll_fn`` that records when it ran and reports nothing.
+
+    ``SKIPPED`` keeps it inert (D3), so the tick count is observable without the
+    background thread rewriting the status columns under the assertions.
+    """
+
+    def poll(device, locks, shutdown) -> TickOutcome:  # noqa: ANN001
+        ticks.append(time.monotonic())
+        return TickOutcome.SKIPPED
+
+    return poll
+
+
+def wait_for(predicate: Callable[[], bool], *, timeout: float = 5.0) -> bool:
+    """Poll *predicate* until it is true or *timeout* elapses."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def events_of(client: TestClient, device_id: int) -> list[dict]:
+    """Every Device Event of *device_id* as the API returns them (newest first)."""
+    response = client.get(f"/api/devices/{device_id}/events")
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["items"]
+
+
+def stored_secret(device_id: int, column: str) -> str:
+    """Return one never-exposed column of *device_id*."""
+    from arichds.db.models import Device
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        return getattr(session.get(Device, device_id), column)
+
+
+def insert_undrivable_device() -> int:
+    """Insert an enabled row whose model has no driver in this build."""
+    from arichds.db.models import Device
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        device = Device(
+            name="Old Sim",
+            brand="SIM",
+            model="sim",
+            site_name="Plant A",
+            transport={"kind": "net", "host": "127.0.0.1", "port": 4059},
+            enabled=True,
+        )
+        session.add(device)
+        session.flush()
+        return device.id
+
+
+def write_readings(device_id: int, count: int) -> None:
+    """Write *count* Interval Readings straight into the table."""
+    from datetime import UTC
+
+    from arichds.db.models import LoadProfileReading
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        for index in range(count):
+            session.add(
+                LoadProfileReading(
+                    device_id=device_id,
+                    read_at=datetime.now(UTC),
+                    source="dlms",
+                    interval="15m",
+                    import_active_kwh=100.0 + index,
+                )
+            )
+
+
+def count_readings(device_id: int) -> int:
+    """How many Interval Readings a device has, straight from the table.
+
+    The API stopped exposing readings when M3-3 removed ``/readings/latest``
+    (ADR 0007), so counting rows is now the only way to assert that Read now
+    wrote nothing and that Delete all data deleted exactly what it claimed.
+    """
+    from sqlalchemy import func, select
+
+    from arichds.db.models import LoadProfileReading
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        return (
+            session.scalar(
+                select(func.count()).select_from(LoadProfileReading).where(LoadProfileReading.device_id == device_id)
+            )
+            or 0
+        )
+
+
+def schema_property_names(model: type) -> set[str]:
+    """Every property name in *model*'s JSON schema, ``$defs`` included."""
+    schema = model.model_json_schema()
+    names: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                names.update(properties)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(schema)
+    return names
+
+
+def insert_unidentified_device() -> int:
+    """Insert a pre-M3 style row: no serial, placeholder site."""
+    from arichds.db.models import Device
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        device = Device(
+            name="Main Incomer",
+            brand="cewe",
+            model="prometer100",
+            site_name="Unknown site",
+            transport={"kind": "net", "host": "127.0.0.1", "port": 4059},
+            password="hunter2",
+            enabled=False,
+        )
+        session.add(device)
+        session.flush()
+        return device.id

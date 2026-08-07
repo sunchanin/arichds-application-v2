@@ -5,8 +5,8 @@ import { api, type LicenseStatus } from "./api";
 import { type Session, clearSession, getSession, onSessionChange, setSession } from "./auth";
 import { AppShell } from "./components/AppShell";
 import { Activation } from "./pages/Activation";
+import { Devices } from "./pages/Devices";
 import { Login } from "./pages/Login";
-import { Monitor } from "./pages/Monitor";
 import { Setup } from "./pages/Setup";
 import { Users } from "./pages/Users";
 import { LICENSE_POLL_MS } from "./theme";
@@ -19,7 +19,7 @@ import { LICENSE_POLL_MS } from "./theme";
  * license status is no longer public (it carries the Machine ID), so the app
  * cannot even ask about Limited Mode until someone has signed in:
  *
- *   Setup → Login → Activation → Monitor
+ *   Setup → Login → Activation → Devices
  *
  * A stored token is *validated* with `GET /api/auth/me` rather than trusted:
  * an 8-hour token sitting in localStorage may well have expired or been revoked
@@ -37,7 +37,7 @@ export default function App() {
   const [status, setStatus] = useState<LicenseStatus | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [page, setPage] = useState<"monitor" | "users">("monitor");
+  const [page, setPage] = useState<"devices" | "users">("devices");
 
   // A 401 anywhere in the app clears the session; this is what turns that into
   // a re-render back to Login, without any page knowing about any other page.
@@ -128,7 +128,7 @@ export default function App() {
     setStatus(null);
     setTokenChecked(false);
     setNotice(null);
-    setPage("monitor");
+    setPage("devices");
   }, []);
 
   if (unreachable) {
@@ -172,11 +172,11 @@ export default function App() {
       licensedTo={status.customer}
       username={session.username}
       role={session.role}
-      activeKey={showUsers ? "users" : "monitor"}
-      onNavigate={(key) => setPage(key === "users" ? "users" : "monitor")}
+      activeKey={showUsers ? "users" : "devices"}
+      onNavigate={(key) => setPage(key === "users" ? "users" : "devices")}
       onSignOut={() => void signOut()}
     >
-      {showUsers ? <Users currentUserId={session.id} /> : <Monitor />}
+      {showUsers ? <Users currentUserId={session.id} /> : <Devices role={session.role} />}
     </AppShell>
   );
 }

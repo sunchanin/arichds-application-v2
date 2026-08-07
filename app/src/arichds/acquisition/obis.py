@@ -1,4 +1,4 @@
-"""OBIS codes for the M1 instantaneous set.
+"""OBIS codes for the instantaneous set.
 
 **Byte-identical to v1's map** — these codes are proven against the deployed
 fleet and are not to be "improved". Taken from
@@ -6,16 +6,22 @@ fleet and are not to be "improved". Taken from
 ``D=7`` IEC-standard group that Prometer 100 uses) and
 ``cewe-worker/src/billing/obis.py`` (``kwh_import_total``).
 
-The keys are the ``interval_readings`` column names, so the mapping from wire to
-storage is visible in one place and the driver has nothing to interpret.
+The keys are the ``load_profile_readings`` column names, so the mapping from
+wire to storage is visible in one place and the driver has nothing to interpret.
+
+**No production read path uses this map today** (ADR 0007, issue #8): the
+Poller's tick reads one register, the Meter Serial. It is reached only by
+``scripts/probe_meter.py``, the read-only field diagnostic. It stays because it
+is field-proven and because M5's load-profile reader needs exactly these
+column-to-OBIS pairs — CLAUDE.md forbids editing an OBIS map, not keeping one.
 """
 
 from __future__ import annotations
 
 from typing import Final
 
-#: The instantaneous set the M1 monitor reads every 60 s: V/I per phase,
-#: frequency, and the cumulative active-energy import register.
+#: The instantaneous set: V/I per phase, frequency, and the cumulative
+#: active-energy import register.
 #:
 #: ``{column_name: (obis_code, attribute_index)}`` — attribute 2 is the value.
 INSTANTANEOUS_OBIS: Final[dict[str, tuple[str, int]]] = {
@@ -35,5 +41,6 @@ INSTANTANEOUS_OBIS: Final[dict[str, tuple[str, int]]] = {
 }
 
 #: Columns whose meter value is raw Wh and must be divided to kWh before it
-#: reaches ``interval_readings``. Everything else is already in its stored unit.
+#: reaches ``load_profile_readings``. Everything else is already in its stored
+#: unit.
 ENERGY_COLUMNS_WH: Final[frozenset[str]] = frozenset({"import_active_kwh"})

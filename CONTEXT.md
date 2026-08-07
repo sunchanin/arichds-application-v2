@@ -56,6 +56,9 @@ _Avoid_: session cookie, API key
 **Interval Reading**:
 One row of time-series meter data in COSEM shape — always UTC, always kWh — regardless of
 whether the source was DLMS or Modbus. The normalization happens at write time, in the driver.
+The rows live in the `load_profile_readings` table, mapped by the `LoadProfileReading` class:
+the term names the row and its contract, the table names what is in it — every interval the
+meter itself recorded, since ADR 0007 stopped anything else being written there.
 _Avoid_: load profile row (that's the feature, not the row), sample, logger reading
 
 **Source**:
@@ -87,15 +90,24 @@ queue behind one lock.
 _Avoid_: connection (ambiguous), socket
 
 **Poller**:
-The background thread pool that reads meters on a fixed cadence (60 s, not configurable) and
-writes Interval Readings. One worker per device, one lock per Transport Endpoint. Its tick
-result is also where device status comes from — there is no separate health check.
+The background thread pool that reads every meter on a fixed cadence (60 s, not configurable)
+to prove it still answers. One worker per device, one lock per Transport Endpoint. Its tick
+runs the Liveness job — one identity register, discarded — and **writes no row at all**
+(ADR 0007); its outcome is where device status comes from, and there is no separate health
+check.
 
 **Probe**:
 Talking to a meter to read its identity before committing anything. Creating or updating a
 device probes first: no serial, no row. A probe is not a reading — it writes no Interval
 Reading.
 _Avoid_: test, ping, health check
+
+**Liveness**:
+The job a tick and Read now run to prove a meter answers a real register read — one
+association, one identity register, disconnect. It is not a data read: it produces no Interval
+Reading, and it never reports a measured value. M5 and M6 name their jobs (`load_profile`,
+`billing`) against this one.
+_Avoid_: ping, health check
 
 **Manual Read**:
 A read a person asked for — Read now, Test connection, or the probe behind Create/Update.

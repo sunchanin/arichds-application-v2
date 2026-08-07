@@ -1,22 +1,39 @@
 """The Poller — one worker thread per device, one lock per Transport Endpoint.
 
-CONTEXT.md defines it: *"The background thread pool that reads meters on a fixed
-cadence and writes Interval Readings. One worker per device, one lock per
+CONTEXT.md defines it: *"The background thread pool that reads every meter on a
+fixed cadence to prove it still answers. One worker per device, one lock per
 Transport Endpoint."*
 
-Two decisions carry real weight:
+**The tick proves liveness, not data** (ADR 0007). It reads one register — the
+Meter Serial, the same driver seam the Probe uses (ADR 0005) — and throws the
+answer away. Merely connecting would not do: a meter that accepts an association
+but cannot serve a register would report Online while being useless. Nothing
+instantaneous is persisted anywhere, and no value the tick read ever reaches a
+log line, an API response or a cache; what issue #5 needs from a tick is its
+**outcome**, not its payload.
+
+Two more decisions carry real weight:
 
 **The lock keys on the Transport Endpoint, not the device.** v1 locked on
 ``device_id``, which is accidentally correct for TCP (one meter = one socket) and
 wrong the moment several devices share a line. Keying on the endpoint
 (``host:port`` now, a COM port name once serial lands) makes devices on one line
 queue behind one lock — see REMAKE-PLAN §3.2, which calls the v1 behaviour a
-latent bug that only survived because sites had one meter per port.
+latent bug that only survived because sites had one meter per port. The registry
+itself lives in :mod:`arichds.acquisition.locks`, process-wide, because Manual
+Reads in the API take the very same locks (ADR 0006).
 
 **The Poller only runs while the license is valid.** SPEC §3.9: in Limited Mode
 "polling หยุด · process ไม่ตาย". It subscribes to the LicenseService rather than
 checking a flag it captured at startup (ADR 0001), so activation starts it
 immediately and a lapsed lease stops it — both without a restart.
+
+**A tick's outcome is also the device's status** (ADR 0004), which is why there
+is no health-check job anywhere in v2: this connection has already answered the
+question a connectivity probe would ask, more recently and more thoroughly. The
+mapping lives in :meth:`Poller._record` and the rules behind it in
+:mod:`arichds.acquisition.status` — nothing in this file decides what "offline"
+means.
 """
 
 from __future__ import annotations
@@ -24,43 +41,40 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from enum import StrEnum
 
 from sqlalchemy import select
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers.base import InstantaneousReading, MeterDriver
-from arichds.acquisition.drivers.factory import create_driver
-from arichds.constants import (
-    INTERVAL_LABEL_INSTANTANEOUS,
-    POLL_INTERVAL_SEC,
-    POLLER_STOP_JOIN_TIMEOUT_SEC,
-)
-from arichds.db.models import Device, IntervalReading
+from arichds.acquisition.drivers.base import MeterDriver
+from arichds.acquisition.drivers.factory import create_driver, supported_models
+from arichds.acquisition.locks import EndpointLocks, endpoint_locks
+from arichds.acquisition.status import record_failure, record_no_driver, record_success
+from arichds.constants import POLL_INTERVAL_SEC, POLLER_STOP_JOIN_TIMEOUT_SEC
+from arichds.db.models import Device
 from arichds.db.session import session_scope
 from arichds.licensing.service import LicenseState
 
 logger = logging.getLogger(__name__)
 
 
-class EndpointLocks:
-    """Hands out one lock per Transport Endpoint, created on demand.
+class TickOutcome(StrEnum):
+    """What one poll tick did.
 
-    Thread-safe: the registry itself is guarded, so two workers racing to poll
-    the first two devices on one line still end up sharing a single lock.
+    ``OK`` means the meter answered a real register read — nothing was stored,
+    because a tick stores nothing (ADR 0007). It was ``STORED`` until issue #8
+    made that a lie.
+
+    ``SKIPPED`` is not ``FAILED`` and that distinction is the point (ADR 0006):
+    a tick that never ran because a Manual Read held the endpoint must not count
+    toward the 3-consecutive-failures rule that flips a device Offline. If both
+    came back as "nothing happened", pressing *Read now* would become a way to
+    mark your own meter Offline.
     """
 
-    def __init__(self) -> None:
-        self._registry: dict[str, threading.Lock] = {}
-        self._guard = threading.Lock()
-
-    def get(self, endpoint: str) -> threading.Lock:
-        """Return the lock for *endpoint*, creating it on first use."""
-        with self._guard:
-            lock = self._registry.get(endpoint)
-            if lock is None:
-                lock = threading.Lock()
-                self._registry[endpoint] = lock
-            return lock
+    OK = "ok"
+    FAILED = "failed"
+    SKIPPED = "skipped"
 
 
 def build_driver(device: Device) -> MeterDriver:
@@ -84,37 +98,18 @@ def build_driver(device: Device) -> MeterDriver:
     return create_driver(device.model, conn, password=device.password or "")
 
 
-def store_reading(device_id: int, reading: InstantaneousReading) -> int:
-    """Persist one Interval Reading and return its row id.
+def poll_once(device: Device, locks: EndpointLocks, shutdown: threading.Event | None = None) -> TickOutcome:
+    """Run one poll tick for *device*: connect, read the identity, disconnect.
 
-    The driver already normalized the values (UTC + kWh); this function must not
-    convert anything, or the contract would live in two places.
+    Takes the Transport Endpoint lock on the **background** path for the whole
+    exchange, so devices sharing a line never interleave frames — and so a tick
+    that arrives while a Manual Read holds (or is waiting for) the endpoint is
+    skipped rather than queued (ADR 0006).
 
-    Args:
-        device_id: Owning device.
-        reading: The normalized sample.
-
-    Returns:
-        The new row's primary key.
-    """
-    with session_scope() as session:
-        row = IntervalReading(
-            device_id=device_id,
-            read_at=reading.read_at,
-            source=reading.source,
-            interval=INTERVAL_LABEL_INSTANTANEOUS,
-            **reading.as_columns(),
-        )
-        session.add(row)
-        session.flush()
-        return row.id
-
-
-def poll_once(device: Device, locks: EndpointLocks, shutdown: threading.Event | None = None) -> int | None:
-    """Run one poll tick for *device*: connect, read, store, disconnect.
-
-    Holds the Transport Endpoint lock for the whole exchange so devices sharing
-    a line never interleave frames.
+    The serial it reads is **discarded** (ADR 0007). It is read to prove the
+    meter answers a real register — one register, not eight — and re-identifying
+    the device off it is deliberately not done here: a serial that no longer
+    matches is Update's business (ADR 0005), not a background thread's.
 
     Args:
         device: The device to read.
@@ -123,41 +118,48 @@ def poll_once(device: Device, locks: EndpointLocks, shutdown: threading.Event | 
             retry aborts promptly.
 
     Returns:
-        The stored row id, or ``None`` if the tick failed (already logged — a
-        failed read is normal operational noise, never a crash).
+        The tick outcome. A failed read is normal operational noise, never a
+        crash, and is already logged by the time this returns.
     """
     try:
         driver = build_driver(device)
-    except ValueError:
-        logger.exception("Cannot build a driver for device %s", device.name)
-        return None
+    except ValueError as exc:
+        # A backstop, not the main guard: the Poller filters unusable models out
+        # before it creates a worker, so reaching here means someone called
+        # poll_once directly. WARNING, not exception() — this is a
+        # configuration problem, not a crash, and it must not shout every tick.
+        logger.warning("Cannot build a driver for device %s: %s", device.name, exc)
+        return TickOutcome.FAILED
 
     if shutdown is not None and hasattr(driver, "set_shutdown_event"):
         driver.set_shutdown_event(shutdown)
 
-    with locks.get(driver.endpoint):
+    with locks.get(driver.endpoint).background() as acquired:
+        if not acquired:
+            logger.info("Skipping tick for %s — a Manual Read holds %s", device.name, driver.endpoint)
+            return TickOutcome.SKIPPED
         try:
             driver.connect()
-            reading = driver.read_instantaneous()
+            serial = driver.read_meter_serial()
         except Exception:  # noqa: BLE001 — one unreachable meter must not stop the rest.
             logger.warning("Poll failed for %s at %s", device.name, driver.endpoint, exc_info=True)
-            return None
+            return TickOutcome.FAILED
         finally:
             driver.disconnect()
 
-    row_id = store_reading(device.id, reading)
-    logger.info(
-        "Stored reading for %s (%s) at %s — V=%s/%s/%s Hz=%s kWh=%s",
-        device.name,
-        driver.endpoint,
-        reading.read_at.isoformat(),
-        reading.volt_l1,
-        reading.volt_l2,
-        reading.volt_l3,
-        reading.freq,
-        reading.import_active_kwh,
-    )
-    return row_id
+    if serial is None:
+        # The association succeeded and the register came back empty. That
+        # proves the meter is listening, not that it can serve a read — the
+        # exact state ADR 0007 refuses to report as Online. ``probe_meter``
+        # classifies the same answer as ``ProbeFailure.NO_SERIAL``.
+        logger.warning("Poll failed for %s at %s — the meter reported no serial", device.name, driver.endpoint)
+        return TickOutcome.FAILED
+
+    # One line, no payload: the serial is discarded here and never logged
+    # (ADR 0007 — the tick proves liveness, and a Meter Serial is identity, not
+    # liveness).
+    logger.info("Tick OK for %s (%s)", device.name, driver.endpoint)
+    return TickOutcome.OK
 
 
 class Poller:
@@ -172,14 +174,15 @@ class Poller:
         interval_sec: float = POLL_INTERVAL_SEC,
         enabled: bool = True,
         stop_timeout: float = POLLER_STOP_JOIN_TIMEOUT_SEC,
-        poll_fn: Callable[[Device, EndpointLocks, threading.Event], int | None] | None = None,
+        poll_fn: Callable[[Device, EndpointLocks, threading.Event], TickOutcome] | None = None,
+        locks: EndpointLocks | None = None,
     ) -> None:
         """Initialise the Poller.
 
         Args:
             interval_sec: Seconds between ticks for each device. The first tick
-                of every worker runs immediately — a monitor page should show a
-                value now, not in a minute.
+                of every worker runs immediately — a device that has just been
+                added should report its status now, not in a minute.
             enabled: Master switch (``ARICHDS_POLL_ENABLED``). When False,
                 :meth:`start` is a no-op, so a valid license does not bring
                 background threads up. Used by tests and by dev runs that want
@@ -190,12 +193,16 @@ class Poller:
                 exactly why the shutdown event is bound per worker.
             poll_fn: Override for the per-tick work (tests). Defaults to
                 :func:`poll_once`.
+            locks: The Transport Endpoint lock registry. Defaults to the
+                process-wide one, which is what makes a Manual Read in the API
+                contend with a background tick for the same endpoint — including
+                across a :meth:`restart` (ADR 0006). Tests pass their own.
         """
         self._interval_sec = interval_sec
         self._enabled = enabled
         self._stop_timeout = stop_timeout
         self._poll_fn = poll_fn or poll_once
-        self._locks = EndpointLocks()
+        self._locks = locks if locks is not None else endpoint_locks()
         self._shutdown = threading.Event()
         self._threads: list[threading.Thread] = []
         self._guard = threading.Lock()
@@ -212,16 +219,38 @@ class Poller:
         return self._enabled
 
     def _enabled_devices(self) -> list[Device]:
-        """Snapshot the enabled devices.
+        """Snapshot the enabled devices whose model this build can actually drive.
 
         Returns detached copies of the fields the workers need, so a worker
         never holds a Session across a 60-second sleep.
+
+        A row whose model has no registered driver — a pre-M3 ``sim`` row that
+        somebody re-enabled by hand, say — gets **no worker at all**. Filtering
+        here rather than inside ``poll_once`` means the unusable device costs no
+        thread and produces exactly one log line per Poller start, instead of a
+        warning every 60 seconds forever.
         """
+        drivable = set(supported_models())
         with session_scope() as session:
             devices = list(session.scalars(select(Device).where(Device.enabled.is_(True))))
             for device in devices:
                 session.expunge(device)
-            return devices
+
+        usable: list[Device] = []
+        for device in devices:
+            if device.model.lower() in drivable:
+                usable.append(device)
+            else:
+                logger.warning(
+                    "Device %s is enabled but its model %r has no driver in this build — not polling it",
+                    device.name,
+                    device.model,
+                )
+                # Say so on the device too, not just in the log. Without this an
+                # operator who resumes a parked pre-M3 row watches a permanent
+                # Unknown with no explanation anywhere they can see.
+                record_no_driver(device.id, device.model)
+        return usable
 
     def start(self) -> None:
         """Start one worker per enabled device.
@@ -305,20 +334,60 @@ class Poller:
         rebinds the attribute to a fresh unset event B. A worker still inside a
         slow meter read that later re-read the attribute would see B, never
         learn it was retired, and poll on forever beside its replacement —
-        duplicate Interval Readings, doubled meter load, and a thread budget
-        that quietly drifts past SPEC §4's "2 + n".
+        doubled meter load, a device status written twice a tick by two threads
+        racing each other, and a thread budget that quietly drifts past SPEC
+        §4's "2 + n".
         """
         logger.info("Poller worker for %s started (every %ss)", device.name, self._interval_sec)
         while not shutdown.is_set():
             try:
-                self._poll_fn(device, self._locks, shutdown)
+                outcome = self._poll_fn(device, self._locks, shutdown)
+                self._record(device, outcome)
             except Exception:  # noqa: BLE001 — a worker must never die on one bad tick.
                 logger.exception("Unhandled error polling %s", device.name)
+                # A driver that raises must still be able to reach Offline: from
+                # the operator's side "it threw" and "it timed out" are the same
+                # fact — this machine could not read that meter.
+                #
+                # Guarded because this call is in the handler of last resort: a
+                # database error here would otherwise escape the loop and kill
+                # the worker, and "a worker must never die on one bad tick" is
+                # the whole reason this except exists.
+                try:
+                    record_failure(device.id)
+                except Exception:  # noqa: BLE001 — see above.
+                    logger.exception("Could not record the failed tick for %s", device.name)
             # Event.wait doubles as the sleep and the shutdown check, so stopping
             # never waits out a full interval.
             if shutdown.wait(self._interval_sec):
                 break
         logger.info("Poller worker for %s stopped", device.name)
+
+    def _record(self, device: Device, outcome: TickOutcome) -> None:
+        """Turn one tick outcome into device status (ADR 0004).
+
+        Called at the ``poll_fn`` seam rather than from inside :func:`poll_once`
+        for two reasons. ``poll_fn`` is the injection point the tests use, so
+        recording here lets a test drive the whole state machine with fabricated
+        outcomes and no threads-versus-meter timing. And it keeps
+        :mod:`arichds.acquisition.status` free of any import of this module, so
+        the outcome vocabulary could be renamed without the state machine
+        noticing — which is exactly what issue #8 then did, turning ``STORED``
+        into ``OK`` here and touching nothing in ``status.py``.
+
+        Args:
+            device: The device that was (or was not) read.
+            outcome: What the tick did.
+        """
+        if outcome is TickOutcome.OK:
+            record_success(device.id)
+        elif outcome is TickOutcome.FAILED:
+            record_failure(device.id)
+        # SKIPPED is a total no-op — not a strike, not a reset, not even a fresh
+        # `status_checked_at`. A tick skipped because a Manual Read held the
+        # endpoint (ADR 0006) checked nothing, so it has nothing to report; if it
+        # counted as a failure, pressing Read now three times in a row would be a
+        # way to mark your own meter Offline.
 
     # ── License integration (ADR 0001) ───────────────────────────────────────
 

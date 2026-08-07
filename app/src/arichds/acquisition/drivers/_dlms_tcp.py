@@ -4,9 +4,11 @@ Internal to :mod:`arichds.acquisition.drivers` — external code imports a
 concrete driver or goes through the factory, never this module.
 
 Ported from ``cewe-worker/src/drivers/_tcp_driver_base.py``, reduced to the
-lifecycle M1 needs (connect / disconnect / read the instantaneous set). The
-load-profile and billing-profile read paths stay behind in v1 until M5/M6 ask
-for them.
+lifecycle M3 needs: connect / disconnect / read one register. The instantaneous
+set went with ADR 0007 (issue #8) — v2 stores nothing instantaneous, so the only
+register anything reads today is the Meter Serial, for the Probe and for the
+Poller's liveness tick. The load-profile and billing-profile read paths stay
+behind in v1 until M5/M6 ask for them.
 
 Invariants carried over from v1, all of them earned the hard way:
 
@@ -35,7 +37,6 @@ import logging
 import threading
 import time
 from abc import abstractmethod
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -44,12 +45,13 @@ from gurux_dlms.objects import GXDLMSData, GXDLMSExtendedRegister, GXDLMSRegiste
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers import _gurux_net_patch  # noqa: F401 — import applies the patch
 from arichds.acquisition.drivers._gurux_trace import silence_frame_trace
-from arichds.acquisition.drivers.base import InstantaneousReading, MeterConnectionError, MeterDriver
+from arichds.acquisition.drivers.base import MeterConnectionError, MeterDriver
 from arichds.acquisition.obis import ENERGY_COLUMNS_WH
 from arichds.constants import (
     CONNECT_ASSOC_RETRY_ATTEMPTS,
     CONNECT_ASSOC_RETRY_BACKOFF_SEC,
-    HEALTH_CHECK_OBIS_CODE,
+    METER_SERIAL_OBIS_ATTR,
+    METER_SERIAL_OBIS_CODE,
     SOURCE_DLMS,
     WH_TO_KWH_DIVISOR,
 )
@@ -94,11 +96,30 @@ class TcpDlmsDriver(MeterDriver):
     ``_read_timeout_ms()`` — everything transport-shaped comes from
     :class:`~arichds.acquisition.connection_params.ConnectionParams`.
 
+    **The Meter Serial read lives here, not on a leaf driver.** All nine
+    catalogued models read the same DLMS-standard register the same way, and the
+    one model that differs (SMW110, whose standard register returns a factory
+    placeholder — v1 ``smw110.py``) differs only in *which* register. So the
+    register is a class attribute a subclass overrides and the read itself is
+    written once: putting it on Prometer100 would guarantee eight copies of
+    identical code when M4 lands the rest. A capability flag, not an if/elif
+    model chain (v1 ``base_driver.py``).
+
     Attributes:
-        last_latency_ms: Round-trip latency of the most recent probe read.
+        last_latency_ms: Round-trip latency of the most recent timed read.
+            **Always None today**: the method that set it left with ADR 0007,
+            and :func:`~arichds.acquisition.probe.probe_meter` measures its own
+            latency on purpose (it must include the wait for the endpoint, which
+            a driver cannot see). Kept for M5's load-profile read, which is the
+            next read slow enough to be worth timing.
     """
 
     source = SOURCE_DLMS
+
+    #: Which ``(obis, attr)`` register carries the Meter Serial. The
+    #: DLMS-standard Device Serial Number by default; read off the CLASS without
+    #: instantiating. Only SMW110 will override it (M4).
+    METER_SERIAL_OBIS: tuple[str, int] = (METER_SERIAL_OBIS_CODE, METER_SERIAL_OBIS_ATTR)
 
     def __init__(self, conn: ConnectionParams, password: str, **kwargs: Any) -> None:
         """Initialise connection state. Does NOT open a socket.
@@ -301,40 +322,34 @@ class TcpDlmsDriver(MeterDriver):
 
         return self._reader.read(obj, attr)
 
-    def read_instantaneous(self) -> InstantaneousReading:
-        """Read the instantaneous set and normalize it (UTC + kWh).
+    def read_meter_serial(self) -> str | None:
+        """Read the Meter Serial off the meter. Assumes connect() succeeded.
 
-        A register that the meter does not expose is logged and left ``None``
-        rather than failing the whole tick — a partial reading is far more
-        useful than no reading (v1's "degrade gracefully" behaviour).
+        Ported from v1's ``connection_manager._probe_meter_serial``: read the
+        register named by :attr:`METER_SERIAL_OBIS`, decode ``bytes`` as ASCII,
+        trim, and treat a blank as nothing. ``errors="replace"`` rather than
+        ``strict`` because a meter that returns one odd byte should still
+        identify itself instead of failing the whole add.
 
         Returns:
-            The normalized sample.
+            The trimmed serial, or None when the meter answered with nothing or
+            a blank.
         """
-        started = time.monotonic()
-        values: dict[str, float | None] = {}
+        obis_code, attr = self.METER_SERIAL_OBIS
+        raw = self.read_register(obis_code, attr)
+        if raw is None:
+            logger.warning("Meter serial read returned nothing — %s %s", self.model_name, self._conn.endpoint)
+            return None
 
-        for column, (obis_code, attr) in self.get_obis_map().items():
-            try:
-                raw = self.read_register(obis_code, attr)
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "%s %s: read failed for %s (%s)",
-                    self.model_name,
-                    self._conn.endpoint,
-                    column,
-                    obis_code,
-                    exc_info=True,
-                )
-                values[column] = None
-                continue
-            values[column] = self._normalize(column, raw)
+        serial = bytes(raw).decode("ascii", errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
 
-        self.last_latency_ms = int((time.monotonic() - started) * 1000)
-
-        # UTC always. The read timestamp is the host's clock, not the meter's:
-        # M1 samples an instantaneous set, which has no meter-side capture time.
-        return InstantaneousReading(read_at=datetime.now(UTC), source=self.source, **values)
+        serial = serial.strip()
+        if not serial:
+            # A blank serial is indistinguishable from a failed probe for the
+            # caller's purposes, so it must not be reported as an identity.
+            logger.warning("Meter serial read was blank — %s %s", self.model_name, self._conn.endpoint)
+            return None
+        return serial
 
     def _normalize(self, column: str, raw: Any) -> float | None:
         """Coerce *raw* to a float in the unit the column name promises.
@@ -354,34 +369,3 @@ class TcpDlmsDriver(MeterDriver):
         if column in ENERGY_COLUMNS_WH:
             return value / WH_TO_KWH_DIVISOR
         return value
-
-    def health_check(self) -> bool:
-        """Connect, read the clock object, disconnect.
-
-        Cheaper than the full instantaneous set — one round trip.
-
-        Returns:
-            True if the meter answered, False on any error.
-        """
-        try:
-            self.connect()
-            start = time.monotonic()
-            self.read_register(HEALTH_CHECK_OBIS_CODE, 2)
-            self.last_latency_ms = int((time.monotonic() - start) * 1000)
-            logger.info(
-                "Health check OK — %s %s latency=%dms",
-                self.model_name,
-                self._conn.endpoint,
-                self.last_latency_ms,
-            )
-            return True
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "Health check FAILED — %s %s",
-                self.model_name,
-                self._conn.endpoint,
-                exc_info=True,
-            )
-            return False
-        finally:
-            self.disconnect()

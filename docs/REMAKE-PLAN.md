@@ -68,7 +68,8 @@ flowchart TD
     M1["<b>M1 · Walking Skeleton</b> ⭐<br/>เครื่องเปล่า → ติดตั้ง 1 ขั้นตอน → offline activate<br/>→ มิเตอร์ CEWE 1 ตัว → เห็นค่าสดบนเว็บ<br/><i>exit: ติดตั้ง &lt; 10 นาที ไม่มีคำถามเรื่อง DB</i>"]
     M2["<b>M2 · Auth & Login</b><br/>JWT · หน้า Login + User Mgmt"]
     M3["<b>M3 · Device Manager</b><br/>CRUD + probe-first · events · สถานะจาก poller<br/>pause/resume · priority lock · หน้า Devices"]
-    M4["<b>M4 · Acquisition</b><br/>a: DLMS ครบทุกรุ่น (≤ วันที่ 5)<br/>b: Modbus + billing cut (วันที่ 6–14)<br/>ปิดเรื่อง scaler ×10 ที่ M4a"]
+    M4["<b>M4 · Acquisition</b><br/>a: SMW110W4 รุ่นเดียว (≤ วันที่ 5)<br/>b: Modbus + billing cut (วันที่ 6–14)<br/>ปิดเรื่อง scaler ×10 ที่ M4a"]
+    M4C["<b>M4c · รุ่นที่เหลือ</b><br/>Prometer100 · Saral305 · Premier550<br/>SMART TCC ×5<br/><i>exit: parity บนเคส 2 logger</i>"]
     M5["<b>M5 · Load Profile</b><br/>2 logger · CSV · retention<br/><i>exit: parity กับ v1</i>"]
     M6["<b>M6 · Billing</b><br/>open period · backfill · capture<br/><i>exit: parity กับ v1</i>"]
     M7["<b>M7 · โมดูลเบาที่เหลือ</b><br/>Energy · Holidays · SpecialDays<br/>Battery · ExportFormat · AppLog<br/><i>exit: parity กับ v1 + นับหน้าครบ</i>"]
@@ -77,7 +78,7 @@ flowchart TD
     M10["<b>M10 · Hardening & Pilot</b><br/><i>exit: ลูกค้านำร่องรัน 2 สัปดาห์</i>"]
     PORTAL[/"portal v2 — คนละรีโป<br/>ออกแบบใหม่ทีหลัง"/]
 
-    M0 --> M1 --> M2 -- "เทสผ่าน" --> M3 -- "เทสผ่าน" --> M4 -- "เทสผ่าน" --> M5 -- "parity" --> M6 -- "parity" --> M7 -- "parity" --> M8 --> M10
+    M0 --> M1 --> M2 -- "เทสผ่าน" --> M3 -- "เทสผ่าน" --> M4 -- "เทสผ่าน" --> M5 -- "parity" --> M6 -- "parity" --> M4C -- "parity ครบ" --> M7 -- "parity" --> M8 --> M10
     M0 -. "v2 นิยาม contract ให้ portal ตาม<br/>ไม่ใช่ทางกลับ" .-> PORTAL
     PORTAL == "gate" ==> M9 --> M10
 
@@ -268,7 +269,12 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 | backup ด้วย `mysqldump` | → `VACUUM INTO` ไฟล์เดียว (เปิด WAL แล้วมี `.db`+`-wal`+`-shm` จึงคัดลอกดิบ ๆ ตอนโปรแกรมรันไม่ได้) |
 
 **ปริมาณงานอยู่ห่างจากขีดจำกัดของ SQLite มาก**: modbus 1,440 แถว/วัน/มิเตอร์ + DLMS LP 96 แถว/วัน/มิเตอร์
-→ 20 มิเตอร์ ≈ 0.3 write/วินาที, retention 90 วัน ≈ 2.6 ล้านแถว ≈ 500 MB
+→ **เคสแย่สุด (20 มิเตอร์ modbus ทั้งหมด)** 28,800 แถว/วัน ≈ 0.3 write/วินาที, retention 90 วัน
+≈ 2.6 ล้านแถว ≈ 500 MB · ส่วนเคสที่คาดจริง (18 DLMS + 2 Modbus) อยู่ที่ 4,608 แถว/วัน — ดู §6.1
+
+> **Poller ไม่ได้เพิ่มแถวเข้าตัวเลขพวกนี้เลย** (ADR 0007, M3-4) — tick พิสูจน์ว่ามิเตอร์ยังตอบอยู่
+> แล้วทิ้งค่า ไม่เขียนอะไรลง DB · ตัวเลขทั้งสองชุดข้างบนนับเฉพาะ interval ที่ **มิเตอร์เป็นคนบันทึกเอง**
+> ซึ่งเป็นสิ่งเดียวที่ `load_profile_readings` เก็บ
 
 **ราคาที่ต้องจ่าย** (ห้ามตีเป็นศูนย์):
 - `DELETE ... LIMIT` 4 จุด (`storage_service.py:117-122`) — `sqlite3` ที่มากับ CPython ไม่รองรับ ต้องเขียน retention ใหม่เป็น subquery
@@ -285,7 +291,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 |---|---|
 | `devices` | `devices` + `device_settings` + `device_status` + `device_capture_objects` (→ JSON column) |
 | `device_events` | `device_heartbeats` (+ แนวคิดจาก `alarms` / `device_connection_log` ที่ตายไปแล้ว) — **ไม่ใช่การพอร์ต 1:1**: v1 เขียนทุก tick, v2 เขียนเฉพาะตอนเปลี่ยนสถานะ + การกระทำของคน (ADR 0004) |
-| `interval_readings` | `logger_readings` + `meter_readings_<brand>_1m/_5m/_15m` — **หน้าตา COSEM ~24 คอลัมน์ + `source` + `interval`** (D10, §6.1) |
+| `load_profile_readings` | `logger_readings` + `meter_readings_<brand>_1m/_5m/_15m` — **หน้าตา COSEM ~24 คอลัมน์ + `source` + `interval`** (D10, §6.1) · ชื่อเดิมตอน M1–M3 คือ `interval_readings` เปลี่ยนที่ M3-4 พร้อม ADR 0007 เมื่อแถว 60 วิหายไปแล้วเหลือ load profile ล้วน |
 | `interval_read_jobs` | `load_profile_reads` |
 | `billing_readings` | `billing_readings` |
 | `billing_captures` | (เก็บเฉพาะถ้ายังต้องใช้ — `logger_exports`/`logger_confirmations` ตายแล้ว) |
@@ -329,12 +335,12 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 
 | ชนิด | พฤติกรรม | วิธี sync |
 |---|---|---|
-| `interval_readings` | append-only | watermark ตาม rowid/`read_at` ตรง ๆ |
+| `load_profile_readings` | append-only | watermark ตาม rowid/`read_at` ตรง ๆ |
 | `billing_readings` | **ไม่ append-only** — open period คือแถวเดียวที่ถูก upsert ซ้ำในที่เดิม (ADR 0018) และ backfill แทรกแถว `bill_date` *เก่ากว่า* watermark (ADR 0012) | track ด้วย `updated_at` หรือส่ง open slot ซ้ำทุกรอบ ให้ server upsert ด้วย key `(device, bill_date)` |
 
 > ถ้าใช้ watermark เดียวกันหมด: เว็บไซต์จะไม่เห็นบิลงวดปัจจุบันขยับ และไม่เห็นประวัติที่ backfill — โดยที่ sync ไม่ error เลย
 
-> เพราะ `interval_readings` เก็บหน้าตา COSEM อยู่แล้ว (§6.1) payload จึงเป็นการ serialize แถวตรง ๆ ไม่ต้อง pivot
+> เพราะ `load_profile_readings` เก็บหน้าตา COSEM อยู่แล้ว (§6.1) payload จึงเป็นการ serialize แถวตรง ๆ ไม่ต้อง pivot
 
 **ข้อมูลประกอบที่เพิ่งพบ**: v1 มี M2M auth แบบ `X-API-Key` อยู่แล้วบนเกือบทุก router
 (`api/dependencies.py:143,174` ใช้ใน `devices`, `billing`, `load_profile`, `energy_summary`, `fs`, `holidays`, `settings`, `battery`)
@@ -357,10 +363,16 @@ v1 มีกลไกขายแยกฟีเจอร์อยู่แล�
 > ร่างแรกวางความเสี่ยงหนักที่สุด (packaging + activation = pain point ข้อ 2 ทั้งดุ้น) ไว้ท้ายสุด
 > และส่งมอบค่าได้ที่ milestone สุดท้ายเท่านั้น — รื้อลำดับใหม่ให้แตะทุกรอยต่อเสี่ยงตั้งแต่ก้อนแรก
 
-> 📅 **Timeline (จาก SPEC.md, M0 grilling 2026-08-03)**: **วันที่ 5 = M1–M6 ครบ** โดย M4 นับเฉพาะ
-> **เส้นทาง DLMS/COSEM ครบทุกรุ่น** — เส้นทาง Modbus (พอร์ต Go + modbus billing cut + §6.1 ฝั่งเขียน)
-> เลื่อนไปช่วง **วันที่ 6–14** พร้อม M7–M8 · **วันที่ 14 = M8 จบ** (push ขึ้นเว็บ + ถอน API ตัวกลาง) ·
-> M9 รอ portal v2 · มิเตอร์จริงมีครบ 3 ยี่ห้อตลอดช่วง — exit "อ่านมิเตอร์จริง"/"parity" ใช้ของจริงได้
+> 📅 **Timeline (จาก SPEC.md, M0 grilling 2026-08-03 · แก้ขอบเขต M4a 2026-08-07)**:
+> **วันที่ 5 = M1–M6 ครบ** โดย M4a นับเฉพาะ **SMW110W4 รุ่นเดียว** — รุ่นที่เหลือย้ายไป **M4c หลัง M6**
+> (เจ้าของตัดสิน: เจาะรุ่นเดียวให้ทะลุถึง billing ก่อนขยายทางกว้าง) · เส้นทาง Modbus
+> (พอร์ต Go + modbus billing cut + §6.1 ฝั่งเขียน) ยังอยู่ช่วง **วันที่ 6–14** พร้อม M7–M8 ·
+> **วันที่ 14 = M8 จบ** (push ขึ้นเว็บ + ถอน API ตัวกลาง) · M9 รอ portal v2
+>
+> ⚠️ **"มิเตอร์จริงมีครบ 3 ยี่ห้อตลอดช่วง" ไม่จริงแล้ว** — ทดสอบ 2026-08-07: CEWE ทั้งสามต่อได้
+> จากเครื่องพัฒนา แต่ **SMART TCC `203.170.148.103:4059` timeout** และ SMW110W4 เข้าถึงได้เฉพาะ
+> ผ่านเครื่องลูกค้า (ตัว TCP อยู่บน LAN `192.168.1.31` ยิงจากข้างนอกไม่ได้) ⇒ exit ที่ต้องใช้
+> "อ่านมิเตอร์จริง" ต้องนัดเวลากับลูกค้า ไม่ใช่ของที่หยิบใช้เมื่อไหร่ก็ได้
 
 ### 🧪 กติกาการเดิน — ทีละโมดูล gate ด้วยเทส
 
@@ -432,21 +444,62 @@ Read now / Test connection ได้คิวก่อน poller + เทสผ�
 *(หน้า Instantaneous เคยอยู่ที่นี่ — ย้ายไป M5 ในชื่อ **Records** เพราะของจริง v1 คือตารางนับความครบ
 ของ interval ไม่ใช่หน้าอ่านค่าสด และต้องมี load profile ก่อนจึงมีอะไรให้นับ)*
 
-### M4 — Acquisition ครบทุกยี่ห้อ — สองเฟส
+### M4 — Acquisition — สามเฟส *(แก้ลำดับ 2026-08-07 — ดูกล่องด้านล่าง)*
 
-**M4a (ภายในวันที่ 5) — เส้นทาง DLMS/COSEM ครบทุกรุ่น**:
-Saral305 / Premier550 / SMART TCC ×5 / SMW110-serial (Prometer100 มีแล้วจาก M1) ·
+> **⚠️ เปลี่ยนลำดับจากร่างเดิม (เจ้าของตัดสิน 2026-08-07)**
+> ร่างเดิมให้ทำ **ทุกรุ่น** ให้จบใน M4a ก่อนขึ้น M5 · ของใหม่คือ **เจาะรุ่นเดียวให้ทะลุถึง billing ก่อน
+> แล้วค่อยขยายออกทางกว้าง** — SMW110W4 เดินตลอดเส้น M4a → M5 → M6 ส่วนรุ่นที่เหลือทั้งหมด
+> (รวม Prometer100) ไปอยู่ M4c หลัง M6 จบ
+>
+> **เหตุผลที่เลือกรุ่นนี้เป็นตัวเจาะ**: 2026-08-07 เป็นรุ่นเดียวที่มีข้อมูลภาคสนามครบทั้งเส้น —
+> capture objects, ลำดับ entry, บริการอ่านที่มิเตอร์ยอมรับ, และเพดานคอลัมน์ของ billing
+> (ดู [`meter-notes/smw110w4-scan.md`](meter-notes/smw110w4-scan.md)) และมันเป็นรุ่นที่บังคับให้
+> abstraction ถูกตั้งแต่แรก เพราะมันหักสมมติฐานสามข้อที่รุ่นอื่นซ่อนไว้ (transport ไม่ผูกกับรุ่น ·
+> byEntry เท่านั้น · billing อ่านได้แค่ prefix)
+>
+> **ราคาที่จ่ายและต้องรู้ตัว — ไม่ใช่ข้อโต้แย้ง เป็นข้อเท็จจริงที่ต้องไม่ลืม**:
+> SMW110W4 **ไม่มี Logger 2** ⇒ ดีไซน์ `logger_id` ของ SPEC §3.5 (unique key
+> `(device_id, logger_id, read_at)`) **จะไม่ถูกทดสอบเลยจนถึง M4c** และ **exit "parity" ของ M5/M6
+> จะพิสูจน์บนรุ่นเดียว** · เคสที่ยังไม่ถูกแตะคือ Prometer 100 (Logger 1 = 900 วิ แต่ Logger 2 = **300 วิ**)
+> และ Premier 550 (คาบเท่ากันแต่คอลัมน์ชนกัน) — ทั้งคู่บันทึกไว้ใน
+> [`meter-notes/load-profile-capture-objects.md`](meter-notes/load-profile-capture-objects.md)
+> ⇒ **M4c ต้องถือว่า parity ยังไม่ผ่านจนกว่าสองเคสนี้จะเดินจริง**
+
+**M4a (ภายในวันที่ 5) — SMW110W4 รุ่นเดียว ทั้ง DLMS serial และ TCP**:
+driver + serial transport (`ConnectionParams.serial()` — วันนี้มีแต่ enum ค้างไว้) ·
 manual-priority gate (ADR 0020) · ปิดเรื่อง scaler (§5)
-**Exit**: อ่านมิเตอร์จริงครบ 3 ยี่ห้อผ่าน DLMS ลงตาราง `interval_readings` ตัวเดียวกัน
+**Exit**: อ่าน SMW110W4 จริงได้ทั้งสอง transport ลงตาราง `load_profile_readings`
+
+> **รุ่นนี้ไม่ใช่ serial-only** — ร่างเดิมเขียนว่า "SMW110-serial" ซึ่งพิสูจน์แล้วว่าผิด:
+> ไซต์ลูกค้ามีสองเครื่องรุ่นเดียวกัน เครื่องหนึ่งต่อ `COM4` อีกเครื่องต่อ `192.168.1.31:4059`
+> ⇒ **transport เป็นคุณสมบัติของการติดตั้ง ไม่ใช่ของรุ่น** และ `catalog.py` ที่ตั้ง
+> `supports_serial=True` / `default_port=None` ต่อรุ่นต้องเลิกผูกแบบนั้น
+
+**M4c (หลัง M6 จบ) — รุ่นที่เหลือทั้งหมด**:
+Prometer100 (driver มีแล้วจาก M1 — ต้องเดินผ่าน LP/billing จริง) · Saral305 · Premier550 ·
+SMART TCC ×5 · **ช่องกรอก `block_cipher_key` / `authentication_key`** (เลื่อนจาก M3 → M4 → มาที่นี่
+2026-08-07 เพราะรุ่นเดียวที่ใช้คีย์คือ TCC ซึ่งอยู่เฟสนี้ — และต้องตัดสินก่อนว่าจำเป็นไหม ดู SPEC §3.3)
+**Exit**: อ่านครบ 3 ยี่ห้อ **และ** parity ผ่านบนเคส 2 logger ที่ M5 ยังไม่ได้แตะ
+
+> 🔴 **SMART TCC คือความเสี่ยงตัวจริงของเฟสนี้ ไม่ใช่ Mitsubishi** — 5 จาก 9 รุ่นเป็น TCC,
+> เอกสารสแกนยังไม่ครบ (`tcc-obis-scan-partial.md` ไม่เคยเห็นกลุ่ม ProfileGeneric เลย)
+> และ `203.170.148.103:4059` **ต่อไม่ได้** (timeout, ทดสอบ 2026-08-07)
+> ⇒ ต้องตามเรื่องลิงก์ตั้งแต่ก่อนถึงเฟสนี้ ไม่ใช่ตอนเริ่มทำ
 
 **M4b (วันที่ 6–14) — เส้นทาง Modbus** *(gate: mapping — เดินด้วย DERIVED ของ ADR 0005 ระหว่างรอลูกค้ายืนยัน)*:
 SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register → COSEM ตอนเขียน** (§6.1) + modbus billing cut (ADR ใหม่)
 **Exit**: มิเตอร์ modbus ลงตารางเดียวกับ DLMS หน่วย/เวลา normalize ถูกต้อง
 
 ### M5 — Load Profile
-2 logger · merge `read_at` · CSV auto-export (สืบทอด watermark pattern) · retention job ·
+2 logger **เก็บคนละแถว** (`logger_id` — merge ทำไม่ได้ ดู `meter-notes/load-profile-capture-objects.md`) ·
+CSV auto-export (สืบทอด watermark pattern) · retention job ·
 **backup รายวัน (`VACUUM INTO` + หมุนเวียนลบ — จาก SPEC grilling)** · หน้า Load Profile
 **Exit**: **output parity กับ v1** (ที่ setting default) + เทสผ่าน
+
+> ⚠️ **parity ที่ M5 พิสูจน์ได้แค่ SMW110W4** ตามขอบเขต M4a ใหม่ — และรุ่นนั้น **ไม่มี Logger 2**
+> ⇒ โค้ด `logger_id` เขียนได้แต่เดินจริงไม่ได้จนถึง M4c · เขียนให้รองรับสองเคสตั้งแต่แรกและ
+> ปักเทสไว้ด้วย fake driver แต่ **อย่านับว่า parity ผ่านครบ** จนกว่า Prometer 100 (900/300 วิ)
+> และ Premier 550 (คอลัมน์ชนกัน) จะเดินจริงที่ M4c
 
 ### M6 — Billing
 open-period upsert slot (ADR 0018) · backfill · capture PDF/xlsx · หน้า Billing
@@ -486,7 +539,7 @@ Business logic ของ v1 ผ่านหน้างานลูกค้า�
 - ADR 0018 open-period upsert slot · ADR 0020 manual-priority gate · ADR 0016 holiday/TOU
 
 > ⚠️ **ADR 0019 (modbus billing cut) ยกมาทั้งดุ้นไม่ได้** — มันอ่านจากตาราง modbus ที่ §6.1 ลบทิ้ง
-> v2 ต้องอ่านจาก `interval_readings` แทน (ช่วง 15 นาทีเพียงพอสำหรับจุดตัด 00:00) และหลัง normalize แล้ว
+> v2 ต้องอ่านจาก `load_profile_readings` แทน (ช่วง 15 นาทีเพียงพอสำหรับจุดตัด 00:00) และหลัง normalize แล้ว
 > ประโยค *"NO ÷10000 scaling"* ในตัว ADR จะไม่จริงอีกต่อไป → **เขียน ADR ใหม่ ไม่ใช่ก๊อบ** เก็บเฉพาะ *กฎทางธุรกิจ*
 > (ระบบเป็นคนตัดบิลให้ modbus, snapshot ที่ 00:00 ของวันบิล, ตามทันย้อนหลังได้, idempotent ด้วย `(device_id, bill_date)`)
 - Ed25519 verify primitive + golden vectors (แต่ **ชื่อ** เปลี่ยนได้ เพราะยังไม่มี license ออกไป)
@@ -516,14 +569,14 @@ v2 เขียน scaler ให้ถูกต้องได้ ตราบ�
 | D3 | รูปแบบ installer | **exe ตัวเดียว** แทนกอง `.ps1` + `.bat` 24 ไฟล์ |
 | D8 | สเกลจริงต่อไซต์ | **DLMS/COSEM เป็นหลัก · Modbus เป็นส่วนน้อยมาก** → อย่าออกแบบ schema ให้เข้าข้าง Modbus (ดู §6.1) |
 | D9 | contract ของ push | **JSON · ทุก 15 นาที · JWT** — ตรงกับจังหวะ LP พอดี ส่งได้ทันทีที่มีแถวใหม่ |
-| D10 | รูปทรงของ `interval_readings` | **ตารางเดียว หน้าตา COSEM แปลงตอนเขียน** — §6.1 |
+| D10 | รูปทรงของ `load_profile_readings` | **ตารางเดียว หน้าตา COSEM แปลงตอนเขียน** — §6.1 |
 | D4 | ไลบรารี frontend | **AntD v6 แบบ re-theme** — ตัดสิน 2026-08-03 หลังเทียบ mockup layout-parity กับ Mantine/shadcn (`mockups/devices-lib-compare/`); ความ "ทันสมัย" แก้ด้วย theme tokens ใหม่ ไม่ใช่เปลี่ยนไลบรารี — ได้ component ครบ (Table/DatePicker/Form) และความคุ้นเคยจาก v1 ซึ่งสำคัญกับกรอบ 5 วัน |
 
 ### ยังค้าง
 
 *(ปิดครบแล้ว — D11/D12 ปิดใน SPEC grilling 2026-08-03: ตัด X-API-Key ทิ้ง · ตัด divide_by_1000 ทิ้ง แสดง kWh เสมอ)*
 
-### 6.1 D10 — `interval_readings` : ตารางเดียว หน้าตา COSEM แปลงตอนเขียน
+### 6.1 D10 — `load_profile_readings` : ตารางเดียว หน้าตา COSEM แปลงตอนเขียน
 
 **โจทย์**: ข้อมูลช่วงเวลามาจาก 2 ทางที่หน้าตาไม่เหมือนกันเลย
 
@@ -546,7 +599,7 @@ v2 เขียน scaler ให้ถูกต้องได้ ตราบ�
 
 #### ตัดสิน: เก็บในหน้าตาที่โปรแกรมใช้จริง — **แปลงตอนเขียน แทนแปลงตอนอ่าน**
 
-`interval_readings` = ตารางเดียว หน้าตา COSEM ~24 คอลัมน์ + `source` (`dlms`/`modbus`) + `interval`
+`load_profile_readings` = ตารางเดียว หน้าตา COSEM ~24 คอลัมน์ + `source` (`dlms`/`modbus`) + `interval`
 driver ฝั่ง Modbus map register → field ของ COSEM **ตั้งแต่ตอน poll** ไม่ใช่ตอน query
 
 ```mermaid
@@ -565,7 +618,7 @@ flowchart LR
         direction TB
         E1["DLMS"] --> X["driver แปลงเป็นหน้าตา COSEM"]
         E2["Modbus"] --> X
-        X --> F[("interval_readings<br/>~24 คอลัมน์")]
+        X --> F[("load_profile_readings<br/>~24 คอลัมน์")]
         F --> G["หน้า LP · CSV · push"]
     end
     style F fill:#238636,color:#fff
@@ -579,9 +632,13 @@ flowchart LR
 
 | | v1 | v2 |
 |---|---|---|
-| แถว/วัน | 1,728 + 2,880 + 576 + 192 = **5,376** | 20 × 96 = **1,920** |
+| แถว/วัน | 1,728 + 2,880 + 576 + 192 = **5,376** | 1,728 + 2,880 = **4,608** |
 | ตาราง | 4 | **1** |
 | คอลัมน์กว้างสุด | 91 | ~24 |
+
+ที่ลดลงคือ **ตาราง aggregate** (`_5m` 576 + `_15m` 192) ไม่ใช่จังหวะการอ่าน — modbus ยังเก็บนาทีละแถว
+เหมือนเดิม แค่ลงตารางเดียว · **Poller ไม่เพิ่มแถวใด ๆ เข้าตารางนี้** (ADR 0007, M3-4): tick พิสูจน์ว่ามิเตอร์
+ยังตอบอยู่แล้วทิ้งค่า ทุกแถวในตารางนี้เป็น interval ที่มิเตอร์บันทึกเอง
 
 #### ⚠️ Normalization contract — ส่วนที่ห้ามลืม
 

@@ -26,10 +26,11 @@ _session_factory: sessionmaker[Session] | None = None
 def _apply_sqlite_pragmas(engine: Engine) -> None:
     """Set WAL + foreign keys on every new DBAPI connection.
 
-    WAL lets one writer and many readers coexist, which is exactly the M1 shape:
-    n poller threads writing Interval Readings while the API serves the monitor
-    page. ``foreign_keys=ON`` is off by default in SQLite — without it the
-    ``ON DELETE CASCADE`` on ``interval_readings`` would silently not fire.
+    WAL lets one writer and many readers coexist, which is what the app is
+    shaped for: n poller threads updating device status while the API serves the
+    Devices page, and M5's load-profile writer beside them.
+    ``foreign_keys=ON`` is off by default in SQLite — without it the
+    ``ON DELETE CASCADE`` on ``load_profile_readings`` would silently not fire.
     """
 
     @event.listens_for(engine, "connect")

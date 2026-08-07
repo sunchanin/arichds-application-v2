@@ -17,9 +17,9 @@ not carry that pair over; ADR 0002 records the reversal. These tests are what
 stop it creeping back.
 
 **2. Energy is divided to kWh at write time, in the driver.**
-``interval_readings`` is always kWh (REMAKE-PLAN §6.1) and column names match
-the unit stored. V/I/frequency are already in engineering units and must NOT be
-divided.
+``load_profile_readings`` is always kWh (REMAKE-PLAN §6.1) and column names
+match the unit stored. V/I/frequency are already in engineering units and must
+NOT be divided.
 
 No hardware needed: a fake reader reproduces Gurux's scaler semantics exactly.
 """
@@ -212,34 +212,56 @@ class TestWhToKwhNormalization:
         assert driver._normalize("volt_l1", object()) is None
 
 
-class TestReadInstantaneousEndToEnd:
-    """Scaler + normalization together, over the driver's real read path."""
+class TestScalerEndToEnd:
+    """Scaler + normalization together, over the driver's real read path.
 
-    def test_produces_utc_and_kwh(self) -> None:
+    These three used to run through the driver's instantaneous read, which
+    ADR 0007 deleted (issue #8, M3-4). They now go through ``read_register()``
+    and ``_normalize()`` — the two halves that method used to chain — so
+    ADR 0002's coverage did not shrink to pay for the removal. Only one
+    assertion was dropped: the old ``read_at.tzinfo is not None``, which pinned
+    the deleted method's own timestamp rather than anything about the scaler,
+    and which no production code can produce again until M5's load-profile
+    writer.
+    """
+
+    def test_scaler_and_kwh_apply_over_the_read_path(self) -> None:
         driver, _ = build(
             {VOLT_L1_OBIS: 239.77, IMPORT_OBIS: 149_643_850.176},
             exponents={VOLT_L1_OBIS: 0, IMPORT_OBIS: 0},
         )
 
-        reading = driver.read_instantaneous()
-
-        assert reading.read_at.tzinfo is not None
-        assert reading.volt_l1 == pytest.approx(239.77)
-        assert reading.import_active_kwh == pytest.approx(149_643.850176)
+        assert driver._normalize("volt_l1", driver.read_register(VOLT_L1_OBIS, 2)) == pytest.approx(239.77)
+        assert driver._normalize("import_active_kwh", driver.read_register(IMPORT_OBIS, 2)) == pytest.approx(
+            149_643.850176
+        )
 
     def test_scaled_energy_is_divided_once_not_twice(self) -> None:
-        """Raw 149_643_850_176 at 10^-3 Wh is still 149_643.850176 kWh."""
+        """Raw 149_643_850_176 at 10^-3 Wh is still 149_643.850176 kWh.
+
+        The load-bearing case: the scaler multiplies (to Wh) and the driver
+        divides (to kWh), and each must happen exactly once. Both halves are
+        asserted so a regression says which one moved.
+        """
         driver, _ = build(
             {VOLT_L1_OBIS: 239.77, IMPORT_OBIS: 149_643_850_176},
             exponents={IMPORT_OBIS: -3},
         )
 
-        reading = driver.read_instantaneous()
+        scaled = driver.read_register(IMPORT_OBIS, 2)
 
-        assert reading.import_active_kwh == pytest.approx(149_643.850176)
+        assert scaled == pytest.approx(149_643_850.176)
+        assert driver._normalize("import_active_kwh", scaled) == pytest.approx(149_643.850176)
 
-    def test_a_failing_register_degrades_to_none(self) -> None:
-        """A partial reading beats no reading — v1's proven behaviour."""
+    def test_a_failing_register_propagates(self) -> None:
+        """A register the meter refuses raises out of ``read_register``.
+
+        This replaces the old degrade-to-``None`` case, whose loop lived inside
+        the deleted instantaneous read and died with it. Propagating is now the
+        contract the Poller depends on: ``poll_once`` marks the tick FAILED off
+        exactly this exception, which is how a meter that accepts an association
+        but cannot serve a register avoids being reported Online (ADR 0007).
+        """
 
         class ExplodingReader(FakeGuruxReader):
             def read(self, obj: Any, attr: int) -> Any:
@@ -249,7 +271,5 @@ class TestReadInstantaneousEndToEnd:
 
         driver = ScalerTestDriver(ExplodingReader({IMPORT_OBIS: 1_000}))
 
-        reading = driver.read_instantaneous()
-
-        assert reading.volt_l1 is None
-        assert reading.import_active_kwh == pytest.approx(1.0)
+        with pytest.raises(RuntimeError, match="undefined object"):
+            driver.read_register(VOLT_L1_OBIS, 2)

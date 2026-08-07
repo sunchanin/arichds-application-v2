@@ -23,7 +23,7 @@ Usage::
     driver = Prometer100Driver(ConnectionParams.net("203.0.113.10", 4059), password="…")
     try:
         driver.connect()
-        reading = driver.read_instantaneous()
+        serial = driver.read_meter_serial()
     finally:
         driver.disconnect()
 """
@@ -88,7 +88,12 @@ class Prometer100Driver(TcpDlmsDriver):
         ]
 
     def get_obis_map(self) -> dict[str, tuple[str, int]]:
-        """Return the instantaneous OBIS map (V/I per phase, freq, import kWh)."""
+        """Return the instantaneous OBIS map (V/I per phase, freq, import kWh).
+
+        No production caller since ADR 0007 removed the instantaneous read — see
+        :mod:`arichds.acquisition.obis`. ``scripts/probe_meter.py`` walks it, and
+        M5's load-profile reader needs the same column-to-OBIS pairs.
+        """
         return dict(INSTANTANEOUS_OBIS)
 
     def get_inter_frame_delay_ms(self) -> int:

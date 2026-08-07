@@ -12,7 +12,7 @@ import tseslint from "typescript-eslint";
  * runnable and clean — a documented gate that cannot be run is worse than no
  * gate at all.
  *
- * The rules-of-hooks check is the one that earns its keep here: the Monitor
+ * The rules-of-hooks check is the one that earns its keep here: the Devices
  * page drives a refresh timer from `useEffect` + `useCallback`, and a
  * mis-declared dependency there shows up as a stale or runaway poll loop.
  */

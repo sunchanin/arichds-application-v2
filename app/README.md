@@ -16,12 +16,19 @@ src/arichds/
 ├── migrations/        the single Alembic set (render_as_batch=True from 0001)
 ├── licensing/         Machine ID, Activation Codes, Limited Mode enforcement
 ├── auth/              Role enum, bcrypt/PyJWT primitives, token service — no HTTP types
-├── acquisition/       ConnectionParams, drivers, Poller
-│   └── drivers/       MeterDriver ABC, Prometer100 (DLMS/TCP), simulated, factory
+├── acquisition/       ConnectionParams, drivers, Poller, catalog, probe, endpoint locks,
+│                      device status (the ADR 0004 state machine the tick feeds)
+│   └── drivers/       MeterDriver ABC, Prometer100 (DLMS/TCP), factory
 ├── api/               health, auth, license, devices routers + the {success,data,error}
 │                      envelope; deps.py holds the JWT guard dependencies
 └── vendor/gurux/      GX*.py copied verbatim from v1 — never edited, never linted
 ```
+
+Anything under `acquisition/drivers/`, `vendor/gurux/`, or the probe and poller read paths
+is DLMS work: read `.claude/skills/gurux-dlms/` first. The library is a camelCase C# port
+with no upstream API docs, and that skill is where its lifecycle, scaler handling and
+traps are written down. For *which* OBIS code to read rather than *how*, see
+`docs/meter-notes/`.
 
 ## Development
 
@@ -62,8 +69,10 @@ Every knob is an `ARICHDS_*` environment variable:
 ## Talking to a real meter
 
 `scripts/probe_meter.py` is a read-only operator diagnostic — it connects,
-reads the instantaneous set and disconnects, touching neither the meter's
-settings nor the database:
+reads the Meter Serial (the one register the Poller's liveness tick reads,
+ADR 0007) and then the instantaneous set, and disconnects, touching neither the
+meter's settings nor the database. The app itself no longer reads that set;
+the script keeps it because Output Parity against v1 is argued in those numbers:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\probe_meter.py --host 203.0.113.10 --port 4059 --password ABCD0001

@@ -57,7 +57,7 @@ app\.venv\Scripts\python.exe tools\arichds_vendor.py sign --customer "$1" --mach
 Print the full command output, making the `ACTIVATION CODE` block prominent (it's on stdout; the customer/machine/mode/expiry summary is on stderr — show both). Remind the user:
 
 - Paste the one-line code into the machine's **Activation** page (first-run / Limited Mode screen).
-- It applies **live, with no service restart** (ADR 0001) — the poller starts and the Monitor page appears immediately on a valid code.
+- It applies **live, with no service restart** (ADR 0001) — the poller starts and the Devices page appears immediately on a valid code.
 
 ## Never
 

@@ -5,8 +5,13 @@ imports, not an ``if/elif`` chain (SPEC §3.4) — adding the remaining eight mo
 in M4 means adding registry rows, never touching a call site.
 
 Imports are deferred into :func:`_registry` so importing the factory does not
-drag the Gurux stack in — which matters for the simulated path and for tests
-that never touch DLMS.
+drag the Gurux stack in for callers that never talk to a meter.
+
+There is deliberately **no registration API**. ``_registry`` being a plain
+function that rebuilds a fresh dict on every call is what lets the test suite
+swap in a fake driver with one ``monkeypatch.setattr`` — including for
+:func:`supported_models` — without the product carrying a plugin seam nobody
+ships.
 """
 
 from __future__ import annotations
@@ -23,12 +28,9 @@ logger = logging.getLogger(__name__)
 def _registry() -> dict[str, type[MeterDriver]]:
     """Lazily import and return the model → driver-class registry."""
     from arichds.acquisition.drivers.prometer100 import Prometer100Driver
-    from arichds.acquisition.drivers.simulated import SimulatedDriver
 
     return {
         "prometer100": Prometer100Driver,
-        # The hardware-free driver used for dev and tests (brand/model "SIM").
-        "sim": SimulatedDriver,
     }
 
 
@@ -44,7 +46,7 @@ def create_driver(model: str, conn: ConnectionParams, password: str = "", **kwar
     and ``disconnect()`` (in a ``finally``) itself.
 
     Args:
-        model: Model identifier, case-insensitive (e.g. ``"prometer100"``, ``"SIM"``).
+        model: Model identifier, case-insensitive (e.g. ``"prometer100"``).
         conn: Transport identity.
         password: DLMS authentication password. Never logged.
         **kwargs: Model-specific keyword arguments passed through.

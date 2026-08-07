@@ -18,7 +18,7 @@ The client fixtures form a ladder, each step adding one thing:
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -29,6 +29,7 @@ from cryptography.hazmat.primitives.serialization import (
     PrivateFormat,
     PublicFormat,
 )
+from fakes import FakeMeterDriver, FakeMeterState, fake_meter_state, reset_fake_meter
 from fastapi.testclient import TestClient
 
 from arichds.auth.roles import Role
@@ -50,20 +51,36 @@ USER_CREDENTIALS = {"username": "operator", "password": "operator-password"}
 
 
 @pytest.fixture(autouse=True)
-def _isolate_simulated_state() -> Iterator[None]:
-    """Give every test a fresh simulated-meter state.
+def fake_meter(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeMeterState]:
+    """Install the test-only fake meter as the ``prometer100`` driver (M3-1).
 
-    ``SimulatedDriver`` keeps its drift and cumulative register at module scope,
-    keyed by Transport Endpoint, because the Poller rebuilds the driver on every
-    tick. That state would otherwise leak between tests in one process — a test
-    asserting "the register advanced" could pass on a previous test's leftovers,
-    or an absolute-value assertion could drift depending on execution order.
+    ADR 0005 took the simulated driver out of the product, and the test suite
+    must never touch a real meter — so the driver registry is monkeypatched
+    instead. ``factory._registry`` being a plain function that returns a fresh
+    dict is exactly what makes one ``setattr`` enough, including for
+    ``supported_models()``; that is why the factory has no registration API and
+    must not grow one.
+
+    Registered under the **real** model string so the catalog endpoint, the
+    registry and the API tests all agree on the product's vocabulary.
+
+    **Autouse on purpose.** A test that creates a device without asking for this
+    fixture would fall through to the real driver and open a TCP socket to
+    whatever host its payload happens to name. Nothing in the suite wants that,
+    and the failure mode is silent, so the safe default is applied everywhere
+    rather than remembered per test.
+
+    Yields:
+        The knob-set the fake reads — set ``connect_error``, ``meter_serial``,
+        ``hold_read`` and friends on it to steer the meter's behaviour.
     """
-    from arichds.acquisition.drivers.simulated import reset_simulated_state
-
-    reset_simulated_state()
-    yield
-    reset_simulated_state()
+    reset_fake_meter()
+    monkeypatch.setattr(
+        "arichds.acquisition.drivers.factory._registry",
+        lambda: {"prometer100": FakeMeterDriver},
+    )
+    yield fake_meter_state()
+    reset_fake_meter()
 
 
 @pytest.fixture
@@ -131,8 +148,14 @@ def unlicensed_client(migrated_db: Settings, monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.fixture
-def activation_code(monkeypatch: pytest.MonkeyPatch, vendor_cli) -> str:
-    """A valid Activation Code for :data:`TEST_MACHINE_ID`, signed with a throwaway key."""
+def sign_activation_code(monkeypatch: pytest.MonkeyPatch, vendor_cli) -> Callable[..., str]:
+    """Issue Activation Codes for :data:`TEST_MACHINE_ID`, signed with one throwaway key.
+
+    A factory rather than a single code so a test can re-license the running
+    machine — which is the only honest way to prove ADR 0001's "applies live":
+    a second, different license goes through the real activation endpoint and
+    the next request must see it.
+    """
     from arichds.licensing import activation_code as ac
 
     private_key = Ed25519PrivateKey.generate()
@@ -140,8 +163,29 @@ def activation_code(monkeypatch: pytest.MonkeyPatch, vendor_cli) -> str:
     public_pem = private_key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
     monkeypatch.setattr(ac, "load_public_key_pem", lambda: public_pem)
 
-    payload = vendor_cli.build_payload(customer="Acme Co", machine_id=TEST_MACHINE_ID)
-    return vendor_cli.sign_payload(private_pem, payload)
+    def issue(*, max_meters: int | None = None) -> str:
+        payload = vendor_cli.build_payload(customer="Acme Co", machine_id=TEST_MACHINE_ID, max_meters=max_meters)
+        return vendor_cli.sign_payload(private_pem, payload)
+
+    return issue
+
+
+@pytest.fixture
+def activation_code(sign_activation_code: Callable[..., str]) -> str:
+    """A valid, unlimited Activation Code for :data:`TEST_MACHINE_ID`."""
+    return sign_activation_code()
+
+
+@pytest.fixture
+def relicense(sign_activation_code: Callable[..., str]) -> Callable[..., None]:
+    """Activate a fresh license on a running app, e.g. to change ``max_meters``."""
+
+    def apply(client: TestClient, *, max_meters: int | None = None) -> None:
+        response = client.post("/api/license/activate", json={"code": sign_activation_code(max_meters=max_meters)})
+        assert response.status_code == 200, response.text
+        assert response.json()["success"] is True, response.text
+
+    return apply
 
 
 @pytest.fixture

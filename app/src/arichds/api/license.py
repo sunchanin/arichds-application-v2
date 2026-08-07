@@ -82,7 +82,7 @@ def get_license_status(license_service: LicenseServiceDep) -> ApiResponse[Licens
     """Return the Machine ID and the current license state.
 
     Any authenticated user (SPEC §3.2). The SPA polls this to decide whether to
-    show the Activation page or the Monitor page, so it must always answer —
+    show the Activation page or the app shell, so it must always answer —
     including in Limited Mode — but only to someone who has logged in: the
     Machine ID identifies this computer and is not for every device on the LAN.
     """

@@ -26,9 +26,23 @@ MySQL, and ~30 tables.
   import/startup) · 0002 (DLMS scaler read correctly) · 0003 (JWT secret generated per install) ·
   0004 (device status derived from the Poller — no health-check loop, no heartbeat table) ·
   0005 (meter identity comes from the meter — probe before the row exists) ·
-  0006 (Manual Reads outrank background polling on the Transport Endpoint lock).
+  0006 (Manual Reads outrank background polling on the Transport Endpoint lock) ·
+  0007 (the Poller tick proves liveness, not data — no live-value display, nothing
+  instantaneous persisted; **fully implemented**: item 1 with issue #6 — Monitor and
+  `/readings/latest` are gone; items 2/3/5/6 with issue #8 — the tick reads the Meter Serial and
+  discards it, and `interval_readings` became `load_profile_readings`, empty until M5).
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
+- `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,
+  vendored `GX*.py`, the probe and poller read paths, anything importing `gurux_dlms` /
+  `gurux_net` / `gurux_common`. Ported to v2 (2026-08-05) with every import verified against
+  the installed `gurux_dlms 1.0.201`; patterns are marked *in v2 today* vs *v1-proven, not
+  in v2 yet* so nobody cites v1 code as if it were ours.
+- `docs/meter-notes/` — OBIS and capture-object maps **scanned off real meters**, not vendor
+  datasheets: `load-profile-capture-objects.md` (CEWE ×3, 2026-08-05 — including the evidence
+  that SPEC §3.5's Logger-1/2 merge is impossible), plus `tcc-obis-scan-partial.md` and
+  `mitsu-obis-scan.md` ported from v1. The skill above says *how* to read a register; these
+  say *which*. Each carries its own limitations section — read it before trusting a value.
 
 ## Layout
 
@@ -48,7 +62,9 @@ MySQL, and ~30 tables.
 - `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code signing. Private keys are
   NEVER committed.
 - `mockups/` — throwaway comparison app that decided D4 (AntD). Do not extend.
-- `docs/` — REMAKE-PLAN + ADRs.
+- `docs/` — REMAKE-PLAN + ADRs, plus `lib-notes/` (per-module API digests), `meter-notes/`
+  (register maps scanned off real meters) and `issues/` (local issue files for work that does
+  not warrant a GitHub issue — `/run-issue docs/issues/NNN-*.md` runs them without touching `gh`).
 
 ## Commands
 
@@ -82,6 +98,11 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
   is data, not control flow.
 - **Concurrency locks key on the Transport Endpoint** (`host:port` / COM port), not
   `device_id` — devices sharing a serial line queue behind one lock.
+- **Manual Reads outrank background ticks on that lock** (ADR 0006) — a background tick
+  that cannot have the endpoint is *skipped*, never queued, and never preempts one in
+  flight. The registry lives in `acquisition/locks.py` and is **process-wide**, never
+  Poller-private: a probe must take the same lock with the Poller switched off and
+  across `poller.restart()`.
 - **License state is read through the re-evaluatable license service** (ADR 0001) — never
   cached at import/startup. Activation takes effect without a restart.
 - **No `if/elif` on meter model in generic code** — model differences live behind
@@ -125,13 +146,19 @@ Two rules that keep the pipeline honest — apply them when running `/to-issues`
   against the issue, so a gate that lives only here won't be enforced. `/to-issues` adds them.
 - **Docs digest per module, not per issue.** If a module introduces a library the repo hasn't
   used yet, produce ONE current-API digest for it and commit it under `docs/lib-notes/` so every
-  issue's delegation prompt can cite it — don't re-fetch docs per issue. **Context7 is NOT
-  connected here** (verified — any "use context7" step silently degrades); use WebFetch on
-  official docs + read installed package sources (`node_modules/*/…d.ts`, `site-packages/`).
+  issue's delegation prompt can cite it — don't re-fetch docs per issue. **Context7 IS connected
+  now** (re-verified 2026-08-06 from both the main session and a subagent; the earlier "not
+  connected" finding was wrong because its tools are *deferred* — they never appear in the initial
+  tool list and must be loaded with `ToolSearch` before the first call). For a library this repo
+  already pins, still prefer the installed source (`node_modules/*/…d.ts`, `site-packages/`) —
+  it matches the pinned version and Context7 may not; use Context7 for standards and protocols
+  with nothing local to read.
   Skip the digest for modules that only reuse the established stack (FastAPI, SQLAlchemy 2,
   AntD v6 — those are covered by `.claude/skills/fastapi/` and `antd-ui`).
 
-Issue tracker: GitHub `sunchanin/arichds-application-v2` via `gh` CLI. Triage labels follow
+Issue tracker: GitHub `sunchanin/arichds-application-v2` via `gh` CLI — with `docs/issues/NNN-*.md`
+as the local alternative for small leftovers (a nit an audit log parked for the owner), which
+`/run-issue` and `/run-batch` accept directly. Triage labels follow
 v1's five: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`.
 
 ### Branch naming — name the work, never the ticket

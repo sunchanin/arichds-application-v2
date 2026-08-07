@@ -89,6 +89,11 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
 - หน้า Activation + หน้า monitor เดียว: เพิ่มมิเตอร์ Prometer100 แบบ minimal →
   **poller อ่าน instantaneous set เล็ก ๆ (V/I รายเฟส, freq, total import kWh) ทุก 60 วิ →
   เก็บ DB → API → หน้าเว็บ auto-refresh** โชว์ค่าล่าสุด + เวลาอ่าน — พิสูจน์ chain เต็มเส้น
+  — **เลิกใช้แล้วตาม ADR 0007 ทั้งย่อหน้า**: (issue #6, M3-3) หน้า monitor เป็นนั่งร้าน M1 ไม่ใช่หน้า
+  product ถูกถอดพร้อม `GET /api/devices/{id}/readings/latest` เมื่อหน้า Devices เข้ามาแทน · v2 ไม่มี
+  หน้าแสดงค่า live · **(issue #8, M3-4) ทั้ง "อ่าน instantaneous set" และ "เก็บ DB" ก็เลิกด้วย**:
+  tick อ่าน register เดียวคือ Meter Serial เพื่อพิสูจน์ว่ามิเตอร์ตอบจริงแล้วทิ้งค่า **ไม่เขียนแถวใด ๆ** ·
+  เก็บข้อความเดิมไว้เป็นประวัติของการตัดสินใจ ไม่ใช่ของที่ยังมีอยู่
 - SPA เสิร์ฟจาก FastAPI origin เดียวกัน — ไม่มี nginx, ไม่มี CORS
 - **M1 ไม่มี auth โดยเจตนา** — M2 ติด guard ย้อนหลัง
 - เช็คคุณภาพเป็น local ทั้งหมด (ruff + pytest + build ตาม gate ต่อโมดูล) — **CI เพิ่มหลังพ้นช่วงเร่ง**
@@ -171,6 +176,14 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - auth: `password` + `block_cipher_key` + `authentication_key` ครบตั้งแต่ M3 (M3 ใช้แค่ password
   แต่ M4 ต้องใช้ทั้งสาม จึงไม่ต้องกลับมาแก้ model/ฟอร์ม/API รอบสอง) · สร้างใหม่ prefill password ด้วย
   `fixed_password` ของยี่ห้อ (CEWE = `ABCD0001`) · **ตอนแก้ เว้นว่าง = คงรหัสเดิม** (พฤติกรรม v1)
+  — **ช่องกรอก 2 คีย์เลื่อนไป M4c** (issue #6 เลื่อนมา M4 · เลื่อนต่อ 2026-08-07): คอลัมน์กับ API
+  พร้อมแล้วตั้งแต่ M3 แต่ฟอร์มมีแค่ IP / Port / Password เพราะยังไม่มีรุ่นที่ auth ด้วยคีย์ให้ทดสอบ ·
+  ฟอร์มไม่ส่ง 2 ฟิลด์นี้ไปเลย และ API ถือว่า "ไม่ส่ง = คงของเดิม" ดังนั้น Update ลบคีย์ที่เก็บไว้ไม่ได้
+  — **เหตุผลที่เลื่อนต่อ**: รุ่นเดียวที่ใช้คีย์คือ SMART TCC ซึ่งย้ายไป M4c แล้ว ส่วน SMW110W4 ของ M4a
+  ใช้ auth Low + password ธรรมดา ⇒ ถ้าทำที่ M4a จะได้ช่องที่ไม่มีรุ่นไหนใช้และทดสอบไม่ได้
+  — ⚠️ **และต้องตัดสินอีกครั้งตอน M4c ว่าจะทำจริงไหม**: v1 `smart_tcc.py` เก็บคีย์ TCC เป็น
+  **module constant ในไดรเวอร์ ไม่ได้เก็บต่อ device** (ลูกค้ายืนยันว่าทุกเครื่อง TCC ใช้ชุดเดียวกัน)
+  และไดรเวอร์ *"absorbs and ignores"* คีย์ที่ส่งมาจากฟอร์ม ⇒ เป็นไปได้ว่าสองช่องนี้ไม่ต้องมีเลย
 - billing: `first_bill_date` + `bill_day_feb28/29/30/31` — ช่องอยู่ที่นี่ ตรรกะการตัดงวดอยู่ M6
 
 **Probe-first identity (ADR 0005)** — `meter_serial` มาจากมิเตอร์เสมอ:
@@ -183,8 +196,12 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 
 **สถานะ — มาจาก Poller ไม่มี health-check loop แยก (ADR 0004)**:
 - v1 มี health-check thread ของตัวเองทุก 5 นาที + ตาราง `device_status` + `device_heartbeats` ·
-  v2 ตัดทิ้งทั้งชุด: poller อ่านค่าจริงทุก 60 วิอยู่แล้ว **ผลของ tick นั้นคือสัญญาณสถานะ** —
+  v2 ตัดทิ้งทั้งชุด: poller คุยกับมิเตอร์ทุก 60 วิอยู่แล้ว **ผลของ tick นั้นคือสัญญาณสถานะ** —
   ไม่เปิด connection ซ้ำไปที่มิเตอร์ และไม่มี job เพิ่มใน registry
+- **tick อ่าน register เดียว: Meter Serial แล้วทิ้ง** (ADR 0007, issue #8) — seam เดียวกับ probe
+  (ADR 0005) · การต่อเฉย ๆ ไม่พอ มิเตอร์ที่รับ association ได้แต่ตอบ register ไม่ได้จะขึ้น Online
+  ทั้งที่ใช้งานไม่ได้ · ตอบกลับว่าง (serial = null) ก็นับเป็น **ล้มเหลว** ด้วยเหตุผลเดียวกัน ·
+  **tick ไม่เขียนแถวลง `load_profile_readings` เลย** — สิ่งที่กฎ 3 ครั้งติดต้องการคือ *ผล* ไม่ใช่ *ค่า*
 - 4 สถานะ: **Online · Offline · Paused · Unknown** — ไม่มี `Error` แยก (อ่านไม่สำเร็จคืออ่านไม่สำเร็จ
   สาเหตุอยู่ใน `detail`) · `Unknown` = ยังไม่มี tick หลัง Resume
 - **Offline เมื่อพลาด 3 tick ติด** (~3 นาที) — กันสถานะกระพริบจาก timeout ชั่วคราว
@@ -195,7 +212,7 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 **`device_events` — เก็บเฉพาะตอนเปลี่ยน**:
 - status transition (Online↔Offline) + การกระทำของคน (created / updated / paused / resumed /
   data cleared) พร้อมชื่อผู้สั่ง — **ไม่ใช่ heartbeat ทุก tick แบบ v1** (30 มิเตอร์ × 288 ครั้ง/วัน
-  ≈ 8,600 แถว/วัน จะกลายเป็นตารางที่ใหญ่ที่สุดรองจาก `interval_readings` โดยไม่มีใครอ่าน)
+  ≈ 8,600 แถว/วัน จะกลายเป็นตารางที่ใหญ่ที่สุดรองจาก `load_profile_readings` โดยไม่มีใครอ่าน)
 - แลกมาด้วย: คำนวณ uptime % ย้อนหลังแบบละเอียดไม่ได้ — ยอมรับ ไม่มีใครขอ
 - แสดงผ่าน **drawer** ที่เปิดจากปุ่ม History บน panel ขวา (เลย์เอาต์ tree+form ไม่มีที่ว่างเหลือ)
 
@@ -212,6 +229,17 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   ไม่ใช่เรื่องใหญ่ ส่วนคนที่กดปุ่มค้างรอคือเรื่องใหญ่) — ยก ADR 0020 ของ v1 มาทำที่ M3 ไม่ใช่ M4
   ตามที่ §3.4 เคยเขียนไว้ · ต้องมีเทสเรื่อง starvation
 
+**Read now — คืน "รายการ job" ไม่ใช่ค่าที่วัดได้ (M3-2, ADR 0007)**:
+- M3 มี job เดียวชื่อ **`liveness`** = อ่านตัวตน (Meter Serial) หนึ่งรอบเพื่อพิสูจน์ว่ามิเตอร์ตอบ
+  register จริง — ต่อ association เดียว อ่าน แล้วตัด · **ไม่เขียน Interval Reading** และ
+  **ไม่ re-identify** (serial ที่ได้ทิ้ง ไม่ใส่ใน detail) เพราะเรื่อง serial ไม่ตรงเป็นหน้าที่ของ Update (ADR 0005)
+- response เป็น **list** `{results: [{job, ok, detail}], status, checked_at}` — M5 เติม
+  `load_profile` และ M6 เติม `billing` เข้า list เดิมโดยไม่ต้องแก้สัญญา (หลาย job สำเร็จบางส่วนได้
+  ซึ่ง HTTP status เดียวบอกไม่ได้) · ตอบ **200 เสมอ** มิเตอร์ปฏิเสธ = `results[].ok = false`
+  ตามแบบ Test connection
+- **ห้ามมีค่าไฟฟ้าหลุดออกทางนี้เด็ดขาด** (ADR 0007 — v2 ไม่มีหน้าแสดงค่า live) · `detail` คือประโยค
+  สำหรับคนอ่าน ไม่ใช่ค่าที่วัดได้ · Read now ที่ล้มนับเป็น 1 strike ตามกฎ 3 ครั้งติด เหมือน tick ปกติ
+
 **Quota — นับจำนวนอย่างเดียวใน M3**:
 - เพิ่ม device ได้เมื่อ `count(devices) < max_meters` (ไม่มี `max_meters` = ไม่จำกัด) —
   **ไม่มีช่อง Meter Key ในฟอร์ม M3** เพราะ redeem ต้องใช้ portal ซึ่งมาที่ M9 (ดู §3.9)
@@ -224,9 +252,12 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   ชิปโควต้า `X / Y meters`
 - ปุ่ม: Create · Update · New Device (copy) · Pause/Resume · **Read now** (สั่งอ่านทันที) ·
   **Test connection** (ทดสอบค่าในฟอร์มโดยไม่เขียนแถว) · History · Delete ·
-  **Delete all data** (ลบเฉพาะ `interval_readings` ของ device นั้น เก็บ `device_events` ไว้เป็น
+  **Delete all data** (ลบเฉพาะ `load_profile_readings` ของ device นั้น เก็บ `device_events` ไว้เป็น
   หลักฐานว่าใครลบ · **ต้องพิมชื่อ device ให้ตรงก่อนกดยืนยัน** เพราะกู้คืนไม่ได้)
-- สิทธิ์: อ่าน/Read now = ทุก role · เพิ่ม/แก้/ลบ/pause/Delete all data = admin (§3.2)
+- สิทธิ์: อ่าน/Read now = ทุก role · เพิ่ม/แก้/ลบ/pause/Delete all data = admin (§3.2) ·
+  **Test connection = admin** — §3.2 ให้ทุก role อ่านได้และให้ admin เท่านั้นแก้ได้ แต่ Test connection
+  ไม่ใช่ทั้งสองอย่าง จึงตัดสินแยก: มันคือครึ่งวินิจฉัยของฟอร์ม Create/Update ที่เป็น admin อยู่แล้ว และมันเล็ง
+  socket ของเครื่องนี้ไปที่ `host:port` อะไรก็ได้ที่คนกรอก
 - **หน้า: Devices หน้าเดียว** — หน้า Instantaneous ย้ายไป M5 (ดู §3.5)
 
 ### 3.4 Acquisition (M4)
@@ -234,10 +265,18 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - `MeterDriver` abstraction เดียว ครอบ DLMS (Gurux vendored) + Modbus (pymodbus)
   — **ห้ามมี if/elif ตามรุ่นในโค้ดกลาง** (หลักการ ADR 0004 ของ v1)
 - รุ่นที่รองรับ (9 รุ่น เท่า v1): CEWE Prometer100 / Saral305 / Premier550 ·
-  Mitsubishi SMW110 (DLMS serial + Modbus) · SMART TCC st3c / st3cl / st33tl / st3tl / st3dh
-- **เฟสแรก (ภายในวันที่ 5): เส้นทาง DLMS/COSEM ครบทุกรุ่น** · เส้นทาง Modbus (พอร์ตจาก Go)
-  ตามมาหลังวันที่ 5 — mapping modbus→COSEM ใช้ของ ADR 0005 (v1) ระหว่างรอลูกค้ายืนยัน
-- ทุก driver เขียนลง `interval_readings` ตารางเดียว หน้าตา COSEM (แปลงตอนเขียน):
+  Mitsubishi SMW110 (**DLMS ทั้ง serial และ TCP** + Modbus) · SMART TCC st3c / st3cl / st33tl / st3tl / st3dh
+- **เฟสแรก (ภายในวันที่ 5): SMW110W4 รุ่นเดียว เดินทะลุถึง billing** — รุ่นที่เหลือทั้งหมด
+  (รวม Prometer100) ย้ายไป **M4c หลัง M6 จบ** (เจ้าของตัดสิน 2026-08-07 — เจาะลึกก่อนขยายกว้าง
+  เพราะ SMW110W4 เป็นรุ่นเดียวที่มีข้อมูลภาคสนามครบทั้งเส้น ดู `docs/meter-notes/smw110w4-scan.md`)
+  · เส้นทาง Modbus (พอร์ตจาก Go) ตามมาหลังวันที่ 5 — mapping modbus→COSEM ใช้ของ ADR 0005 (v1)
+  ระหว่างรอลูกค้ายืนยัน
+- **transport เป็นคุณสมบัติของการติดตั้ง ไม่ใช่ของรุ่น** — พิสูจน์ 2026-08-07: ไซต์ลูกค้ามี SMW110W4
+  สองเครื่อง เครื่องหนึ่งต่อ COM port อีกเครื่องต่อ TCP ⇒ `catalog.py` ต้องเลิกผูก
+  `supports_serial` / `default_port` ไว้กับรุ่น
+- **client address ของ SMW110W4 = 6** (ไม่ใช่ 5 ที่ v1 ฮาร์ดโค้ด) — ถือเป็นค่าคงที่ของรุ่นไปก่อน
+  (เจ้าของตัดสิน 2026-08-07) ทั้งสองเครื่องที่ไซต์ใช้ค่านี้ · ถ้าไซต์ไหนตอบที่ค่าอื่นให้กลับมาทบทวน
+- ทุก driver เขียนลง `load_profile_readings` ตารางเดียว หน้าตา COSEM (แปลงตอนเขียน):
   **UTC เสมอ · kWh เสมอ · ชื่อคอลัมน์ตรงหน่วยจริง** (normalization contract — REMAKE-PLAN §6.1)
 - Lock ต่อ **transport endpoint** (TCP: host:port · Serial: ชื่อ COM port) — อุปกรณ์บนสายเดียวกัน
   เข้าคิวกัน · manual read มี priority เหนือ background (ADR 0020 ของ v1) — **ทำไปแล้วที่ M3**
@@ -247,8 +286,19 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 
 ### 3.5 Load Profile (M5)
 
-- อ่าน load profile 15 นาที ทั้ง Logger 1 (energy) และ Logger 2 (V/I/PF/freq — Premier 550)
-  รวมแถวด้วย `read_at` — ตาม logic v1
+- อ่าน load profile จาก Logger 1 (`1.0.99.1.0.255`) และ Logger 2 (`1.0.99.2.0.255`)
+  **เก็บเป็นคนละแถว** มี `logger_id` เป็นตัวแยก unique key = `(device_id, logger_id, read_at)`
+  ตามที่ v1 ทำ (ADR-6 ของ v1) — **ประโยคเดิมที่เขียนว่า "รวมแถวด้วย `read_at`" ผิด**
+  พิสูจน์แล้วด้วยการ probe มิเตอร์จริง 3 รุ่นเมื่อ 2026-08-05
+  (`docs/meter-notes/load-profile-capture-objects.md`) — merge ไม่ได้ทั้งสามรุ่น คนละเหตุผล:
+  - **Prometer 100**: Logger 1 = **900 วิ** · Logger 2 = **300 วิ** ⇒ timestamp ไม่ตรงกันเลย
+    ไม่มี `read_at` ร่วมให้ merge · และความถี่ (`1.0.14.27.0.255`) อยู่ใน**ทั้งสอง** logger
+  - **Premier 550**: รอบตรงกันทั้งคู่ (900 วิ) แต่ Logger 1 เก็บ `1.0.1.29.0.255` ส่วน Logger 2
+    เก็บ `1.0.1.8.0.255` ซึ่ง v1 แมป**ลงคอลัมน์เดียวกัน** (ค่าช่วง vs ค่าสะสม) ⇒ merge = ทับกันเงียบ ๆ
+  - **Saral 305**: ไม่มี Logger 2
+  ⇒ ข้อความเดิมที่ว่า "Logger 2 เป็นของ Premier 550" และ "Logger 1 = energy, Logger 2 = V/I/PF"
+  **ผิดทั้งคู่** — Prometer 100 ก็มี Logger 2 · และ Logger 1 ของมันมีทั้งพลังงานและ V/I/PF/freq
+- **ห้ามสมมติว่า capture period คือ 900 วิ** — อ่าน attr 4 ของ ProfileGeneric ทุกครั้ง
 - CSV auto-export ต่อ device (watermark pattern) + manual read-now
 - Retention: LP 90 วัน · billing 365 วัน · events 90 วัน (ตัวเลขเดิม v1) — job รายวัน
 - Backup อัตโนมัติรายวัน: `VACUUM INTO` ไปโฟลเดอร์ backup + หมุนเวียนลบของเก่า
@@ -265,7 +315,7 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - Backfill ประวัติจากมิเตอร์ · manual read · auto-read ตามเวลา (job ใน registry)
 - Capture PDF/xlsx ลง filesystem (ตาม v1) — gated ด้วย feature `auto_capture` / `billing_excel_export`
 - Modbus billing cut (ระบบตัดบิลแทนมิเตอร์ที่ตัดเองไม่ได้) — **เขียน ADR ใหม่** อ่านจาก
-  `interval_readings` (กฎธุรกิจเดิมของ ADR 0019: ตัดที่ 00:00 ของวันบิล, catch-up, idempotent) —
+  `load_profile_readings` (กฎธุรกิจเดิมของ ADR 0019: ตัดที่ 00:00 ของวันบิล, catch-up, idempotent) —
   มากับเฟส modbus หลังวันที่ 5
 - หน้า: Billing
 
@@ -276,6 +326,8 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - หน้า: EnergySummary · Holidays · SpecialDays · Battery · ExportFormat · AppLog
 - **นับหน้าครบที่นี่**: 14 หน้า v1 → 12 หน้ามีเจ้าของใน M2–M7 + DatabaseSettings ถูกลบ (SQLite)
   + ApiConfig ถูกแทนด้วย push (M8)
+- **หน้า monitor ไม่เคยอยู่ในบัญชีนี้** — มันเป็นนั่งร้าน M1 ที่ §3.1 สร้างขึ้นเอง ไม่ใช่หน้าของ v1
+  ถูกถอดที่ M3-3 (ADR 0007) · ตัวเลข 14 → 12 จึงไม่ขยับเพราะเรื่องนั้น
 
 ### 3.8 Data-out / Sync (M8)
 
@@ -285,7 +337,7 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - Contract: JSON · รอบ 15 นาที · JWT ผูกกับ activation (site identity = machine token จาก portal
   — เฟสนี้ฝังใน license/config ตอน activate แบบ offline)
 - ทนเน็ตหลุด: watermark เลื่อนเมื่อ server ACK เท่านั้น · ส่งย้อนหลัง **ครบทุกแถวเสมอ** ·
-  `interval_readings`/energy ใช้ watermark append-only · `billing_readings` track ด้วย `updated_at`
+  `load_profile_readings`/energy ใช้ watermark append-only · `billing_readings` track ด้วย `updated_at`
   (open period ถูก upsert ที่เดิม + backfill แทรกย้อนหลัง — watermark ธรรมดาใช้ไม่ได้) ·
   รายชื่อมิเตอร์ + สถานะ = **snapshot ทั้งชุดทุกรอบ** (ข้อมูลเล็ก ไม่ต้อง track diff)
 - เมื่อ M8 เสร็จ: ถอน API ตัวกลางออกจากเครื่องลูกค้า
@@ -322,7 +374,7 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   `[(name, interval, fn)]` (LP scheduler, billing auto-read, retention, backup, sync, license recheck)
   — **ไม่มี health-check job**: สถานะมิเตอร์เป็นผลพลอยได้จาก poller tick (ADR 0004)
 - **Data model** (13 ตาราง): `devices` (รวม settings/status/capture_objects เป็น JSON columns) ·
-  `device_events` · `interval_readings` (COSEM shape + `source` + `interval`) · `interval_read_jobs` ·
+  `device_events` · `load_profile_readings` (COSEM shape + `source` + `interval`) · `interval_read_jobs` ·
   `billing_readings` · `billing_captures` · `energy_register_readings` · `battery_readings` ·
   `holidays` · `settings` (key/value) · `users` · `user_tokens` · `sync_state`
 - **Interfaces**:
