@@ -382,8 +382,8 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   transport endpoint) + scheduler thread เดียวรันทุก periodic job จาก registry
   `[(name, interval, fn)]` (LP scheduler, billing auto-read, retention, backup, sync, license recheck)
   — **ไม่มี health-check job**: สถานะมิเตอร์เป็นผลพลอยได้จาก poller tick (ADR 0004)
-- **Data model** (13 ตาราง): `devices` (รวม settings/status/capture_objects เป็น JSON columns) ·
-  `device_events` · `load_profile_readings` (COSEM shape + `source` + `interval`) · `interval_read_jobs` ·
+- **Data model** (12 ตาราง): `devices` (รวม settings/status/capture_objects เป็น JSON columns) ·
+  `device_events` · `load_profile_readings` (COSEM shape + `source` + `interval`) ·
   `billing_readings` · `billing_captures` · `energy_register_readings` · `battery_readings` ·
   `holidays` · `settings` (key/value) · `users` · `user_tokens` · `sync_state`
 - **Interfaces**:

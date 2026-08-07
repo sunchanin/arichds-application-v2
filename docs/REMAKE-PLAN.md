@@ -108,7 +108,7 @@ flowchart LR
             POLL["poller<br/>1 pool · 1 lock/device"]
             JOBS["jobs<br/><b>scheduler ตัวเดียว</b>"]
             DOM["domain<br/>billing · LP · energy"]
-            DB[("SQLite<br/>13 ตาราง")]
+            DB[("SQLite<br/>12 ตาราง")]
             SYNC["sync<br/>watermark + retry"]
             API["FastAPI + SPA<br/>origin เดียวกัน"]
             LIC["licensing"]
@@ -292,7 +292,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 | `devices` | `devices` + `device_settings` + `device_status` + `device_capture_objects` (→ JSON column) |
 | `device_events` | `device_heartbeats` (+ แนวคิดจาก `alarms` / `device_connection_log` ที่ตายไปแล้ว) — **ไม่ใช่การพอร์ต 1:1**: v1 เขียนทุก tick, v2 เขียนเฉพาะตอนเปลี่ยนสถานะ + การกระทำของคน (ADR 0004) |
 | `load_profile_readings` | `logger_readings` + `meter_readings_<brand>_1m/_5m/_15m` — **หน้าตา COSEM ~24 คอลัมน์ + `source` + `interval`** (D10, §6.1) · ชื่อเดิมตอน M1–M3 คือ `interval_readings` เปลี่ยนที่ M3-4 พร้อม ADR 0007 เมื่อแถว 60 วิหายไปแล้วเหลือ load profile ล้วน |
-| `interval_read_jobs` | `load_profile_reads` |
+| ~~`interval_read_jobs`~~ **ตัดทิ้ง** | `load_profile_reads` — **ไม่พอร์ต** (ADR 0008, 2026-08-07): watermark มาจาก `MAX(read_at)` ของตารางข้อมูลเอง ตาราง job ที่เก็บ `read_end` ไว้ข้าง ๆ คือกับดักที่ v1 เหยียบมาแล้ว (over-report coverage 7 ชม. หลังแก้ timezone) · manual read-now เป็น synchronous ใต้ Transport Endpoint lock ตาม ADR 0006 |
 | `billing_readings` | `billing_readings` |
 | `billing_captures` | (เก็บเฉพาะถ้ายังต้องใช้ — `logger_exports`/`logger_confirmations` ตายแล้ว) |
 | `energy_register_readings` | คงไว้ — **มีคนอ่านจริง** ห้ามยุบกับ `battery_readings` แบบมั่ว (คนละรูปทรง) |
