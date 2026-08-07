@@ -33,6 +33,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
+    # Parallel test execution. The suite is CPU-bound on fixture setup and this
+    # machine has 16 cores; `pytest -n auto` is the difference between a gate
+    # that runs in a minute and one agents skip because it costs five.
+    "pytest-xdist>=3.6",
     "httpx>=0.28",
     "ruff>=0.6",
     "pyinstaller>=6.6",

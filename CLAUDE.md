@@ -73,7 +73,8 @@ MySQL, and ~30 tables.
 .venv\Scripts\activate            # Windows venv
 fastapi dev                        # dev server (entrypoint in pyproject [tool.fastapi])
 ruff format . && ruff check . --fix
-pytest                             # full suite; pytest tests/<file>::<test> for one
+pytest -n auto                     # full suite in parallel (~17s across 16 cores)
+pytest tests/<file>::<test>        # one file/test — plain, NEVER -n auto (workers cost 4s, the run costs 0.05s)
 python -m alembic upgrade head     # manual; app also auto-migrates at startup
 
 # Frontend (web/)
@@ -135,8 +136,14 @@ Milestones M2–M8 run **one module at a time** (SPEC §5): a module = backend +
 ```
 
 Do NOT create issues for modules that have not been grilled. "เทสผ่าน" per module =
-`ruff format --check` + `ruff check` + `pytest` (app), `pnpm lint` + `pnpm build` (web),
+`ruff format --check` + `ruff check` + `pytest -n auto` (app), `pnpm lint` + `pnpm build` (web),
 **Output Parity vs v1** for LP/Billing/Energy, real-meter read for acquisition work.
+
+The full suite is the gate — **never narrow it to "the tests for what I changed"**, because the
+party choosing the subset is the one with an incentive to under-scope, and this codebase's changes
+cross layers routinely (a base-class rename touched 7 files; an `endpoint` fix broke a lock key two
+modules away). It costs ~17s, so there is nothing to buy by skipping it. Use plain scoped runs
+inside the red→green loop and `-n auto` for the gate.
 
 Two rules that keep the pipeline honest — apply them when running `/to-issues`, not inside
 `/run-issue` (fixing it there is the wrong layer):

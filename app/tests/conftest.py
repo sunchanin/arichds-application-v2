@@ -21,6 +21,7 @@ import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import bcrypt
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
@@ -32,6 +33,7 @@ from cryptography.hazmat.primitives.serialization import (
 from fakes import FakeMeterDriver, FakeMeterState, FakeSmw110Driver, fake_meter_state, reset_fake_meter
 from fastapi.testclient import TestClient
 
+from arichds.auth import security
 from arichds.auth.roles import Role
 from arichds.config import Settings, get_settings
 from arichds.db import session as db_session
@@ -48,6 +50,35 @@ ADMIN_CREDENTIALS = {"username": "admin", "password": "admin-password"}
 
 #: A second, non-admin account, created by the admin through ``POST /api/users``.
 USER_CREDENTIALS = {"username": "operator", "password": "operator-password"}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cheap_password_hashing() -> Iterator[None]:
+    """Drop bcrypt's cost factor to its minimum for the test session only.
+
+    Production hashes at bcrypt's default 12 rounds, and that slowness is the
+    point: it is the login path's brake, and :mod:`arichds.auth.service` spends
+    one verification against ``DUMMY_PASSWORD_HASH`` even for an unknown
+    username so the cost does not leak whether an account exists (v1
+    INV-AUTH-02/03). None of that is being changed here — this fixture is
+    confined to the test session.
+
+    It is worth doing because the auth fixtures are function-scoped: on this
+    machine one hash or one verification is 0.187 s, every ``admin_client``
+    test pays three of them and every ``user_client`` test pays five, which is
+    ~93 s per suite run spent proving nothing. No test asserts the cost factor,
+    and bcrypt's own key stretching is not ours to re-test.
+
+    Four rounds is bcrypt's documented minimum and ~232x faster. Only the cost
+    changes — same call, same salt handling, same ``$2b$`` format — so nothing
+    a test can observe differs. ``DUMMY_PASSWORD_HASH`` is recomputed because
+    it is a module constant baked at import time, before any fixture runs.
+    """
+    real_gensalt = bcrypt.gensalt
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(bcrypt, "gensalt", lambda rounds=4, prefix=b"2b": real_gensalt(rounds, prefix))
+        mp.setattr(security, "DUMMY_PASSWORD_HASH", security.hash_password("arichds-dummy-password"))
+        yield
 
 
 @pytest.fixture(autouse=True)
