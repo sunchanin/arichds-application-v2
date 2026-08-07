@@ -308,15 +308,50 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   ⇒ ข้อความเดิมที่ว่า "Logger 2 เป็นของ Premier 550" และ "Logger 1 = energy, Logger 2 = V/I/PF"
   **ผิดทั้งคู่** — Prometer 100 ก็มี Logger 2 · และ Logger 1 ของมันมีทั้งพลังงานและ V/I/PF/freq
 - **ห้ามสมมติว่า capture period คือ 900 วิ** — อ่าน attr 4 ของ ProfileGeneric ทุกครั้ง
-- CSV auto-export ต่อ device (watermark pattern) + manual read-now
-- Retention: LP 90 วัน · billing 365 วัน · events 90 วัน (ตัวเลขเดิม v1) — job รายวัน
-- Backup อัตโนมัติรายวัน: `VACUUM INTO` ไปโฟลเดอร์ backup + หมุนเวียนลบของเก่า
 - **Records** (ย้ายมาจาก M3 — grill M3 2026-08-05): ตารางตรวจความครบของข้อมูล แถว = มิเตอร์
-  คอลัมน์ = วันที่ ช่อง = จำนวน interval ที่เก็บได้วันนั้น (ครบวัน = **96**, ขาด = `N (-X)`,
-  ไม่มีเลย = `0 (Missing)`) — v1 เรียกหน้านี้ว่า **Instantaneous Records** (เมนู "Records")
-  แต่เป็นหน้าเปล่า: `DATES`/`DEVICE_ROWS` hardcode ว่าง ไม่มี API call และ worker ไม่มี endpoint รองรับ
+  คอลัมน์ = วันที่ ช่อง = จำนวน interval ที่เก็บได้วันนั้น (ขาด = `N (-X)`, ไม่มีเลย = `0 (Missing)`)
+  — v1 เรียกหน้านี้ว่า **Instantaneous Records** (เมนู "Records") แต่เป็นหน้าเปล่า:
+  `DATES`/`DEVICE_ROWS` hardcode ว่าง ไม่มี API call และ worker ไม่มี endpoint รองรับ
   ⇒ v2 เป็นผู้เขียนหน้านี้ครั้งแรก และต้องมี load profile ก่อนจึงจะมีอะไรให้นับ จึงอยู่ที่ M5 ไม่ใช่ M3
-- หน้า: Load Profile · Records
+
+#### ผลการ grill M5 (2026-08-07) — เคาะแล้ว 10 ข้อ
+
+**เฟส** — M5 แตกเป็นสามใบตามบันไดโมดูล แต่ละเฟสมี gate ของตัวเอง:
+
+| เฟส | เนื้องาน | Exit |
+|---|---|---|
+| **M5a** | migration · scheduler thread + job registry · LP job | replay parity จาก buffer ที่บันทึกไว้ **+ probe ยืนยันบนมิเตอร์จริง** |
+| **M5b** | หน้า Load Profile · หน้า Records · ปุ่มดึงย้อนหลัง | เลขบนจอตรงกับในตาราง |
+| **M5c** | retention · backup รายวัน · CSV auto-export | job รันจริง ลบ/สำรอง/เขียนไฟล์ถูกต้อง |
+
+**Exit ของ M5 ไม่ใช่ parity เทียบ v1** — `cewe/cewe-worker/src/drivers/smw110.py:119` ฮาร์ดโค้ด
+client address 5 ส่วน SMW110W4 ทั้งสองเครื่องตอบเฉพาะ **6** ⇒ v1 ต่อมิเตอร์รุ่นนี้ไม่ติดเลย
+ไม่มี output ของ v1 ให้เทียบ **parity ย้ายไปเป็น exit ของ M4c** ซึ่ง CEWE ทั้งสามรุ่นเดินจริงและ v1 อ่านได้
+(และ CT ratio ยังไม่รู้ ⇒ parity ของพลังงานสัมบูรณ์อ้างไม่ได้อยู่ดี)
+
+**สคีมา** — `load_profile_readings` เพิ่ม `logger_id` (int, not null, **ผูกกับ OBIS**:
+`1.0.99.1.0.255`→`1`, `1.0.99.2.0.255`→`2` — อ่านจากมิเตอร์ ไม่ใช่จากลำดับที่เจอ ตามหลัก ADR 0005)
+· เปลี่ยน `interval` (String) เป็น **`interval_sec` (int)** เก็บวินาทีจาก attr 4 ตรง ๆ ไม่แปลงเป็น label
+(คอลัมน์เดิมไม่มีผู้ใช้ในโค้ดเลยและตารางว่าง ⇒ เปลี่ยนตอนนี้ฟรี) · unique key = `(device_id, logger_id, read_at)`
+· **`NULL` ใช้ไม่ได้กับ `logger_id`** เพราะ SQLite ถือว่า `NULL != NULL` ⇒ unique key จะไม่กันซ้ำ
+
+**การอ่าน** — แถวที่มีอยู่แล้ว **upsert ทับด้วยค่าใหม่** (ตาม v1 `INV-LP-01`) · watermark = `MAX(read_at)`
+ต่อ (device, logger) **ไม่มีตาราง job** (ADR 0008) · backfill ตั้งต้น **90 วัน** หั่นเป็นก้อน **24 ชม.** ที่ตัว job
+(ไม่ใช่ที่ driver — `read_load_profile()` ยิง `readRowsByEntry` ครั้งเดียวเสมอ) · **เดินจากเก่าไปใหม่เท่านั้น**
+มิเตอร์ที่เพิ่งเพิ่มจึงเห็นข้อมูลเก่าก่อนและข้อมูลวันนี้มาถึงเป็นอันสุดท้าย — ยอมรับแล้ว เหตุผลใน ADR 0008
+
+**scheduler** — เธรดเดียว รัน job ตาม registry `[(name, interval, fn)]` · LP job เดิน device
+**แบบ sequential ตาม v1** และ **ข้าม device ที่สถานะ Offline** เพื่อไม่ให้มิเตอร์ตายกิน read timeout 60 วิ
+ต่อรอบ (poller ยัง tick มันอยู่ตาม ADR 0004 มันจึงกลับมา Online ได้เอง แล้ว watermark ดึงช่วงที่ขาดให้)
+
+**Records** — "ครบวัน" คำนวณจาก **capture period จริงต่อ logger** ไม่ใช่ค่าคงที่ 96
+(96 = 86400÷900 ซึ่งขัดกับข้อ "ห้ามสมมติ 900 วิ" ข้างบน — และผิดจริงกับ Prometer 100 Logger 2
+ที่เป็น **300 วิ ⇒ ครบวัน = 288**)
+
+- CSV auto-export ต่อ device (watermark pattern) + manual read-now → **M5c**
+- Retention: LP 90 วัน · billing 365 วัน · events 90 วัน (ตัวเลขเดิม v1) — job รายวัน → **M5c**
+- Backup อัตโนมัติรายวัน: `VACUUM INTO` ไปโฟลเดอร์ backup + หมุนเวียนลบของเก่า → **M5c**
+- หน้า: Load Profile · Records → **M5b**
 
 ### 3.6 Billing (M6)
 
