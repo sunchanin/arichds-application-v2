@@ -507,10 +507,15 @@ SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register 
 - **M5a** — migration (`logger_id` · `interval_sec` · unique key) · **scheduler thread + job registry
   (ยังไม่มีในโค้ดเลย — M5 เป็นโมดูลแรกที่ต้องการ และ M6/M7/M8 จะใช้ต่อ)** · LP job
   **Exit**: replay parity จาก buffer ที่บันทึกไว้ + **probe ยืนยันบนมิเตอร์จริงทั้งสองเครื่อง**
-- **M5b** — หน้า Load Profile · หน้า Records · ปุ่มดึงย้อนหลัง
+- **M5b** — หน้า Load Profile (**ดูอย่างเดียว** — ช่วงวันที่บังคับ, แบ่งหน้าฝั่งเซิร์ฟเวอร์) ·
+  หน้า Records · ปุ่มดึงย้อนหลัง
   **Exit**: เลขบนจอตรงกับในตาราง
-- **M5c** — retention · backup รายวัน (`VACUUM INTO` + หมุนเวียนลบ) · CSV auto-export
-  **Exit**: job รันจริง ลบ/สำรอง/เขียนไฟล์ถูกต้อง
+- **M5c** — retention · backup รายวัน (`VACUUM INTO` + หมุนเวียนลบ)
+  **Exit**: job รันจริง ลบ/สำรองถูกต้อง
+
+> **CSV auto-export ย้ายไป M7** — รูปแบบไฟล์เป็นค่าที่ผู้ใช้ตั้งได้ และหน้า ExportFormat
+> เจ้าของค่านั้นอยู่ที่ M7 อยู่แล้ว ⇒ ฟีเจอร์ไปอยู่กับหน้าตั้งค่าของมัน แลกกับการที่ลูกค้า
+> ไม่มี CSV จนถึง M7 · ผลพลอยได้คือ M5c เหลืองานเบื้องหลังล้วน และ M5b จบในตัวไม่มีปุ่มค้าง
 
 > **Exit ของ M5 ไม่ใช่ parity เทียบ v1 อีกต่อไป** — v1 ฮาร์ดโค้ด client address **5**
 > (`cewe/cewe-worker/src/drivers/smw110.py:119`) ส่วน SMW110W4 ทั้งสองเครื่องตอบเฉพาะ **6**

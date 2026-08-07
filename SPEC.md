@@ -450,6 +450,10 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
 
 - Energy Summary (TOU buckets — ADR 0016) · Holidays (2 ชนิด) · Special Days · Battery status ·
   Export format settings · App Log (log viewer — log ผ่าน credential redaction filter เสมอ)
+- **CSV auto-export ของ Load Profile (ย้ายมาจาก M5c ที่ grill M5 2026-08-07)** — มาพร้อมกันกับ
+  หน้า ExportFormat ที่เป็นเจ้าของรูปแบบไฟล์: job เขียนต่อท้ายไฟล์ต่อมิเตอร์ · ปุ่ม **Save CSV now**
+  · สวิตช์ **auto-save** ต่อมิเตอร์ · ช่องเลือกโฟลเดอร์ปลายทาง — ทั้งสามอย่างอยู่บนหน้า Load Profile
+  ที่ M5b สร้างไว้แล้ว · รายละเอียดที่เคาะแล้ว (watermark, BOM, fsync, lock ต่อ device) อยู่ใน §3.5
 - หน้า: EnergySummary · Holidays · SpecialDays · Battery · ExportFormat · AppLog
 - **นับหน้าครบที่นี่**: 14 หน้า v1 → 12 หน้ามีเจ้าของใน M2–M7 + DatabaseSettings ถูกลบ (SQLite)
   + ApiConfig ถูกแทนด้วย push (M8)
