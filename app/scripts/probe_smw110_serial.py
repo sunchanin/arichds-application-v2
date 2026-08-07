@@ -270,7 +270,7 @@ def describe_ports() -> list[str]:
 def open_association(args: list[str], timeout_ms: int) -> tuple[Any, Any, Any]:
     """Open one association and return ``(client, reader, media)``.
 
-    Mirrors ``TcpDlmsDriver._open_association`` deliberately — same order, same
+    Mirrors ``DlmsDriver._open_association`` deliberately — same order, same
     timeouts on both the media and the reader, and ``silence_frame_trace``
     before a single frame moves. That call is not optional: the vendored reader
     writes an unredacted frame trace **containing the password** to
