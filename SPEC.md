@@ -368,6 +368,22 @@ one bad tick"* พร้อม guard ซ้อนใน handler)
 `(device_id, read_at)` ที่มีอยู่แล้ว · **คาบเปลี่ยนกลางวัน**: คาดหวังตามคาบที่พบมากที่สุดของวันนั้น
 และถ้าวันไหนมีมากกว่าหนึ่งคาบ ให้ทำเครื่องหมาย *คาบเปลี่ยน* แทนการรายงานว่าขาด — ข้อมูลไม่ได้ขาด แค่ถี่ต่างกัน
 
+**คอลัมน์วัดค่า — ขยายเป็น 12 ตัวที่ M5a** (เดิม 8) เพิ่ม `import_reactive_kvarh` ·
+`export_active_kwh` · `export_reactive_kvarh` · `avg_geo_pf` ⇒ ครบชุดที่ **หน้า Load Profile ของ v1
+แสดงให้ลูกค้าเห็นจริง** (`cewe-fe/src/pages/LoadProfile/index.tsx` — 14 คอลัมน์รวม Name/Date-Time)
+เกณฑ์คือ *"v1 แสดงมันหรือเปล่า"* ไม่ใช่ *"COSEM มีอะไรบ้าง"* — v1 เก็บอีก ~14 คอลัมน์
+(demand ทั้งสี่ทิศ · voltage L-L · phase angle · `record_status` · fundamental · reactive Q1–Q4)
+ที่**ไม่มีหน้าจอไหนแสดง** ⇒ ยังบอกไม่ได้ว่าใครอ่าน จึงไม่มีสิทธิ์อยู่ (`REMAKE-PLAN:182`)
+
+มีข้อมูลจริงรองรับ ไม่ใช่คอลัมน์ว่างถาวร: CEWE ทั้งสามรุ่นเก็บ `1.0.1/2/3/4.29.0.255`
+(*active/reactive import & export energy, interval* — `load-profile-capture-objects.md:75`)
+· PF: Prometer 100 มีทั้งรายเฟสและรวม (`1.0.13.24.0.255`) แต่ **Premier 550 Logger 2 มีเฉพาะรายเฟส**
+⇒ `avg_geo_pf` ของรุ่นนั้นต้องคำนวณหรือปล่อยว่าง — **เคาะที่ M4c**
+· ทั้งสี่คอลัมน์จะ **ว่างตลอด M5** เพราะ SMW110W4 ไม่ได้เก็บ — ยอมรับแล้ว เจ้าของคอลัมน์คือหน้าจอ v1 ที่ M4c
+· `SPEC.md` §4 และ `REMAKE-PLAN:294` ที่เขียนว่า *"COSEM ~24 คอลัมน์"* **ไม่ตรงกับของจริง** — แก้เป็น 12
+· รายการที่ `load-profile-capture-objects.md:91-93` ฝากให้ *"decide at M5"* (Saral 305:
+`1.0.149.4.0.255` · `1.0.16.29.0.255` ที่ v1 อ่านแล้วทิ้ง) **ย้ายไป M4c ตามรุ่น**
+
 **CSV export (M5c)** — ไฟล์ต่อมิเตอร์ เขียนต่อท้าย · UTF-8 BOM (Excel บนวินโดวส์) ·
 `flush()` + `fsync()` แล้วค่อย commit watermark ⇒ เขียนพลาด watermark ไม่ขยับ แถวลองใหม่รอบหน้า ·
 lock ต่อ device ให้ scheduler กับ Manual Read ไม่เขียนชนกัน · watermark เป็น **คอลัมน์
@@ -452,7 +468,7 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
   `[(name, interval, fn)]` (LP scheduler, billing auto-read, retention, backup, sync, license recheck)
   — **ไม่มี health-check job**: สถานะมิเตอร์เป็นผลพลอยได้จาก poller tick (ADR 0004)
 - **Data model** (12 ตาราง): `devices` (รวม settings/status/capture_objects เป็น JSON columns) ·
-  `device_events` · `load_profile_readings` (COSEM shape + `source` + `interval`) ·
+  `device_events` · `load_profile_readings` (COSEM shape 12 คอลัมน์วัดค่า + `source` + `interval_sec`) ·
   `billing_readings` · `billing_captures` · `energy_register_readings` · `battery_readings` ·
   `holidays` · `settings` (key/value) · `users` · `user_tokens` · `sync_state`
 - **Interfaces**:
