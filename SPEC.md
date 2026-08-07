@@ -260,9 +260,17 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - `MeterDriver` abstraction เดียว ครอบ DLMS (Gurux vendored) + Modbus (pymodbus)
   — **ห้ามมี if/elif ตามรุ่นในโค้ดกลาง** (หลักการ ADR 0004 ของ v1)
 - รุ่นที่รองรับ (9 รุ่น เท่า v1): CEWE Prometer100 / Saral305 / Premier550 ·
-  Mitsubishi SMW110 (DLMS serial + Modbus) · SMART TCC st3c / st3cl / st33tl / st3tl / st3dh
-- **เฟสแรก (ภายในวันที่ 5): เส้นทาง DLMS/COSEM ครบทุกรุ่น** · เส้นทาง Modbus (พอร์ตจาก Go)
-  ตามมาหลังวันที่ 5 — mapping modbus→COSEM ใช้ของ ADR 0005 (v1) ระหว่างรอลูกค้ายืนยัน
+  Mitsubishi SMW110 (**DLMS ทั้ง serial และ TCP** + Modbus) · SMART TCC st3c / st3cl / st33tl / st3tl / st3dh
+- **เฟสแรก (ภายในวันที่ 5): SMW110W4 รุ่นเดียว เดินทะลุถึง billing** — รุ่นที่เหลือทั้งหมด
+  (รวม Prometer100) ย้ายไป **M4c หลัง M6 จบ** (เจ้าของตัดสิน 2026-08-07 — เจาะลึกก่อนขยายกว้าง
+  เพราะ SMW110W4 เป็นรุ่นเดียวที่มีข้อมูลภาคสนามครบทั้งเส้น ดู `docs/meter-notes/smw110w4-scan.md`)
+  · เส้นทาง Modbus (พอร์ตจาก Go) ตามมาหลังวันที่ 5 — mapping modbus→COSEM ใช้ของ ADR 0005 (v1)
+  ระหว่างรอลูกค้ายืนยัน
+- **transport เป็นคุณสมบัติของการติดตั้ง ไม่ใช่ของรุ่น** — พิสูจน์ 2026-08-07: ไซต์ลูกค้ามี SMW110W4
+  สองเครื่อง เครื่องหนึ่งต่อ COM port อีกเครื่องต่อ TCP ⇒ `catalog.py` ต้องเลิกผูก
+  `supports_serial` / `default_port` ไว้กับรุ่น
+- **client address ของ SMW110W4 = 6** (ไม่ใช่ 5 ที่ v1 ฮาร์ดโค้ด) — ถือเป็นค่าคงที่ของรุ่นไปก่อน
+  (เจ้าของตัดสิน 2026-08-07) ทั้งสองเครื่องที่ไซต์ใช้ค่านี้ · ถ้าไซต์ไหนตอบที่ค่าอื่นให้กลับมาทบทวน
 - ทุก driver เขียนลง `load_profile_readings` ตารางเดียว หน้าตา COSEM (แปลงตอนเขียน):
   **UTC เสมอ · kWh เสมอ · ชื่อคอลัมน์ตรงหน่วยจริง** (normalization contract — REMAKE-PLAN §6.1)
 - Lock ต่อ **transport endpoint** (TCP: host:port · Serial: ชื่อ COM port) — อุปกรณ์บนสายเดียวกัน
