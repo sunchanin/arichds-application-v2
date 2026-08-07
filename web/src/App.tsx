@@ -8,14 +8,15 @@ import { Activation } from "./pages/Activation";
 import { Devices } from "./pages/Devices";
 import { LoadProfile } from "./pages/LoadProfile";
 import { Login } from "./pages/Login";
+import { Records } from "./pages/Records";
 import { Setup } from "./pages/Setup";
 import { Users } from "./pages/Users";
 import { LICENSE_POLL_MS } from "./theme";
 
 /** The in-shell pages. Every other menu key belongs to a milestone that has not shipped. */
-type Page = "devices" | "load-profile" | "users";
+type Page = "devices" | "load-profile" | "records" | "users";
 
-const PAGES: readonly Page[] = ["devices", "load-profile", "users"];
+const PAGES: readonly Page[] = ["devices", "load-profile", "records", "users"];
 
 /** Read a menu key as a page, falling back to Devices for anything unrecognised. */
 function toPage(key: string): Page {
@@ -175,8 +176,8 @@ export default function App() {
 
   // A `user` never reaches the Users page: the menu entry is absent for them,
   // and this second check is what keeps a stale `page` from surviving a
-  // demotion that landed while the page was open. Load Profile needs no such
-  // gate — reading stored readings is open to both roles.
+  // demotion that landed while the page was open. Load Profile and Records need
+  // no such gate — reading stored readings is open to both roles.
   const active: Page = page === "users" && session.role !== "admin" ? "devices" : page;
 
   return (
@@ -192,6 +193,8 @@ export default function App() {
         <Users currentUserId={session.id} />
       ) : active === "load-profile" ? (
         <LoadProfile />
+      ) : active === "records" ? (
+        <Records />
       ) : (
         <Devices role={session.role} />
       )}

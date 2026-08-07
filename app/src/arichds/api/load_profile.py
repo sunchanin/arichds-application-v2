@@ -7,8 +7,8 @@ only thing that *reads* those rows back out.
 It is deliberately not in ``devices.py``. That module's docstring states that no
 handler in it reports a measured value (ADR 0007), and every row here is exactly
 that — but a *recorded interval*, not a live one, which is the distinction
-ADR 0007 draws and the thing it left standing. Records (M5b-2) will want a home
-next to this one.
+ADR 0007 draws and the thing it left standing. Records (M5b-2) has its own home
+next to this one, in ``records.py``.
 
 **The range is half-open** — ``read_at >= start AND read_at < end``, v1's own
 bounds (``cewe-worker/src/load_profile/repository.py:237-238``). A closed upper

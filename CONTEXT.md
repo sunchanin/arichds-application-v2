@@ -79,6 +79,19 @@ One row recorded when something *changes*: a status transition, or an operator a
 per-tick heartbeat — a meter that stays online all month writes no rows.
 _Avoid_: heartbeat, log entry
 
+**Records**:
+The page that answers whether the stored data is *complete* — one row per
+**meter and logger**, one column per local calendar day, each cell counting that
+day's Interval Readings. A complete day is `86400 / interval_sec` from the
+meter's own capture period, never the constant 96 — a Prometer 100's Logger 2
+runs at 300 s, so a complete day for it is 288, and that is why the row is per
+logger and not per meter. A cell is exactly one of `complete` · `short` ·
+`missing` · `period changed` (`missing` means no rows at all, so there is no
+period to expect against; `period changed` means the day carried more than one
+capture period and is counted against the most common one). The counts are
+computed live from `load_profile_readings` on every request.
+_Avoid_: records_96, completeness table, instantaneous records
+
 **Output Parity**:
 The acceptance rule for domain modules: numbers shown by v2 must equal v1's output at v1's
 default settings (`divide_by_1000=on` → kWh) on the same meter. Internals may differ freely.
