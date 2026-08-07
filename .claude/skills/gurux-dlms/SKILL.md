@@ -26,7 +26,7 @@ executed against it, 2026-08-05).
 
 | Layer | Files | Touch it when… |
 |---|---|---|
-| **driver layer** (preferred) | `app/src/arichds/acquisition/drivers/_dlms_tcp.py`, `prometer100.py`, `base.py` | Adding or changing meter behaviour. Override hooks (`_protocol_args`, `get_obis_map`, `read_*`, class attributes like `METER_SERIAL_OBIS`); do not reimplement the lifecycle. **No `if/elif` on meter model or brand in generic code** — that is a `CLAUDE.md` invariant; model differences live behind `MeterDriver` capability methods. |
+| **driver layer** (preferred) | `app/src/arichds/acquisition/drivers/_dlms.py`, `prometer100.py`, `base.py` | Adding or changing meter behaviour. Override hooks (`_protocol_args`, `get_obis_map`, `read_*`, class attributes like `METER_SERIAL_OBIS`); do not reimplement the lifecycle. **No `if/elif` on meter model or brand in generic code** — that is a `CLAUDE.md` invariant; model differences live behind `MeterDriver` capability methods. |
 | **ARICHDS wrappers around Gurux bugs** | `_gurux_net_patch.py`, `_gurux_trace.py` | Only when the upstream bug they fix changes. Read their docstrings before touching either — both exist because of production incidents, not taste. |
 | **vendored Gurux** | `app/src/arichds/vendor/gurux/` — `GXSettings.py`, `GXDLMSReader.py`, `GXDLMSSecureClient2.py`, `GXCmdParameter.py` | Rarely. These are upstream samples copied **verbatim** (camelCase, lint-exempt in `pyproject.toml`). `CLAUDE.md` forbids renaming, reformatting or "improving" their APIs. Read them to understand a call. |
 
@@ -48,7 +48,7 @@ Both are load-bearing. If a read path stops going through them, those bugs come 
 
 ARICHDS never constructs `GXDLMSClient` by hand — it builds an argv-style list and lets
 `GXSettings` parse it into a configured client + media. See
-`_dlms_tcp.py::TcpDlmsDriver.connect()`.
+`_dlms.py::DlmsDriver.connect()`.
 
 ```python
 settings = GXSettings()
@@ -82,7 +82,7 @@ Rules baked into the driver base. Keep them; each has a reason in `CLAUDE.md` or
 - **Explicit timeout on every blocking I/O** — `media.receiveTimeout` *and* `reader.waitTime`.
 - **Trace level `Error`, and the frame trace file closed** — see `_gurux_trace.py`.
 - **Passwords and keys never in `repr`/`str` or logs.** `CLAUDE.md` invariant: the credential
-  redaction filter is on every log handler, and `TcpDlmsDriver.__repr__` excludes the password.
+  redaction filter is on every log handler, and `DlmsDriver.__repr__` excludes the password.
 
 ### Reads happen under a lock — know this before you write one
 
@@ -139,12 +139,13 @@ Gurux documents both access paths and warns that **not every meter supports both
 
 ## What exists in v2 today
 
-- **One driver: `prometer100`** (`TcpDlmsDriver` subclass). The other eight catalogued
-  models land at **M4** — adding one means adding a registry row in `factory.py` and a
-  driver class, never an `if` at a call site.
+- **Two drivers: `prometer100` (TCP) and `smw110` (TCP or serial, issue #9)** — both
+  `DlmsDriver` subclasses. The other seven catalogued models land at **M4c** — adding
+  one means adding a registry row in `factory.py` and a driver class, never an `if` at
+  a call site.
 - **`read_register(obis, attr=2)`** with correct scaler handling.
 - **`read_meter_serial()`** — one register, driven by the `METER_SERIAL_OBIS` class
-  attribute on `TcpDlmsDriver` so a model with a different serial OBIS overrides the
+  attribute on `DlmsDriver` so a model with a different serial OBIS overrides the
   attribute, not the method. **It is the only register any read path reads today**: both
   `probe.py` and the Poller's liveness tick go through it.
 - **There is no live-value read and no reachability probe.** The eight-register

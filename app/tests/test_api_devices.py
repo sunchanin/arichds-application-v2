@@ -44,16 +44,38 @@ DEVICE = {
     "brand": "cewe",
     "model": "prometer100",
     "site_name": "Plant A",
-    "host": "127.0.0.1",
-    "port": 4059,
+    "transport": {"kind": "net", "host": "127.0.0.1", "port": 4059},
     "password": "hunter2",
 }
+
+
+def with_transport_overrides(payload: dict, overrides: dict) -> dict:
+    """Merge *overrides* into *payload*, one payload for the whole file.
+
+    Translates the test suite's long-standing flat ``host=``/``port=``
+    override convention into the nested ``transport`` shape the API now
+    requires (issue #9), so most of this file's call sites needed no change —
+    only this function and the handful of places that built the payload dict
+    by hand rather than through it.
+    """
+    overrides = dict(overrides)
+    host = overrides.pop("host", None)
+    port = overrides.pop("port", None)
+    merged = {**payload, **overrides}
+    if host is not None or port is not None:
+        transport = dict(merged.get("transport", {}))
+        if host is not None:
+            transport["host"] = host
+        if port is not None:
+            transport["port"] = port
+        merged["transport"] = transport
+    return merged
 
 
 def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = "SN-1", **overrides: object):
     """Create a device whose meter reports *serial*."""
     fake_meter.meter_serial = serial
-    return client.post("/api/devices", json={**DEVICE, **overrides})
+    return client.post("/api/devices", json=with_transport_overrides(DEVICE, overrides))
 
 
 class TestCreateDevice:
@@ -231,7 +253,7 @@ class TestUpdateDevice:
 
     def update(self, client: TestClient, device_id: int, **overrides: object):
         """PUT the full device payload with *overrides* applied."""
-        return client.put(f"/api/devices/{device_id}", json={**DEVICE, **overrides})
+        return client.put(f"/api/devices/{device_id}", json=with_transport_overrides(DEVICE, overrides))
 
     def test_edits_are_saved(self, admin_client: TestClient, device_id: int) -> None:
         data = self.update(admin_client, device_id, name="Renamed", site_name="Plant B").json()["data"]
@@ -270,14 +292,18 @@ class TestUpdateRefusedOnSerialMismatch:
 
     def test_it_is_409(self, admin_client: TestClient, fake_meter: FakeMeterState, stored: dict) -> None:
         fake_meter.meter_serial = "SN-OTHER"
-        response = admin_client.put(f"/api/devices/{stored['id']}", json={**DEVICE, "host": "10.0.0.5"})
+        response = admin_client.put(
+            f"/api/devices/{stored['id']}", json=with_transport_overrides(DEVICE, {"host": "10.0.0.5"})
+        )
         assert response.status_code == 409
 
     def test_the_message_names_both_serials(
         self, admin_client: TestClient, fake_meter: FakeMeterState, stored: dict
     ) -> None:
         fake_meter.meter_serial = "SN-OTHER"
-        detail = admin_client.put(f"/api/devices/{stored['id']}", json={**DEVICE, "host": "10.0.0.5"}).json()["detail"]
+        detail = admin_client.put(
+            f"/api/devices/{stored['id']}", json=with_transport_overrides(DEVICE, {"host": "10.0.0.5"})
+        ).json()["detail"]
         assert "SN-1" in detail
         assert "SN-OTHER" in detail
 
@@ -285,7 +311,7 @@ class TestUpdateRefusedOnSerialMismatch:
         fake_meter.meter_serial = "SN-OTHER"
         admin_client.put(
             f"/api/devices/{stored['id']}",
-            json={**DEVICE, "name": "Renamed", "host": "10.0.0.5", "site_name": "Plant Z"},
+            json=with_transport_overrides(DEVICE, {"name": "Renamed", "host": "10.0.0.5", "site_name": "Plant Z"}),
         )
         assert admin_client.get("/api/devices").json()["data"][0] == stored
 
@@ -303,7 +329,9 @@ class TestUpdateRefusedOnSerialMismatch:
         add_device(admin_client, fake_meter, name="Second", host="10.0.0.2", serial="SN-2")
         fake_meter.meter_serial = "SN-2"
         # The first device now answers with the second device's serial.
-        response = admin_client.put(f"/api/devices/{stored['id']}", json={**DEVICE, "host": "10.0.0.2"})
+        response = admin_client.put(
+            f"/api/devices/{stored['id']}", json=with_transport_overrides(DEVICE, {"host": "10.0.0.2"})
+        )
         assert response.status_code == 409
 
 
@@ -319,6 +347,117 @@ class TestUpdateFillsInAMissingSerial:
 
         assert response.status_code == 200
         assert response.json()["data"]["meter_serial"] == "SN-NEW"
+
+
+SERIAL_DEVICE = {
+    "name": "Serial Meter",
+    "brand": "mitsu",
+    "model": "smw110",
+    "site_name": "Plant A",
+    "transport": {
+        "kind": "serial",
+        "serial_port": "COM4",
+        "baud_rate": 19200,
+        "data_bits": 8,
+        "parity": "None",
+        "stop_bits": 1,
+    },
+    "password": "00000000000000000003",
+}
+
+
+class TestCreateAndUpdateOverSerial:
+    """Probe-first identity on the serial transport (issue #9), exactly as the
+    TCP path already proves in ``TestCreateDevice``/``TestCreateRefusedByTheMeter``/
+    ``TestUpdateRefusedOnSerialMismatch`` above — same rules (ADR 0005), a
+    different Transport Endpoint shape.
+    """
+
+    def add(self, client: TestClient, fake_meter: FakeMeterState, *, serial: str = "SN-SERIAL-1", **overrides: object):
+        fake_meter.meter_serial = serial
+        return client.post("/api/devices", json={**SERIAL_DEVICE, **overrides})
+
+    def test_creates_over_serial_and_the_endpoint_is_the_bare_com_port(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        response = self.add(admin_client, fake_meter)
+
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert data["endpoint"] == "COM4"
+        assert data["transport"] == SERIAL_DEVICE["transport"]
+
+    def test_a_refused_probe_writes_no_row(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+        response = self.add(admin_client, fake_meter)
+
+        assert response.json()["success"] is False
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_no_serial_refuses_the_create(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        fake_meter.meter_serial = None
+        response = admin_client.post("/api/devices", json=SERIAL_DEVICE)
+
+        assert response.json()["error"]["reason"] == ProbeFailure.NO_SERIAL.value
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_update_over_serial_re_probes(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        device_id = self.add(admin_client, fake_meter).json()["data"]["id"]
+        connects_after_create = fake_meter.connects
+
+        response = admin_client.put(f"/api/devices/{device_id}", json={**SERIAL_DEVICE, "name": "Renamed"})
+
+        assert response.status_code == 200
+        assert fake_meter.connects == connects_after_create + 1
+
+    def test_update_over_serial_refuses_a_changed_serial(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = self.add(admin_client, fake_meter, serial="SN-SERIAL-1").json()["data"]["id"]
+        fake_meter.meter_serial = "SN-OTHER"
+
+        response = admin_client.put(f"/api/devices/{device_id}", json=SERIAL_DEVICE)
+
+        assert response.status_code == 409
+
+
+class TestTransportSchema:
+    """The API requires only the fields the chosen transport needs — by
+    schema, before any socket is opened (issue #9, Decision 7)."""
+
+    def test_a_serial_request_needs_no_host_or_port(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        fake_meter.meter_serial = "SN-1"
+        assert admin_client.post("/api/devices", json=SERIAL_DEVICE).status_code == 201
+
+    def test_serial_missing_serial_port_is_422(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        transport = {k: v for k, v in SERIAL_DEVICE["transport"].items() if k != "serial_port"}
+        response = admin_client.post("/api/devices", json={**SERIAL_DEVICE, "transport": transport})
+
+        assert response.status_code == 422
+        assert fake_meter.connects == 0
+
+    def test_net_missing_host_is_422(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        response = admin_client.post("/api/devices", json={**DEVICE, "transport": {"kind": "net", "port": 4059}})
+
+        assert response.status_code == 422
+        assert fake_meter.connects == 0
+
+    def test_an_unresolvable_parity_is_422(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        transport = {**SERIAL_DEVICE["transport"], "parity": "Weird"}
+        response = admin_client.post("/api/devices", json={**SERIAL_DEVICE, "transport": transport})
+
+        assert response.status_code == 422
+        assert fake_meter.connects == 0
+
+    def test_a_recognised_parity_is_accepted_case_insensitively(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.meter_serial = "SN-1"
+        transport = {**SERIAL_DEVICE["transport"], "parity": "even"}
+        response = admin_client.post("/api/devices", json={**SERIAL_DEVICE, "transport": transport})
+
+        assert response.status_code == 201
+        assert response.json()["data"]["transport"]["parity"] == "Even"
 
 
 class TestUpdateSecretsDefaultToKeep:
@@ -364,20 +503,32 @@ class TestUpdateSecretsDefaultToKeep:
 
 class TestCatalog:
     def test_only_models_with_a_driver_are_listed(self, admin_client: TestClient) -> None:
-        """SPEC §3.3 — M3 offers ``prometer100`` alone; the other eight land in M4."""
+        """SPEC §3.3/§3.4 — M3 offered ``prometer100`` alone; issue #9 (M4a)
+        added ``smw110``. The other seven land in M4c. Dropdown order, not
+        insertion order into the driver registry, decides the order here —
+        ``smw110`` sorts before ``prometer100`` in the catalog (Mitsubishi
+        before CEWE)."""
         data = admin_client.get("/api/devices/catalog").json()["data"]
-        assert [entry["model"] for entry in data] == ["prometer100"]
+        assert [entry["model"] for entry in data] == ["smw110", "prometer100"]
 
     def test_it_carries_what_the_form_prefills(self, admin_client: TestClient) -> None:
-        entry = admin_client.get("/api/devices/catalog").json()["data"][0]
+        data = admin_client.get("/api/devices/catalog").json()["data"]
+        entry = next(e for e in data if e["model"] == "prometer100")
         assert entry["ui_label"] == "Prometer 100"
-        assert entry["default_port"] == 4059
         assert entry["fixed_password"] == "ABCD0001"
         assert entry["brand"] == "cewe"
 
+    def test_it_carries_no_transport_information(self, admin_client: TestClient) -> None:
+        """Issue #9 — transport is a property of the installation, not of the
+        model; the catalog entry must not offer either field."""
+        data = admin_client.get("/api/devices/catalog").json()["data"]
+        for entry in data:
+            assert "default_port" not in entry
+            assert "supports_serial" not in entry
+
     def test_it_carries_the_capability_flags(self, admin_client: TestClient) -> None:
-        entry = admin_client.get("/api/devices/catalog").json()["data"][0]
-        assert entry["supports_serial"] is False
+        data = admin_client.get("/api/devices/catalog").json()["data"]
+        entry = next(e for e in data if e["model"] == "prometer100")
         assert entry["supports_battery"] is True
         assert entry["supports_energy_summary"] is False
         assert entry["supports_special_days"] is False
@@ -490,7 +641,11 @@ class TestQuota:
 
 
 class TestTestConnection:
-    BODY = {"model": "prometer100", "host": "127.0.0.1", "port": 4059, "password": "ABCD0001"}
+    BODY = {
+        "model": "prometer100",
+        "transport": {"kind": "net", "host": "127.0.0.1", "port": 4059},
+        "password": "ABCD0001",
+    }
 
     def test_a_reachable_meter_reports_its_serial(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
         fake_meter.meter_serial = "SN-DIAG"
@@ -542,6 +697,40 @@ class TestListDevices:
 
         data = admin_client.get("/api/devices").json()["data"]
         assert [d["name"] for d in data] == ["Main Incomer", "Second"]
+
+
+class TestMalformedStoredTransportNeverLies:
+    """Code review (issue #9) — the response degrade path for a malformed or
+    incomplete stored transport must never assert a `kind` different from
+    what is actually stored.
+
+    Neither Create nor Update can write a row like this (both validate by
+    schema first), so it only happens to data this module did not write —
+    but ``web/src/pages/Devices.tsx``'s ``toFormValues`` switches the whole
+    form on ``transport.kind`` alone, so a serial row mislabeled `net` here
+    would have its next Update save silently rewrite it to a TCP device.
+    """
+
+    def test_a_malformed_serial_row_reports_serial_not_net(self, admin_client: TestClient) -> None:
+        device_id = insert_device_with_transport({"kind": "serial", "baud_rate": 19200})
+
+        listed = admin_client.get("/api/devices").json()["data"][0]
+
+        assert listed["id"] == device_id
+        assert listed["transport"]["kind"] == "serial"
+
+    def test_a_malformed_net_row_still_reports_net(self, admin_client: TestClient) -> None:
+        """The other direction — an empty/legacy net row is not relabelled either."""
+        device_id = insert_device_with_transport({})
+
+        listed = admin_client.get("/api/devices").json()["data"][0]
+
+        assert listed["id"] == device_id
+        assert listed["transport"]["kind"] == "net"
+
+    def test_it_never_500s(self, admin_client: TestClient) -> None:
+        insert_device_with_transport({"kind": "serial"})
+        assert admin_client.get("/api/devices").status_code == 200
 
 
 class TestDeleteDevice:
@@ -1124,7 +1313,11 @@ class TestSecretsNeverLeak:
             admin_client.put(f"/api/devices/{device_id}", json={**DEVICE, "password": "another-secret"})
             admin_client.post(
                 "/api/devices/test-connection",
-                json={"model": "prometer100", "host": "127.0.0.1", "port": 4059, "password": "diag-secret"},
+                json={
+                    "model": "prometer100",
+                    "transport": {"kind": "net", "host": "127.0.0.1", "port": 4059},
+                    "password": "diag-secret",
+                },
             )
 
         for secret in ("hunter2", "CIPHER-1", "AUTH-1", "another-secret", "diag-secret"):
@@ -1162,7 +1355,11 @@ class TestRoleBoundary:
         machine's socket at an arbitrary host:port."""
         response = user_client.post(
             "/api/devices/test-connection",
-            json={"model": "prometer100", "host": "127.0.0.1", "port": 4059, "password": ""},
+            json={
+                "model": "prometer100",
+                "transport": {"kind": "net", "host": "127.0.0.1", "port": 4059},
+                "password": "",
+            },
         )
         assert response.status_code == 403
 
@@ -1366,6 +1563,31 @@ def insert_unidentified_device() -> int:
             site_name="Unknown site",
             transport={"kind": "net", "host": "127.0.0.1", "port": 4059},
             password="hunter2",
+            enabled=False,
+        )
+        session.add(device)
+        session.flush()
+        return device.id
+
+
+def insert_device_with_transport(transport: dict) -> int:
+    """Insert a row with an arbitrary — possibly malformed — transport dict.
+
+    Bypasses the API on purpose: Create and Update both validate by schema,
+    so this is the only way to get a malformed row into the table, which is
+    exactly what ``TestMalformedStoredTransportNeverLies`` needs to exercise
+    the read path's degrade behaviour.
+    """
+    from arichds.db.models import Device
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        device = Device(
+            name="Malformed Transport",
+            brand="mitsu",
+            model="smw110",
+            site_name="Plant A",
+            transport=transport,
             enabled=False,
         )
         session.add(device)

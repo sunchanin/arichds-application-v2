@@ -80,9 +80,21 @@ class FakeMeterDriver(MeterDriver):
     Implements the full :class:`~arichds.acquisition.drivers.base.MeterDriver`
     contract, so registering it proves the contract is satisfiable rather than
     papering over it.
+
+    Registered under **both** ``prometer100`` and ``smw110`` (issue #9) — see
+    :class:`FakeSmw110Driver` below, which only overrides :attr:`_MODEL_NAME`,
+    so ``model_name`` stays truthful for whichever key the registry used.
     """
 
     source = SOURCE_DLMS
+
+    #: Overridden by :class:`FakeSmw110Driver`. A class attribute rather than a
+    #: constructor argument because the driver factory calls
+    #: ``registry[key](conn=conn, password=password, **kwargs)`` — it never
+    #: passes the registry key itself, so the only way for two registrations of
+    #: "the same fake" to report a different, truthful ``model_name`` is one
+    #: class each.
+    _MODEL_NAME: str = "prometer100"
 
     def __init__(self, conn: ConnectionParams, password: str = "", **kwargs: Any) -> None:
         """Initialise the fake.
@@ -98,7 +110,7 @@ class FakeMeterDriver(MeterDriver):
     @property
     def model_name(self) -> str:
         """Human-readable model identifier."""
-        return "prometer100"
+        return self._MODEL_NAME
 
     @property
     def endpoint(self) -> str:
@@ -135,3 +147,9 @@ class FakeMeterDriver(MeterDriver):
         if _STATE.serial_error is not None:
             raise _STATE.serial_error
         return _STATE.meter_serial
+
+
+class FakeSmw110Driver(FakeMeterDriver):
+    """The same fake, registered under ``smw110`` (issue #9) with a truthful name."""
+
+    _MODEL_NAME = "smw110"

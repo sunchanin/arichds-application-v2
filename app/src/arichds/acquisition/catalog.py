@@ -30,9 +30,12 @@ Fixed credentials per brand (server-side, from the customer answers):
   ``fixed_password`` is ``None`` here. No real TCC keys are stored in this
   module.
 
-The two passwords and the default port stay here rather than in
-``constants.py`` exactly as they did in v1: they are catalog data about
-particular brands, not cross-cutting product constants.
+The two passwords stay here rather than in ``constants.py`` exactly as they did
+in v1: they are catalog data about particular brands, not cross-cutting product
+constants. ``DLMS_DEFAULT_TCP_PORT`` is the opposite case — 4059 is a protocol
+constant every IP-connected model shares, not a property of any one model, so
+it lives here as a bare constant rather than as a per-model field (issue #9
+removed ``ModelSpec.default_port`` for exactly this reason — see below).
 """
 
 from __future__ import annotations
@@ -61,11 +64,16 @@ class Brand(StrEnum):
 class ModelSpec:
     """Immutable taxonomy entry for one meter model.
 
+    **Carries no transport information** (issue #9). The field probe of two
+    live SMW110W4 units — one on serial, one on TCP, otherwise identical —
+    proved transport is a property of the *installation*, not of the model:
+    ``docs/meter-notes/smw110w4-scan.md`` — "The site was reported as holding
+    two different models. It does not." Every catalogued model is offered both
+    transports; the operator picks per device.
+
     Attributes:
         brand: Owning brand.
         ui_label: Human-readable label for the Model dropdown.
-        default_port: Default TCP port, or None for serial-only models.
-        supports_serial: True if the model connects over serial transport.
         supports_battery: True if the model exposes a battery reading.
         supports_energy_summary: True if the model exposes an energy summary.
         supports_special_days: True if the model exposes a special-days table.
@@ -76,8 +84,6 @@ class ModelSpec:
 
     brand: Brand
     ui_label: str
-    default_port: int | None
-    supports_serial: bool
     supports_battery: bool
     supports_energy_summary: bool
     supports_special_days: bool
@@ -87,7 +93,6 @@ class ModelSpec:
 # ── The catalog ───────────────────────────────────────────────────────────────
 #
 # Capability-flag rationale, carried over from v1 verbatim:
-#   - supports_serial: only Mitsu SMW110 (Serial 19200 8N1). CEWE + TCC are TCP.
 #   - supports_battery: True for Mitsu & TCC (battery register) AND for the three
 #     CEWE models, whose drivers read the CEWE Battery-status register
 #     0.0.96.6.1.255.
@@ -102,8 +107,6 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3c": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3C",
-        default_port=DLMS_DEFAULT_TCP_PORT,
-        supports_serial=False,
         supports_battery=True,
         supports_energy_summary=True,
         supports_special_days=True,
@@ -112,8 +115,6 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3cl": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3CL",
-        default_port=DLMS_DEFAULT_TCP_PORT,
-        supports_serial=False,
         supports_battery=True,
         supports_energy_summary=True,
         supports_special_days=True,
@@ -122,8 +123,6 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st33tl": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-33TL",
-        default_port=DLMS_DEFAULT_TCP_PORT,
-        supports_serial=False,
         supports_battery=True,
         supports_energy_summary=True,
         supports_special_days=True,
@@ -132,8 +131,6 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3tl": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3TL",
-        default_port=DLMS_DEFAULT_TCP_PORT,
-        supports_serial=False,
         supports_battery=True,
         supports_energy_summary=True,
         supports_special_days=True,
@@ -142,19 +139,15 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3dh": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3DH",
-        default_port=DLMS_DEFAULT_TCP_PORT,
-        supports_serial=False,
         supports_battery=True,
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
     ),
-    # ── Mitsubishi SMW110 (serial) ───────────────────────────────────────────
+    # ── Mitsubishi SMW110 ─────────────────────────────────────────────────────
     "smw110": ModelSpec(
         brand=Brand.MITSU,
         ui_label="Mitsubishi SMW110",
-        default_port=None,  # serial-only (19200 8N1); no TCP port
-        supports_serial=True,
         supports_battery=True,  # battery = voltage 0.0.96.6.3.255
         supports_energy_summary=True,  # energy 1.0.{1,2,3,4}.8.x
         supports_special_days=True,  # 0.0.11.0.0.255
@@ -164,8 +157,6 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "prometer100": ModelSpec(
         brand=Brand.CEWE,
         ui_label="Prometer 100",
-        default_port=DLMS_DEFAULT_TCP_PORT,
-        supports_serial=False,
         supports_battery=True,  # read_battery_status 0.0.96.6.1.255
         supports_energy_summary=False,
         supports_special_days=False,
@@ -174,8 +165,6 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "saral305": ModelSpec(
         brand=Brand.CEWE,
         ui_label="Saral 305",
-        default_port=DLMS_DEFAULT_TCP_PORT,
-        supports_serial=False,
         supports_battery=True,  # read_battery_status 0.0.96.6.1.255
         supports_energy_summary=False,
         supports_special_days=False,
@@ -184,8 +173,6 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "premier550": ModelSpec(
         brand=Brand.CEWE,
         ui_label="Premier 550",
-        default_port=DLMS_DEFAULT_TCP_PORT,
-        supports_serial=False,
         supports_battery=True,  # read_battery_status 0.0.96.6.1.255
         supports_energy_summary=False,
         supports_special_days=False,

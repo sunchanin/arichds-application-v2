@@ -33,7 +33,7 @@ from typing import Any
 import pytest
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers._dlms_tcp import TcpDlmsDriver
+from arichds.acquisition.drivers._dlms import DlmsDriver
 
 VOLT_L1_OBIS = "1.0.32.7.0.255"
 IMPORT_OBIS = "1.0.1.8.0.255"
@@ -84,8 +84,8 @@ class FakeGuruxReader:
         raise AssertionError(f"unexpected attribute {attr}")
 
 
-class ScalerTestDriver(TcpDlmsDriver):
-    """A concrete TcpDlmsDriver wired to a fake reader instead of a socket."""
+class ScalerTestDriver(DlmsDriver):
+    """A concrete DlmsDriver wired to a fake reader instead of a socket."""
 
     def __init__(self, reader: FakeGuruxReader) -> None:
         super().__init__(ConnectionParams.net("198.51.100.7", 4059), password="secret")

@@ -33,12 +33,12 @@ from __future__ import annotations
 from typing import Any
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers._dlms_tcp import TcpDlmsDriver
+from arichds.acquisition.drivers._dlms import DlmsDriver
 from arichds.acquisition.obis import INSTANTANEOUS_OBIS
 from arichds.constants import DLMS_INTER_REQUEST_DELAY_MS, TCP_READ_TIMEOUT_SEC
 
 
-class Prometer100Driver(TcpDlmsDriver):
+class Prometer100Driver(DlmsDriver):
     """CEWE Prometer 100 over DLMS/COSEM WRAPPER."""
 
     _INTERFACE = "WRAPPER"

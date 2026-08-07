@@ -91,7 +91,7 @@ Construct with the OBIS code string; `read(obj, attr)` fills the matching Python
 | `GXDLMSCaptureObject` | — | `attributeIndex`, `dataIndex` | Each `captureObjects` entry is a `(GXDLMSObject, GXDLMSCaptureObject)` pair. |
 
 v1 selected the class by OBIS D-field (D=8 → Register, D=6/2 → ExtendedRegister, clock
-OBIS → Clock, else Data). **ARICHDS has no such helper yet** — `_dlms_tcp.read_register()`
+OBIS → Clock, else Data). **ARICHDS has no such helper yet** — `_dlms.read_register()`
 uses `GXDLMSRegister` and `GXDLMSExtendedRegister` directly. Add one when M6's billing path
 needs it, and put it behind a driver method, not an `if` chain.
 
@@ -144,9 +144,11 @@ Anything here can also be set directly on `settings.client` (e.g. `client.authen
 `client.ciphering.security`, `client.ciphering.blockCipherKey = GXByteBuffer.hexToBytes(…)`)
 — that is all `getParameters` does under the hood.
 
-> Mitsubishi SMW110 (M4, serial) is documented in `docs/meter-notes/mitsu-obis-scan.md` as
-> **19200 8N1, auth Low, password `00000000000000000003`, client 5, physical server 1 and
-> logical server 0** — the last part meaning `-l 0` must be passed, which is easy to miss.
+> Mitsubishi SMW110W4 (issue #9, TCP or serial) is documented in
+> `docs/meter-notes/smw110w4-scan.md` as **HDLC, LN referencing, 19200 8N1 on serial,
+> auth Low, password `00000000000000000003`, client 6** (not v1's hardcoded 5 — neither
+> live unit answers on it) **, physical server 1 and logical server 0** — the last part
+> meaning `-l 0` must be passed, which is easy to miss.
 
 ## Client / media objects
 

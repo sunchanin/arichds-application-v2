@@ -10,11 +10,12 @@ must be built against.
 Why this model needs its own probe rather than the existing ones:
 
 * ``scripts/probe_meter.py`` and ``scripts/probe_capture_objects.py`` both go
-  through ``create_driver()``, and v2 has **no SMW110 driver** and **no serial
-  transport** — ``ConnectionParams`` carries a ``SERIAL`` enum member but only a
-  ``net()`` constructor, and ``transport_args()`` hardcodes ``-h/-p``. So this
-  script builds the GXSettings argv itself. It is the one place that is allowed
-  to; the driver layer gets it properly at M4.
+  through ``create_driver()``, and at the time this script was written v2 had
+  **no SMW110 driver** and **no serial transport** — ``ConnectionParams``
+  carried a ``SERIAL`` enum member but only a ``net()`` constructor, and
+  ``transport_args()`` hardcoded ``-h/-p``. So this script builds the
+  GXSettings argv itself. (Delivered at M4a by issue #9 — this script's own
+  code is left as it was, a frozen record of the probe run.)
 * The customer's site turned out to hold **two units of one model**, not two
   models. Both nameplates read ``SMW110-C47E (ADVANCE)`` / ``SMW110W4-N141C600``
   and differ only in ID code (``0123 2002893`` and ``0123 2002892``). The wire

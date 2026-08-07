@@ -35,7 +35,11 @@ from arichds.constants import METER_SERIAL_OBIS_ATTR, METER_SERIAL_OBIS_CODE
 from arichds.db.models import LoadProfileReading
 from arichds.db.session import session_scope
 
-PROBE_ARGS = {"model": "prometer100", "host": "127.0.0.1", "port": 4059, "password": "ABCD0001"}
+PROBE_ARGS = {
+    "model": "prometer100",
+    "conn": ConnectionParams.net("127.0.0.1", 4059),
+    "password": "ABCD0001",
+}
 
 
 def probe(**overrides: object):
@@ -277,12 +281,13 @@ class TestAProbeIsNotAReading:
         assert before == after == 0
 
 
-class TestTcpDlmsSerialRead:
-    """D5 — the one concrete implementation, shared by every DLMS/TCP model.
+class TestDlmsSerialRead:
+    """D5 — the one concrete implementation, shared by every DLMS model.
 
-    On :class:`TcpDlmsDriver`, not on the leaf: all eight remaining DLMS models
-    in M4 need the identical read, and only SMW110 needs a different register —
-    which the ``METER_SERIAL_OBIS`` class attribute already covers.
+    On :class:`DlmsDriver`, not on the leaf: every DLMS model needs the
+    identical read, and only SMW110 needs a different register — which the
+    ``METER_SERIAL_OBIS`` class attribute already covers (see
+    ``test_smw110_driver.py`` for that model's own coverage).
     """
 
     def driver(self) -> Prometer100Driver:

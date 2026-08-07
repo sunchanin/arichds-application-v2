@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives.serialization import (
     PrivateFormat,
     PublicFormat,
 )
-from fakes import FakeMeterDriver, FakeMeterState, fake_meter_state, reset_fake_meter
+from fakes import FakeMeterDriver, FakeMeterState, FakeSmw110Driver, fake_meter_state, reset_fake_meter
 from fastapi.testclient import TestClient
 
 from arichds.auth.roles import Role
@@ -52,7 +52,8 @@ USER_CREDENTIALS = {"username": "operator", "password": "operator-password"}
 
 @pytest.fixture(autouse=True)
 def fake_meter(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeMeterState]:
-    """Install the test-only fake meter as the ``prometer100`` driver (M3-1).
+    """Install the test-only fake meter as the ``prometer100`` AND ``smw110``
+    drivers (M3-1; ``smw110`` added by issue #9).
 
     ADR 0005 took the simulated driver out of the product, and the test suite
     must never touch a real meter — so the driver registry is monkeypatched
@@ -61,14 +62,16 @@ def fake_meter(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeMeterState]:
     ``supported_models()``; that is why the factory has no registration API and
     must not grow one.
 
-    Registered under the **real** model string so the catalog endpoint, the
-    registry and the API tests all agree on the product's vocabulary.
+    Registered under the **real** model strings so the catalog endpoint, the
+    registry and the API tests all agree on the product's vocabulary — one
+    class each (:class:`FakeMeterDriver` / :class:`FakeSmw110Driver`) so
+    ``model_name`` stays truthful for whichever key resolved to it.
 
     **Autouse on purpose.** A test that creates a device without asking for this
-    fixture would fall through to the real driver and open a TCP socket to
-    whatever host its payload happens to name. Nothing in the suite wants that,
-    and the failure mode is silent, so the safe default is applied everywhere
-    rather than remembered per test.
+    fixture would fall through to the real driver and open a TCP socket or a
+    COM port to whatever its payload happens to name. Nothing in the suite
+    wants that, and the failure mode is silent, so the safe default is applied
+    everywhere rather than remembered per test.
 
     Yields:
         The knob-set the fake reads — set ``connect_error``, ``meter_serial``,
@@ -77,7 +80,7 @@ def fake_meter(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeMeterState]:
     reset_fake_meter()
     monkeypatch.setattr(
         "arichds.acquisition.drivers.factory._registry",
-        lambda: {"prometer100": FakeMeterDriver},
+        lambda: {"prometer100": FakeMeterDriver, "smw110": FakeSmw110Driver},
     )
     yield fake_meter_state()
     reset_fake_meter()

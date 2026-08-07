@@ -27,7 +27,7 @@ import pytest
 from fakes import FakeMeterDriver, FakeMeterState
 from sqlalchemy import select
 
-from arichds.acquisition.connection_params import ConnectionParams
+from arichds.acquisition.connection_params import ConnectionParams, connection_params_from_transport
 from arichds.acquisition.drivers.factory import create_driver, supported_models
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
 from arichds.acquisition.poller import Poller, TickOutcome, build_driver, poll_once
@@ -82,6 +82,82 @@ class TestBuildDriver:
         device = Device(name="Broken", brand="cewe", model="prometer100", transport={})
         with pytest.raises(ValueError, match="no usable transport"):
             build_driver(device)
+
+
+class TestTheLockKeyIsOneString:
+    """The acceptance criterion issue #9 names explicitly.
+
+    Before the fix, ``ConnectionParams`` had no ``serial()`` constructor and
+    ``transport_args()``/``endpoint`` hardcoded ``-h/-p`` — so a serial device's
+    lock key computed by the Poller (through ``build_driver``) and by a Manual
+    Read (through ``probe_meter``) could diverge from ``Device.transport_endpoint``
+    (``db/models.py``), silently voiding ADR 0006 for exactly the meters that
+    need it: two units sharing a line. This asserts all three agree, for both
+    transports.
+    """
+
+    def test_net(self, migrated_db: Settings) -> None:
+        with session_scope() as session:
+            device = Device(
+                name="TCP Meter",
+                brand="cewe",
+                model="prometer100",
+                transport={"kind": "net", "host": "127.0.0.1", "port": 4059},
+            )
+            session.add(device)
+            session.flush()
+            session.expunge(device)
+
+        assert build_driver(device).endpoint == device.transport_endpoint == "127.0.0.1:4059"
+
+    def test_serial(self, migrated_db: Settings, fake_meter: FakeMeterState) -> None:
+        with session_scope() as session:
+            device = Device(
+                name="Serial Meter",
+                brand="mitsu",
+                model="smw110",
+                transport={
+                    "kind": "serial",
+                    "serial_port": "COM4",
+                    "baud_rate": 19200,
+                    "data_bits": 8,
+                    "parity": "None",
+                    "stop_bits": 1,
+                },
+            )
+            session.add(device)
+            session.flush()
+            session.expunge(device)
+
+        assert build_driver(device).endpoint == device.transport_endpoint == "COM4"
+
+    def test_the_api_builds_the_same_connection_params_a_manual_read_uses(
+        self, migrated_db: Settings, fake_meter: FakeMeterState
+    ) -> None:
+        """The sibling assertion: the ``ConnectionParams`` a Manual Read (Probe,
+        Test connection, Read now) builds from the same stored transport yields
+        the identical endpoint string — the one lock key, regardless of which
+        code path asks."""
+        with session_scope() as session:
+            device = Device(
+                name="Serial Meter",
+                brand="mitsu",
+                model="smw110",
+                transport={
+                    "kind": "serial",
+                    "serial_port": "COM4",
+                    "baud_rate": 19200,
+                    "data_bits": 8,
+                    "parity": "None",
+                    "stop_bits": 1,
+                },
+            )
+            session.add(device)
+            session.flush()
+            session.expunge(device)
+
+        manual_read_conn = connection_params_from_transport(device.transport)
+        assert manual_read_conn.endpoint == build_driver(device).endpoint == device.transport_endpoint
 
 
 class TestPollOnce:

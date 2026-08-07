@@ -23,7 +23,7 @@ Two provenances are marked throughout, and the difference matters:
 
 ## Connect / disconnect lifecycle
 
-*In v2*: `app/src/arichds/acquisition/drivers/_dlms_tcp.py` → `connect()` / `disconnect()`.
+*In v2*: `app/src/arichds/acquisition/drivers/_dlms.py` → `connect()` / `disconnect()`.
 
 ```python
 settings = GXSettings()
@@ -51,7 +51,7 @@ other device on that line.
 
 ## Register + scaler (the #1 trap)
 
-*In v2*: `_dlms_tcp.py` → `read_register()`. Pinned by `app/tests/test_dlms_scaler.py`.
+*In v2*: `_dlms.py` → `read_register()`. Pinned by `app/tests/test_dlms_scaler.py`.
 
 `reader.read(register, 2)` returns the **raw integer** stored in the meter. The real value
 is `raw * 10**scaler`, where `scaler` comes from **attr 3 (scaler_unit)**. Skipping it gives
@@ -78,7 +78,7 @@ add up, not before.
 
 ## Reading one identity register
 
-*In v2*: `_dlms_tcp.py` → `read_meter_serial()`, driven by the class attribute
+*In v2*: `_dlms.py` → `read_meter_serial()`, driven by the class attribute
 `METER_SERIAL_OBIS` so a model with a different serial OBIS overrides the **attribute**,
 not the method. That is the shape every per-model difference should take (`CLAUDE.md`:
 no `if/elif` on model in generic code).
