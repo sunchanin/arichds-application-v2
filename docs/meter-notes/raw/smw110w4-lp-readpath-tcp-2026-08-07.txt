@@ -1,0 +1,95 @@
+==============================================================================
+ARICHDS v2 - LOAD PROFILE READ PATH, AGAINST A LIVE METER
+==============================================================================
+started        : 2026-08-07T16:52:12
+endpoint       : 192.168.1.31:4059
+transport      : net
+code under test: arichds.acquisition.drivers.smw110.Smw110Driver.read_load_profile
+                 (the shipped driver, imported - not a reimplementation)
+read-only      : nothing is written to the meter or to any database
+
+Serial ports visible from this machine:
+  COM4  USB Serial Port (COM4)
+
+connecting ...
+connected.
+
+[1] IDENTITY
+    meter serial (1.0.199.128.134.255) : 1232002892
+    model string (0.0.96.1.1.255)      : SMW110W4-N141C600   
+    NOTE: 0.0.96.1.0.255 answers the placeholder 99999999 on this model
+          and is never the serial (scan 2026-08-07).
+
+[2] LIVE SCHEMA vs THE 2026-08-07 SCAN
+    capture objects (attr 3) :     20   expected 20
+    capture period  (attr 4) :    900 s expected 900 s
+    entries in use  (attr 7) :   8640   expected 8640
+
+[3] METER CLOCK vs HOST CLOCK
+    meter clock        : 2026-08-07 16:52:12
+    host local clock   : 2026-08-07T16:52:14
+    host UTC clock     : 2026-08-07T09:52:14+00:00
+    v2 assumes the meter runs UTC+7 (constants.py)
+    implied meter offset from UTC : +7 h
+
+[4] WINDOW -> ROWS  (the entry arithmetic, on a buffer that is moving)
+    A. last 2 hours
+      window : 2026-08-07T07:52:14.375932+00:00  ->  2026-08-07T09:52:14.375932+00:00
+      rows   : 8
+    2026-08-07T08:00:00+00:00  kwh=     7.247  V= 227.655/ 225.330/ 227.681  A=  42.409/  42.600/  42.209  freq=None
+    2026-08-07T08:15:00+00:00  kwh=     6.828  V= 228.022/ 225.714/ 228.104  A=  39.890/  40.076/  39.694  freq=None
+    2026-08-07T08:30:00+00:00  kwh=     7.719  V= 227.905/ 225.630/ 227.903  A=  45.143/  45.339/  44.947  freq=None
+    2026-08-07T08:45:00+00:00  kwh=     6.583  V= 227.224/ 224.894/ 227.206  A=  38.610/  38.797/  38.424  freq=None
+    2026-08-07T09:00:00+00:00  kwh=     3.427  V= 226.840/ 224.360/ 226.733  A=  20.084/  20.244/  19.894  freq=None
+    2026-08-07T09:15:00+00:00  kwh=     3.582  V= 227.180/ 224.717/ 227.191  A=  20.937/  21.109/  20.761  freq=None
+    2026-08-07T09:30:00+00:00  kwh=     3.294  V= 227.573/ 225.150/ 227.587  A=  19.287/  19.446/  19.103  freq=None
+    2026-08-07T09:45:00+00:00  kwh=     3.254  V= 227.849/ 225.409/ 227.848  A=  19.035/  19.191/  18.853  freq=None
+      expected about 8 rows at 900 s; got 8
+
+[5] SAME WINDOW TWICE  (is it stable, or does it drift with call time?)
+    A again
+      window : 2026-08-07T07:52:14.375932+00:00  ->  2026-08-07T09:52:14.375932+00:00
+      rows   : 8
+    2026-08-07T08:00:00+00:00  kwh=     7.247  V= 227.655/ 225.330/ 227.681  A=  42.409/  42.600/  42.209  freq=None
+    2026-08-07T08:15:00+00:00  kwh=     6.828  V= 228.022/ 225.714/ 228.104  A=  39.890/  40.076/  39.694  freq=None
+      ... 4 more ...
+    2026-08-07T09:30:00+00:00  kwh=     3.294  V= 227.573/ 225.150/ 227.587  A=  19.287/  19.446/  19.103  freq=None
+    2026-08-07T09:45:00+00:00  kwh=     3.254  V= 227.849/ 225.409/ 227.848  A=  19.035/  19.191/  18.853  freq=None
+      identical timestamps : True
+
+[6] WIDE WINDOW CONTAINS THE NARROW ONE  (off-by-one in start/count)
+    B. last 6 hours
+      window : 2026-08-07T03:52:14.375932+00:00  ->  2026-08-07T09:52:14.375932+00:00
+      rows   : 24
+    2026-08-07T04:00:00+00:00  kwh=    13.130  V= 228.188/ 225.989/ 228.127  A=  76.833/  76.993/  76.552  freq=None
+    2026-08-07T04:15:00+00:00  kwh=    10.279  V= 227.701/ 225.412/ 227.648  A=  60.264/  60.436/  60.018  freq=None
+    2026-08-07T04:30:00+00:00  kwh=     7.165  V= 226.907/ 224.475/ 226.817  A=  42.049/  42.230/  41.850  freq=None
+      ... 18 more ...
+    2026-08-07T09:15:00+00:00  kwh=     3.582  V= 227.180/ 224.717/ 227.191  A=  20.937/  21.109/  20.761  freq=None
+    2026-08-07T09:30:00+00:00  kwh=     3.294  V= 227.573/ 225.150/ 227.587  A=  19.287/  19.446/  19.103  freq=None
+    2026-08-07T09:45:00+00:00  kwh=     3.254  V= 227.849/ 225.409/ 227.848  A=  19.035/  19.191/  18.853  freq=None
+      narrow rows absent from the wide window : 0
+      narrow rows whose values differ         : 0
+
+[7] WINDOWS OUTSIDE THE BUFFER  (must be empty, not an error)
+      one day in the future : 0 rows   (expected 0)
+      January 2020          : 0 rows   (expected 0)
+
+[8] read_at SPACING AND UNIQUENESS  (M5's unique key depends on this)
+      rows            : 24
+      distinct stamps : 24
+      duplicates      : 0
+      gaps between consecutive rows (seconds -> count):
+           900 s : 23
+      ascending order as returned : True
+
+[9] LOGGER 2
+    1.0.99.2.0.255 -> GXDLMSException: Access Error : Device reports a undefined object.
+    Expected: 'undefined object'. This model has one logger, which is why
+    logger_id cannot be exercised for real until M4c (Prometer 100 / Premier 550).
+
+disconnected.
+
+==============================================================================
+report written to: C:\Users\Logger\Desktop\probe\lp-probe-20260807-165212.txt
+==============================================================================

@@ -159,6 +159,48 @@ Lock these before touching driver code (REMAKE-PLAN §5):
 | `225942` | 0.001 | **225.942 V** | `volt_l1` |
 | `59004` | 0.001 | **59.004 A** | `current_l1` |
 
+## The shipped read path, validated against both live meters (2026-08-07, 16:52)
+
+Everything above was read with `scripts/probe_smw110_serial.py`, which built its own
+DLMS argv and did its own parsing — so it established facts about the *meter*, not
+about our code. After issue #10 shipped `Smw110Driver.read_load_profile()`,
+`scripts/probe_lp_smw110.py` **imported that driver and called it** against both units.
+Raw reports: [`raw/smw110w4-lp-readpath-tcp-2026-08-07.txt`](raw/smw110w4-lp-readpath-tcp-2026-08-07.txt)
+and [`raw/smw110w4-lp-readpath-serial-2026-08-07.txt`](raw/smw110w4-lp-readpath-serial-2026-08-07.txt).
+
+**Zero failures and zero warnings on both units.**
+
+| Question replay cannot answer | TCP `1232002892` | Serial `1232002893` |
+|---|---|---|
+| 2 h window → rows | 8 | 8 |
+| Same window asked twice | identical | identical |
+| 6 h window contains the 2 h one | 0 missing, 0 differing | 0 missing, 0 differing |
+| Window outside the buffer | 0 rows, no error | 0 rows, no error |
+| Live schema vs this document | 20 / 900 s / 8640 unchanged | unchanged |
+| Meter clock offset from UTC | **+7 h** | **+7 h** |
+| Logger 2 | "undefined object" | "undefined object" |
+
+**The locked test vector reproduced live.** The TCP unit's `2026-08-07T04:00:00+00:00`
+row came back as `13.130 kWh · 228.188/225.989/228.127 V · 76.833/76.993/76.552 A` —
+digit-for-digit the recorded row at `raw/smw110w4-tcp-probe-2026-08-07.txt:179` that
+issue #10 pinned as its verbatim test. Three things at once: the recorded row was
+transcribed correctly, the driver produces the same numbers live as in replay, and the
+entry-window arithmetic picks the right row out of a ring that is actually moving.
+
+**`read_at` is safe as a unique key on this model.** 24 rows over six hours, on both
+units: 24 distinct timestamps, **zero duplicates**, ascending as returned, and the gap
+histogram has exactly **one bucket — 900 s × 23**. No skew, no repeat, no short interval.
+M5's intended `(device_id, logger_id, read_at)` uniqueness holds here. Note the scope:
+six hours on one model. A meter whose clock is corrected while logging is the case this
+does not cover, and no probe run so far has caught one.
+
+> ⚠️ **This is not Output Parity and must not be recorded as such.** v1 cannot read these
+> units at all — `cewe/cewe-worker/src/drivers/smw110.py:119` hardcodes client address 5
+> and both units answer only on 6 — so there is no v1 output to compare against on this
+> model, live meter or not. What is proven here is that v2's read path is correct and
+> stable against the meter. Parity against v1 has to come from the CEWE models at M4c.
+> The CT ratio is still unknown, so absolute energy remains unclaimable either way.
+
 ## The 11 columns left unmapped are now identified
 
 The owner deferred mapping `1.0.x.128.y` until the customer says what they are.
@@ -307,3 +349,14 @@ Two corollaries worth keeping:
 - **The older unit v1 read** (`1252008102`) is **retired — the customer no longer
   uses it**. [`mitsu-obis-scan.md`](mitsu-obis-scan.md) stays as the historical
   record of that meter; this document describes the units in service.
+- **`catalog.py`'s fixed password for this model belongs to the retired meter.**
+  `MITSU_SMW110_FIXED_PASSWORD` (`app/src/arichds/acquisition/catalog.py:52`) still
+  carries the password `mitsu-obis-scan.md` recorded for `1252008102`. The units in
+  service use a different one — confirmed today, because the read-path probe
+  authenticated against both with a password the operator supplied, not that
+  constant. **An operator adding either unit through the Devices page today would get
+  the wrong password prefilled and the create-time probe would fail `AUTH_FAILED`.**
+  Two decisions are owed before this is fixed: whether both units share one password,
+  and whether a customer credential should keep living as a literal in source at all
+  now that eight more models are coming at M4c. The value is deliberately not written
+  here — this file is committed.
