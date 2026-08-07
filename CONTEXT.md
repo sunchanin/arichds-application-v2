@@ -98,6 +98,16 @@ runs the Liveness job — one identity register, discarded — and **writes no r
 (ADR 0007); its outcome is where device status comes from, and there is no separate health
 check.
 
+**Scheduler**:
+The single background thread that runs every periodic job from a registry of
+`(name, interval, fn)` — one thread for all of them, not one per job. Jobs run sequentially in
+registry order, and a job that throws costs only its own cycle: it is logged and runs again at
+its next interval. It stops in Limited Mode and starts on activation, without a restart. Its
+first job is the load-profile cycle, which reads every enabled device that is not Offline.
+Everything it does is background work: a device whose Transport Endpoint is busy is skipped and
+read next cycle, never queued ahead of a person.
+_Avoid_: cron, worker, background service, a per-module scheduler (v1 had seven)
+
 **Probe**:
 Talking to a meter to read its identity before committing anything. Creating or updating a
 device probes first: no serial, no row. A probe is not a reading — it writes no Interval

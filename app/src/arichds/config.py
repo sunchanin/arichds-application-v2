@@ -26,8 +26,13 @@ class Settings(BaseSettings):
         host: Bind address. ``0.0.0.0`` so other machines on the site LAN can
             reach ``http://<ip>:8000`` (the installer opens the firewall rule).
         log_level: Root logger level. ``ARICHDS_LOG_LEVEL``.
-        poll_enabled: Master switch for the Poller — off in tests that do not
-            want background threads. ``ARICHDS_POLL_ENABLED``.
+        poll_enabled: Master switch for **every background meter read** — the
+            Poller and the Scheduler's meter-reading jobs alike. Off in tests and
+            dev runs that want the API without touching meters.
+            ``ARICHDS_POLL_ENABLED``. One variable rather than two because they
+            gate the same thing, and a second one would be missed by exactly the
+            fixtures that already set this one. The first job that reads no meter
+            (M7's retention and backup) is the trigger to revisit that.
         token_expire_minutes: Access Token lifetime (SPEC §3.2 — 8 hours).
             ``ARICHDS_TOKEN_EXPIRE_MINUTES``.
         jwt_secret: Explicit JWT signing secret. ``ARICHDS_JWT_SECRET``. When

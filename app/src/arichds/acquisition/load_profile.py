@@ -1,4 +1,4 @@
-"""The load-profile read job (M5a-1, issue #15).
+"""The load-profile read job (M5a-1, issue #15) and its cycle (M5a-2, issue #16).
 
 One call reads a device's load profile from where the stored data ends up to
 now, in chunks, and writes each chunk before fetching the next. Everything it
@@ -27,9 +27,24 @@ Three rules shape the walk, and each is load-bearing:
 Poller and from nothing else. A failed load-profile read is a log line and,
 later, a gap on the Records page — never a strike against the meter.
 
-The scheduler thread, the job registry, skipping Offline devices and Limited
-Mode behaviour are **not here**: they are M5a-2 (issue #16). Today the one
-caller is Read now.
+**Two callers, one read path, two priorities.** :func:`read_and_store_load_profile`
+is what Read now presses, and :func:`load_profile_cycle` is the same call in a
+loop over every device that should be read — the ``load_profile`` entry in
+:func:`arichds.jobs.scheduler.default_jobs`. Which devices those are (enabled,
+not Offline) is decided in the cycle, because it is a property of *the sweep*,
+not of a read: pressing Read now on an Offline device must still read it.
+
+The one thing that differs between the two is **how the Transport Endpoint is
+taken**. Read now is a Manual Read: it waits, and it outranks background work.
+The cycle passes ``background=True`` and gives the line up at once when anything
+else holds it — a walk can hold an endpoint for a full budget, and a person whose
+Read now blocks behind an invisible background sweep is the exact cost ADR 0006
+priced and refused. A skip loses nothing: the watermark makes the next cycle
+resume from the same place (ADR 0008).
+
+The scheduler thread itself and Limited Mode are **not here**: they are
+:mod:`arichds.jobs.scheduler`, which stops the thread when the license lapses,
+so this module needs no license check of its own.
 """
 
 from __future__ import annotations
@@ -45,6 +60,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from arichds.acquisition.drivers.base import IntervalReading, MeterDriver
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
 from arichds.acquisition.poller import build_driver
+from arichds.acquisition.status import DeviceStatus
 from arichds.constants import (
     LOAD_PROFILE_BACKFILL_DAYS,
     LOAD_PROFILE_CHUNK_HOURS,
@@ -79,6 +95,11 @@ class LoadProfileReadResult:
         budget_exhausted: True when the walk stopped with history still to fetch.
             Pressing Read now again continues from the data.
         error: An operator-facing sentence, or None. Never contains a password.
+        skipped: True when a **background** read gave the Transport Endpoint up
+            rather than queue for it (ADR 0006). Not a failure and never an
+            ``error``: nothing was asked of the meter, nothing was lost, and the
+            next cycle reads it from the same watermark. Only the background
+            path can set it, so Read now never sees it.
     """
 
     supported: bool
@@ -86,6 +107,9 @@ class LoadProfileReadResult:
     through: datetime | None
     budget_exhausted: bool
     error: str | None
+    # Defaulted so every existing construction — and `api/devices.py`, which
+    # renders the Read now modal — needs no change.
+    skipped: bool = False
 
 
 def read_and_store_load_profile(
@@ -95,25 +119,38 @@ def read_and_store_load_profile(
     lock_timeout_sec: float = MANUAL_READ_LOCK_TIMEOUT_SEC,
     budget_sec: float = LOAD_PROFILE_READ_BUDGET_SEC,
     now: datetime | None = None,
+    background: bool = False,
 ) -> LoadProfileReadResult:
     """Read one device's load profile from its watermark to *now* and store it.
 
-    Takes the Transport Endpoint lock **once**, as a Manual Read (ADR 0006), and
-    holds it for the whole walk with a single connection. Releasing between
-    chunks would force a re-association per chunk and buy nothing: a background
-    tick that cannot have the endpoint is skipped, never queued.
+    Takes the Transport Endpoint lock **once** and holds it for the whole walk
+    with a single connection. Releasing between chunks would force a
+    re-association per chunk and buy nothing.
+
+    **Which lock, and why it is the caller's business.** A person pressing Read
+    now is a Manual Read: it waits for the endpoint and is granted it ahead of
+    background work (ADR 0006). The Scheduler's cycle is background work and
+    takes the other path — it gives the endpoint up at once rather than queue,
+    because a walk can hold a line for a full :data:`LOAD_PROFILE_READ_BUDGET_SEC`
+    and a person waiting behind invisible background work is precisely the cost
+    ADR 0006 refuses to pay. Priority is a property of *the request*, which is
+    why it is a parameter here and not a branch inside the lock.
 
     Args:
         device_id: The device to read. It must exist — the caller resolved it.
         locks: Lock registry. Defaults to the process-wide one, which is the
             registry the Poller and every other Manual Read use.
-        lock_timeout_sec: How long to wait for the Transport Endpoint.
+        lock_timeout_sec: How long to wait for the Transport Endpoint. Ignored
+            when *background* is set — that path never waits.
         budget_sec: How long the whole walk may keep going. Checked **before
             starting each chunk except the first**: a DLMS read cannot be
             interrupted mid-flight, and a call that reads nothing at all makes
             no progress against the watermark.
         now: The upper bound of the window, timezone-aware UTC. A parameter so
             a test drives the walk without a clock.
+        background: Take the endpoint on the background path — never blocking,
+            skipping the device when the line is busy. The default is False so
+            Read now keeps exactly the behaviour it has always had.
 
     Returns:
         What happened, including a sentence for the operator when it failed.
@@ -134,7 +171,18 @@ def read_and_store_load_profile(
         except ValueError as exc:
             # A model with no driver, or a stored transport nothing can parse.
             # Not a meter failure — nothing was asked of the meter.
-            logger.warning("Load profile skipped for device %s: %s", device_name, exc)
+            #
+            # DEBUG on the background path: such a row sits at `unknown`, which
+            # the cycle deliberately does not skip, so a WARNING here would be
+            # ~96 identical lines a day forever. The Poller met the same case and
+            # made the same call — one line per start, not one per tick. A person
+            # pressing Read now still gets the WARNING *and* the sentence below.
+            logger.log(
+                logging.DEBUG if background else logging.WARNING,
+                "Load profile skipped for device %s: %s",
+                device_name,
+                exc,
+            )
             return LoadProfileReadResult(
                 supported=False, stored=0, through=None, budget_exhausted=False, error=str(exc)
             )
@@ -152,29 +200,41 @@ def read_and_store_load_profile(
     budget_exhausted = False
     error: str | None = None
 
-    try:
-        with registry.get(endpoint).manual(timeout=lock_timeout_sec):
-            try:
-                driver.connect()
-            except Exception as exc:  # noqa: BLE001 — every meter failure becomes a sentence, never a 500.
-                logger.exception("Load profile read of %s at %s failed to connect", device_name, endpoint)
-                error = f"The read of {endpoint} stopped after a {type(exc).__name__}."
-            else:
-                # `_walk` returns its own error rather than raising: a failure on
-                # chunk three must still report the two chunks already committed,
-                # and an exception unwinding past here would lose that count.
-                stored, budget_exhausted, error = _walk(
+    if background:
+        # Never blocks, and never preempts what is in flight. A tick that cannot
+        # have the endpoint is *skipped*, and the watermark means the skip costs
+        # one cycle rather than any data (ADR 0006 + ADR 0008).
+        with registry.get(endpoint).background() as acquired:
+            if not acquired:
+                logger.info("Skipping the load profile of %s — %s is busy", device_name, endpoint)
+                return LoadProfileReadResult(
+                    supported=True,
+                    stored=0,
+                    through=_through(device_id),
+                    budget_exhausted=False,
+                    # NOT an error: nothing was asked of the meter. Reporting a
+                    # skip as a failure is how a busy line would come to look
+                    # like a broken one (poller.py's SKIPPED-is-not-FAILED).
+                    error=None,
+                    skipped=True,
+                )
+            stored, budget_exhausted, error = _read_while_holding(
+                driver, device_id, device_name, endpoint, start, now_utc, budget_sec
+            )
+    else:
+        try:
+            with registry.get(endpoint).manual(timeout=lock_timeout_sec):
+                stored, budget_exhausted, error = _read_while_holding(
                     driver, device_id, device_name, endpoint, start, now_utc, budget_sec
                 )
-            finally:
-                driver.disconnect()
-    except TimeoutError as exc:
-        # Only ``manual()`` can raise here — a TimeoutError from the meter is
-        # already a sentence above. The line, not the meter (``probe.py`` draws
-        # the same distinction).
-        logger.warning("Load profile read of %s skipped: %s busy", device_name, endpoint)
-        error = f"The line to {endpoint} was still busy after {lock_timeout_sec:g}s — nothing was read."
-        _ = exc
+        except TimeoutError as exc:
+            # Reachable from the manual path only — ``background()`` yields False
+            # instead of raising. A TimeoutError from the meter is already a
+            # sentence below. The line, not the meter (``probe.py`` draws the
+            # same distinction).
+            logger.warning("Load profile read of %s skipped: %s busy", device_name, endpoint)
+            error = f"The line to {endpoint} was still busy after {lock_timeout_sec:g}s — nothing was read."
+            _ = exc
 
     return LoadProfileReadResult(
         supported=True,
@@ -183,6 +243,95 @@ def read_and_store_load_profile(
         budget_exhausted=budget_exhausted,
         error=error,
     )
+
+
+def _read_while_holding(
+    driver: MeterDriver,
+    device_id: int,
+    device_name: str,
+    endpoint: str,
+    start: datetime,
+    now_utc: datetime,
+    budget_sec: float,
+) -> tuple[int, bool, str | None]:
+    """Connect, walk the window, disconnect — with the endpoint already held.
+
+    Extracted so the two acquisition paths differ **only** in how they take the
+    lock: the read itself must not depend on who asked for it, or the priority
+    rule would quietly become a second code path through the meter.
+
+    Returns:
+        ``(rows stored, whether the budget stopped the walk, an error sentence
+        or None)``.
+    """
+    try:
+        driver.connect()
+    except Exception as exc:  # noqa: BLE001 — every meter failure becomes a sentence, never a 500.
+        logger.exception("Load profile read of %s at %s failed to connect", device_name, endpoint)
+        return 0, False, f"The read of {endpoint} stopped after a {type(exc).__name__}."
+    else:
+        # `_walk` returns its own error rather than raising: a failure on chunk
+        # three must still report the two chunks already committed, and an
+        # exception unwinding past here would lose that count.
+        return _walk(driver, device_id, device_name, endpoint, start, now_utc, budget_sec)
+    finally:
+        driver.disconnect()
+
+
+def load_profile_cycle() -> None:
+    """Read the load profile of every device that should be read, once (issue #16).
+
+    The Scheduler's ``load_profile`` job — see
+    :func:`arichds.jobs.scheduler.default_jobs`. It takes no arguments on
+    purpose: the registry entry is one line, and everything this needs
+    (the process-wide locks, the real clock, the standard budget) is
+    :func:`read_and_store_load_profile`'s own default.
+
+    **Two filters, and no others** (D5). ``enabled`` is the operator pausing a
+    device. ``status != offline`` is narrower than it looks: a dead meter would
+    otherwise burn a full read timeout every single cycle for nothing
+    (SPEC §3.5). ``unknown`` is deliberately **not** skipped — a device is
+    unknown until its first Poller tick, and stranding its 90-day backfill behind
+    the Poller's cadence would buy nothing. A device that recovers needs no code
+    here at all: the Poller keeps ticking it (ADR 0004), ``record_success``
+    writes ``online``, the next cycle's query includes it again, and the
+    watermark pulls in everything missed during the outage (ADR 0008).
+
+    **It never writes device status** — not on success, not on failure, not even
+    ``status_checked_at``. Status has exactly one source (ADR 0004) and a failed
+    load-profile read is a log line here and, at M5b, a gap on the Records page.
+
+    The walk is sequential: the Transport Endpoint lock already serialises
+    anything sharing a line, so reading devices concurrently would buy
+    contention rather than throughput. One device's failure never stops the
+    next — :func:`read_and_store_load_profile` returns meter failures as a
+    sentence rather than raising, and the guard below catches the rest.
+
+    **Every read here is background work** (``background=True``): a device whose
+    line is busy is skipped and read next cycle, never queued behind a person
+    (ADR 0006, and CLAUDE.md's invariant in as many words).
+    """
+    with session_scope() as session:
+        device_ids = list(
+            session.scalars(
+                select(Device.id)
+                .where(Device.enabled.is_(True), Device.status != DeviceStatus.OFFLINE)
+                .order_by(Device.id)
+            )
+        )
+
+    for device_id in device_ids:
+        try:
+            # background=True: this is a sweep, not a person. A busy endpoint
+            # means skip this device and read it next cycle (ADR 0006).
+            read_and_store_load_profile(device_id, background=True)
+        except Exception:  # noqa: BLE001 — one device must never strand the rest of the site.
+            # Meter failures do not arrive here at all: they come back as a
+            # sentence in the result. What does arrive is the ValueError from a
+            # device deleted between the query above and its turn in the walk —
+            # and anything unforeseen, which on a site nobody can log into must
+            # cost one device rather than the whole cycle.
+            logger.exception("Load profile cycle failed for device id %s", device_id)
 
 
 def _walk(

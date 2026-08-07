@@ -30,7 +30,10 @@ MySQL, and ~30 tables.
   0007 (the Poller tick proves liveness, not data — no live-value display, nothing
   instantaneous persisted; **fully implemented**: item 1 with issue #6 — Monitor and
   `/readings/latest` are gone; items 2/3/5/6 with issue #8 — the tick reads the Meter Serial and
-  discards it, and `interval_readings` became `load_profile_readings`, empty until M5).
+  discards it, and `interval_readings` became `load_profile_readings`, empty until M5) ·
+  0008 (the load-profile watermark is the data, not a job record — no job table, no `read_end`,
+  no persisted scheduler state; **fully implemented**: the read path with issue #15 and the
+  one-thread job-registry scheduler with issue #16).
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
 - `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,

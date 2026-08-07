@@ -63,6 +63,29 @@ LOAD_PROFILE_CHUNK_HOURS: Final[int] = 24
 # timing the other caller out. Nobody has measured how long one chunk takes on
 # this hardware — which is exactly why this is a budget and not a chunk count.
 LOAD_PROFILE_READ_BUDGET_SEC: Final[float] = 60.0
+# How often the Scheduler runs the load-profile cycle over every device
+# (M5a-2, issue #16). 900 s is v1's `LP_READ_INTERVAL_SEC` carried over as an
+# **assumption, not a measured number**: nobody has measured how long one
+# device's LP read takes on this hardware, let alone a whole site's. If a site's
+# cycle overruns 900 s nothing breaks — the watermark is the data (ADR 0008), so
+# the next cycle resumes exactly where this one stopped — but the jobs queued
+# behind it in the same thread are delayed by the overrun. That is the trigger to
+# measure, not to add a second thread.
+LOAD_PROFILE_INTERVAL_SEC: Final[int] = 900
+
+# ─── Scheduler (SPEC §4, M5a-2) ───────────────────────────────────────────────
+# How long `Scheduler.stop()` waits for the one job thread to finish the job it
+# is inside. Deliberately shorter than a worst-case load-profile cycle (which is
+# LOAD_PROFILE_READ_BUDGET_SEC per device, times however many devices a site
+# has): the thread is expected to outlast this and exit on its own afterwards,
+# because its shutdown event is already set. Mirrors
+# POLLER_STOP_JOIN_TIMEOUT_SEC and for the same reason — shutdown stays
+# responsive instead of waiting out a meter.
+SCHEDULER_STOP_JOIN_TIMEOUT_SEC: Final[float] = 5.0
+# The floor on the scheduler's sleep between passes. Only ever reached by a job
+# whose interval is zero or negative — a real one is 900 s — and it exists so
+# such a job costs a busy-ish loop instead of a hot one that pins a core.
+SCHEDULER_MIN_SLEEP_SEC: Final[float] = 0.01
 
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"

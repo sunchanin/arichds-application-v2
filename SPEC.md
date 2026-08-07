@@ -293,7 +293,9 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   `readRowsByRange`) คืนแถวเป็น UTC + kWh ผ่านมิเตอร์จริง 8 คอลัมน์ (ตัด 12 คอลัมน์ที่ยังไม่รู้
   ความหมายทิ้ง) — **ตารางมีแล้วที่ M5a-1 (issue #15, 2026-08-07)**: Read now เขียนลง
   `load_profile_readings` จริง (migration 0006 + `acquisition/load_profile.py`) ·
-  ยังไม่มี scheduled job (#16) และหน้าเว็บ (#17/#18)
+  **scheduler thread + job registry มาแล้วที่ M5a-2 (issue #16)**: `jobs/scheduler.py`
+  รัน `load_profile_cycle` ทุก 900 วิ (ข้าม device ที่ Offline/ปิดใช้งาน) —
+  ยังไม่มีหน้าเว็บ (#17/#18)
 
 ### 3.5 Load Profile (M5)
 

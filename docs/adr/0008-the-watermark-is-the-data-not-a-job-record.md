@@ -1,9 +1,16 @@
 # The load-profile watermark is the data, not a job record — v2 has no read-job table
 
-Status: accepted (2026-08-07, owner decision during M5 grilling). **Partly implemented**: the
+Status: accepted (2026-08-07, owner decision during M5 grilling). **Fully implemented**: the
 watermark, the oldest-first 24 h walk and the synchronous Manual Read landed with issue #15
-(M5a-1) in `acquisition/load_profile.py`, and no job table was created; the background
-scheduler that will call it on a cadence is issue #16 (M5a-2).
+(M5a-1) in `acquisition/load_profile.py`, and the background scheduler that calls it on a
+cadence landed with issue #16 (M5a-2) in `jobs/scheduler.py` — one thread, a registry of
+`(name, interval, fn)`, with `load_profile_cycle` as its first entry.
+
+**Still no job table, and no persisted scheduler state of any kind.** The scheduler's due
+times live in memory and are lost on restart, deliberately: after a restart every job simply
+runs on its first pass, and the load-profile walk resumes from `MIN` of the per-logger
+`MAX(read_at)` over `load_profile_readings` — the rows themselves, exactly as below. There is
+no `last_run_at`, no `read_end`, and nothing a future reader could mistake for a watermark.
 
 Reverses: v1's `load_profile_reads` job table, and v2's own `SPEC.md` §4 data model, which
 listed `interval_read_jobs` among thirteen tables. **The count is now twelve.**

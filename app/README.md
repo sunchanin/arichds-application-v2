@@ -53,7 +53,7 @@ Every knob is an `ARICHDS_*` environment variable:
 | `ARICHDS_PORT` | `8000` | HTTP port |
 | `ARICHDS_HOST` | `0.0.0.0` | Bind address (LAN-reachable by default) |
 | `ARICHDS_LOG_LEVEL` | `INFO` | Root logger level |
-| `ARICHDS_POLL_ENABLED` | `true` | Master switch for the Poller |
+| `ARICHDS_POLL_ENABLED` | `true` | Master switch for every background meter read — the Poller and the Scheduler's jobs |
 | `ARICHDS_FE_DIST` | *(unset)* | Override the SPA directory |
 | `ARICHDS_TOKEN_EXPIRE_MINUTES` | `480` | Access Token lifetime (8 hours) |
 | `ARICHDS_JWT_SECRET` | *(unset)* | Overrides the per-install key at `<data>\secret\jwt_secret.key` (ADR 0003) |

@@ -385,7 +385,7 @@ class TestFailuresBecomeSentences:
         assert fake_meter.load_profile_windows == []
 
     def test_an_unusable_transport_is_unsupported_not_a_crash(self, migrated_db: Settings) -> None:
-        """The scheduler (#16) will call this without a probe in front of it, so
+        """The scheduler (#16) calls this without a probe in front of it, so
         an unbuildable driver has to come back as an answer rather than an
         exception."""
         with session_scope() as session:
