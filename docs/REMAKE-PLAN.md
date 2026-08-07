@@ -477,7 +477,8 @@ manual-priority gate (ADR 0020) · ปิดเรื่อง scaler (§5)
 
 **M4c (หลัง M6 จบ) — รุ่นที่เหลือทั้งหมด**:
 Prometer100 (driver มีแล้วจาก M1 — ต้องเดินผ่าน LP/billing จริง) · Saral305 · Premier550 ·
-SMART TCC ×5
+SMART TCC ×5 · **ช่องกรอก `block_cipher_key` / `authentication_key`** (เลื่อนจาก M3 → M4 → มาที่นี่
+2026-08-07 เพราะรุ่นเดียวที่ใช้คีย์คือ TCC ซึ่งอยู่เฟสนี้ — และต้องตัดสินก่อนว่าจำเป็นไหม ดู SPEC §3.3)
 **Exit**: อ่านครบ 3 ยี่ห้อ **และ** parity ผ่านบนเคส 2 logger ที่ M5 ยังไม่ได้แตะ
 
 > 🔴 **SMART TCC คือความเสี่ยงตัวจริงของเฟสนี้ ไม่ใช่ Mitsubishi** — 5 จาก 9 รุ่นเป็น TCC,
