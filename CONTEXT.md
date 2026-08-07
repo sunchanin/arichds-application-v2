@@ -92,6 +92,23 @@ capture period and is counted against the most common one). The counts are
 computed live from `load_profile_readings` on every request.
 _Avoid_: records_96, completeness table, instantaneous records
 
+**Retention**:
+The daily job that deletes rows past 90 days — Interval Readings by `read_at`, Device Events by
+`created_at`. **Device Events go uniformly**: a status transition the machine wrote and an
+operator action carrying a username expire alike, so after 90 days there is no record of who
+paused a meter or cleared its data. That simplicity was chosen deliberately, knowing the cost.
+It cannot disturb the load-profile watermark, which is the *newest* row; a device purged empty
+simply backfills 90 days again on its next read.
+_Avoid_: cleanup, archiving (nothing is archived — the rows are gone), purge job
+
+**Daily Backup**:
+The daily job that writes the whole database to `%ProgramData%\ARICHDS\backup\` with
+`VACUUM INTO` — a file copy would not be a database, because WAL means `.db` + `-wal` + `-shm`.
+Seven files are kept, named by UTC timestamp and rotated by name. It sits on **the same disk as
+the original**, so it protects against a wrong delete or a corrupted database and **not** against
+the disk failing. The destination is fixed, not a setting.
+_Avoid_: snapshot, dump, export (that's the CSV feature), replica
+
 **Output Parity**:
 The acceptance rule for domain modules: numbers shown by v2 must equal v1's output at v1's
 default settings (`divide_by_1000=on` → kWh) on the same meter. Internals may differ freely.
@@ -114,11 +131,12 @@ check.
 **Scheduler**:
 The single background thread that runs every periodic job from a registry of
 `(name, interval, fn)` — one thread for all of them, not one per job. Jobs run sequentially in
-registry order, and a job that throws costs only its own cycle: it is logged and runs again at
-its next interval. It stops in Limited Mode and starts on activation, without a restart. Its
-first job is the load-profile cycle, which reads every enabled device that is not Offline.
-Everything it does is background work: a device whose Transport Endpoint is busy is skipped and
-read next cycle, never queued ahead of a person.
+registry order, each on its own interval, and a job that throws costs only its own cycle: it is
+logged and runs again at its next interval. It stops in Limited Mode and starts on activation,
+without a restart. **Not all of its jobs read meters**: it runs the load-profile cycle (every
+enabled device that is not Offline) alongside Retention and the Daily Backup, which touch no
+meter at all. Every meter read it does make is background work — a device whose Transport
+Endpoint is busy is skipped and read next cycle, never queued ahead of a person.
 _Avoid_: cron, worker, background service, a per-module scheduler (v1 had seven)
 
 **Probe**:

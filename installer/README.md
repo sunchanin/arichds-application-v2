@@ -9,7 +9,7 @@ ARICHDS install — with no database questions (SPEC §2: install in under
 | Step | Detail |
 |---|---|
 | Program files | `C:\Program Files\ARICHDS` (the PyInstaller onedir build + `nssm.exe`) |
-| Data | `C:\ProgramData\ARICHDS\` — `arichds.db`, `license\`, `logs\`, `secret\` (the generated JWT signing key — ADR 0003; deleting it signs every user out), `backups\`, `captures\` |
+| Data | `C:\ProgramData\ARICHDS\` — `arichds.db`, `license\`, `logs\`, `secret\` (the generated JWT signing key — ADR 0003; deleting it signs every user out), `backup\` (seven daily `VACUUM INTO` copies, M5c), `captures\` |
 | Service | `arichds`, wrapped by NSSM: auto-start, restart on exit, stdout/stderr to `logs\service.log` rotated at 50 MB |
 | Port | TCP **8000**, bound on all interfaces |
 | Firewall | Inbound allow rule `ARICHDS Web UI (TCP 8000)` so other machines on the site LAN can open `http://<ip>:8000` |
@@ -95,7 +95,8 @@ Uninstall stops and removes the service, deletes the firewall rule, and removes
 `C:\Program Files\ARICHDS`.
 
 **`C:\ProgramData\ARICHDS` is deliberately preserved.** Meter history, the
-license and the logs survive an uninstall/reinstall cycle. Removing them would
+license, the logs and the daily backups survive an uninstall/reinstall cycle.
+Removing them would
 be unrecoverable, so it is a manual decision — delete that folder by hand if you
 really mean it.
 

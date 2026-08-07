@@ -66,7 +66,7 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
   `arichds.exe` เป็น Windows service (สูตรเดียวกับ v1 ที่พิสูจน์แล้ว: auto-start, restart on exit,
   log rotation 50 MB)
 - ที่อยู่: โปรแกรม `Program Files\ARICHDS` · ข้อมูลทั้งหมด `%ProgramData%\ARICHDS\`
-  (`arichds.db`, license, logs, captures, backups)
+  (`arichds.db`, license, logs, captures, `backup\`)
 - พอร์ต **8000** · bind LAN ได้ — installer เปิด firewall rule ให้เครื่องอื่นในไซต์เข้า
   `http://<ip>:8000` ได้
 - **Migration รันอัตโนมัติตอน service start** (alembic upgrade head ก่อนเปิด API) —
@@ -443,12 +443,19 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
   จึงไม่กระทบกัน และถ้าลบจนหมด (device ออฟไลน์เกิน 90 วัน) `MAX` เป็น `NULL` ⇒ กลับไป backfill
   90 วันใหม่เมื่อมันกลับมา ซึ่งถูกต้อง
 - Backup อัตโนมัติรายวัน → **M5c** (เคาะที่ grill M5):
-  `VACUUM INTO` · ปลายทางตั้งต้น **`%ProgramData%\ARICHDS\backup\`** และ **ตั้งค่าปลายทางได้**
+  `VACUUM INTO` · ปลายทาง **`%ProgramData%\ARICHDS\backup\` ตายตัว ตั้งค่าไม่ได้**
   (backup ที่อยู่ดิสก์เดียวกับต้นฉบับกันได้แค่ "ลบผิด/ข้อมูลเสีย" **กันดิสก์พังไม่ได้**) ·
   **เก็บ 7 ชุด** หมุนเวียนลบ · **ทุก 24 ชม. นับจากบริการเริ่ม** (เข้ากับ registry ตรง ๆ
   ไม่ต้องเพิ่มตรรกะเวลานาฬิกา) · **เขียนเป็น `.tmp` แล้ว rename เมื่อสำเร็จ** — `VACUUM INTO`
   กินพื้นที่เท่าฐานทั้งก้อนชั่วคราว ถ้าดิสก์เต็มกลางทางจะได้ไฟล์ที่ไม่สมบูรณ์ และไฟล์ backup
   ที่พังแต่ดูเหมือนใช้ได้ แย่กว่าไม่มี backup
+
+> ✅ **แก้แล้วตอนทำ M5c (issue #19)** — บรรทัดข้างบนเคยบอกว่า **ตั้งค่าปลายทางได้** ซึ่ง
+> **M5c ล้มข้อนั้น**: ค่าที่ผู้ใช้ตั้งได้ต้องมีตาราง `settings` (ยังไม่มี — อยู่ในรายการตารางอนาคต §4)
+> และหน้าตั้งค่าที่เป็นของ **M7** ⇒ ถ้าทำตอนนี้จะได้ค่าที่เก็บไว้แต่ไม่มีใครแก้ได้ ซึ่งคือครึ่งฟีเจอร์
+> (เหตุผลเดียวกับที่ CSV export ถูกย้ายไป M7) · **M5c จึงฮาร์ดโค้ดปลายทางเป็น
+> `%ProgramData%\ARICHDS\backup\`** และการตั้งค่าปลายทางไปพร้อมหน้า Settings ที่ M7
+
 - หน้า: Load Profile · Records → **M5b**
 
 **หน้า Load Profile (M5b) = ดูอย่างเดียว** — ตัวกรอง (group · brand · model · device) · ช่วงวันที่ ·

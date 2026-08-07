@@ -93,6 +93,22 @@ watermark stays derived from the data. That constraint is the entire point of th
 future change that quietly relaxes it should be treated as reversing this decision, not as
 extending it.
 
+## Checked against M5c's retention job (issue #19, 2026-08-07)
+
+Retention deletes rows out of `load_profile_readings`, which is where the watermark comes from,
+so it was checked against this ADR before shipping rather than after. **It cannot move a
+watermark**, and that is arithmetic rather than luck: retention deletes the *oldest* rows (those
+older than 90 days by `read_at`) while the watermark is `MIN` over the per-logger `MAX(read_at)`
+— the *newest*. The two ends of the table never meet except in one case, and that case is
+already correct: a device offline past the cutoff loses every row it had, the `GROUP BY`
+produces no groups, `func.min` returns `None`, and `load_profile.py` backfills from
+`LOAD_PROFILE_BACKFILL_DAYS` back when the device returns. A fresh 90-day backfill is the right
+answer there, and `tests/test_retention.py` asserts it through the real read path.
+
+Nothing was reversed and nothing was added: retention records nowhere that it ran, and the
+scheduler still holds its due times in memory only. The one INFO line per purge is the entire
+history, which is this ADR's cost paid a second time, deliberately.
+
 ## Alternatives considered
 
 **Keep v1's table as-is.** Closest to Output Parity, and Output Parity is about numbers rather

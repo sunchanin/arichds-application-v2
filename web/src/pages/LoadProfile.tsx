@@ -368,8 +368,10 @@ export function LoadProfile() {
             onChange={onRangeChange}
             allowClear={false}
             // Only the future is out of reach. v1 also clamped the past to its
-            // 90-day retention window; v2 has no retention job until M5c, so
-            // clamping here would hide rows that really are in the table.
+            // 90-day retention window. v2 has one from M5c, and still does not
+            // clamp: retention runs once a day, so rows older than the cutoff
+            // legitimately exist in the table between two runs, and clamping
+            // would hide them. This page is M5b's and ships no new UI here.
             disabledDate={(current) => current.isAfter(dayjs().endOf("day"))}
           />
         </Flex>

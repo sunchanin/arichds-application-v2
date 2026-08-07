@@ -26,13 +26,16 @@ class Settings(BaseSettings):
         host: Bind address. ``0.0.0.0`` so other machines on the site LAN can
             reach ``http://<ip>:8000`` (the installer opens the firewall rule).
         log_level: Root logger level. ``ARICHDS_LOG_LEVEL``.
-        poll_enabled: Master switch for **every background meter read** — the
-            Poller and the Scheduler's meter-reading jobs alike. Off in tests and
-            dev runs that want the API without touching meters.
-            ``ARICHDS_POLL_ENABLED``. One variable rather than two because they
-            gate the same thing, and a second one would be missed by exactly the
-            fixtures that already set this one. The first job that reads no meter
-            (M7's retention and backup) is the trigger to revisit that.
+        poll_enabled: Master switch for **all background work** — the Poller and
+            every Scheduler job. Off in tests and dev runs that want the API
+            without touching meters. ``ARICHDS_POLL_ENABLED``.
+            **Still one variable, decided at M5c (issue #19).** That slice added
+            the first two jobs that read no meter (retention and backup), which
+            was the trigger to revisit this, and the answer is unchanged: this is
+            a dev/test switch, unset on a real install, and a second variable
+            would be missed by exactly the fixtures that already set this one.
+            The cost, accepted: ``false`` also disables the daily purge and the
+            daily backup — which on a dev box is what anyone setting it wants.
         token_expire_minutes: Access Token lifetime (SPEC §3.2 — 8 hours).
             ``ARICHDS_TOKEN_EXPIRE_MINUTES``.
         jwt_secret: Explicit JWT signing secret. ``ARICHDS_JWT_SECRET``. When
@@ -78,6 +81,16 @@ class Settings(BaseSettings):
         return self.data_dir.resolve() / "logs"
 
     @property
+    def backup_dir(self) -> Path:
+        """Directory holding the daily database backups (M5c, issue #19).
+
+        Fixed, not configurable: SPEC §5 wanted a configurable destination, and
+        M5c overrules that — a stored setting needs the ``settings`` table and
+        the page that edits it, both M7's. Singular ``backup``, matching SPEC §5.
+        """
+        return self.data_dir.resolve() / "backup"
+
+    @property
     def secret_dir(self) -> Path:
         """Directory holding process secrets generated on this install."""
         return self.data_dir.resolve() / "secret"
@@ -97,7 +110,7 @@ class Settings(BaseSettings):
         SQLite will not create a missing parent directory, and neither will the
         rotating log handler — so this runs before either is opened.
         """
-        for directory in (self.data_dir.resolve(), self.license_dir, self.log_dir, self.secret_dir):
+        for directory in (self.data_dir.resolve(), self.license_dir, self.log_dir, self.secret_dir, self.backup_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
 

@@ -64,7 +64,9 @@ Source: "vendor\nssm.exe"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{commonappdata}\{#AppName}"
 Name: "{commonappdata}\{#AppName}\logs"
 Name: "{commonappdata}\{#AppName}\license"
-Name: "{commonappdata}\{#AppName}\backups"
+; Singular: the daily backup job writes here (SPEC §5, M5c) and resolves it from
+; Settings.backup_dir, which is `<data>\backup`.
+Name: "{commonappdata}\{#AppName}\backup"
 Name: "{commonappdata}\{#AppName}\captures"
 
 [Icons]

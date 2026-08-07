@@ -87,6 +87,37 @@ SCHEDULER_STOP_JOIN_TIMEOUT_SEC: Final[float] = 5.0
 # such a job costs a busy-ish loop instead of a hot one that pins a core.
 SCHEDULER_MIN_SLEEP_SEC: Final[float] = 0.01
 
+# ─── Retention & backup (SPEC §5, M5c, issue #19) ─────────────────────────────
+# How long rows are kept, for `load_profile_readings` (by `read_at`) and
+# `device_events` (by `created_at`) alike. **One constant because it is one
+# owner rule**, not two coincidences — and deliberately NOT reused from
+# LOAD_PROFILE_BACKFILL_DAYS even though that is also 90: one says how far back a
+# fresh device is read, this says how long any row survives. Tying them means
+# tuning either one silently retunes the other.
+RETENTION_DAYS: Final[int] = 90
+# How many rows one DELETE statement removes, so the SQLite write lock is
+# released between batches instead of held for the whole purge. **Measured**
+# (2026-08-07, CPython's bundled SQLite 3.50.4) at REMAKE-PLAN §272's worst case
+# — 20 all-Modbus meters, 28,800 rows/day, a 2.62 M-row / 375 MB table: one day's
+# rows took 7 batches / 1.61 s at this size, planned as a covering-index scan on
+# `ix_load_profile_readings_device_read_at`. That measurement is why no new index
+# and no migration ship with this job.
+RETENTION_DELETE_BATCH_SIZE: Final[int] = 5000
+# How often the Scheduler purges expired rows, and how often it backs the
+# database up. **Two constants, not one shared**: they are independent policies
+# that happen to agree today, and sharing would mean retuning backup to 12 h
+# silently retunes retention. Both are measured from service start (SPEC §5) —
+# the registry's fixed interval, with no clock logic and no persisted state
+# (ADR 0008).
+RETENTION_INTERVAL_SEC: Final[int] = 86400
+BACKUP_INTERVAL_SEC: Final[int] = 86400
+# How many backup files survive rotation (SPEC §5).
+BACKUP_KEEP_COUNT: Final[int] = 7
+# The scheduler-registry names for both jobs. Deliberately not under "Read now
+# jobs" above: neither ever appears in a Read now response.
+JOB_RETENTION: Final[str] = "retention"
+JOB_BACKUP: Final[str] = "backup"
+
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"
 SOURCE_MODBUS: Final[str] = "modbus"

@@ -59,7 +59,8 @@ MySQL, and ~30 tables.
   English-only UI). No Tailwind — AntD tokens + its layout primitives cover the UI. pnpm.
 - `installer/` — Inno Setup script + NSSM service wrapper (`installer/vendor/nssm.exe` is a
   vendor drop, never committed). Installs to `Program Files\ARICHDS`, data at
-  `%ProgramData%\ARICHDS` (`arichds.db`, `license\`, `logs\`, and `secret\jwt_secret.key` —
+  `%ProgramData%\ARICHDS` (`arichds.db`, `license\`, `logs\`, `backup\`, and
+  `secret\jwt_secret.key` —
   generated on first run, ADR 0003; deleting it signs everyone out). Port 8000, firewall
   rule. Migration runs at service start — no installer migrate step.
 - `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code signing. Private keys are

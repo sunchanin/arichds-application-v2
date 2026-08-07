@@ -24,11 +24,17 @@ from dataclasses import dataclass
 
 from arichds.acquisition.load_profile import load_profile_cycle
 from arichds.constants import (
+    BACKUP_INTERVAL_SEC,
+    JOB_BACKUP,
     JOB_LOAD_PROFILE,
+    JOB_RETENTION,
     LOAD_PROFILE_INTERVAL_SEC,
+    RETENTION_INTERVAL_SEC,
     SCHEDULER_MIN_SLEEP_SEC,
     SCHEDULER_STOP_JOIN_TIMEOUT_SEC,
 )
+from arichds.db.backup import backup_database
+from arichds.db.retention import purge_expired
 from arichds.licensing.service import LicenseState
 
 logger = logging.getLogger(__name__)
@@ -72,8 +78,12 @@ class Scheduler:
                 which is the same thing that makes adding a real job one entry.
             enabled: Master switch (``ARICHDS_POLL_ENABLED``). When False,
                 :meth:`start` is a no-op, so a valid license does not bring a
-                background thread up. Shared with the Poller because it gates the
-                same thing: whether this process touches meters at all.
+                background thread up. Shared with the Poller: since M5c it gates
+                more than meter reads — the daily purge and the daily backup
+                touch no meter and stop with it too. Still one switch by decision
+                (issue #19, see :class:`arichds.config.Settings`): it is a
+                dev/test switch, and a second one would be missed by exactly the
+                fixtures that already set this.
             stop_timeout: How long :meth:`stop` waits for the thread to finish
                 the job it is inside. A load-profile cycle can legitimately
                 outlast it, which is why the shutdown event is bound per run.
@@ -185,10 +195,10 @@ class Scheduler:
             for index, job in enumerate(self._jobs):
                 # Checked per job, not just per pass: a job already running is
                 # never interrupted, but one that has not started must not begin
-                # after shutdown was signalled. With one job today this is moot;
-                # with M7's backup registered behind a slow load-profile cycle it
-                # is the difference between stopping and starting a fresh backup
-                # of a database the process is closing.
+                # after shutdown was signalled. Load-bearing since M5c: backup is
+                # registered behind a slow load-profile cycle, so this is the
+                # difference between stopping and starting a fresh backup of a
+                # database the process is closing.
                 if shutdown.is_set():
                     break
                 if due[index] > now:
@@ -222,6 +232,12 @@ class Scheduler:
         is pasted this fires and the jobs come up. No restart. In Limited Mode
         the thread stops — SPEC §3.9's *"polling หยุด · process ไม่ตาย"* covers
         every background meter read, not only the Poller's.
+
+        **Since M5c that stops two jobs that read no meter**: the daily purge and
+        the daily backup go quiet in Limited Mode too. Intended rather than
+        overlooked — an unlicensed machine collects no new rows, so it has
+        nothing to expire and nothing new to back up, and the existing backups
+        stay on disk untouched until it is licensed again.
         """
         if state.valid:
             self.start()
@@ -233,9 +249,9 @@ def default_jobs() -> list[Job]:
     """The registry the product runs.
 
     **Adding a job is adding one line here**, plus its function in the module
-    that owns its domain. M6's billing auto-read, M7's retention and backup and
-    M8's sync all land that way — no new thread, no new class, no subclass of
-    anything.
+    that owns its domain. M5c's retention and backup landed that way, and M6's
+    billing auto-read and M8's sync will — no new thread, no new class, no
+    subclass of anything.
 
     A function returning a fresh list rather than a module-level constant,
     mirroring ``drivers.factory._registry()``: one ``monkeypatch.setattr`` then
@@ -248,4 +264,11 @@ def default_jobs() -> list[Job]:
     """
     return [
         Job(name=JOB_LOAD_PROFILE, interval_sec=LOAD_PROFILE_INTERVAL_SEC, fn=load_profile_cycle),
+        # Backup runs BEFORE retention, deliberately (M5c, issue #19): the
+        # backup then still contains the rows retention is about to delete, so a
+        # retention bug stays recoverable for the seven days of backups that are
+        # kept. The cost is a marginally larger backup file, which is the cheaper
+        # side of that trade by a wide margin.
+        Job(name=JOB_BACKUP, interval_sec=BACKUP_INTERVAL_SEC, fn=backup_database),
+        Job(name=JOB_RETENTION, interval_sec=RETENTION_INTERVAL_SEC, fn=purge_expired),
     ]

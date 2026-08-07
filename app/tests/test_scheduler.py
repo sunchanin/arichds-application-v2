@@ -35,8 +35,16 @@ from arichds.acquisition.load_profile import (
 from arichds.acquisition.locks import endpoint_locks
 from arichds.acquisition.status import DeviceStatus
 from arichds.config import Settings
-from arichds.constants import LOAD_PROFILE_INTERVAL_SEC, MANUAL_READ_LOCK_TIMEOUT_SEC, SOURCE_DLMS
+from arichds.constants import (
+    BACKUP_INTERVAL_SEC,
+    LOAD_PROFILE_INTERVAL_SEC,
+    MANUAL_READ_LOCK_TIMEOUT_SEC,
+    RETENTION_INTERVAL_SEC,
+    SOURCE_DLMS,
+)
+from arichds.db.backup import backup_database
 from arichds.db.models import Device, DeviceEvent, LoadProfileReading
+from arichds.db.retention import purge_expired
 from arichds.db.session import session_scope
 from arichds.jobs.scheduler import Job, Scheduler, default_jobs
 from arichds.licensing.service import STATE_ACTIVE, STATE_LIMITED, LicenseState
@@ -213,6 +221,41 @@ class TestAnOverrunningJobDoesNotStackUp:
         )
 
 
+class TestJobsWithDifferentIntervalsCoexist:
+    """The registry is heterogeneous from M5c on: 900 s beside two 86,400 s jobs.
+
+    Until issue #19 the registry had exactly one entry, so nothing had ever
+    exercised the per-job due time. Two ways to get this wrong both look
+    plausible: sleeping until the *latest* due time would stall the frequent job
+    behind the daily one, and one shared due time would run the daily job on the
+    frequent one's cadence — which for the real registry means a full database
+    backup every fifteen minutes.
+    """
+
+    def test_a_daily_job_runs_once_while_the_frequent_one_keeps_its_cadence(self) -> None:
+        frequent: list[float] = []
+        daily: list[float] = []
+
+        scheduler = Scheduler(
+            jobs=[
+                Job(name="frequent", interval_sec=0.02, fn=lambda: frequent.append(time.monotonic())),
+                # 30 s stands in for the real 86,400 s: long enough that a second
+                # run inside this test could only come from a scheduling bug.
+                Job(name="daily", interval_sec=30.0, fn=lambda: daily.append(time.monotonic())),
+            ]
+        )
+        scheduler.start()
+        try:
+            assert wait_until(lambda: len(frequent) >= 5), (
+                f"the frequent job ran {len(frequent)} time(s) — the thread is sleeping until the daily job is due "
+                f"instead of until the *next* job is due"
+            )
+        finally:
+            scheduler.stop()
+
+        assert len(daily) == 1, f"the daily job ran {len(daily)} times — it is following the frequent job's cadence"
+
+
 class TestStopIsPrompt:
     """Shutdown must not wait out an interval — the real one is 900 s."""
 
@@ -238,9 +281,9 @@ class TestStopIsPrompt:
     def test_shutdown_does_not_start_the_jobs_behind_the_one_in_flight(self) -> None:
         """A job already running is never interrupted; one not yet started must not begin.
 
-        Moot with today's single-entry registry and load-bearing the moment M7
-        adds backup: a shutdown landing mid-pass must not kick off a fresh backup
-        of a database the process is closing.
+        Load-bearing since M5c registered backup behind the load-profile cycle: a
+        shutdown landing mid-pass must not kick off a fresh backup of a database
+        the process is closing.
         """
         in_first = threading.Event()
         release = threading.Event()
@@ -335,17 +378,30 @@ class TestSchedulerMasterSwitch:
 
 
 class TestTheDefaultRegistry:
-    """D12 — exactly one job at M5a-2. M6/M7/M8 add theirs one line at a time."""
+    """D12 — three jobs at M5c. M6/M8 add theirs one line at a time."""
 
-    def test_it_holds_only_the_load_profile_job(self) -> None:
+    def test_it_holds_the_load_profile_backup_and_retention_jobs(self) -> None:
         jobs = default_jobs()
 
         # Asserted deliberately so that whoever adds M6's billing auto-read has
         # to come here and update the count on purpose.
-        assert len(jobs) == 1
-        assert jobs[0].name == "load_profile"
-        assert jobs[0].interval_sec == LOAD_PROFILE_INTERVAL_SEC
-        assert jobs[0].fn is load_profile_cycle
+        assert len(jobs) == 3
+        assert [job.name for job in jobs] == ["load_profile", "backup", "retention"]
+        assert [job.interval_sec for job in jobs] == [
+            LOAD_PROFILE_INTERVAL_SEC,
+            BACKUP_INTERVAL_SEC,
+            RETENTION_INTERVAL_SEC,
+        ]
+        assert [job.fn for job in jobs] == [load_profile_cycle, backup_database, purge_expired]
+
+    def test_backup_runs_before_retention(self) -> None:
+        """Deliberate order (issue #19): the backup still holds the rows retention
+        is about to delete, so a retention bug is recoverable for seven days. The
+        cost is a marginally larger backup file.
+        """
+        names = [job.name for job in default_jobs()]
+
+        assert names.index("backup") < names.index("retention")
 
     def test_it_returns_a_fresh_list_each_call(self) -> None:
         """A function, not a module constant — one ``setattr`` swaps it whole."""

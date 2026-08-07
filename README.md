@@ -99,8 +99,8 @@ iscc installer\arichds.iss                 # needs Inno Setup 6 + installer\vend
 ```
 
 **Updating an existing install** means running the newer `setup.exe` over it — the service
-stops, the files are replaced, and `C:\ProgramData\ARICHDS` (database, license, logs)
-survives. Bump `AppVersion` in `installer\arichds.iss` first, or every release reports
+stops, the files are replaced, and `C:\ProgramData\ARICHDS` (database, license, logs,
+backups) survives. Bump `AppVersion` in `installer\arichds.iss` first, or every release reports
 itself as the same version. To re-test a build on your *own* machine without compiling an
 installer, see [installer/README.md](installer/README.md) → Upgrading.
 
