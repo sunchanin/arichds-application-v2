@@ -68,6 +68,7 @@ CEWE captures, then write up what it settles in ``docs/meter-notes/``.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import traceback
 from datetime import datetime, timedelta
@@ -82,13 +83,14 @@ if not getattr(sys, "frozen", False):
         sys.path.insert(0, str(_SRC))
 
 from gurux_dlms import GXDLMSClient, GXReplyData  # noqa: E402
-from gurux_dlms.enums import DataType, ObjectType  # noqa: E402
+from gurux_dlms.enums import DataType, ObjectType, Unit  # noqa: E402
 from gurux_dlms.objects import (  # noqa: E402
     GXDLMSCaptureObject,
     GXDLMSClock,
     GXDLMSData,
     GXDLMSObject,
     GXDLMSProfileGeneric,
+    GXDLMSRegister,
 )
 
 from arichds.acquisition.drivers._gurux_trace import silence_frame_trace  # noqa: E402
@@ -148,6 +150,7 @@ BILLING_PROFILES: tuple[tuple[str, str], ...] = (
 )
 
 ATTR_VALUE = 2
+ATTR_SCALER_UNIT = 3
 ATTR_CAPTURE_OBJECTS = 3
 ATTR_CAPTURE_PERIOD = 4
 ATTR_ENTRIES_IN_USE = 7
@@ -397,6 +400,98 @@ def read_schema(out: Report, client: Any, reader: Any, obis: str, label: str) ->
     return {"pg": pg, "obis": obis, "period": period, "entries": entries, "columns": columns}
 
 
+def unit_name(code: Any) -> str:
+    """Render a DLMS unit code as its name — ``27`` alone reads as nothing.
+
+    The unit is the whole point of this pass: it is what says whether a sibling
+    measures the same thing as the column borrowing from it. ``ACTIVE_POWER``
+    and ``ACTIVE_ENERGY`` are one digit apart as codes and worlds apart as
+    answers.
+    """
+    if code is None:
+        return "none"
+    try:
+        return f"{Unit(int(code)).name}({int(code)})"
+    except Exception:  # noqa: BLE001 — an unknown code is still worth printing
+        return str(code)
+
+
+def scaler_siblings(obis: str) -> list[str]:
+    """Return OBIS codes that should carry the same scaler as *obis*.
+
+    An OBIS code is ``A.B.C.D.E.F``: C is the quantity, D the processing method.
+    A meter that refuses attr 3 on a capture column may still serve it on a
+    sibling measuring the same physical quantity a different way — v1 relied on
+    exactly this (interval energy borrowing the cumulative D=8 register's
+    scaler, cumulative demand D=2 borrowing D=6). The unit is a property of the
+    quantity, not of how it was averaged, so the borrow is sound.
+
+    Candidates, in order: D=7 (instantaneous), D=8 (time integral / energy),
+    D=6 (maximum demand). This is a **search reported as a search** — the probe
+    prints which sibling actually answered, so nothing is assumed.
+    """
+    parts = obis.split(".")
+    if len(parts) != 6:
+        return []
+    a, b, c, d, e, f = parts
+    return [f"{a}.{b}.{c}.{candidate}.{e}.{f}" for candidate in ("8", "7", "6") if candidate != d]
+
+
+def probe_scalers(out: Report, client: Any, reader: Any, schema: dict[str, Any]) -> None:
+    """Read each captured column's ``scaler_unit`` so raw buffer cells can be scaled.
+
+    A ProfileGeneric buffer hands back **raw integers**. Gurux only applies a
+    multiplier when it parses a Register object whose attr 3 it has read, and
+    the capture list is not made of such objects — so every numeric cell in a
+    load-profile row is unscaled until something reads the sibling register's
+    ``scaler_unit`` and multiplies. Without this the driver cannot honour the
+    project's "always kWh" contract; it can only return integers of unknown
+    magnitude.
+
+    **This is the register ADR 0002 exists for.** ``obj.scaler`` is the
+    *multiplier* (10**exponent), not the exponent — v1 read it as an exponent
+    and produced values ten times too large wherever the exponent was not 0.
+    Reported here as raw, exponent, multiplier and scaled value together so the
+    arithmetic is checkable by eye rather than trusted.
+
+    A column that cannot be read standalone is a finding, not a failure: v1 hit
+    exactly that and had to borrow a sibling OBIS's scaler (cumulative demand
+    D=2 borrowing the D=6 scaler). Which columns need that is what this prints.
+    """
+    out("  --- scaler_unit per captured column (attr 3) ---")
+    out("  raw buffer cells are unscaled; these are the multipliers that make them engineering units")
+    out("  probed 2026-08-07: this meter denies attr 3 on EVERY capture column, so each one")
+    out("  falls back to a sibling OBIS carrying the same physical quantity (v1 did the same).")
+    for logical_name, _attr, class_id in schema["columns"]:
+        if class_id not in (3, 4):  # Register / ExtendedRegister only
+            out(f"    {logical_name:<22} class={class_id} - not a Register, no scaler")
+            continue
+        out(f"    {logical_name}")
+        answered = 0
+        for source in (logical_name, *scaler_siblings(logical_name)):
+            label = "itself" if source == logical_name else f"sibling {source}"
+            try:
+                obj = GXDLMSRegister(source)
+                client.objects.append(obj)
+                reader.read(obj, ATTR_SCALER_UNIT)
+                multiplier = float(obj.scaler)
+                exponent = int(round(math.log10(multiplier))) if multiplier > 0 else 0
+                scaled = reader.read(obj, ATTR_VALUE)
+                out(
+                    f"        {label:<30} exp={exponent:<4} multiplier={multiplier:<9g} "
+                    f"unit={unit_name(getattr(obj, 'unit', None))}  (its own value: {float(scaled):g})"
+                )
+                answered += 1
+            except Exception as exc:  # noqa: BLE001 — a refusal is the measurement
+                out(f"        {label:<30} {str(exc).strip()}")
+        if not answered:
+            out(f"        ^ NOTHING answered - {logical_name} cannot be scaled from this meter")
+    out("  NOTE: pick the sibling whose UNIT matches what the column measures, not merely")
+    out("  the first that answers. Interval energy (D=29, Wh) must not borrow from")
+    out("  instantaneous power (D=7, W) - same quantity, different unit, different scaler.")
+    out()
+
+
 def probe_column_prefix_ladder(
     out: Report,
     client: Any,
@@ -642,6 +737,7 @@ def main() -> int:
             schema = read_schema(out, client, reader, obis, label)
             if schema is None:
                 continue
+            probe_scalers(out, client, reader, schema)
             probe_rows(out, reader, schema, args.sample)
             restore_schema(client, schema)
             probe_by_range(out, reader, schema, meter_now, args.range_hours)

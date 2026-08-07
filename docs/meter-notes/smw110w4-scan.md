@@ -105,6 +105,74 @@ firmware differs or the earlier count was of a different configuration; the
 lesson is that the capture list is read from the meter every time, never cached
 across units.
 
+## Scalers — every capture column borrows one
+
+**This meter denies `scaler_unit` (attr 3) on all 18 Register capture columns** —
+`Read-Write denied`, not "undefined object", so the objects exist and the access
+right is what is withheld. Buffer cells come back as raw integers, so without a
+scaler the driver cannot honour the "always kWh" contract at all.
+
+Each column therefore borrows from a sibling OBIS. In `A.B.C.D.E.F` the **C**
+group is the quantity and **D** is the processing method, so a sibling differing
+only in D measures the same thing a different way — and carries the same scaler.
+This is the mechanism v1 used (cumulative demand D=2 borrowing D=6).
+
+| Capture column | Borrowed from | exp | multiplier | Unit |
+|---|---|---|---|---|
+| `1.0.1.29.0.255` | **`1.0.1.8.0.255`** | 0 | 1 | **ACTIVE_ENERGY (Wh)** |
+| `1.0.32/52/72.27.0.255` | `1.0.32/52/72.7.0.255` | −3 | 0.001 | VOLTAGE (V) |
+| `1.0.31/51/71.27.0.255` | `1.0.31/51/71.7.0.255` | −3 | 0.001 | CURRENT (A) |
+| `1.0.32/52/72.128.124.255` | `…7.124.255` | −2 | 0.01 | PERCENTAGE |
+| `1.0.31/51/71.128.124.255` | `…7.124.255` | −2 | 0.01 | PERCENTAGE |
+| `1.0.81.128.{4,15,26,1,20}.255` | `1.0.81.7.*` | −2 | 0.01 | PHASE_ANGLE_DEGREE |
+
+> ⚠️ **Pick the sibling by unit, not by whichever answers first.** The energy
+> column has two live siblings: `1.0.1.7.0.255` answers **ACTIVE_POWER (W)** and
+> `1.0.1.8.0.255` answers **ACTIVE_ENERGY (Wh)**. Only the second measures what
+> the column measures. A first probe pass took D=7 because it tried it first, and
+> would have labelled interval energy as power — the multipliers happened to
+> agree here, so nothing downstream would have complained.
+>
+> `1.0.1.6.0.255` answers *"inconsistent Class or object"*: it exists as a
+> DemandRegister, not a Register. That is the ambiguous-class case, not an error.
+
+### The arithmetic, checked against the meter's own physics
+
+Not trusted from the unit code alone. At probe time the meter reported
+instantaneous active power `1.0.1.7.0.255` = **23,700 W = 23.7 kW**. The newest
+load-profile rows read 3,999–13,130 raw over a 900 s period:
+
+    13130 Wh / 0.25 h = 52.5 kW      3999 Wh / 0.25 h = 16.0 kW
+
+**23.7 kW sits inside that range**, which is what a live instantaneous reading
+should do against recent 15-minute averages. A multiplier wrong by ten would put
+the profile at 160–525 kW against the same 23.7 kW and the contradiction would be
+obvious. This is the check ADR 0002 exists to force.
+
+### Test vectors for the driver
+
+Lock these before touching driver code (REMAKE-PLAN §5):
+
+| Raw cell | × multiplier | Engineering value | → column |
+|---|---|---|---|
+| `10138` | 1 | 10 138 Wh | `import_active_kwh` = **10.138** (÷1000 at write) |
+| `225942` | 0.001 | **225.942 V** | `volt_l1` |
+| `59004` | 0.001 | **59.004 A** | `current_l1` |
+
+## The 11 columns left unmapped are now identified
+
+The owner deferred mapping `1.0.x.128.y` until the customer says what they are.
+Their units are now known, which makes the deferral an informed one:
+
+- `1.0.{31,32,51,52,71,72}.128.124.255` — **PERCENTAGE**, per phase, on the
+  voltage and current groups. Consistent with a distortion measure; not confirmed.
+- `1.0.81.128.{4,15,26,1,20}.255` — **PHASE_ANGLE_DEGREE**. The E values 4/15/26
+  are exactly the ones v1's map uses for per-phase phase angle at `1.0.81.7.*`.
+
+Neither changes the decision to drop them; both mean that if the customer asks,
+the answer is already in hand. Note that `1.0.81.7.*` is **absent from the
+association export and reads fine** — the third instance of that in this scan.
+
 ## Logger 2 — declared but not readable
 
 `1.0.99.2.0.255` appears in the association object list on both units and in
@@ -227,9 +295,13 @@ Two corollaries worth keeping:
   2026-08-07) — both units at this site use it, and v1's hardcoded `5` is not
   carried over. Revisit if a site ever answers on a different address; nothing in
   the product should assume the value cannot change.
-- **The `1.0.x.128.y` load-profile columns**: read, not understood. Deliberately
-  left unmapped until the customer says what they are — do not guess one into a
-  product column.
+- **The `1.0.x.128.y` load-profile columns**: units known (percentage and phase
+  angle), meaning not confirmed. Deliberately left unmapped until the customer
+  says what they are — do not guess one into a product column.
+- **The CT ratio is not established.** The nameplate reads `CT /5A`, so this is a
+  transformer-operated meter and the registers carry secondary values. Nothing in
+  this scan resolves what the primary side is, and no parity claim about absolute
+  energy can be made until it does.
 - **Maximum-demand cells read `0`** across every billing row. Inside the accepted
   prefix, so it is what the meter reports; whether that is real is unknown.
 - **The older unit v1 read** (`1252008102`) is **retired — the customer no longer
