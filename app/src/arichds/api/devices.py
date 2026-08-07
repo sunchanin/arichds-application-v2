@@ -5,10 +5,15 @@ Pause/Resume, Read now and Delete all data (M3-2).
 ``GET /{device_id}/readings/latest`` along with the Monitor page that was its
 only caller: v2 has no live-value display, so an endpoint serving one had
 nobody to serve. Read now reports whether the meter *answered*, never what it
-read. Nothing else in this module ever touched
-:class:`~arichds.db.models.LoadProfileReading` except Delete all data, which
-counts rows it destroys — and from M3-4 until M5 that table is empty, because
-nothing writes to it at all.
+read. That stayed true when M5 gave the module rows to write: Read now stores
+the meter's own load profile from #15
+(:func:`~arichds.acquisition.load_profile.read_and_store_load_profile`), and the
+Scheduler's job does the same on a cadence from #16 — but neither *reports* a
+value, they report whether the meter answered and how many intervals were
+stored. Reading those rows back out belongs to
+:mod:`arichds.api.load_profile`, not here. The other handler touching
+:class:`~arichds.db.models.LoadProfileReading` is Delete all data, which counts
+the rows it destroys.
 
 Three independent gates sit in front of every handler here:
 

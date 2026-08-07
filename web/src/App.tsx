@@ -6,10 +6,21 @@ import { type Session, clearSession, getSession, onSessionChange, setSession } f
 import { AppShell } from "./components/AppShell";
 import { Activation } from "./pages/Activation";
 import { Devices } from "./pages/Devices";
+import { LoadProfile } from "./pages/LoadProfile";
 import { Login } from "./pages/Login";
 import { Setup } from "./pages/Setup";
 import { Users } from "./pages/Users";
 import { LICENSE_POLL_MS } from "./theme";
+
+/** The in-shell pages. Every other menu key belongs to a milestone that has not shipped. */
+type Page = "devices" | "load-profile" | "users";
+
+const PAGES: readonly Page[] = ["devices", "load-profile", "users"];
+
+/** Read a menu key as a page, falling back to Devices for anything unrecognised. */
+function toPage(key: string): Page {
+  return PAGES.includes(key as Page) ? (key as Page) : "devices";
+}
 
 /**
  * Routes on state, not on a URL — and from M2-1 the first question is auth.
@@ -37,7 +48,7 @@ export default function App() {
   const [status, setStatus] = useState<LicenseStatus | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [page, setPage] = useState<"devices" | "users">("devices");
+  const [page, setPage] = useState<Page>("devices");
 
   // A 401 anywhere in the app clears the session; this is what turns that into
   // a re-render back to Login, without any page knowing about any other page.
@@ -164,19 +175,26 @@ export default function App() {
 
   // A `user` never reaches the Users page: the menu entry is absent for them,
   // and this second check is what keeps a stale `page` from surviving a
-  // demotion that landed while the page was open.
-  const showUsers = page === "users" && session.role === "admin";
+  // demotion that landed while the page was open. Load Profile needs no such
+  // gate — reading stored readings is open to both roles.
+  const active: Page = page === "users" && session.role !== "admin" ? "devices" : page;
 
   return (
     <AppShell
       licensedTo={status.customer}
       username={session.username}
       role={session.role}
-      activeKey={showUsers ? "users" : "devices"}
-      onNavigate={(key) => setPage(key === "users" ? "users" : "devices")}
+      activeKey={active}
+      onNavigate={(key) => setPage(toPage(key))}
       onSignOut={() => void signOut()}
     >
-      {showUsers ? <Users currentUserId={session.id} /> : <Devices role={session.role} />}
+      {active === "users" ? (
+        <Users currentUserId={session.id} />
+      ) : active === "load-profile" ? (
+        <LoadProfile />
+      ) : (
+        <Devices role={session.role} />
+      )}
     </AppShell>
   );
 }

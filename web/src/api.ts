@@ -127,6 +127,41 @@ export interface DeviceEventPage {
   offset: number;
 }
 
+/**
+ * One Interval Reading, from `GET /api/load-profile`.
+ *
+ * Every measurement is `number | null`, and the null is load-bearing: the only
+ * meter model in service captures seven of the twelve columns, so the other five
+ * arrive as `null` on every row. They must render as an em dash, never as `0` —
+ * which is why nothing here may be read with `??` or `||` (see `LoadProfile.tsx`).
+ */
+export interface LoadProfileRow {
+  /** UTC, ISO-8601. Rendered in the browser's local clock. */
+  read_at: string;
+  /** Which of the meter's load profiles the row came from. Never a merge key. */
+  logger_id: number;
+  import_active_kwh: number | null;
+  import_reactive_kvarh: number | null;
+  export_active_kwh: number | null;
+  export_reactive_kvarh: number | null;
+  avg_geo_pf: number | null;
+  volt_l1: number | null;
+  volt_l2: number | null;
+  volt_l3: number | null;
+  current_l1: number | null;
+  current_l2: number | null;
+  current_l3: number | null;
+  freq: number | null;
+}
+
+/** One page of Interval Readings. `total` is the unpaged count the pager needs. */
+export interface LoadProfilePage {
+  items: LoadProfileRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 /** How many meters this machine has and may have, from `GET /api/devices/quota`. */
 export interface Quota {
   used: number;
@@ -417,6 +452,18 @@ export const api = {
 
   deviceEvents: (id: number, limit: number, offset: number) =>
     request<DeviceEventPage>(`/api/devices/${id}/events?limit=${limit}&offset=${offset}`),
+
+  /**
+   * One page of a device's stored Interval Readings.
+   *
+   * The range is **half-open**: `startIso` is included, `endIso` is *excluded*,
+   * so a whole day is `[day 00:00, next day 00:00)` with nothing to round. Both
+   * are required, and `end <= start` is refused with 422.
+   */
+  loadProfile: (deviceId: number, startIso: string, endIso: string, limit: number, offset: number) =>
+    request<LoadProfilePage>(
+      `/api/load-profile?device_id=${deviceId}&start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}&limit=${limit}&offset=${offset}`,
+    ),
 
   clearReadings: (id: number, confirmName: string) =>
     request<number>(`/api/devices/${id}/readings/clear`, {

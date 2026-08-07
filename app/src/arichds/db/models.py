@@ -191,7 +191,12 @@ class LoadProfileReading(Base):
             a Prometer 100's Logger 2 is 300.
         volt_l1/volt_l2/volt_l3: Phase-to-neutral voltage (V).
         current_l1/current_l2/current_l3: Line current (A).
-        freq: Frequency (Hz).
+        freq: Frequency (Hz). **Empty until M4c**, on the same footing as the
+            four below: the SMW110W4's load profile has no frequency column, so
+            the driver hard-sets it to None, while a Prometer 100 captures it in
+            both loggers (SPEC §3.5). Easy to miss because it is not one of the
+            "four added columns" §3.5 names — five of the twelve are empty in
+            service, not four.
         import_active_kwh: Active energy import — **kWh**, already divided down
             from the meter's raw Wh by the driver.
         import_reactive_kvarh/export_active_kwh/export_reactive_kvarh/avg_geo_pf:
