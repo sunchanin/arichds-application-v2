@@ -308,15 +308,116 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   ⇒ ข้อความเดิมที่ว่า "Logger 2 เป็นของ Premier 550" และ "Logger 1 = energy, Logger 2 = V/I/PF"
   **ผิดทั้งคู่** — Prometer 100 ก็มี Logger 2 · และ Logger 1 ของมันมีทั้งพลังงานและ V/I/PF/freq
 - **ห้ามสมมติว่า capture period คือ 900 วิ** — อ่าน attr 4 ของ ProfileGeneric ทุกครั้ง
-- CSV auto-export ต่อ device (watermark pattern) + manual read-now
-- Retention: LP 90 วัน · billing 365 วัน · events 90 วัน (ตัวเลขเดิม v1) — job รายวัน
-- Backup อัตโนมัติรายวัน: `VACUUM INTO` ไปโฟลเดอร์ backup + หมุนเวียนลบของเก่า
 - **Records** (ย้ายมาจาก M3 — grill M3 2026-08-05): ตารางตรวจความครบของข้อมูล แถว = มิเตอร์
-  คอลัมน์ = วันที่ ช่อง = จำนวน interval ที่เก็บได้วันนั้น (ครบวัน = **96**, ขาด = `N (-X)`,
-  ไม่มีเลย = `0 (Missing)`) — v1 เรียกหน้านี้ว่า **Instantaneous Records** (เมนู "Records")
-  แต่เป็นหน้าเปล่า: `DATES`/`DEVICE_ROWS` hardcode ว่าง ไม่มี API call และ worker ไม่มี endpoint รองรับ
+  คอลัมน์ = วันที่ ช่อง = จำนวน interval ที่เก็บได้วันนั้น (ขาด = `N (-X)`, ไม่มีเลย = `0 (Missing)`)
+  — v1 เรียกหน้านี้ว่า **Instantaneous Records** (เมนู "Records") แต่เป็นหน้าเปล่า:
+  `DATES`/`DEVICE_ROWS` hardcode ว่าง ไม่มี API call และ worker ไม่มี endpoint รองรับ
   ⇒ v2 เป็นผู้เขียนหน้านี้ครั้งแรก และต้องมี load profile ก่อนจึงจะมีอะไรให้นับ จึงอยู่ที่ M5 ไม่ใช่ M3
-- หน้า: Load Profile · Records
+
+#### ผลการ grill M5 (2026-08-07) — เคาะแล้ว 10 ข้อ
+
+**เฟส** — M5 แตกเป็นสามใบตามบันไดโมดูล แต่ละเฟสมี gate ของตัวเอง:
+
+| เฟส | เนื้องาน | Exit |
+|---|---|---|
+| **M5a** | migration · scheduler thread + job registry · LP job | replay parity จาก buffer ที่บันทึกไว้ **+ probe ยืนยันบนมิเตอร์จริง** |
+| **M5b** | หน้า Load Profile · หน้า Records · ปุ่มดึงย้อนหลัง | เลขบนจอตรงกับในตาราง |
+| **M5c** | retention · backup รายวัน · CSV auto-export | job รันจริง ลบ/สำรอง/เขียนไฟล์ถูกต้อง |
+
+**Exit ของ M5 ไม่ใช่ parity เทียบ v1** — `cewe/cewe-worker/src/drivers/smw110.py:119` ฮาร์ดโค้ด
+client address 5 ส่วน SMW110W4 ทั้งสองเครื่องตอบเฉพาะ **6** ⇒ v1 ต่อมิเตอร์รุ่นนี้ไม่ติดเลย
+ไม่มี output ของ v1 ให้เทียบ **parity ย้ายไปเป็น exit ของ M4c** ซึ่ง CEWE ทั้งสามรุ่นเดินจริงและ v1 อ่านได้
+(และ CT ratio ยังไม่รู้ ⇒ parity ของพลังงานสัมบูรณ์อ้างไม่ได้อยู่ดี)
+
+**สคีมา** — `load_profile_readings` เพิ่ม `logger_id` (int, not null, **ผูกกับ OBIS**:
+`1.0.99.1.0.255`→`1`, `1.0.99.2.0.255`→`2` — อ่านจากมิเตอร์ ไม่ใช่จากลำดับที่เจอ ตามหลัก ADR 0005)
+· เปลี่ยน `interval` (String) เป็น **`interval_sec` (int)** เก็บวินาทีจาก attr 4 ตรง ๆ ไม่แปลงเป็น label
+(คอลัมน์เดิมไม่มีผู้ใช้ในโค้ดเลยและตารางว่าง ⇒ เปลี่ยนตอนนี้ฟรี) · unique key = `(device_id, logger_id, read_at)`
+· **`NULL` ใช้ไม่ได้กับ `logger_id`** เพราะ SQLite ถือว่า `NULL != NULL` ⇒ unique key จะไม่กันซ้ำ
+
+**การอ่าน** — แถวที่มีอยู่แล้ว **upsert ทับด้วยค่าใหม่** (ตาม v1 `INV-LP-01`) · watermark = `MAX(read_at)`
+ต่อ (device, logger) **ไม่มีตาราง job** (ADR 0008) · backfill ตั้งต้น **90 วัน** หั่นเป็นก้อน **24 ชม.** ที่ตัว job
+(ไม่ใช่ที่ driver — `read_load_profile()` ยิง `readRowsByEntry` ครั้งเดียวเสมอ) · **เดินจากเก่าไปใหม่เท่านั้น**
+มิเตอร์ที่เพิ่งเพิ่มจึงเห็นข้อมูลเก่าก่อนและข้อมูลวันนี้มาถึงเป็นอันสุดท้าย — ยอมรับแล้ว เหตุผลใน ADR 0008
+
+**scheduler** — เธรดเดียว รัน job ตาม registry `[(name, interval, fn)]` · LP job เดิน device
+**แบบ sequential ตาม v1** และ **ข้าม device ที่สถานะ Offline** เพื่อไม่ให้มิเตอร์ตายกิน read timeout 60 วิ
+ต่อรอบ (poller ยัง tick มันอยู่ตาม ADR 0004 มันจึงกลับมา Online ได้เอง แล้ว watermark ดึงช่วงที่ขาดให้)
+
+**scheduler (ต่อ)** — LP job ลงทะเบียนที่ **900 วิ** ตาม v1 (`LP_READ_INTERVAL_SEC`)
+⚠️ **เป็นสมมติฐาน ไม่ใช่ตัวเลขที่วัดแล้ว** — เรายังไม่รู้ว่าอ่าน LP หนึ่ง device ใช้เวลาเท่าไหร่จริง
+ถ้าไซต์ไหนรอบเกิน 900 วิ ระบบไม่พัง (watermark กันไว้) แต่ job อื่นในเธรดเดียวกันจะไม่ได้คิว
+ตัวลดความเสี่ยงที่มีแล้วคือการข้าม Offline · ถ้าจะเคาะด้วยตัวเลขจริง ให้ใส่การจับเวลาลง probe แล้ววัด
+· job ตัวหนึ่ง exception ต้องไม่ฆ่าเธรด — ลอกแบบจาก `poller.py:351` (*"a worker must never die on
+one bad tick"* พร้อม guard ซ้อนใน handler)
+
+**capability** — job รู้ว่า driver ไหนอ่าน LP ได้ผ่าน **`MeterDriver.supports_load_profile()`**
+(ค่าตั้งต้น `False`, `Smw110Driver` override เป็น `True`) ตาม invariant ของ `CLAUDE.md`
+ที่ว่าความต่างระหว่างรุ่นอยู่หลัง capability method **ห้าม `hasattr` และห้ามธงใน catalog**
+— `hasattr` ทำให้ driver ที่*ลืม*ใส่เมธอดกับที่*ตั้งใจ*ไม่มี หน้าตาเหมือนกันและพลาดแบบเงียบ
+ส่วน catalog เพิ่งถอด `supports_serial` ออกไปด้วยเหตุผลว่าไม่ควรตัดสินพฤติกรรม driver (#9)
+· **LP job ห้ามแตะสถานะ device** — ADR 0004 ให้สถานะมาจาก poller ทางเดียว การอ่าน LP ที่ล้ม
+เป็นเรื่องของ log และจะปรากฏบนหน้า Records เป็นช่องว่างอยู่แล้ว
+
+**Records** — "ครบวัน" คำนวณจาก **capture period จริงต่อ logger** ไม่ใช่ค่าคงที่ 96
+(96 = 86400÷900 ซึ่งขัดกับข้อ "ห้ามสมมติ 900 วิ" ข้างบน — และผิดจริงกับ Prometer 100 Logger 2
+ที่เป็น **300 วิ ⇒ ครบวัน = 288**) · **คำนวณสดด้วย `GROUP BY device_id, date(read_at)`
+ไม่มีตาราง materialize** — หน้าที่เดียวของหน้านี้คือบอกว่าข้อมูลครบไหม การอ่านจากสำเนาที่อาจไม่ตรง
+กับต้นฉบับทำลายเหตุผลที่มันมีอยู่ (v1 มี `records_96` แต่เป็นคนละอย่าง — กางค่าเป็น 96 slot ต่อวัน
+และฮาร์ดโค้ด 96 ไว้ในชื่อตาราง) · ปริมาณจริง 90 วัน × 30 มิเตอร์ × 96 ≈ 259k แถว บน index
+`(device_id, read_at)` ที่มีอยู่แล้ว · **คาบเปลี่ยนกลางวัน**: คาดหวังตามคาบที่พบมากที่สุดของวันนั้น
+และถ้าวันไหนมีมากกว่าหนึ่งคาบ ให้ทำเครื่องหมาย *คาบเปลี่ยน* แทนการรายงานว่าขาด — ข้อมูลไม่ได้ขาด แค่ถี่ต่างกัน
+
+**คอลัมน์วัดค่า — ขยายเป็น 12 ตัวที่ M5a** (เดิม 8) เพิ่ม `import_reactive_kvarh` ·
+`export_active_kwh` · `export_reactive_kvarh` · `avg_geo_pf` ⇒ ครบชุดที่ **หน้า Load Profile ของ v1
+แสดงให้ลูกค้าเห็นจริง** (`cewe-fe/src/pages/LoadProfile/index.tsx` — 14 คอลัมน์รวม Name/Date-Time)
+เกณฑ์คือ *"v1 แสดงมันหรือเปล่า"* ไม่ใช่ *"COSEM มีอะไรบ้าง"* — v1 เก็บอีก ~14 คอลัมน์
+(demand ทั้งสี่ทิศ · voltage L-L · phase angle · `record_status` · fundamental · reactive Q1–Q4)
+ที่**ไม่มีหน้าจอไหนแสดง** ⇒ ยังบอกไม่ได้ว่าใครอ่าน จึงไม่มีสิทธิ์อยู่ (`REMAKE-PLAN:182`)
+
+มีข้อมูลจริงรองรับ ไม่ใช่คอลัมน์ว่างถาวร: CEWE ทั้งสามรุ่นเก็บ `1.0.1/2/3/4.29.0.255`
+(*active/reactive import & export energy, interval* — `load-profile-capture-objects.md:75`)
+· PF: Prometer 100 มีทั้งรายเฟสและรวม (`1.0.13.24.0.255`) แต่ **Premier 550 Logger 2 มีเฉพาะรายเฟส**
+⇒ `avg_geo_pf` ของรุ่นนั้นต้องคำนวณหรือปล่อยว่าง — **เคาะที่ M4c**
+· ทั้งสี่คอลัมน์จะ **ว่างตลอด M5** เพราะ SMW110W4 ไม่ได้เก็บ — ยอมรับแล้ว เจ้าของคอลัมน์คือหน้าจอ v1 ที่ M4c
+· `SPEC.md` §4 และ `REMAKE-PLAN:294` ที่เขียนว่า *"COSEM ~24 คอลัมน์"* **ไม่ตรงกับของจริง** — แก้เป็น 12
+· รายการที่ `load-profile-capture-objects.md:91-93` ฝากให้ *"decide at M5"* (Saral 305:
+`1.0.149.4.0.255` · `1.0.16.29.0.255` ที่ v1 อ่านแล้วทิ้ง) **ย้ายไป M4c ตามรุ่น**
+
+**CSV export (M5c)** — ไฟล์ต่อมิเตอร์ เขียนต่อท้าย · UTF-8 BOM (Excel บนวินโดวส์) ·
+`flush()` + `fsync()` แล้วค่อย commit watermark ⇒ เขียนพลาด watermark ไม่ขยับ แถวลองใหม่รอบหน้า ·
+lock ต่อ device ให้ scheduler กับ Manual Read ไม่เขียนชนกัน · watermark เป็น **คอลัมน์
+`csv_exported_through` บน `devices`** (แบบเดียวกับ `status_checked_at` — **ไม่เพิ่มตาราง คง 12**)
+· **ไม่ merge logger และไม่มี logger-2 skew cap** — เลื่อนไป M4c พร้อมรุ่นที่มีสอง logger จริง
+⚠️ ตอน M4c ต้องเคาะว่า CSV เป็นไฟล์ละ logger หรือไฟล์เดียวมีคอลัมน์ logger **ถ้าออกมาเป็นต่อ
+(device, logger) คอลัมน์เดี่ยวจะไม่พอและต้องกลายเป็นตาราง**
+> watermark ตัวนี้ **ไม่ขัด ADR 0008** — ADR นั้นห้าม marker ที่รายงานเกินจริงแล้วทำให้**ข้อมูลหายถาวร**
+> ส่วนตัวนี้ถ้าเพี้ยน แถวหายจากไฟล์ CSV แต่ยังอยู่ในฐาน กู้ได้เสมอ
+
+> 🔧 **`SPEC.md` §4 บรรทัด `devices` เขียนผิด** — บอกว่ารวม settings/status เป็น **JSON columns**
+> แต่โค้ดจริงเก็บ `status` · `status_detail` · `status_checked_at` · ตัวนับ strike เป็น**คอลัมน์มีชนิด**
+> (มีแค่ `transport` ที่เป็น JSON) ⇒ แก้ตอนทำ M5a
+
+- CSV auto-export ต่อ device (watermark pattern) + manual read-now → **M5c**
+- Retention (ตัวเลขเดิม v1) — job รายวัน → **M5c** (เคาะที่ grill M5):
+  **ครอบเท่าที่มีตารางจริงตอน M5c** = `load_profile_readings` (**90 วัน**, ตัดตาม `read_at`)
+  และ `device_events` (**90 วัน**, ตัดตาม `created_at`) · billing 365 วันเป็นของ **M6** ·
+  `user_tokens` **ไม่ต้องมี** — `auth/service.py:162` เรียก `purge_expired_tokens()` ตอน login แล้ว
+  · LP 90 วันเข้าคู่กับ backfill 90 วันพอดี: ดึงมาเท่าที่ตั้งใจเก็บ แล้ว retention ตัดหางไปเรื่อย ๆ
+  · ลบ `device_events` **ทุกแถวเท่ากันหมด ไม่แยก `actor`** — เจ้าของงานเลือกความเรียบง่าย
+  โดยรู้ตัวว่า **ร่องรอยการกระทำของคน (ใครสั่ง pause / clear data เมื่อไหร่) หายไปด้วยหลัง 90 วัน**
+  ถ้าวันหนึ่งต้องตอบคำถามย้อนหลังเกินนั้น ต้องกลับมาทบทวนข้อนี้
+  · **retention ห้ามขยับ watermark** — มันลบแถวเก่า ส่วน watermark คือ `MAX(read_at)` ซึ่งเป็นแถวใหม่สุด
+  จึงไม่กระทบกัน และถ้าลบจนหมด (device ออฟไลน์เกิน 90 วัน) `MAX` เป็น `NULL` ⇒ กลับไป backfill
+  90 วันใหม่เมื่อมันกลับมา ซึ่งถูกต้อง
+- Backup อัตโนมัติรายวัน → **M5c** (เคาะที่ grill M5):
+  `VACUUM INTO` · ปลายทางตั้งต้น **`%ProgramData%\ARICHDS\backup\`** และ **ตั้งค่าปลายทางได้**
+  (backup ที่อยู่ดิสก์เดียวกับต้นฉบับกันได้แค่ "ลบผิด/ข้อมูลเสีย" **กันดิสก์พังไม่ได้**) ·
+  **เก็บ 7 ชุด** หมุนเวียนลบ · **ทุก 24 ชม. นับจากบริการเริ่ม** (เข้ากับ registry ตรง ๆ
+  ไม่ต้องเพิ่มตรรกะเวลานาฬิกา) · **เขียนเป็น `.tmp` แล้ว rename เมื่อสำเร็จ** — `VACUUM INTO`
+  กินพื้นที่เท่าฐานทั้งก้อนชั่วคราว ถ้าดิสก์เต็มกลางทางจะได้ไฟล์ที่ไม่สมบูรณ์ และไฟล์ backup
+  ที่พังแต่ดูเหมือนใช้ได้ แย่กว่าไม่มี backup
+- หน้า: Load Profile · Records → **M5b**
 
 ### 3.6 Billing (M6)
 
@@ -382,8 +483,8 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   transport endpoint) + scheduler thread เดียวรันทุก periodic job จาก registry
   `[(name, interval, fn)]` (LP scheduler, billing auto-read, retention, backup, sync, license recheck)
   — **ไม่มี health-check job**: สถานะมิเตอร์เป็นผลพลอยได้จาก poller tick (ADR 0004)
-- **Data model** (13 ตาราง): `devices` (รวม settings/status/capture_objects เป็น JSON columns) ·
-  `device_events` · `load_profile_readings` (COSEM shape + `source` + `interval`) · `interval_read_jobs` ·
+- **Data model** (12 ตาราง): `devices` (รวม settings/status/capture_objects เป็น JSON columns) ·
+  `device_events` · `load_profile_readings` (COSEM shape 12 คอลัมน์วัดค่า + `source` + `interval_sec`) ·
   `billing_readings` · `billing_captures` · `energy_register_readings` · `battery_readings` ·
   `holidays` · `settings` (key/value) · `users` · `user_tokens` · `sync_state`
 - **Interfaces**:

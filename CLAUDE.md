@@ -192,7 +192,7 @@ scanning `git branch`, and a number tells them nothing.
 - **Think before coding.** State assumptions; if several interpretations exist, surface
   them. If something is unclear, stop and ask — never guess on domain behavior.
 - **Simplicity first.** Minimum code that solves the problem. No speculative abstractions,
-  no unrequested flexibility. Lean is a stated project goal (13 tables, 2 fixed threads).
+  no unrequested flexibility. Lean is a stated project goal (12 tables, 2 fixed threads).
 - **Surgical changes.** Touch only what the task needs; match existing style; every changed
   line traces to the request.
 - **Goal-driven.** Turn tasks into verifiable goals (failing test → make it pass).

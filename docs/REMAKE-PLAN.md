@@ -70,7 +70,7 @@ flowchart TD
     M3["<b>M3 · Device Manager</b><br/>CRUD + probe-first · events · สถานะจาก poller<br/>pause/resume · priority lock · หน้า Devices"]
     M4["<b>M4 · Acquisition</b><br/>a: SMW110W4 รุ่นเดียว (≤ วันที่ 5)<br/>b: Modbus + billing cut (วันที่ 6–14)<br/>ปิดเรื่อง scaler ×10 ที่ M4a"]
     M4C["<b>M4c · รุ่นที่เหลือ</b><br/>Prometer100 · Saral305 · Premier550<br/>SMART TCC ×5<br/><i>exit: parity บนเคส 2 logger</i>"]
-    M5["<b>M5 · Load Profile</b><br/>2 logger · CSV · retention<br/><i>exit: parity กับ v1</i>"]
+    M5["<b>M5 · Load Profile</b><br/>a: job+สคีมา · b: หน้าจอ · c: งานบ้าน<br/><i>exit: replay + probe มิเตอร์จริง</i>"]
     M6["<b>M6 · Billing</b><br/>open period · backfill · capture<br/><i>exit: parity กับ v1</i>"]
     M7["<b>M7 · โมดูลเบาที่เหลือ</b><br/>Energy · Holidays · SpecialDays<br/>Battery · ExportFormat · AppLog<br/><i>exit: parity กับ v1 + นับหน้าครบ</i>"]
     M8["<b>M8 · Data-out</b><br/>push ขึ้น server · ถอน API ตัวกลาง"]
@@ -78,7 +78,7 @@ flowchart TD
     M10["<b>M10 · Hardening & Pilot</b><br/><i>exit: ลูกค้านำร่องรัน 2 สัปดาห์</i>"]
     PORTAL[/"portal v2 — คนละรีโป<br/>ออกแบบใหม่ทีหลัง"/]
 
-    M0 --> M1 --> M2 -- "เทสผ่าน" --> M3 -- "เทสผ่าน" --> M4 -- "เทสผ่าน" --> M5 -- "parity" --> M6 -- "parity" --> M4C -- "parity ครบ" --> M7 -- "parity" --> M8 --> M10
+    M0 --> M1 --> M2 -- "เทสผ่าน" --> M3 -- "เทสผ่าน" --> M4 -- "เทสผ่าน" --> M5 -- "probe จริง" --> M6 -- "parity" --> M4C -- "parity ครบ" --> M7 -- "parity" --> M8 --> M10
     M0 -. "v2 นิยาม contract ให้ portal ตาม<br/>ไม่ใช่ทางกลับ" .-> PORTAL
     PORTAL == "gate" ==> M9 --> M10
 
@@ -108,7 +108,7 @@ flowchart LR
             POLL["poller<br/>1 pool · 1 lock/device"]
             JOBS["jobs<br/><b>scheduler ตัวเดียว</b>"]
             DOM["domain<br/>billing · LP · energy"]
-            DB[("SQLite<br/>13 ตาราง")]
+            DB[("SQLite<br/>12 ตาราง")]
             SYNC["sync<br/>watermark + retry"]
             API["FastAPI + SPA<br/>origin เดียวกัน"]
             LIC["licensing"]
@@ -291,8 +291,8 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 |---|---|
 | `devices` | `devices` + `device_settings` + `device_status` + `device_capture_objects` (→ JSON column) |
 | `device_events` | `device_heartbeats` (+ แนวคิดจาก `alarms` / `device_connection_log` ที่ตายไปแล้ว) — **ไม่ใช่การพอร์ต 1:1**: v1 เขียนทุก tick, v2 เขียนเฉพาะตอนเปลี่ยนสถานะ + การกระทำของคน (ADR 0004) |
-| `load_profile_readings` | `logger_readings` + `meter_readings_<brand>_1m/_5m/_15m` — **หน้าตา COSEM ~24 คอลัมน์ + `source` + `interval`** (D10, §6.1) · ชื่อเดิมตอน M1–M3 คือ `interval_readings` เปลี่ยนที่ M3-4 พร้อม ADR 0007 เมื่อแถว 60 วิหายไปแล้วเหลือ load profile ล้วน |
-| `interval_read_jobs` | `load_profile_reads` |
+| `load_profile_readings` | `logger_readings` + `meter_readings_<brand>_1m/_5m/_15m` — **หน้าตา COSEM 12 คอลัมน์วัดค่า + `source` + `interval_sec`** (เคาะที่ grill M5 — เกณฑ์คือคอลัมน์ที่หน้าจอ v1 แสดงจริง) (D10, §6.1) · ชื่อเดิมตอน M1–M3 คือ `interval_readings` เปลี่ยนที่ M3-4 พร้อม ADR 0007 เมื่อแถว 60 วิหายไปแล้วเหลือ load profile ล้วน |
+| ~~`interval_read_jobs`~~ **ตัดทิ้ง** | `load_profile_reads` — **ไม่พอร์ต** (ADR 0008, 2026-08-07): watermark มาจาก `MAX(read_at)` ของตารางข้อมูลเอง ตาราง job ที่เก็บ `read_end` ไว้ข้าง ๆ คือกับดักที่ v1 เหยียบมาแล้ว (over-report coverage 7 ชม. หลังแก้ timezone) · manual read-now เป็น synchronous ใต้ Transport Endpoint lock ตาม ADR 0006 |
 | `billing_readings` | `billing_readings` |
 | `billing_captures` | (เก็บเฉพาะถ้ายังต้องใช้ — `logger_exports`/`logger_confirmations` ตายแล้ว) |
 | `energy_register_readings` | คงไว้ — **มีคนอ่านจริง** ห้ามยุบกับ `battery_readings` แบบมั่ว (คนละรูปทรง) |
@@ -502,15 +502,29 @@ SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register 
 **Exit**: มิเตอร์ modbus ลงตารางเดียวกับ DLMS หน่วย/เวลา normalize ถูกต้อง
 
 ### M5 — Load Profile
-2 logger **เก็บคนละแถว** (`logger_id` — merge ทำไม่ได้ ดู `meter-notes/load-profile-capture-objects.md`) ·
-CSV auto-export (สืบทอด watermark pattern) · retention job ·
-**backup รายวัน (`VACUUM INTO` + หมุนเวียนลบ — จาก SPEC grilling)** · หน้า Load Profile
-**Exit**: **output parity กับ v1** (ที่ setting default) + เทสผ่าน
+**แตกเป็นสามเฟส** (grill 2026-08-07 — รายละเอียดที่เคาะแล้วทั้ง 10 ข้ออยู่ใน `SPEC.md` §3.5):
 
-> ⚠️ **parity ที่ M5 พิสูจน์ได้แค่ SMW110W4** ตามขอบเขต M4a ใหม่ — และรุ่นนั้น **ไม่มี Logger 2**
-> ⇒ โค้ด `logger_id` เขียนได้แต่เดินจริงไม่ได้จนถึง M4c · เขียนให้รองรับสองเคสตั้งแต่แรกและ
-> ปักเทสไว้ด้วย fake driver แต่ **อย่านับว่า parity ผ่านครบ** จนกว่า Prometer 100 (900/300 วิ)
-> และ Premier 550 (คอลัมน์ชนกัน) จะเดินจริงที่ M4c
+- **M5a** — migration (`logger_id` · `interval_sec` · unique key) · **scheduler thread + job registry
+  (ยังไม่มีในโค้ดเลย — M5 เป็นโมดูลแรกที่ต้องการ และ M6/M7/M8 จะใช้ต่อ)** · LP job
+  **Exit**: replay parity จาก buffer ที่บันทึกไว้ + **probe ยืนยันบนมิเตอร์จริงทั้งสองเครื่อง**
+- **M5b** — หน้า Load Profile · หน้า Records · ปุ่มดึงย้อนหลัง
+  **Exit**: เลขบนจอตรงกับในตาราง
+- **M5c** — retention · backup รายวัน (`VACUUM INTO` + หมุนเวียนลบ) · CSV auto-export
+  **Exit**: job รันจริง ลบ/สำรอง/เขียนไฟล์ถูกต้อง
+
+> **Exit ของ M5 ไม่ใช่ parity เทียบ v1 อีกต่อไป** — v1 ฮาร์ดโค้ด client address **5**
+> (`cewe/cewe-worker/src/drivers/smw110.py:119`) ส่วน SMW110W4 ทั้งสองเครื่องตอบเฉพาะ **6**
+> ⇒ **v1 ต่อมิเตอร์รุ่นที่ M4a/M5 ครอบไม่ติดเลย** ไม่มี output ให้เทียบ ต่อให้รีโมทเข้าเครื่องลูกค้าได้
+> **parity ย้ายไปเป็น exit ของ M4c** ซึ่ง CEWE ทั้งสามรุ่นเดินจริงและต่อได้จากเครื่องพัฒนา
+>
+> นี่คือผลข้างเคียงของการแคบ M4a เหลือรุ่นเดียวเมื่อ 2026-08-07 ที่ไม่มีใครพูดถึงตอนนั้น:
+> **รุ่นเดียวที่ M5 ครอบ คือรุ่นเดียวที่พิสูจน์ parity ไม่ได้ ส่วนรุ่นที่พิสูจน์ได้ทั้งสามถูกเลื่อนไป M4c**
+
+> ⚠️ **SMW110W4 ไม่มี Logger 2** — ยืนยันซ้ำสองรอบด้วย probe เมื่อ 2026-08-07
+> (`1.0.99.2.0.255` → *"undefined object"* ทั้งสองเครื่อง) ⇒ โค้ด `logger_id` เขียนได้แต่
+> **เดินจริงไม่ได้จนถึง M4c** · เขียนให้รองรับสองเคสตั้งแต่แรกและปักเทสไว้ด้วย fake driver
+> แต่ **อย่านับว่าเคสสอง logger ผ่าน** จนกว่า Prometer 100 (900/300 วิ ⇒ ครบวัน 96 กับ 288
+> คนละเลข) และ Premier 550 (คอลัมน์ชนกัน) จะเดินจริงที่ M4c
 
 ### M6 — Billing
 open-period upsert slot (ADR 0018) · backfill · capture PDF/xlsx · หน้า Billing
