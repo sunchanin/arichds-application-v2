@@ -321,8 +321,8 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 | เฟส | เนื้องาน | Exit |
 |---|---|---|
 | **M5a** | migration · scheduler thread + job registry · LP job | replay parity จาก buffer ที่บันทึกไว้ **+ probe ยืนยันบนมิเตอร์จริง** |
-| **M5b** | หน้า Load Profile · หน้า Records · ปุ่มดึงย้อนหลัง | เลขบนจอตรงกับในตาราง |
-| **M5c** | retention · backup รายวัน · CSV auto-export | job รันจริง ลบ/สำรอง/เขียนไฟล์ถูกต้อง |
+| **M5b** | หน้า Load Profile (**ดูอย่างเดียว**) · หน้า Records · ปุ่มดึงย้อนหลัง | เลขบนจอตรงกับในตาราง |
+| **M5c** | retention · backup รายวัน | job รันจริง ลบ/สำรองถูกต้อง |
 
 **Exit ของ M5 ไม่ใช่ parity เทียบ v1** — `cewe/cewe-worker/src/drivers/smw110.py:119` ฮาร์ดโค้ด
 client address 5 ส่วน SMW110W4 ทั้งสองเครื่องตอบเฉพาะ **6** ⇒ v1 ต่อมิเตอร์รุ่นนี้ไม่ติดเลย
@@ -384,7 +384,17 @@ one bad tick"* พร้อม guard ซ้อนใน handler)
 · รายการที่ `load-profile-capture-objects.md:91-93` ฝากให้ *"decide at M5"* (Saral 305:
 `1.0.149.4.0.255` · `1.0.16.29.0.255` ที่ v1 อ่านแล้วทิ้ง) **ย้ายไป M4c ตามรุ่น**
 
-**CSV export (M5c)** — ไฟล์ต่อมิเตอร์ เขียนต่อท้าย · UTF-8 BOM (Excel บนวินโดวส์) ·
+**CSV export — ย้ายจาก M5c ไป M7 ทั้งก้อน** เพราะ **รูปแบบไฟล์ของมันเป็นค่าที่ผู้ใช้ตั้งได้**
+(v1 เก็บ `csv_filename_tmpl` ใน settings + API `get_export_format`/`put_export_format` ที่
+`settings/router.py:139,159`) และ **หน้า Export Format อยู่ที่ M7 อยู่แล้ว** (§3.7) — ฟีเจอร์ควรอยู่กับ
+หน้าตั้งค่าของมัน ถ้าแยกกันจะได้ M5c ที่ฮาร์ดโค้ดรูปแบบแล้วต้องรื้อที่ M7 หรือได้ settings ที่ไม่มีใครแก้ได้
+ผลพลอยได้: **M5c เหลืองานเบื้องหลังล้วนที่ไม่ต้องมี UI** และ **M5b จบในตัว ไม่มีปุ่มค้างรอเฟสหลัง**
+⚠️ ต้นทุน: **ลูกค้าไม่มี CSV export จนถึง M7**
+
+การตัดสินใจด้านล่างยังใช้ได้ แค่ไปเกิดที่ M7 — รวมถึงคอลัมน์ `csv_exported_through`
+ที่**ไม่ต้องอยู่ใน migration ของ M5a อีกต่อไป**:
+
+**CSV export (M7)** — ไฟล์ต่อมิเตอร์ เขียนต่อท้าย · UTF-8 BOM (Excel บนวินโดวส์) ·
 `flush()` + `fsync()` แล้วค่อย commit watermark ⇒ เขียนพลาด watermark ไม่ขยับ แถวลองใหม่รอบหน้า ·
 lock ต่อ device ให้ scheduler กับ Manual Read ไม่เขียนชนกัน · watermark เป็น **คอลัมน์
 `csv_exported_through` บน `devices`** (แบบเดียวกับ `status_checked_at` — **ไม่เพิ่มตาราง คง 12**)
@@ -398,7 +408,7 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
 > แต่โค้ดจริงเก็บ `status` · `status_detail` · `status_checked_at` · ตัวนับ strike เป็น**คอลัมน์มีชนิด**
 > (มีแค่ `transport` ที่เป็น JSON) ⇒ แก้ตอนทำ M5a
 
-- CSV auto-export ต่อ device (watermark pattern) + manual read-now → **M5c**
+- CSV auto-export → **ย้ายไป M7** (ดูเหตุผลด้านล่าง) · manual read-now → **M5b**
 - Retention (ตัวเลขเดิม v1) — job รายวัน → **M5c** (เคาะที่ grill M5):
   **ครอบเท่าที่มีตารางจริงตอน M5c** = `load_profile_readings` (**90 วัน**, ตัดตาม `read_at`)
   และ `device_events` (**90 วัน**, ตัดตาม `created_at`) · billing 365 วันเป็นของ **M6** ·
@@ -419,6 +429,13 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
   ที่พังแต่ดูเหมือนใช้ได้ แย่กว่าไม่มี backup
 - หน้า: Load Profile · Records → **M5b**
 
+**หน้า Load Profile (M5b) = ดูอย่างเดียว** — ตัวกรอง (group · brand · model · device) · ช่วงวันที่ ·
+ตารางแบ่งหน้า **ฝั่งเซิร์ฟเวอร์เสมอ** · ปุ่ม **Read now** เท่านั้น
+· **ช่วงวันที่บังคับ ตั้งต้นเป็นวันนี้** — v1 ปล่อยให้ว่างแล้วแปลว่า *ดึงทั้งหมด* ซึ่งที่ 90 วัน × 96
+= 8,640 แถว/มิเตอร์ และถ้าเลือกทุกมิเตอร์คือ ~259,000 แถวยิงเข้าเบราว์เซอร์
+· **ไม่พอร์ต `resolution`** ที่ v1 มีในพารามิเตอร์ query — ยังบอกไม่ได้ว่าใครใช้ (`REMAKE-PLAN:182`)
+· ปุ่ม **Save CSV now** · สวิตช์ **auto-save** · ช่องเลือกโฟลเดอร์ → **ไปพร้อม CSV ที่ M7**
+
 ### 3.6 Billing (M6)
 
 - Open period = upsert slot เดียวต่อ device (ADR 0018) · ปิดงวดตาม reset-reason / driver capability
@@ -433,6 +450,10 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
 
 - Energy Summary (TOU buckets — ADR 0016) · Holidays (2 ชนิด) · Special Days · Battery status ·
   Export format settings · App Log (log viewer — log ผ่าน credential redaction filter เสมอ)
+- **CSV auto-export ของ Load Profile (ย้ายมาจาก M5c ที่ grill M5 2026-08-07)** — มาพร้อมกันกับ
+  หน้า ExportFormat ที่เป็นเจ้าของรูปแบบไฟล์: job เขียนต่อท้ายไฟล์ต่อมิเตอร์ · ปุ่ม **Save CSV now**
+  · สวิตช์ **auto-save** ต่อมิเตอร์ · ช่องเลือกโฟลเดอร์ปลายทาง — ทั้งสามอย่างอยู่บนหน้า Load Profile
+  ที่ M5b สร้างไว้แล้ว · รายละเอียดที่เคาะแล้ว (watermark, BOM, fsync, lock ต่อ device) อยู่ใน §3.5
 - หน้า: EnergySummary · Holidays · SpecialDays · Battery · ExportFormat · AppLog
 - **นับหน้าครบที่นี่**: 14 หน้า v1 → 12 หน้ามีเจ้าของใน M2–M7 + DatabaseSettings ถูกลบ (SQLite)
   + ApiConfig ถูกแทนด้วย push (M8)
