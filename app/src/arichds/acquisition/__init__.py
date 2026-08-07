@@ -11,7 +11,7 @@ Transport Endpoint — Manual Reads ahead of background ticks (ADR 0006).
 
 from arichds.acquisition.catalog import CATALOG, Brand, ModelSpec, get_model_spec
 from arichds.acquisition.connection_params import ConnectionParams, ConnectionType
-from arichds.acquisition.drivers.base import InstantaneousReading, MeterDriver
+from arichds.acquisition.drivers.base import IntervalReading, MeterDriver
 from arichds.acquisition.drivers.factory import create_driver, supported_models
 from arichds.acquisition.locks import EndpointLocks, PriorityEndpointLock, endpoint_locks
 from arichds.acquisition.poller import Poller, TickOutcome, poll_once
@@ -23,7 +23,7 @@ __all__ = [
     "ConnectionParams",
     "ConnectionType",
     "EndpointLocks",
-    "InstantaneousReading",
+    "IntervalReading",
     "MeterDriver",
     "ModelSpec",
     "Poller",

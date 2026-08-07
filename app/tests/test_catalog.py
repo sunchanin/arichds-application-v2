@@ -87,19 +87,22 @@ class TestFixedPasswords:
             assert CATALOG[model].fixed_password is None
 
 
-class TestPorts:
-    def test_tcp_models_default_to_4059(self) -> None:
+class TestCatalogCarriesNoTransportInformation:
+    """Issue #9 — a field probe of two live SMW110W4 units, one serial one TCP,
+    otherwise identical, proved transport is a property of the installation,
+    not of the model (docs/meter-notes/smw110w4-scan.md). This is the
+    invariant that stops the binding creeping back — it replaces the old
+    ``TestPorts`` class, whose ``supports_serial``/``default_port``
+    assertions are now false by construction.
+    """
+
+    def test_dlms_default_tcp_port_is_a_protocol_constant_not_a_model_field(self) -> None:
         assert DLMS_DEFAULT_TCP_PORT == 4059
-        assert CATALOG["prometer100"].default_port == DLMS_DEFAULT_TCP_PORT
-        assert CATALOG["st3c"].default_port == DLMS_DEFAULT_TCP_PORT
 
-    def test_smw110_is_serial_only(self) -> None:
-        assert CATALOG["smw110"].default_port is None
-        assert CATALOG["smw110"].supports_serial is True
-
-    def test_no_other_model_is_serial(self) -> None:
-        serial_models = [model for model, spec in CATALOG.items() if spec.supports_serial]
-        assert serial_models == ["smw110"]
+    def test_no_model_spec_carries_transport_information(self) -> None:
+        for field_name in ("default_port", "supports_serial"):
+            for model, spec in CATALOG.items():
+                assert not hasattr(spec, field_name), f"{model}.{field_name} should not exist"
 
 
 class TestLabelsAndCapabilities:

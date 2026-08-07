@@ -466,9 +466,20 @@ Read now / Test connection ได้คิวก่อน poller + เทสผ�
 > ⇒ **M4c ต้องถือว่า parity ยังไม่ผ่านจนกว่าสองเคสนี้จะเดินจริง**
 
 **M4a (ภายในวันที่ 5) — SMW110W4 รุ่นเดียว ทั้ง DLMS serial และ TCP**:
-driver + serial transport (`ConnectionParams.serial()` — วันนี้มีแต่ enum ค้างไว้) ·
+driver + serial transport (`ConnectionParams.serial()`) ·
 manual-priority gate (ADR 0020) · ปิดเรื่อง scaler (§5)
 **Exit**: อ่าน SMW110W4 จริงได้ทั้งสอง transport ลงตาราง `load_profile_readings`
+
+> ✅ **โค้ดของ M4a ลงครบแล้ว (2026-08-07)** — issue #9 (`ConnectionParams.serial()` ·
+> `Smw110Driver` · catalog เลิกผูก transport กับรุ่น · **แก้ `endpoint` ที่คืน `"None:None"`
+> ให้ serial** ซึ่งทำให้ Poller กับ Manual Read จับคนละ lock บน COM port เดียว — ADR 0006
+> เป็นโมฆะเงียบ ๆ) และ issue #10 (`read_load_profile()` · entry window · scaler ยืมจาก
+> sibling ที่หน่วยตรงกัน · `InstantaneousReading` → `IntervalReading`)
+>
+> **แต่ Exit ยังไม่ปิด** — ทั้งสองใบทดสอบบน fake ทั้งหมด เพราะเครื่องจริงเข้าถึงไม่ได้จาก
+> เครื่องพัฒนา (TCP อยู่หลัง LAN ลูกค้า · serial เป็น COM port บนเครื่องเขา)
+> **การอ่านมิเตอร์จริงทั้งสอง transport เป็นงานของเจ้าของโปรเจกต์ ต้องนัดกับลูกค้า**
+> และการเขียนลงตาราง `load_profile_readings` เป็นของ M5
 
 > **รุ่นนี้ไม่ใช่ serial-only** — ร่างเดิมเขียนว่า "SMW110-serial" ซึ่งพิสูจน์แล้วว่าผิด:
 > ไซต์ลูกค้ามีสองเครื่องรุ่นเดียวกัน เครื่องหนึ่งต่อ `COM4` อีกเครื่องต่อ `192.168.1.31:4059`

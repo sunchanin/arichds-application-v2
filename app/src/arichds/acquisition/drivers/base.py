@@ -16,8 +16,12 @@ nothing instantaneous, so the Poller's tick reads
 :meth:`MeterDriver.read_meter_serial` — one register, the same seam the Probe
 uses — and discards the answer. An abstract method with no caller is not a
 contract, it is a leftover, and every base class M4 adds would have had to
-implement it. The remaining read paths are the load profile (M5) and billing
-(M6), both of which read intervals the *meter* recorded.
+implement it. The load-profile read path for the SMW110W4 landed at M4a-2
+(issue #10) on the leaf driver
+(:class:`~arichds.acquisition.drivers.smw110.Smw110Driver`), not here — D1 in
+that issue's delegation prompt is why it stayed off this base class rather than
+becoming an abstraction shaped by one model. Billing (M6) is the one read path
+still behind in v1.
 """
 
 from __future__ import annotations
@@ -29,24 +33,21 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class InstantaneousReading:
-    """One normalized sample, ready to persist.
+class IntervalReading:
+    """One normalized Interval Reading, produced by a driver's load-profile read.
 
     Field names match ``load_profile_readings`` columns exactly, and the units
-    match the names — that is the normalization contract, not a coincidence.
-
-    **Nothing produces one of these today.** ADR 0007 removed the read method
-    that did, and issue #8 kept the dataclass on purpose: M5 may well use the
-    same shape for a load-profile row, so the decision belongs to M5 rather than
-    to the change that stopped storing instantaneous values.
+    match the names — that is the normalization contract, not a coincidence
+    (CONTEXT.md — Interval Reading).
 
     Attributes:
-        read_at: When the value was taken — **timezone-aware UTC, always**.
+        read_at: When the interval was recorded by the meter —
+            **timezone-aware UTC, always**.
         source: Which acquisition path produced it (``dlms`` / ``modbus``).
         volt_l1/volt_l2/volt_l3: Phase-to-neutral voltage (V).
         current_l1/current_l2/current_l3: Line current (A).
         freq: Frequency (Hz).
-        import_active_kwh: Cumulative active energy import (**kWh**).
+        import_active_kwh: Active energy import for the interval (**kWh**).
     """
 
     read_at: datetime

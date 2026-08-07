@@ -17,7 +17,7 @@ Two more decisions carry real weight:
 **The lock keys on the Transport Endpoint, not the device.** v1 locked on
 ``device_id``, which is accidentally correct for TCP (one meter = one socket) and
 wrong the moment several devices share a line. Keying on the endpoint
-(``host:port`` now, a COM port name once serial lands) makes devices on one line
+(``host:port`` for TCP, the bare COM port name for serial — issue #9) makes devices on one line
 queue behind one lock — see REMAKE-PLAN §3.2, which calls the v1 behaviour a
 latent bug that only survived because sites had one meter per port. The registry
 itself lives in :mod:`arichds.acquisition.locks`, process-wide, because Manual
@@ -45,7 +45,7 @@ from enum import StrEnum
 
 from sqlalchemy import select
 
-from arichds.acquisition.connection_params import ConnectionParams
+from arichds.acquisition.connection_params import connection_params_from_transport
 from arichds.acquisition.drivers.base import MeterDriver
 from arichds.acquisition.drivers.factory import create_driver, supported_models
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
@@ -80,6 +80,12 @@ class TickOutcome(StrEnum):
 def build_driver(device: Device) -> MeterDriver:
     """Construct the driver for *device* from its stored transport.
 
+    Goes through :func:`~arichds.acquisition.connection_params.connection_params_from_transport`
+    — the single transport-to-:class:`ConnectionParams` mapping, shared with
+    every Manual Read path in the API (issue #9). Two implementations of this
+    mapping is how a background tick and a Manual Read came to compute
+    different lock keys for a serial device; one function is the fix.
+
     Args:
         device: The configured device.
 
@@ -90,11 +96,10 @@ def build_driver(device: Device) -> MeterDriver:
         ValueError: If the model is unknown or the transport is unusable.
     """
     transport = device.transport or {}
-    host = transport.get("host")
-    port = transport.get("port")
-    if not host or not port:
-        raise ValueError(f"Device {device.name!r} has no usable transport: {transport!r}")
-    conn = ConnectionParams.net(str(host), int(port))
+    try:
+        conn = connection_params_from_transport(transport)
+    except ValueError as exc:
+        raise ValueError(f"Device {device.name!r} has no usable transport: {transport!r}") from exc
     return create_driver(device.model, conn, password=device.password or "")
 
 

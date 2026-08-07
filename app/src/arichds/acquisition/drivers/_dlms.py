@@ -1,4 +1,4 @@
-"""Private base for DLMS/COSEM meter drivers reached over TCP.
+"""Private base for DLMS/COSEM meter drivers, reached over TCP or serial.
 
 Internal to :mod:`arichds.acquisition.drivers` — external code imports a
 concrete driver or goes through the factory, never this module.
@@ -6,9 +6,18 @@ concrete driver or goes through the factory, never this module.
 Ported from ``cewe-worker/src/drivers/_tcp_driver_base.py``, reduced to the
 lifecycle M3 needs: connect / disconnect / read one register. The instantaneous
 set went with ADR 0007 (issue #8) — v2 stores nothing instantaneous, so the only
-register anything reads today is the Meter Serial, for the Probe and for the
-Poller's liveness tick. The load-profile and billing-profile read paths stay
-behind in v1 until M5/M6 ask for them.
+register anything reads today through *this* base is the Meter Serial, for the
+Probe and for the Poller's liveness tick. The SMW110W4's load-profile read path
+landed at M4a-2 (issue #10) — but on the leaf driver
+(:class:`~arichds.acquisition.drivers.smw110.Smw110Driver`), not here, per that
+issue's D1: one model's field evidence does not justify a shared method yet.
+The billing-profile read path stays behind in v1 until M6 asks for it.
+
+**Transport-agnostic since issue #9** (module renamed from ``_dlms_tcp.py``,
+class renamed from ``TcpDlmsDriver``): the transport fragment of the argv comes
+entirely from :class:`~arichds.acquisition.connection_params.ConnectionParams`
+(``-h/-p`` for net, ``-S`` for serial), so this base never itself branches on
+which one a subclass is using — :class:`Smw110Driver` runs over either.
 
 Invariants carried over from v1, all of them earned the hard way:
 
@@ -89,8 +98,8 @@ def _cosem_class(obis_code: str) -> Any:
     return GXDLMSData(obis_code)
 
 
-class TcpDlmsDriver(MeterDriver):
-    """Base for DLMS meters reached over TCP.
+class DlmsDriver(MeterDriver):
+    """Base for DLMS meters, reached over TCP or serial.
 
     Subclasses supply only ``model_name``, ``_protocol_args()`` and
     ``_read_timeout_ms()`` — everything transport-shaped comes from
@@ -118,7 +127,7 @@ class TcpDlmsDriver(MeterDriver):
 
     #: Which ``(obis, attr)`` register carries the Meter Serial. The
     #: DLMS-standard Device Serial Number by default; read off the CLASS without
-    #: instantiating. Only SMW110 will override it (M4).
+    #: instantiating. Only SMW110 overrides it (issue #9).
     METER_SERIAL_OBIS: tuple[str, int] = (METER_SERIAL_OBIS_CODE, METER_SERIAL_OBIS_ATTR)
 
     def __init__(self, conn: ConnectionParams, password: str, **kwargs: Any) -> None:
@@ -142,7 +151,9 @@ class TcpDlmsDriver(MeterDriver):
 
     @property
     def endpoint(self) -> str:
-        """The Transport Endpoint — ``host:port``."""
+        """The Transport Endpoint — ``host:port`` for net, the bare COM port
+        name for serial (CONTEXT.md). This is the string the Poller takes its
+        lock key from (``poller.py``)."""
         return self._conn.endpoint
 
     def __repr__(self) -> str:
@@ -171,7 +182,7 @@ class TcpDlmsDriver(MeterDriver):
 
     @abstractmethod
     def _read_timeout_ms(self) -> int:
-        """TCP receive / DLMS waitTime timeout in milliseconds."""
+        """Receive / DLMS waitTime timeout in milliseconds."""
 
     def _build_args(self) -> list[str]:
         """Return the full GXSettings argv: script + transport + protocol flags."""
@@ -180,7 +191,7 @@ class TcpDlmsDriver(MeterDriver):
     # ── Connection lifecycle ─────────────────────────────────────────────────
 
     def connect(self) -> None:
-        """Open the TCP connection and complete the DLMS handshake.
+        """Open the connection (TCP or serial) and complete the DLMS handshake.
 
         Wraps the association in a bounded inner retry that absorbs a transient
         abort — a ``ValueError("Invalid connection.")`` or a terminal

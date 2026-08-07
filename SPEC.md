@@ -164,15 +164,19 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - **สามช่อง `site_code` / `customer` / `meter_number` เป็นช่องบันทึกล้วน ๆ** — v1 ไม่มี logic ใดผูกอยู่
   (มีแค่ validator แล้วเก็บ) ห้ามประดิษฐ์พฤติกรรมให้ · `group_name` มี query ดึงค่า distinct ไปทำ dropdown
 - brand/model จาก catalog 9 รุ่น (ยก `catalog.py` ของ v1 มาพร้อม capability flags) แต่ช่อง Model
-  **แสดงเฉพาะรุ่นที่มี driver จริง** — M3 = `prometer100` เท่านั้น อีก 8 รุ่นโผล่เมื่อ M4 ลง driver
+  **แสดงเฉพาะรุ่นที่มี driver จริง** — M3 = `prometer100` เท่านั้น · **M4a (issue #9, 2026-08-07)
+  เพิ่ม `smw110`** · อีก 7 รุ่นที่เหลือโผล่เมื่อ M4c ลง driver
 - **ไม่มีรุ่น SIM อีกต่อไป** — ยกเลิกจาก M1: `simulated.py` ออกจาก driver registry / catalog / README
   เหลือเป็น fake driver ที่เทส monkeypatch เข้าไปเท่านั้น (เทสห้ามยิงมิเตอร์จริง)
 - **device ที่สร้างก่อน M3**: migration **ไม่ลบอะไร** — แถวที่ `model` ไม่มี driver แล้ว (เช่น `sim` เก่า)
   ถูกตั้ง `enabled=0` และ `site_name` เติมค่า placeholder ส่วน `meter_serial` ปล่อยว่างไว้
   = "ยังไม่ยืนยันตัวตน" จนกว่าคนจะกด Update (ซึ่ง probe เสมอ) · โค้ดห้ามสมมติว่า serial ไม่มีวันว่าง
-- transport: **TCP อย่างเดียวใน M3** — ช่อง Serial (COM/baud/data bits/parity/stop bits/flow control)
-  มาพร้อม SMW110 ที่ M4 เพราะ M3 ไม่มีรุ่น serial ให้เลือก จึงเทสไม่ได้ · คอลัมน์ `transport` เป็น JSON
-  อยู่แล้วจึงไม่ต้อง migrate ตอนเพิ่ม · **ไม่มีช่อง Source (dlms/modbus) ใน M3** — modbus มาหลังวันที่ 5
+- transport: **TCP อย่างเดียวใน M3** — ช่อง Serial มาพร้อม SMW110W4 ที่ **M4a (issue #9, 2026-08-07)**:
+  **5 ช่อง** — COM port / baud rate / data bits / parity / stop bits · **ไม่มีช่อง flow control**
+  (แก้จากรายการเดิมที่เคยเขียนไว้ 6 ช่อง — the argv seam `-S` ที่ `GXSettings` แยกไม่มีที่ให้ flow
+  control เลย และหน่วยจริงทั้งสองที่ไซต์ลูกค้าใช้ค่า default "ไม่มี flow control" อยู่แล้ว ดู
+  `docs/meter-notes/smw110w4-scan.md`) · คอลัมน์ `transport` เป็น JSON อยู่แล้วจึงไม่ต้อง migrate ตอน
+  เพิ่มจริง (พิสูจน์แล้วที่ M4a) · **ไม่มีช่อง Source (dlms/modbus) ใน M3/M4a** — modbus มาหลังวันที่ 5
 - auth: `password` + `block_cipher_key` + `authentication_key` ครบตั้งแต่ M3 (M3 ใช้แค่ password
   แต่ M4 ต้องใช้ทั้งสาม จึงไม่ต้องกลับมาแก้ model/ฟอร์ม/API รอบสอง) · สร้างใหม่ prefill password ด้วย
   `fixed_password` ของยี่ห้อ (CEWE = `ABCD0001`) · **ตอนแก้ เว้นว่าง = คงรหัสเดิม** (พฤติกรรม v1)
@@ -273,7 +277,8 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   ระหว่างรอลูกค้ายืนยัน
 - **transport เป็นคุณสมบัติของการติดตั้ง ไม่ใช่ของรุ่น** — พิสูจน์ 2026-08-07: ไซต์ลูกค้ามี SMW110W4
   สองเครื่อง เครื่องหนึ่งต่อ COM port อีกเครื่องต่อ TCP ⇒ `catalog.py` ต้องเลิกผูก
-  `supports_serial` / `default_port` ไว้กับรุ่น
+  `supports_serial` / `default_port` ไว้กับรุ่น — **ทำแล้วที่ M4a (issue #9, 2026-08-07)**: ทั้งสองฟิลด์
+  ตัดออกจาก `ModelSpec`/`CatalogEntry` จริง ทุกรุ่นในแคตตาล็อกเสนอทั้งสอง transport ให้คนเลือกต่อ device
 - **client address ของ SMW110W4 = 6** (ไม่ใช่ 5 ที่ v1 ฮาร์ดโค้ด) — ถือเป็นค่าคงที่ของรุ่นไปก่อน
   (เจ้าของตัดสิน 2026-08-07) ทั้งสองเครื่องที่ไซต์ใช้ค่านี้ · ถ้าไซต์ไหนตอบที่ค่าอื่นให้กลับมาทบทวน
 - ทุก driver เขียนลง `load_profile_readings` ตารางเดียว หน้าตา COSEM (แปลงตอนเขียน):
@@ -283,6 +288,10 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   (ADR 0006 ของ v2) เพราะ Read now / Test connection / probe เกิดขึ้นตั้งแต่ M3
 - Scaler: เขียนให้ถูกต้องตั้งแต่ต้น โดยล็อกด้วย test case จากค่าที่ลูกค้ายืนยันแล้ว
   (ไม่ยกพฤติกรรม phantom ×10 ของ ADR 0010 มา แต่ผลลัพธ์สุดท้ายต้องตรง v1)
+- **SMW110W4 อ่าน load profile (Logger 1) ได้แล้วที่ M4a-2 (issue #10, 2026-08-07)**:
+  `Smw110Driver.read_load_profile()` อ่านผ่าน `readRowsByEntry` เท่านั้น (เมิเตอร์ปฏิเสธ
+  `readRowsByRange`) คืนแถวเป็น UTC + kWh ผ่านมิเตอร์จริง 8 คอลัมน์ (ตัด 12 คอลัมน์ที่ยังไม่รู้
+  ความหมายทิ้ง) — ยังไม่มีตาราง/scheduled job/หน้าเว็บ (ของ M5 ดูด้านล่าง)
 
 ### 3.5 Load Profile (M5)
 

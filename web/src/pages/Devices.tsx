@@ -27,6 +27,7 @@ import {
   InputNumber,
   Modal,
   Row,
+  Segmented,
   Select,
   Space,
   Table,
@@ -53,6 +54,7 @@ import {
   type DeviceInput,
   type DeviceStatus,
   type Quota,
+  type Transport,
 } from "../api";
 import { DEVICES_REFRESH_MS } from "../theme";
 
@@ -119,7 +121,31 @@ const HISTORY_PAGE_SIZE = 50;
 /** Shown wherever a value the meter or the operator never supplied would go. */
 const NOTHING = "—";
 
-/** The form's own shape: `first_bill_date` is a Dayjs while it is being edited. */
+/**
+ * The five parity names the backend's ``-S`` argv parser resolves (issue #9).
+ * Sent case-insensitively; the API normalizes to this exact casing.
+ */
+const PARITY_OPTIONS = [
+  { value: "None", label: "None" },
+  { value: "Odd", label: "Odd" },
+  { value: "Even", label: "Even" },
+  { value: "Mark", label: "Mark" },
+  { value: "Space", label: "Space" },
+];
+
+const TRANSPORT_KIND_OPTIONS = [
+  { value: "net", label: "TCP" },
+  { value: "serial", label: "Serial" },
+];
+
+/**
+ * The form's own shape: `first_bill_date` is a Dayjs while it is being
+ * edited, and the transport fields are flat (issue #9) — `transportKind`
+ * decides which group the Connection card renders and which group
+ * {@link transportFromForm} reads. The inactive group's fields are simply
+ * unused, not cleared, so switching back and forth does not lose what was
+ * typed.
+ */
 interface DeviceFormValues {
   name: string;
   brand: string;
@@ -129,8 +155,14 @@ interface DeviceFormValues {
   customer: string;
   meter_number: string;
   group_name: string;
+  transportKind: "net" | "serial";
   host: string;
   port: number;
+  serialPort: string;
+  baudRate: number;
+  dataBits: number;
+  parity: string;
+  stopBits: number;
   password: string;
   first_bill_date: Dayjs | null;
   bill_day_feb28: number | null;
@@ -148,8 +180,14 @@ const EMPTY_FORM: DeviceFormValues = {
   customer: "",
   meter_number: "",
   group_name: "",
+  transportKind: "net",
   host: "",
   port: 4059,
+  serialPort: "",
+  baudRate: 19200,
+  dataBits: 8,
+  parity: "None",
+  stopBits: 1,
   password: "",
   first_bill_date: null,
   bill_day_feb28: null,
@@ -157,6 +195,25 @@ const EMPTY_FORM: DeviceFormValues = {
   bill_day_30: null,
   bill_day_31: null,
 };
+
+/** Build the {@link Transport} the form currently describes. */
+function transportFromForm(values: DeviceFormValues): Transport {
+  if (values.transportKind === "serial") {
+    return {
+      kind: "serial",
+      serial_port: values.serialPort.trim(),
+      baud_rate: values.baudRate,
+      data_bits: values.dataBits,
+      parity: values.parity,
+      stop_bits: values.stopBits,
+    };
+  }
+  return {
+    kind: "net",
+    host: values.host.trim(),
+    port: values.port,
+  };
+}
 
 /** A record-only text field: blank is stored as nothing, not as an empty string. */
 function blankToNull(value: string | undefined): string | null {
@@ -171,6 +228,7 @@ function checkedAt(value: string | null): string {
 
 /** Project a device row onto the form's shape. Password is never prefilled on edit (D10). */
 function toFormValues(device: Device): DeviceFormValues {
+  const transport = device.transport;
   return {
     name: device.name,
     brand: device.brand,
@@ -180,8 +238,14 @@ function toFormValues(device: Device): DeviceFormValues {
     customer: device.customer ?? "",
     meter_number: device.meter_number ?? "",
     group_name: device.group_name ?? "",
-    host: device.host,
-    port: device.port,
+    transportKind: transport.kind,
+    host: transport.kind === "net" ? transport.host : "",
+    port: transport.kind === "net" ? transport.port : EMPTY_FORM.port,
+    serialPort: transport.kind === "serial" ? transport.serial_port : "",
+    baudRate: transport.kind === "serial" ? transport.baud_rate : EMPTY_FORM.baudRate,
+    dataBits: transport.kind === "serial" ? transport.data_bits : EMPTY_FORM.dataBits,
+    parity: transport.kind === "serial" ? transport.parity : EMPTY_FORM.parity,
+    stopBits: transport.kind === "serial" ? transport.stop_bits : EMPTY_FORM.stopBits,
     // The API never returns the stored password, so the field starts empty and
     // blank means "keep it" — see the Password field's own hint.
     password: "",
@@ -207,8 +271,7 @@ function toInput(values: DeviceFormValues, mode: "create" | "edit"): DeviceInput
     brand: values.brand,
     model: values.model,
     site_name: values.site_name.trim(),
-    host: values.host.trim(),
-    port: values.port,
+    transport: transportFromForm(values),
     site_code: blankToNull(values.site_code),
     customer: blankToNull(values.customer),
     meter_number: blankToNull(values.meter_number),
@@ -279,8 +342,10 @@ export function Devices({ role }: { role: "admin" | "user" }) {
   const [form] = Form.useForm<DeviceFormValues>();
   const passwordRef = useRef<InputRef>(null);
   const watchedBrand = Form.useWatch("brand", form);
+  const watchedTransportKind = Form.useWatch("transportKind", form);
   const watchedHost = Form.useWatch("host", form);
   const watchedPort = Form.useWatch("port", form);
+  const watchedSerialPort = Form.useWatch("serialPort", form);
   const watchedModel = Form.useWatch("model", form);
 
   const selected = devices.find((device) => device.id === selectedId) ?? null;
@@ -386,15 +451,20 @@ export function Devices({ role }: { role: "admin" | "user" }) {
     return options;
   }, [catalog, watchedBrand, watchedModel]);
 
-  /** Apply what the catalog knows about a model: its port, and on create its password. */
+  /**
+   * Apply what the catalog knows about a model: on create, its password.
+   *
+   * The catalog carries no transport information (issue #9) — every model is
+   * offered both transports, so there is no per-model port to prefill; the
+   * Port field's own default (4059, in {@link EMPTY_FORM}) covers it.
+   */
   const applyModelDefaults = useCallback(
     (model: string, target: "create" | "edit") => {
       const entry = catalog.find((candidate) => candidate.model === model);
       if (!entry) return;
-      form.setFieldsValue({
-        ...(entry.default_port !== null ? { port: entry.default_port } : {}),
-        ...(target === "create" && entry.fixed_password !== null ? { password: entry.fixed_password } : {}),
-      });
+      if (target === "create" && entry.fixed_password !== null) {
+        form.setFieldsValue({ password: entry.fixed_password });
+      }
     },
     [catalog, form],
   );
@@ -586,13 +656,19 @@ export function Devices({ role }: { role: "admin" | "user" }) {
   const testConnection = () =>
     run("test", async () => {
       // The form's own rules first. Test connection is the one action with no
-      // `htmlType="submit"` behind it, so without this a blank Model or IP goes
-      // to the server and comes back as a 422 saying what the field already
-      // knew — and the operator gets a server error where a field error belongs.
+      // `htmlType="submit"` behind it, so without this a blank Model or a blank
+      // transport field goes to the server and comes back as a 422 saying what
+      // the field already knew — and the operator gets a server error where a
+      // field error belongs. Which fields depends on the Transport switch.
       // Password is deliberately not validated: it has no rule, and a meter may
       // legitimately have none.
+      const kind = form.getFieldValue("transportKind") as "net" | "serial";
+      const transportFields =
+        kind === "serial"
+          ? ["serialPort", "baudRate", "dataBits", "parity", "stopBits"]
+          : ["host", "port"];
       try {
-        await form.validateFields(["model", "host", "port"]);
+        await form.validateFields(["model", ...transportFields]);
       } catch {
         // `validateFields` has already marked the offending fields on screen;
         // there is nothing left to say and nothing to send.
@@ -603,8 +679,7 @@ export function Devices({ role }: { role: "admin" | "user" }) {
         const values = form.getFieldsValue();
         const result = await api.testConnection({
           model: values.model,
-          host: (values.host ?? "").trim(),
-          port: values.port,
+          transport: transportFromForm(values),
           // Verbatim: a password is not a label, and trimming one changes it.
           password: values.password ?? "",
         });
@@ -895,19 +970,74 @@ export function Devices({ role }: { role: "admin" | "user" }) {
                 <Card size="small" title="Connection" type="inner">
                   <Row gutter={12}>
                     <Col xs={24} md={8}>
-                      <Form.Item
-                        name="host"
-                        label="IP Address"
-                        rules={[{ required: true, message: "Where is the meter?" }]}
-                      >
-                        <Input placeholder="192.168.1.100" />
+                      <Form.Item name="transportKind" label="Transport">
+                        <Segmented options={TRANSPORT_KIND_OPTIONS} />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} md={4}>
-                      <Form.Item name="port" label="Port" rules={[{ required: true, message: "Port?" }]}>
-                        <InputNumber min={1} max={65535} style={{ width: "100%" }} />
-                      </Form.Item>
-                    </Col>
+                  </Row>
+                  {watchedTransportKind === "serial" ? (
+                    <Row gutter={12}>
+                      <Col xs={24} md={8}>
+                        <Form.Item
+                          name="serialPort"
+                          label="COM Port"
+                          rules={[{ required: true, message: "Which COM port?" }]}
+                        >
+                          <Input placeholder="COM4" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={4}>
+                        <Form.Item
+                          name="baudRate"
+                          label="Baud Rate"
+                          rules={[{ required: true, message: "Baud rate?" }]}
+                        >
+                          <InputNumber min={110} max={1_000_000} style={{ width: "100%" }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={4}>
+                        <Form.Item
+                          name="dataBits"
+                          label="Data Bits"
+                          rules={[{ required: true, message: "Data bits?" }]}
+                        >
+                          <InputNumber min={5} max={8} style={{ width: "100%" }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={4}>
+                        <Form.Item name="parity" label="Parity" rules={[{ required: true, message: "Parity?" }]}>
+                          <Select options={PARITY_OPTIONS} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={4}>
+                        <Form.Item
+                          name="stopBits"
+                          label="Stop Bits"
+                          rules={[{ required: true, message: "Stop bits?" }]}
+                        >
+                          <InputNumber min={1} max={2} style={{ width: "100%" }} />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  ) : (
+                    <Row gutter={12}>
+                      <Col xs={24} md={8}>
+                        <Form.Item
+                          name="host"
+                          label="IP Address"
+                          rules={[{ required: true, message: "Where is the meter?" }]}
+                        >
+                          <Input placeholder="192.168.1.100" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={4}>
+                        <Form.Item name="port" label="Port" rules={[{ required: true, message: "Port?" }]}>
+                          <InputNumber min={1} max={65535} style={{ width: "100%" }} />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  )}
+                  <Row gutter={12}>
                     <Col xs={24} md={8}>
                       <Form.Item
                         name="password"
@@ -1046,8 +1176,11 @@ export function Devices({ role }: { role: "admin" | "user" }) {
             {saving ? (
               <div style={{ marginBlockStart: 8 }}>
                 <Text type="secondary">
-                  Connecting to the meter at {(watchedHost ?? "").trim() || NOTHING}:{watchedPort ?? NOTHING} to
-                  read its serial number…
+                  Connecting to the meter at{" "}
+                  {watchedTransportKind === "serial"
+                    ? (watchedSerialPort ?? "").trim() || NOTHING
+                    : `${(watchedHost ?? "").trim() || NOTHING}:${watchedPort ?? NOTHING}`}{" "}
+                  to read its serial number…
                 </Text>
               </div>
             ) : null}

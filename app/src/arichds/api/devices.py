@@ -50,13 +50,14 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import delete, func, select
 
 from arichds.acquisition.catalog import CATALOG, ModelSpec
+from arichds.acquisition.connection_params import connection_params_from_transport
 from arichds.acquisition.drivers.factory import supported_models
 from arichds.acquisition.probe import ProbeError, ProbeResult, probe_meter
 from arichds.acquisition.status import (
@@ -80,6 +81,145 @@ router = APIRouter(prefix="/api/devices", tags=["devices"], dependencies=[Depend
 #: The envelope error code every meter-side failure carries.
 ERROR_PROBE_FAILED = "PROBE_FAILED"
 
+#: The five parity names the vendored ``GXSettings`` ``-S`` parser resolves
+#: (``Parity[value.upper()]`` against the installed ``gurux_common.io.Parity``
+#: — see ``connection_params.py`` and the gurux-dlms skill's ``-S`` row).
+_SERIAL_PARITY_NAMES = ("NONE", "ODD", "EVEN", "MARK", "SPACE")
+
+
+class NetTransport(BaseModel):
+    """A TCP/IP Transport Endpoint — ``{"kind": "net", host, port}``.
+
+    The key names are not free choices: they are exactly what
+    ``Device.transport_endpoint`` (``db/models.py``) reads and what
+    ``Device.transport`` stores, so a validated instance's
+    ``model_dump()`` needs no translation to become a DB row's JSON.
+    """
+
+    kind: Literal["net"] = "net"
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(ge=1, le=65535)
+
+
+class SerialTransport(BaseModel):
+    """A serial Transport Endpoint — five fields, no flow control.
+
+    No flow control (SPEC §3.3, amended by issue #9): the ``-S`` argv seam
+    ``GXSettings`` parses carries no flow-control slot at all, and both field
+    units at the customer site run at the default of "no flow control" —
+    there is nothing to configure.
+
+    Bounds are chosen from what the vendored ``-S`` parser can actually parse
+    (``GXSettings.py:224-244``), not arbitrarily: data bits is sliced to a
+    single character, so a value outside 5-8 would silently corrupt the argv
+    rather than fail cleanly; stop bits is read as a human count and the
+    parser subtracts 1 to reach ``StopBits.ONE``/``TWO`` — 3 has no target.
+    """
+
+    kind: Literal["serial"] = "serial"
+    serial_port: str = Field(min_length=1, max_length=32)
+    baud_rate: int = Field(gt=0, le=1_000_000)
+    data_bits: int = Field(ge=5, le=8)
+    parity: str = Field(min_length=1, max_length=10)
+    stop_bits: int = Field(ge=1, le=2)
+
+    @field_validator("parity")
+    @classmethod
+    def _known_parity_name(cls, value: str) -> str:
+        """Normalize to Title case and reject anything the parser cannot resolve."""
+        upper = value.upper()
+        if upper not in _SERIAL_PARITY_NAMES:
+            raise ValueError(f"Unknown parity {value!r}. Use one of: {', '.join(_SERIAL_PARITY_NAMES)}.")
+        return upper.title()
+
+
+#: A device's transport, discriminated on ``kind`` — makes "the API requires
+#: only the fields the chosen transport actually needs" true by schema, not by
+#: an ``if`` in a handler (the repo's rule: transport branching lives in
+#: ``connection_params.py`` alone).
+Transport = Annotated[NetTransport | SerialTransport, Field(discriminator="kind")]
+
+
+class NetTransportOut(BaseModel):
+    """``net`` transport as the API *reports* it — no request-side bounds.
+
+    A response is not a submission (code review, issue #9): the min-length/ge
+    constraints on :class:`NetTransport` exist to reject a bad *request*
+    before it is written, not to make an already-stored row unreportable. A
+    malformed/legacy row (an empty ``{}``, say) must still round-trip as
+    itself — see :func:`_transport_out`.
+    """
+
+    kind: Literal["net"] = "net"
+    host: str
+    port: int
+
+
+class SerialTransportOut(BaseModel):
+    """``serial`` transport as the API *reports* it — no request-side bounds.
+
+    See :class:`NetTransportOut` — the same reasoning applies to a stored
+    serial row missing a field a submission could never have gotten past.
+    """
+
+    kind: Literal["serial"] = "serial"
+    serial_port: str
+    baud_rate: int
+    data_bits: int
+    parity: str
+    stop_bits: int
+
+
+TransportOut = Annotated[NetTransportOut | SerialTransportOut, Field(discriminator="kind")]
+
+
+def _safe_int(value: Any) -> int:
+    """Coerce *value* to ``int``, or ``0`` if it cannot be — never raises.
+
+    A malformed stored row can hold anything in a JSON column (a string, a
+    list, ``None``); :func:`_transport_out` must degrade it, not crash on it.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _transport_out(transport: dict[str, Any]) -> NetTransportOut | SerialTransportOut:
+    """Project a stored transport dict onto the response shape, honestly.
+
+    Two things a malformed/legacy row (an empty ``{}`` default, a serial row
+    missing a field, ...) must never do (code review, issue #9):
+
+    * **claim a ``kind`` other than the one actually stored** — the same rule
+      :meth:`~arichds.db.models.Device.transport_endpoint` already uses
+      (``kind == "serial"`` is the only special case; everything else,
+      including a missing ``kind``, is ``net``). ``web/src/pages/Devices.tsx``
+      trusts ``transport.kind`` alone to decide which form fields to show, so
+      reporting a serial row as ``net`` would have the next Update save
+      silently rewrite it to the wrong transport — a read path corrupting
+      write-path data.
+    * **violate the schema the API itself publishes** for the field it is
+      returned in. Reusing the request-side :data:`Transport` union for this
+      would do exactly that (``NetTransport.host`` requires a non-blank
+      string), so the response uses the separate, unconstrained
+      :data:`TransportOut` union instead — a response's job is to describe
+      what is stored, not to pretend a bad row is a well-formed submission.
+
+    A row written through this module's own Create/Update always validates
+    against the strict :data:`Transport` union already, so this only ever
+    changes behaviour for data this module did not write.
+    """
+    if transport.get("kind") == "serial":
+        return SerialTransportOut(
+            serial_port=str(transport.get("serial_port", "")),
+            baud_rate=_safe_int(transport.get("baud_rate")),
+            data_bits=_safe_int(transport.get("data_bits")),
+            parity=str(transport.get("parity", "")),
+            stop_bits=_safe_int(transport.get("stop_bits")),
+        )
+    return NetTransportOut(host=str(transport.get("host", "")), port=_safe_int(transport.get("port")))
+
 
 class DeviceCreate(BaseModel):
     """Request body for adding a device.
@@ -93,8 +233,9 @@ class DeviceCreate(BaseModel):
             catalog; nothing branches on it.
         model: Model identifier resolving a driver, e.g. ``"prometer100"``.
         site_name: Which site this meter is at. Required (SPEC §3.3).
-        host: TCP host of the Transport Endpoint.
-        port: TCP port of the Transport Endpoint.
+        transport: The Transport Endpoint — ``net`` or ``serial`` (issue #9).
+            A discriminated union, so the API requires only the fields the
+            chosen transport actually needs.
         password: DLMS authentication password. Stored, never returned.
         site_code: Record-only.
         customer: Record-only.
@@ -111,8 +252,7 @@ class DeviceCreate(BaseModel):
     brand: str = Field(min_length=1, max_length=64)
     model: str = Field(min_length=1, max_length=64)
     site_name: str = Field(min_length=1, max_length=255)
-    host: str = Field(min_length=1, max_length=255)
-    port: int = Field(ge=1, le=65535)
+    transport: Transport
     password: str = Field(default="", max_length=128)
     site_code: str | None = Field(default=None, max_length=80)
     customer: str | None = Field(default=None, max_length=255)
@@ -158,9 +298,14 @@ class DeviceOut(BaseModel):
         customer: Record-only.
         meter_number: Record-only.
         group_name: Free-text group.
-        host: TCP host.
-        port: TCP port.
-        endpoint: The Transport Endpoint (``host:port``) — the Poller lock key.
+        transport: The Transport Endpoint — ``net`` or ``serial`` (issue #9).
+            Unlike the request-side :data:`Transport`, this carries no
+            min-length/ge bounds (:class:`NetTransportOut`/
+            :class:`SerialTransportOut`) — a response describes what is
+            stored, including a malformed legacy row, and never lies about
+            which ``kind`` that row actually is (see :func:`_transport_out`).
+        endpoint: The Transport Endpoint's lock key — ``host:port`` for net,
+            the bare COM port name for serial (CONTEXT.md).
         enabled: Whether the Poller reads it.
         status: What to show — ``paused`` whenever *enabled* is false, otherwise
             the last thing a read proved (ADR 0004). Computed by
@@ -186,8 +331,7 @@ class DeviceOut(BaseModel):
     customer: str | None
     meter_number: str | None
     group_name: str | None
-    host: str
-    port: int
+    transport: TransportOut
     endpoint: str
     enabled: bool
     status: DeviceStatus
@@ -266,14 +410,16 @@ class CatalogEntry(BaseModel):
     default (CEWE's is printed in this repo's README), not a per-site secret,
     and prefilling it is what stops an operator from guessing.
 
+    **Carries no transport information** (issue #9) — every catalogued model
+    is offered both transports; the operator picks per device on the form's
+    own Transport switch, not from the catalog.
+
     Attributes:
         model: Canonical model identifier — what to submit.
         brand: Owning brand.
         ui_label: What to show in the dropdown.
-        default_port: Prefill for the Port field, or None for serial-only models.
         fixed_password: Prefill for the Password field, or None when the model
             uses key-based auth.
-        supports_serial: True if the model connects over serial transport.
         supports_battery: True if the model exposes a battery reading.
         supports_energy_summary: True if the model exposes an energy summary.
         supports_special_days: True if the model exposes a special-days table.
@@ -282,9 +428,7 @@ class CatalogEntry(BaseModel):
     model: str
     brand: str
     ui_label: str
-    default_port: int | None
     fixed_password: str | None
-    supports_serial: bool
     supports_battery: bool
     supports_energy_summary: bool
     supports_special_days: bool
@@ -317,14 +461,12 @@ class TestConnectionRequest(BaseModel):
 
     Attributes:
         model: Model identifier resolving a driver.
-        host: TCP host to try.
-        port: TCP port to try.
+        transport: The Transport Endpoint to try — ``net`` or ``serial``.
         password: DLMS authentication password. Never stored, never echoed.
     """
 
     model: str = Field(min_length=1, max_length=64)
-    host: str = Field(min_length=1, max_length=255)
-    port: int = Field(ge=1, le=65535)
+    transport: Transport
     password: str = Field(default="", max_length=128)
 
 
@@ -405,7 +547,6 @@ DeviceIdPath = Annotated[int, Path(ge=1, description="Device id")]
 
 def _to_out(device: Device) -> DeviceOut:
     """Project a :class:`Device` row onto the API shape (secrets excluded)."""
-    transport = device.transport or {}
     return DeviceOut(
         id=device.id,
         name=device.name,
@@ -417,8 +558,7 @@ def _to_out(device: Device) -> DeviceOut:
         customer=device.customer,
         meter_number=device.meter_number,
         group_name=device.group_name,
-        host=str(transport.get("host", "")),
-        port=int(transport.get("port", 0)),
+        transport=_transport_out(device.transport or {}),
         endpoint=device.transport_endpoint,
         enabled=device.enabled,
         status=display_status(device),
@@ -439,9 +579,7 @@ def _to_catalog_entry(model: str, spec: ModelSpec) -> CatalogEntry:
         model=model,
         brand=spec.brand.value,
         ui_label=spec.ui_label,
-        default_port=spec.default_port,
         fixed_password=spec.fixed_password,
-        supports_serial=spec.supports_serial,
         supports_battery=spec.supports_battery,
         supports_energy_summary=spec.supports_energy_summary,
         supports_special_days=spec.supports_special_days,
@@ -628,14 +766,15 @@ def test_connection(payload: TestConnectionRequest, admin: AdminDep) -> ApiRespo
     Admin only. SPEC §3.2 grants read and Read now to every role and everything
     mutating to admin; Test connection is neither, so it is decided on its own
     terms — it is the diagnostic half of the admin-only Create/Update form, and
-    it points this machine's socket at an arbitrary ``host:port``.
+    it points this machine's socket (or COM port) at whatever the form holds.
 
     Raises:
         HTTPException: 403 for a non-admin, 422 if the model is unknown.
     """
     _require_known_model(payload.model)
+    conn = connection_params_from_transport(payload.transport.model_dump())
     try:
-        result = probe_meter(model=payload.model, host=payload.host, port=payload.port, password=payload.password)
+        result = probe_meter(model=payload.model, conn=conn, password=payload.password)
     except ProbeError as exc:
         return ApiResponse.ok(
             TestConnectionOut(reachable=False, meter_serial=None, reason=exc.reason.value, message=str(exc))
@@ -683,8 +822,10 @@ def create_device(
     _enforce_quota(session, license_service.current_state().max_meters)
     _reject_duplicate_name(session, payload.name)
 
+    transport = payload.transport.model_dump()
+    conn = connection_params_from_transport(transport)
     try:
-        probe = probe_meter(model=payload.model, host=payload.host, port=payload.port, password=payload.password)
+        probe = probe_meter(model=payload.model, conn=conn, password=payload.password)
     except ProbeError as exc:
         return _probe_failure(response, exc)
 
@@ -700,7 +841,7 @@ def create_device(
         customer=payload.customer,
         meter_number=payload.meter_number,
         group_name=payload.group_name,
-        transport={"kind": "net", "host": payload.host, "port": payload.port},
+        transport=transport,
         password=payload.password,
         block_cipher_key=payload.block_cipher_key,
         authentication_key=payload.authentication_key,
@@ -772,8 +913,10 @@ def update_device(
     block_cipher_key = _kept(payload.block_cipher_key, device.block_cipher_key or "") or None
     authentication_key = _kept(payload.authentication_key, device.authentication_key or "") or None
 
+    transport = payload.transport.model_dump()
+    conn = connection_params_from_transport(transport)
     try:
-        probe = probe_meter(model=payload.model, host=payload.host, port=payload.port, password=password)
+        probe = probe_meter(model=payload.model, conn=conn, password=password)
     except ProbeError as exc:
         return _probe_failure(response, exc)
 
@@ -789,7 +932,7 @@ def update_device(
     device.customer = payload.customer
     device.meter_number = payload.meter_number
     device.group_name = payload.group_name
-    device.transport = {"kind": "net", "host": payload.host, "port": payload.port}
+    device.transport = transport
     device.password = password
     device.block_cipher_key = block_cipher_key
     device.authentication_key = authentication_key
@@ -985,18 +1128,22 @@ def read_now(device_id: DeviceIdPath, session: SessionDep, user: CurrentUserDep)
         )
     else:
         try:
-            probe_meter(
-                model=device.model,
-                host=str(transport.get("host", "")),
-                port=int(transport.get("port", 0)),
-                password=device.password,
-            )
+            conn = connection_params_from_transport(transport)
+            probe_meter(model=device.model, conn=conn, password=device.password)
         except ProbeError as exc:
             # `str(exc)` is already operator-facing and already free of the
             # password — that is ProbeError's contract, so it is passed straight
             # through rather than reworded here.
             record_failure(device_id, str(exc))
             result = ReadNowJobResult(job=JOB_LIVENESS, ok=False, detail=str(exc))
+        except ValueError as exc:
+            # A malformed stored transport — never produced by this module's
+            # own Create/Update, which always validate first, but a config
+            # problem rather than a meter refusal either way, so it is not a
+            # strike (mirrors the no-driver branch above).
+            detail = f"Device {device.name!r} has no usable transport: {exc}"
+            logger.warning(detail)
+            result = ReadNowJobResult(job=JOB_LIVENESS, ok=False, detail=detail)
         else:
             record_success(device_id)
             result = ReadNowJobResult(job=JOB_LIVENESS, ok=True, detail=f"The meter answered at {endpoint}.")

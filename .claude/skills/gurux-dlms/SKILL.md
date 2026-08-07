@@ -26,7 +26,7 @@ executed against it, 2026-08-05).
 
 | Layer | Files | Touch it when… |
 |---|---|---|
-| **driver layer** (preferred) | `app/src/arichds/acquisition/drivers/_dlms_tcp.py`, `prometer100.py`, `base.py` | Adding or changing meter behaviour. Override hooks (`_protocol_args`, `get_obis_map`, `read_*`, class attributes like `METER_SERIAL_OBIS`); do not reimplement the lifecycle. **No `if/elif` on meter model or brand in generic code** — that is a `CLAUDE.md` invariant; model differences live behind `MeterDriver` capability methods. |
+| **driver layer** (preferred) | `app/src/arichds/acquisition/drivers/_dlms.py`, `prometer100.py`, `base.py` | Adding or changing meter behaviour. Override hooks (`_protocol_args`, `get_obis_map`, `read_*`, class attributes like `METER_SERIAL_OBIS`); do not reimplement the lifecycle. **No `if/elif` on meter model or brand in generic code** — that is a `CLAUDE.md` invariant; model differences live behind `MeterDriver` capability methods. |
 | **ARICHDS wrappers around Gurux bugs** | `_gurux_net_patch.py`, `_gurux_trace.py` | Only when the upstream bug they fix changes. Read their docstrings before touching either — both exist because of production incidents, not taste. |
 | **vendored Gurux** | `app/src/arichds/vendor/gurux/` — `GXSettings.py`, `GXDLMSReader.py`, `GXDLMSSecureClient2.py`, `GXCmdParameter.py` | Rarely. These are upstream samples copied **verbatim** (camelCase, lint-exempt in `pyproject.toml`). `CLAUDE.md` forbids renaming, reformatting or "improving" their APIs. Read them to understand a call. |
 
@@ -48,7 +48,7 @@ Both are load-bearing. If a read path stops going through them, those bugs come 
 
 ARICHDS never constructs `GXDLMSClient` by hand — it builds an argv-style list and lets
 `GXSettings` parse it into a configured client + media. See
-`_dlms_tcp.py::TcpDlmsDriver.connect()`.
+`_dlms.py::DlmsDriver.connect()`.
 
 ```python
 settings = GXSettings()
@@ -82,7 +82,7 @@ Rules baked into the driver base. Keep them; each has a reason in `CLAUDE.md` or
 - **Explicit timeout on every blocking I/O** — `media.receiveTimeout` *and* `reader.waitTime`.
 - **Trace level `Error`, and the frame trace file closed** — see `_gurux_trace.py`.
 - **Passwords and keys never in `repr`/`str` or logs.** `CLAUDE.md` invariant: the credential
-  redaction filter is on every log handler, and `TcpDlmsDriver.__repr__` excludes the password.
+  redaction filter is on every log handler, and `DlmsDriver.__repr__` excludes the password.
 
 ### Reads happen under a lock — know this before you write one
 
@@ -110,8 +110,10 @@ value = reader.read(obj, 2)       # attr 2 = value
 
 `reader.read` returns the parsed Python value (int / float / str / `GXDateTime` / bytes).
 The trap is that **Register and ExtendedRegister return a *raw* integer at attr 2** — you
-must also read **attr 3 (scaler_unit)** and apply `value * 10**scaler`. Getting this wrong
-is exactly the v1 defect that **ADR 0002** exists to prevent from being reproduced; the
+must also read **attr 3 (scaler_unit)** *first*, which is already the multiplier
+(`10**exponent`), not the exponent — Gurux then applies it for you when attr 2 is parsed.
+Reading attr 2 first, or treating `scaler` as an exponent (`10 ** int(obj.scaler)`), is
+exactly the v1 defect that **ADR 0002** exists to prevent from being reproduced; the
 scaler behaviour is pinned by `app/tests/test_dlms_scaler.py`. See
 [patterns.md](patterns.md) → "Register + scaler".
 
@@ -131,22 +133,36 @@ Gurux documents both access paths and warns that **not every meter supports both
 `captureObjects` (attr 3) for the column layout rather than calling
 `getAssociationView()`, which is far too slow on these meters.
 
-> **ARICHDS has no ProfileGeneric read path yet.** Load profile arrives at **M5**, billing
-> at **M6**. The patterns file documents how v1 did it — proven against the same meters —
-> so you have a worked reference when you build it, not because the code exists here.
+> **The SMW110W4 load profile has a real ProfileGeneric read path since issue #10 (M4a-2)**:
+> `smw110.py::Smw110Driver.read_load_profile()` — entry access only (this meter refuses
+> `readRowsByRange`), with a scaler-borrowing resolver because it also denies `scaler_unit`
+> on every load-profile capture column. No other model has one yet, and billing is still
+> **M6**. The patterns file documents how v1 did billing-by-entry — proven against the same
+> meters — as a worked reference, not as code that exists here.
 > `docs/meter-notes/load-profile-capture-objects.md` has the real capture lists and periods
-> for three CEWE models, read off the meters on 2026-08-05.
+> for three CEWE models, read off the meters on 2026-08-05; `docs/meter-notes/smw110w4-scan.md`
+> is the SMW110W4's own scan.
 
 ## What exists in v2 today
 
-- **One driver: `prometer100`** (`TcpDlmsDriver` subclass). The other eight catalogued
-  models land at **M4** — adding one means adding a registry row in `factory.py` and a
-  driver class, never an `if` at a call site.
+- **Two drivers: `prometer100` (TCP) and `smw110` (TCP or serial, issue #9)** — both
+  `DlmsDriver` subclasses. The other seven catalogued models land at **M4c** — adding
+  one means adding a registry row in `factory.py` and a driver class, never an `if` at
+  a call site.
 - **`read_register(obis, attr=2)`** with correct scaler handling.
 - **`read_meter_serial()`** — one register, driven by the `METER_SERIAL_OBIS` class
-  attribute on `TcpDlmsDriver` so a model with a different serial OBIS overrides the
-  attribute, not the method. **It is the only register any read path reads today**: both
-  `probe.py` and the Poller's liveness tick go through it.
+  attribute on `DlmsDriver` so a model with a different serial OBIS overrides the
+  attribute, not the method. **It is the only register `probe.py` and the Poller's
+  liveness tick read** — `read_load_profile()` (below) is a separate, wider read path
+  with no production caller yet.
+- **`Smw110Driver.read_load_profile(start_utc, end_utc)`** (issue #10, M4a-2) — the
+  ProfileGeneric read for this model's Logger 1, by entry access (this meter refuses
+  `readRowsByRange`), reading `captureObjects`/`capturePeriod`/`entriesInUse` live on
+  every call and resolving each mapped column's scaler from a sibling OBIS chosen by
+  **unit**, not by whichever answers first (see the callout above and `patterns.md` →
+  "Register + scaler" / "ProfileGeneric by entry"). Reads the ProfileGeneric plus up to
+  seven sibling registers at attr 3 in one call — more than one register, unlike every
+  other read path today.
 - **There is no live-value read and no reachability probe.** The eight-register
   instantaneous set and the driver-level `bool` reachability check were both removed by
   ADR 0007 (issue #8, M3-4): v2 displays no live value and stores nothing instantaneous, so

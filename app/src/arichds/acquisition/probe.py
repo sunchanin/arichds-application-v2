@@ -16,7 +16,7 @@ ADR 0005 is why this module exists at all, and it decides the two hard parts:
   (``connection_manager.py``: E1 refused, E2 timeout, E4/E5 DLMS auth, E7 DNS).
 
 One attempt, no retry loop:
-:meth:`~arichds.acquisition.drivers._dlms_tcp.TcpDlmsDriver.connect` already
+:meth:`~arichds.acquisition.drivers._dlms.DlmsDriver.connect` already
 carries a bounded association retry, and a person is waiting on this call.
 """
 
@@ -140,8 +140,7 @@ def _classify(exc: Exception, endpoint: str) -> ProbeError:
 def probe_meter(
     *,
     model: str,
-    host: str,
-    port: int,
+    conn: ConnectionParams,
     password: str,
     locks: EndpointLocks | None = None,
     lock_timeout_sec: float = MANUAL_READ_LOCK_TIMEOUT_SEC,
@@ -164,8 +163,11 @@ def probe_meter(
 
     Args:
         model: Model identifier, case-insensitive.
-        host: TCP host of the Transport Endpoint.
-        port: TCP port of the Transport Endpoint.
+        conn: Transport identity — net or serial (issue #9). Every caller
+            builds this the same way, through
+            :func:`~arichds.acquisition.connection_params.connection_params_from_transport`,
+            so a probe and a background tick always agree on the Transport
+            Endpoint lock key.
         password: DLMS authentication password. Never logged, never in the
             error message.
         locks: Lock registry. Defaults to the process-wide one, which is the
@@ -184,7 +186,6 @@ def probe_meter(
         ProbeError: If the endpoint stayed busy, or the meter could not be
             reached, refused the credentials, or reported no identity.
     """
-    conn = ConnectionParams.net(host, port)
     driver = create_driver(model, conn, password=password)
     registry = endpoint_locks() if locks is None else locks
 

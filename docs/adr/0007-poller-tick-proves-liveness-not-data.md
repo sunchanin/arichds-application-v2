@@ -113,6 +113,12 @@ That answer collapses the rest.
 - **`InstantaneousReading`, the dataclass.** M5 may well use the same shape for a load-profile
   row, so the decision belongs there. The *method* does not survive — see below.
 
+  > **Amendment (2026-08-07, issue #10, M4a-2):** the naming decision deferred above was taken
+  > here, not at M5. The dataclass is `IntervalReading` now — CONTEXT.md's exact term for the
+  > row it produces — and `Smw110Driver.read_load_profile()` is the first thing that produces
+  > one. M5 still owns the table write, the scheduled job and the page; this amendment is
+  > symbol-only.
+
 ## Consequences
 
 - **v2 ships with no live-values screen.** If a customer asks for one later it is a new feature

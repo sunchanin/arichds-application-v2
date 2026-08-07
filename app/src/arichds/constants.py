@@ -74,6 +74,13 @@ HEALTH_CHECK_OBIS_ATTR: Final[int] = 2
 METER_SERIAL_OBIS_CODE: Final[str] = "0.0.96.1.0.255"  # Device Serial Number (DLMS standard)
 METER_SERIAL_OBIS_ATTR: Final[int] = 2
 
+# ─── Meter clock offset (a property of the SITE, not of the model) ────────────
+# Every SMW110W4 in service today runs an ICT (UTC+7, no DST) clock — the meter
+# clock matched host clock exactly in the 2026-08-07 field probe
+# (docs/meter-notes/raw/smw110w4-serial-probe-2026-08-07.txt:40-41). A site
+# outside ICT is the trigger to make this per-device rather than one constant.
+METER_LOCAL_UTC_OFFSET_HOURS: Final[int] = 7
+
 # ─── Unit normalization (REMAKE-PLAN §6.1 normalization contract) ─────────────
 # DLMS registers report active energy in Wh; `load_profile_readings` is ALWAYS
 # kWh. The division happens in the driver, at write time.

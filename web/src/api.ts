@@ -51,6 +51,31 @@ export type DeviceEventKind =
   | "resumed"
   | "data_cleared";
 
+/** A TCP/IP Transport Endpoint. */
+export interface NetTransport {
+  kind: "net";
+  host: string;
+  port: number;
+}
+
+/**
+ * A serial Transport Endpoint (issue #9) — five fields, no flow control: the
+ * `-S` argv seam the backend's `GXSettings` parses carries no flow-control
+ * slot at all, and both field-confirmed SMW110W4 units run at the default of
+ * "no flow control".
+ */
+export interface SerialTransport {
+  kind: "serial";
+  serial_port: string;
+  baud_rate: number;
+  data_bits: number;
+  parity: string;
+  stop_bits: number;
+}
+
+/** A device's Transport Endpoint — TCP or serial, discriminated on `kind`. */
+export type Transport = NetTransport | SerialTransport;
+
 /**
  * A device as `GET /api/devices` returns it — every field the Devices page
  * needs, status included, so the tree paints from **one** call rather than an
@@ -68,8 +93,7 @@ export interface Device {
   customer: string | null;
   meter_number: string | null;
   group_name: string | null;
-  host: string;
-  port: number;
+  transport: Transport;
   endpoint: string;
   enabled: boolean;
   status: DeviceStatus;
@@ -143,14 +167,16 @@ export interface ReadNowResult {
  * Only models that resolve to a real driver are listed, so the dropdown can
  * never offer something that will fail to connect. `fixed_password` is a
  * documented brand-wide default the form prefills, not a per-site secret.
+ *
+ * **Carries no transport information** (issue #9) — every catalogued model
+ * is offered both transports; the operator picks per device on the form's
+ * own Transport switch.
  */
 export interface CatalogEntry {
   model: string;
   brand: string;
   ui_label: string;
-  default_port: number | null;
   fixed_password: string | null;
-  supports_serial: boolean;
   supports_battery: boolean;
   supports_energy_summary: boolean;
   supports_special_days: boolean;
@@ -171,8 +197,8 @@ export interface DeviceInput {
   model: string;
   /** Required — the Devices tree groups by it (SPEC §3.3). */
   site_name: string;
-  host: string;
-  port: number;
+  /** `net` or `serial` (issue #9) — the operator's Transport switch. */
+  transport: Transport;
   password?: string;
   site_code?: string | null;
   customer?: string | null;
@@ -189,8 +215,7 @@ export interface DeviceInput {
 /** The transport values `POST /api/devices/test-connection` tries. */
 export interface TestConnectionInput {
   model: string;
-  host: string;
-  port: number;
+  transport: Transport;
   password: string;
 }
 
