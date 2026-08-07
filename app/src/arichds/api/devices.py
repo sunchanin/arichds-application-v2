@@ -59,6 +59,7 @@ from sqlalchemy import delete, func, select
 from arichds.acquisition.catalog import CATALOG, ModelSpec
 from arichds.acquisition.connection_params import connection_params_from_transport
 from arichds.acquisition.drivers.factory import supported_models
+from arichds.acquisition.load_profile import read_and_store_load_profile
 from arichds.acquisition.probe import ProbeError, ProbeResult, probe_meter
 from arichds.acquisition.status import (
     DeviceEventKind,
@@ -71,7 +72,7 @@ from arichds.acquisition.status import (
 )
 from arichds.api.deps import AdminDep, CurrentUserDep, LicenseServiceDep, PollerDep, SessionDep, get_current_user
 from arichds.api.envelope import ApiResponse
-from arichds.constants import JOB_LIVENESS
+from arichds.constants import JOB_LIVENESS, JOB_LOAD_PROFILE
 from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 
 logger = logging.getLogger(__name__)
@@ -491,11 +492,17 @@ class ReadNowJobResult(BaseModel):
     """What one job of a Read now did.
 
     Attributes:
-        job: Which job ran — :data:`~arichds.constants.JOB_LIVENESS` at M3.
+        job: Which job this entry is about —
+            :data:`~arichds.constants.JOB_LIVENESS` or
+            :data:`~arichds.constants.JOB_LOAD_PROFILE` (M5a-1). M6 adds
+            ``billing``.
         ok: Whether it succeeded. A meter that refuses reports ``False`` here,
-            not through an HTTP status (D10).
+            not through an HTTP status (D10) — and so does a job that could not
+            run at all, which is the same thing from the operator's side.
         detail: A sentence for a person. **Never a measured value** (ADR 0007):
-            v2 has no live-value display, and a liveness read has none to report.
+            v2 has no live-value display. The load-profile job may say *how
+            many* rows it stored and how far it got, which is coverage rather
+            than a reading.
     """
 
     job: str
@@ -506,12 +513,16 @@ class ReadNowJobResult(BaseModel):
 class ReadNowOut(BaseModel):
     """What a Read now produced.
 
-    A **list** of job results, with one entry at M3, because M5 adds
-    ``load_profile`` and M6 adds ``billing`` — and a multi-job read can be
-    partially successful, which is exactly what a single HTTP status cannot say.
+    A **list** of job results — ``liveness`` and, from M5a-1, ``load_profile``;
+    M6 adds ``billing`` — because a multi-job read can be partially successful,
+    which is exactly what a single HTTP status cannot say.
 
     Attributes:
-        results: One entry per job that ran.
+        results: One entry per job Read now **considered**, not per job that
+            ran. A job that could not run says so with ``ok=False`` and a
+            sentence, because the Read-now modal renders a row per entry and
+            nothing at all for an absent one — so silence would tell the
+            operator nothing (M5a-1, D12).
         status: The device's status after the read, re-read from the row, so the
             caller sees the state its own click produced.
         checked_at: When that status was established (UTC), or None when nothing
@@ -1092,12 +1103,23 @@ def read_now(device_id: DeviceIdPath, session: SessionDep, user: CurrentUserDep)
     device: Pause governs background reads only, and a person asking whether a
     meter they just fixed is answering is precisely what Read now is for.
 
-    At M3 there is exactly one job, ``liveness``: the same
-    :func:`~arichds.acquisition.probe.probe_meter` Create and Update use — one
-    association, one register (the Meter Serial), disconnect. That is what
-    ADR 0007 §2 calls a liveness read, and it **cannot** return an electrical
-    value by construction, so it also writes no Interval Reading. M5 and M6 add
-    their jobs to the same list without changing this contract.
+    Two jobs run, in this order:
+
+    1. ``liveness`` — the same :func:`~arichds.acquisition.probe.probe_meter`
+       Create and Update use: one association, one register (the Meter Serial),
+       disconnect. That is what ADR 0007 §2 calls a liveness read, it **cannot**
+       return an electrical value by construction, and it writes no Interval
+       Reading. It is also the **only** job here that touches device status
+       (ADR 0004).
+    2. ``load_profile`` (M5a-1) — :func:`~arichds.acquisition.load_profile.read_and_store_load_profile`,
+       which walks from the stored watermark to now in 24 h chunks under one
+       Manual Read acquisition and stores what it reads. It runs only after the
+       liveness read succeeded: a meter that did not answer one register will
+       not answer a profile, and asking anyway would just spend the operator's
+       wait. M6 adds ``billing`` to the same list without changing this contract.
+
+    Every job that was *considered* gets an entry, including one that could not
+    run (D12) — see :class:`ReadNowOut`.
 
     The serial it reads is deliberately ignored beyond "it answered" (D9).
     Serial-mismatch handling belongs to Update (ADR 0005); doing it here would
@@ -1116,15 +1138,22 @@ def read_now(device_id: DeviceIdPath, session: SessionDep, user: CurrentUserDep)
     device = _require_device(session, device_id)
     endpoint = device.transport_endpoint
     transport = device.transport or {}
+    results: list[ReadNowJobResult] = []
 
     if device.model.lower() not in supported_models():
         # Not a meter failure and therefore not a strike: nothing was asked of
         # the meter. `record_no_driver` parks it at Unknown with the reason.
+        # No `load_profile` entry either — there is no driver to ask whether
+        # this model has one.
         record_no_driver(device_id, device.model)
-        result = ReadNowJobResult(
-            job=JOB_LIVENESS,
-            ok=False,
-            detail=(f"Model {device.model!r} has no driver in this build — press Update to re-identify this device."),
+        results.append(
+            ReadNowJobResult(
+                job=JOB_LIVENESS,
+                ok=False,
+                detail=(
+                    f"Model {device.model!r} has no driver in this build — press Update to re-identify this device."
+                ),
+            )
         )
     else:
         try:
@@ -1135,18 +1164,27 @@ def read_now(device_id: DeviceIdPath, session: SessionDep, user: CurrentUserDep)
             # password — that is ProbeError's contract, so it is passed straight
             # through rather than reworded here.
             record_failure(device_id, str(exc))
-            result = ReadNowJobResult(job=JOB_LIVENESS, ok=False, detail=str(exc))
+            results.append(ReadNowJobResult(job=JOB_LIVENESS, ok=False, detail=str(exc)))
+            results.append(
+                ReadNowJobResult(
+                    job=JOB_LOAD_PROFILE,
+                    ok=False,
+                    detail="Skipped — the meter did not answer the liveness read.",
+                )
+            )
         except ValueError as exc:
             # A malformed stored transport — never produced by this module's
             # own Create/Update, which always validate first, but a config
             # problem rather than a meter refusal either way, so it is not a
-            # strike (mirrors the no-driver branch above).
+            # strike (mirrors the no-driver branch above). Nothing can be built
+            # to ask about a load profile, so that job gets no entry.
             detail = f"Device {device.name!r} has no usable transport: {exc}"
             logger.warning(detail)
-            result = ReadNowJobResult(job=JOB_LIVENESS, ok=False, detail=detail)
+            results.append(ReadNowJobResult(job=JOB_LIVENESS, ok=False, detail=detail))
         else:
             record_success(device_id)
-            result = ReadNowJobResult(job=JOB_LIVENESS, ok=True, detail=f"The meter answered at {endpoint}.")
+            results.append(ReadNowJobResult(job=JOB_LIVENESS, ok=True, detail=f"The meter answered at {endpoint}."))
+            results.append(_read_load_profile_job(device_id, device.model))
 
     # Re-read: the recorders wrote through their own session (they have to — the
     # Poller calls them with no request session), so this request's identity map
@@ -1154,8 +1192,46 @@ def read_now(device_id: DeviceIdPath, session: SessionDep, user: CurrentUserDep)
     # state its own click *replaced*.
     session.refresh(device)
     return ApiResponse.ok(
-        ReadNowOut(results=[result], status=display_status(device), checked_at=device.status_checked_at)
+        ReadNowOut(results=results, status=display_status(device), checked_at=device.status_checked_at)
     )
+
+
+def _read_load_profile_job(device_id: int, model: str) -> ReadNowJobResult:
+    """Run the load-profile job for a device whose liveness read just succeeded.
+
+    Never touches device status (ADR 0004, D11): the liveness read above is the
+    evidence status is made of, and a load profile that failed afterwards must
+    not undo an Online the meter just earned. The job returns its failures as
+    sentences rather than raising, so this cannot turn Read now into a 500.
+    """
+    outcome = read_and_store_load_profile(device_id)
+
+    if not outcome.supported:
+        # `outcome.error` is only set here by an unbuildable driver, which this
+        # branch cannot reach — the liveness probe built one seconds ago. It is
+        # preferred anyway rather than discarded, because a sentence that says
+        # what actually went wrong beats one that guesses.
+        detail = outcome.error or f"Model {model!r} has no load profile in this build — nothing was read."
+        return ReadNowJobResult(job=JOB_LOAD_PROFILE, ok=False, detail=detail)
+
+    if outcome.error is not None:
+        return ReadNowJobResult(
+            job=JOB_LOAD_PROFILE,
+            ok=False,
+            detail=f"Stored {outcome.stored} Interval Readings before the read stopped: {outcome.error}",
+        )
+
+    if outcome.stored == 0:
+        return ReadNowJobResult(job=JOB_LOAD_PROFILE, ok=True, detail="The meter had no new intervals to store.")
+
+    # `through` is the highest `read_at` now in the table, so it cannot be None
+    # once a row was stored — the fallback exists so a surprise there degrades
+    # to a shorter sentence instead of a TypeError inside the format.
+    through = f" up to {outcome.through:%Y-%m-%d %H:%M} UTC" if outcome.through is not None else ""
+    detail = f"Stored {outcome.stored} Interval Readings{through}."
+    if outcome.budget_exhausted:
+        detail += " More history remains — press Read now again to continue."
+    return ReadNowJobResult(job=JOB_LOAD_PROFILE, ok=True, detail=detail)
 
 
 @router.post("/{device_id}/readings/clear")
@@ -1164,11 +1240,16 @@ def clear_readings(
 ) -> ApiResponse[int]:
     """Delete every Interval Reading of one device, keeping the device and its history.
 
-    **It deletes nothing until M5.** ADR 0007 stopped the Poller writing rows
-    (M3-4) and the load-profile reader that fills ``load_profile_readings``
-    arrives at M5, so today this always answers ``0``. The endpoint, the
-    confirmation ritual and the Device Event it records all stay: they are the
-    contract M5 lands against, and the button is already on the Devices page.
+    **It deletes real rows from M5a-1 on.** ADR 0007 stopped the Poller writing
+    rows (M3-4), so between then and now this always answered ``0``; issue #15
+    landed the load-profile reader that fills ``load_profile_readings``, and this
+    is the one place they are removed again. Nothing else about the endpoint
+    changed — the confirmation ritual and the Device Event it records were
+    written as the contract M5 would land against, and it landed against them.
+
+    Deleting the rows also resets what the load-profile job knows: the watermark
+    **is** the data (ADR 0008), so the next Read now starts its walk 90 days back
+    rather than where the deleted rows ended.
 
     Admin only (SPEC §3.2). The device's Device Events are kept **on purpose**:
     they are the evidence of who deleted the data, and destroying that evidence

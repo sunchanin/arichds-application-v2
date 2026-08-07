@@ -58,7 +58,9 @@ One row of time-series meter data in COSEM shape — always UTC, always kWh — 
 whether the source was DLMS or Modbus. The normalization happens at write time, in the driver.
 The rows live in the `load_profile_readings` table, mapped by the `LoadProfileReading` class:
 the term names the row and its contract, the table names what is in it — every interval the
-meter itself recorded, since ADR 0007 stopped anything else being written there.
+meter itself recorded, since ADR 0007 stopped anything else being written there. A row is
+identified by `(device, logger, read_at)` and carries the meter's own capture period in
+`interval_sec` — two loggers on one meter are separate rows, never merged.
 _Avoid_: load profile row (that's the feature, not the row), sample, logger reading
 
 **Source**:

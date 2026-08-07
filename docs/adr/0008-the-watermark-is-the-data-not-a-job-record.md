@@ -1,6 +1,9 @@
 # The load-profile watermark is the data, not a job record — v2 has no read-job table
 
-Status: accepted (2026-08-07, owner decision during M5 grilling). Not yet implemented — M5.
+Status: accepted (2026-08-07, owner decision during M5 grilling). **Partly implemented**: the
+watermark, the oldest-first 24 h walk and the synchronous Manual Read landed with issue #15
+(M5a-1) in `acquisition/load_profile.py`, and no job table was created; the background
+scheduler that will call it on a cadence is issue #16 (M5a-2).
 
 Reverses: v1's `load_profile_reads` job table, and v2's own `SPEC.md` §4 data model, which
 listed `interval_read_jobs` among thirteen tables. **The count is now twelve.**

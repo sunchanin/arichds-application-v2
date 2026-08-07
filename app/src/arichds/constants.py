@@ -39,11 +39,30 @@ MANUAL_READ_LOCK_TIMEOUT_SEC: Final[float] = 120.0
 OFFLINE_AFTER_CONSECUTIVE_FAILURES: Final[int] = 3
 
 # ─── Read now jobs (SPEC §3.3) ────────────────────────────────────────────────
-# The one job Read now runs at M3: an identity read that proves the meter
-# answers a real register read, writing no Interval Reading (ADR 0007).
-# M5 adds "load_profile" and M6 adds "billing" to this same list — the naming is
-# fixed here now precisely so those two modules do not each invent one.
+# The identity read that proves the meter answers a real register read, writing
+# no Interval Reading (ADR 0007). M6 adds "billing" to this same list — the
+# naming is fixed here so each module does not invent its own.
 JOB_LIVENESS: Final[str] = "liveness"
+# The load-profile read (M5a-1, issue #15): stores Interval Readings. Reported
+# as its own entry in `results` even when it could not run, because the Read now
+# modal renders a row per entry and nothing at all for an absent one.
+JOB_LOAD_PROFILE: Final[str] = "load_profile"
+
+# ─── Load profile (SPEC §3.5, ADR 0008) ───────────────────────────────────────
+# How far back the walk starts on a device with no stored rows.
+LOAD_PROFILE_BACKFILL_DAYS: Final[int] = 90
+# The window is walked in chunks this wide, oldest first, each written before
+# the next is fetched (v1's LP_READ_CHUNK_HOURS).
+LOAD_PROFILE_CHUNK_HOURS: Final[int] = 24
+# How long the whole walk may keep going. Checked before starting each chunk
+# except the first — a DLMS read cannot be interrupted mid-flight, and a call
+# that reads nothing at all makes no progress against the watermark.
+# Half of MANUAL_READ_LOCK_TIMEOUT_SEC on purpose: the walk holds the Transport
+# Endpoint under ONE Manual Read acquisition, and a concurrent Manual Read waits
+# that long, so this leaves room for the in-flight chunk to finish without
+# timing the other caller out. Nobody has measured how long one chunk takes on
+# this hardware — which is exactly why this is a budget and not a chunk count.
+LOAD_PROFILE_READ_BUDGET_SEC: Final[float] = 60.0
 
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"

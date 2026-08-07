@@ -8,9 +8,10 @@ widening this file speculatively.
 ``load_profile_readings`` is deliberately a *subset* of the COSEM shape defined
 in REMAKE-PLAN §6.1. Its normalization contract is absolute and applies from row
 one: **always UTC, always kWh, column names match the unit actually stored**.
-The conversion happens in the driver at write time, never at read time. It is
-empty from M3-4 until M5: ADR 0007 stopped the Poller writing to it, and the
-load-profile reader that fills it properly arrives with its own schema grill.
+The conversion happens in the driver at write time, never at read time. It was
+empty from M3-4 until M5a-1: ADR 0007 stopped the Poller writing to it, and the
+load-profile reader that fills it properly landed with issue #15 —
+``acquisition/load_profile.py``, driven by Read now.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -179,13 +180,24 @@ class LoadProfileReading(Base):
         read_at: When the meter reported the value — **UTC, timezone-aware**.
         source: Which acquisition path produced it (``dlms`` / ``modbus``). A
             property of the reading, never a branch in read-path code.
-        interval: Cadence label, e.g. ``"15m"`` for load profile. M4b's Modbus
-            cadences share this table and this column tells them apart.
+        logger_id: Which load profile the row came from, derived from the
+            profile's OBIS (``1.0.99.1.0.255`` → 1, ``1.0.99.2.0.255`` → 2 —
+            SPEC §3.5), never from discovery order. Part of the row's identity:
+            two loggers on one meter record *separate rows*, not a merge, because
+            no CEWE model's loggers can be merged (they differ in period, or map
+            different registers onto one column).
+        interval_sec: The meter's own capture period for that logger, in seconds
+            as it reports them (ProfileGeneric attr 4). Never assumed to be 900 —
+            a Prometer 100's Logger 2 is 300.
         volt_l1/volt_l2/volt_l3: Phase-to-neutral voltage (V).
         current_l1/current_l2/current_l3: Line current (A).
         freq: Frequency (Hz).
-        import_active_kwh: Cumulative active energy import — **kWh**, already
-            divided down from the meter's raw Wh by the driver.
+        import_active_kwh: Active energy import — **kWh**, already divided down
+            from the meter's raw Wh by the driver.
+        import_reactive_kvarh/export_active_kwh/export_reactive_kvarh/avg_geo_pf:
+            The rest of the twelve-column set the v1 Load Profile page shows
+            (SPEC §3.5). **Empty until M4c** — the SMW110W4 does not capture
+            them; all three CEWE models do.
         created_at: When this row was written (UTC).
     """
 
@@ -195,7 +207,12 @@ class LoadProfileReading(Base):
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
     read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     source: Mapped[str] = mapped_column(String(16))
-    interval: Mapped[str] = mapped_column(String(16))
+    # The server defaults exist so migration 0006's ALTER could not fail on a
+    # non-empty table, and are declared here too so the schema on disk and this
+    # model agree (0005's docstring: that drift must never be allowed). No
+    # writer relies on them — every row supplies both values explicitly.
+    logger_id: Mapped[int] = mapped_column(Integer, server_default="1")
+    interval_sec: Mapped[int] = mapped_column(Integer, server_default="900")
 
     volt_l1: Mapped[float | None] = mapped_column(default=None)
     volt_l2: Mapped[float | None] = mapped_column(default=None)
@@ -205,6 +222,10 @@ class LoadProfileReading(Base):
     current_l3: Mapped[float | None] = mapped_column(default=None)
     freq: Mapped[float | None] = mapped_column(default=None)
     import_active_kwh: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvarh: Mapped[float | None] = mapped_column(default=None)
+    export_active_kwh: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvarh: Mapped[float | None] = mapped_column(default=None)
+    avg_geo_pf: Mapped[float | None] = mapped_column(default=None)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -213,6 +234,10 @@ class LoadProfileReading(Base):
     __table_args__ = (
         # Load Profile's page query (M5): one device's rows over a date range.
         Index("ix_load_profile_readings_device_read_at", "device_id", "read_at"),
+        # The row's real identity (SPEC §3.5, ADR 0008). It is what makes the
+        # job's deliberate re-read of the watermark row an upsert instead of a
+        # duplicate.
+        UniqueConstraint("device_id", "logger_id", "read_at", name="uq_load_profile_readings_device_logger_read_at"),
     )
 
 

@@ -16,12 +16,20 @@ nothing instantaneous, so the Poller's tick reads
 :meth:`MeterDriver.read_meter_serial` — one register, the same seam the Probe
 uses — and discards the answer. An abstract method with no caller is not a
 contract, it is a leftover, and every base class M4 adds would have had to
-implement it. The load-profile read path for the SMW110W4 landed at M4a-2
-(issue #10) on the leaf driver
-(:class:`~arichds.acquisition.drivers.smw110.Smw110Driver`), not here — D1 in
-that issue's delegation prompt is why it stayed off this base class rather than
-becoming an abstraction shaped by one model. Billing (M6) is the one read path
-still behind in v1.
+implement it. Billing (M6) is the one read path still behind in v1.
+
+**The load-profile read path moved onto this base class at M5a-1 (issue #15).**
+It landed on the leaf :class:`~arichds.acquisition.drivers.smw110.Smw110Driver`
+at M4a-2 (issue #10, D1) on the "no caller, no contract" principle above — and
+that reasoning has now expired rather than been overruled: the load-profile job
+is the caller, it must ask *every* driver whether it can read one, and
+``SPEC.md`` §3.5 names :meth:`MeterDriver.supports_load_profile` as the way it
+asks. The pairing is deliberate — a non-abstract
+:meth:`MeterDriver.supports_load_profile` answering ``False`` plus a
+:meth:`MeterDriver.read_load_profile` that *raises*, so that ``hasattr`` is never
+the question. ``hasattr`` would make a driver that **forgot** the method
+indistinguishable from one that deliberately lacks it, and only one of those two
+is a bug.
 """
 
 from __future__ import annotations
@@ -44,14 +52,26 @@ class IntervalReading:
         read_at: When the interval was recorded by the meter —
             **timezone-aware UTC, always**.
         source: Which acquisition path produced it (``dlms`` / ``modbus``).
+        logger_id: Which load profile the row came from, derived from that
+            profile's OBIS (:func:`~arichds.acquisition.obis.logger_id_for_profile`).
+            Required, because it is part of the row's identity.
+        interval_sec: The meter's own capture period for that logger, in seconds
+            exactly as it reports them — no label conversion (M5a-1, D4).
         volt_l1/volt_l2/volt_l3: Phase-to-neutral voltage (V).
         current_l1/current_l2/current_l3: Line current (A).
         freq: Frequency (Hz).
         import_active_kwh: Active energy import for the interval (**kWh**).
+
+    The four measurement columns ``load_profile_readings`` gained at M5a-1
+    (``import_reactive_kvarh``, ``export_active_kwh``, ``export_reactive_kvarh``,
+    ``avg_geo_pf``) are deliberately **not** fields here: no driver produces one
+    until M4c, and a field nothing sets is speculative.
     """
 
     read_at: datetime
     source: str
+    logger_id: int
+    interval_sec: int
     volt_l1: float | None = None
     volt_l2: float | None = None
     volt_l3: float | None = None
@@ -62,7 +82,12 @@ class IntervalReading:
     import_active_kwh: float | None = None
 
     def as_columns(self) -> dict[str, Any]:
-        """Return the measurement fields as ``load_profile_readings`` column values."""
+        """Return the **measurement** fields as ``load_profile_readings`` column values.
+
+        Measurements only — ``read_at``, ``source``, ``logger_id`` and
+        ``interval_sec`` are the row's identity, not values it measured, and the
+        writer composes them alongside this dict.
+        """
         return {
             "volt_l1": self.volt_l1,
             "volt_l2": self.volt_l2,
@@ -134,6 +159,43 @@ class MeterDriver(ABC):
             a blank — which is indistinguishable from a failed probe for the
             caller.
         """
+
+    def supports_load_profile(self) -> bool:
+        """Whether this driver can read a load profile (M5a-1, SPEC §3.5).
+
+        Non-abstract and ``False`` by default: most models have no scanned
+        capture list yet, and the load-profile job must be able to ask every
+        driver the same question. A model that can read one overrides this to
+        ``True`` **and** implements :meth:`read_load_profile`.
+
+        Returns:
+            False, unless a concrete driver says otherwise.
+        """
+        return False
+
+    def read_load_profile(self, start_utc: datetime, end_utc: datetime) -> list[IntervalReading]:
+        """Read the meter's load profile over ``[start_utc, end_utc]``, inclusive.
+
+        Callable only when :meth:`supports_load_profile` returns ``True``.
+        Assumes :meth:`connect` succeeded.
+
+        Non-abstract and raising, rather than absent, so the job never has to ask
+        ``hasattr``: a driver that *forgot* this method must not look like one
+        that deliberately lacks it. Not abstract either — that would force every
+        model M4 adds to write a stub for a profile nobody has scanned.
+
+        Args:
+            start_utc: Inclusive lower bound, timezone-aware UTC.
+            end_utc: Inclusive upper bound, timezone-aware UTC.
+
+        Returns:
+            Rows already normalized to UTC timestamps and kWh energy, oldest
+            first, each stamped with its ``logger_id`` and ``interval_sec``.
+
+        Raises:
+            NotImplementedError: Always, on a driver that has no load profile.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no load profile — check supports_load_profile() first")
 
 
 class MeterConnectionError(RuntimeError):

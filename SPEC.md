@@ -291,7 +291,9 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - **SMW110W4 อ่าน load profile (Logger 1) ได้แล้วที่ M4a-2 (issue #10, 2026-08-07)**:
   `Smw110Driver.read_load_profile()` อ่านผ่าน `readRowsByEntry` เท่านั้น (เมิเตอร์ปฏิเสธ
   `readRowsByRange`) คืนแถวเป็น UTC + kWh ผ่านมิเตอร์จริง 8 คอลัมน์ (ตัด 12 คอลัมน์ที่ยังไม่รู้
-  ความหมายทิ้ง) — ยังไม่มีตาราง/scheduled job/หน้าเว็บ (ของ M5 ดูด้านล่าง)
+  ความหมายทิ้ง) — **ตารางมีแล้วที่ M5a-1 (issue #15, 2026-08-07)**: Read now เขียนลง
+  `load_profile_readings` จริง (migration 0006 + `acquisition/load_profile.py`) ·
+  ยังไม่มี scheduled job (#16) และหน้าเว็บ (#17/#18)
 
 ### 3.5 Load Profile (M5)
 

@@ -9,6 +9,10 @@ fleet and are not to be "improved". Taken from
 The keys are the ``load_profile_readings`` column names, so the mapping from
 wire to storage is visible in one place and the driver has nothing to interpret.
 
+It also holds the load-profile **logger** map (M5a-1) — a separate constant,
+added rather than folded in, because ``INSTANTANEOUS_OBIS`` below is
+field-proven and frozen.
+
 **No production read path uses this map today** (ADR 0007, issue #8): the
 Poller's tick reads one register, the Meter Serial. It is reached only by
 ``scripts/probe_meter.py``, the read-only field diagnostic. It stays because it
@@ -44,3 +48,34 @@ INSTANTANEOUS_OBIS: Final[dict[str, tuple[str, int]]] = {
 #: reaches ``load_profile_readings``. Everything else is already in its stored
 #: unit.
 ENERGY_COLUMNS_WH: Final[frozenset[str]] = frozenset({"import_active_kwh"})
+
+#: Which ``logger_id`` a load-profile row gets, keyed by the ProfileGeneric OBIS
+#: it was read from (SPEC §3.5). Two entries, scanned off real meters on
+#: 2026-08-05 (``docs/meter-notes/load-profile-capture-objects.md``) — there is
+#: no third profile anybody has seen.
+LOAD_PROFILE_LOGGER_IDS: Final[dict[str, int]] = {"1.0.99.1.0.255": 1, "1.0.99.2.0.255": 2}
+
+
+def logger_id_for_profile(obis: str) -> int:
+    """Return the ``logger_id`` for a load-profile OBIS code (M5a-1, D5).
+
+    **An explicit map, not a parse of the OBIS group.** Deriving the id
+    arithmetically (``1.0.99.N.0.255`` → ``N``) would silently mint ids for
+    profiles nobody has scanned, and an id nobody can trace back to a real
+    profile is the same class of failure as deriving one from the order profiles
+    happened to be discovered in — which is what ADR 0005 forbids for identity.
+
+    Args:
+        obis: The ProfileGeneric's OBIS code.
+
+    Returns:
+        1 for Logger 1, 2 for Logger 2.
+
+    Raises:
+        ValueError: For any other code. Adding a profile means adding it to
+            :data:`LOAD_PROFILE_LOGGER_IDS` with the scan that justifies it.
+    """
+    logger_id = LOAD_PROFILE_LOGGER_IDS.get(obis)
+    if logger_id is None:
+        raise ValueError(f"{obis!r} is not a known load profile — no logger_id can be derived from it")
+    return logger_id
