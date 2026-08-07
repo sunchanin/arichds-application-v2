@@ -53,6 +53,17 @@ instead. It kept the table for its other duties. **v2 takes the fix and declines
   and returns to the caller who is waiting on it, exactly like Test connection and the
   create-time probe. ADR 0006 already gives it priority over background ticks, so a queue would
   add a state machine to solve a problem that is already solved by a lock.
+- **Backfill runs oldest-first, and a newly added meter therefore shows its oldest data first.**
+  This falls straight out of the rule above and is not negotiable while that rule stands. The
+  job splits the window from the watermark to now into 24 h chunks (v1's `LP_READ_CHUNK_HOURS`)
+  and writes each one, so a link that drops keeps everything already fetched and the next cycle
+  resumes from the data — no chunk bookkeeping, which is the payoff for deriving the watermark
+  from rows. Newest-first is the tempting alternative and it is **wrong**: fetching today first
+  moves `MAX(read_at)` to today, the next cycle starts from today, and the 90 days behind it are
+  never read. That is the exact permanent gap this ADR exists to prevent, arrived at from the
+  other direction. Owner's call, 2026-08-07: the install-time cost — an operator who adds a
+  meter sees three-month-old data before today's — is accepted rather than reintroducing a
+  second marker to work around it.
 
 ## What this costs, accepted deliberately
 
