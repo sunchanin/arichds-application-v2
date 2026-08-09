@@ -28,6 +28,11 @@ dependencies = [
     "gurux-net>=1.0.23",
     "gurux-serial>=1.0.21",
     "pyserial>=3.5",
+    # ─── Billing capture — PDF/xlsx (M6b, issue #22) ──────────────────────────
+    # Both pure Python (no Cairo/Pango/native ext) — see docs/lib-notes/fpdf2-and-openpyxl.md.
+    # Pinned at the versions v1's renderers are field-proven against.
+    "fpdf2>=2.8.7",
+    "openpyxl>=3.1.5",
 ]
 
 [project.optional-dependencies]

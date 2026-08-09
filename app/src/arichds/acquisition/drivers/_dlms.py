@@ -11,7 +11,9 @@ Probe and for the Poller's liveness tick. The SMW110W4's load-profile read path
 landed at M4a-2 (issue #10) — but on the leaf driver
 (:class:`~arichds.acquisition.drivers.smw110.Smw110Driver`), not here, per that
 issue's D1: one model's field evidence does not justify a shared method yet.
-The billing-profile read path stays behind in v1 until M6 asks for it.
+The billing-profile read path (M6a, issue #21) landed on the same leaf driver,
+for the same reason — this base class still supplies only the register lifecycle
+every DLMS model shares.
 
 **Transport-agnostic since issue #9** (module renamed from ``_dlms_tcp.py``,
 class renamed from ``TcpDlmsDriver``): the transport fragment of the argv comes

@@ -47,16 +47,16 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from gurux_dlms import GXDLMSClient
+from gurux_dlms import GXDLMSClient, GXReplyData
 from gurux_dlms.enums import Unit
 from gurux_dlms.enums.DataType import DataType
-from gurux_dlms.objects import GXDLMSProfileGeneric, GXDLMSRegister
+from gurux_dlms.objects import GXDLMSExtendedRegister, GXDLMSProfileGeneric, GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers._dlms import DlmsDriver
-from arichds.acquisition.drivers.base import IntervalReading
+from arichds.acquisition.drivers.base import BillingReading, IntervalReading
 from arichds.acquisition.obis import logger_id_for_profile
-from arichds.constants import METER_LOCAL_UTC_OFFSET_HOURS, TCP_READ_TIMEOUT_SEC
+from arichds.constants import METER_LOCAL_UTC_OFFSET_HOURS, TCP_READ_TIMEOUT_SEC, WH_TO_KWH_DIVISOR
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,57 @@ LOAD_PROFILE_OBIS = "1.0.99.1.0.255"
 #: position is still resolved from the live-read ``captureObjects`` (D7) rather
 #: than assumed.
 _CLOCK_OBIS = "0.0.1.0.0.255"
+
+#: The billing profile (M6a, issue #21) — prefix ``1.0``, not the ``0.0``
+#: SMART TCC uses (docs/meter-notes/smw110w4-scan.md:228-238).
+BILLING_PROFILE_OBIS = "1.0.98.1.0.255"
+
+#: The widest column prefix this profile will serve — a full-width read
+#: answers "Data Block Unavailable"; 43 is the measured ceiling
+#: (docs/meter-notes/smw110w4-scan.md:240-267).
+BILLING_COLUMN_SPAN = 43
+
+#: `E` (capture-column tariff index) -> the ``billing_readings`` column suffix.
+_BILLING_RATE_SUFFIX: dict[int, str] = {0: "total", 1: "rate_a", 2: "rate_b", 3: "rate_c", 4: "rate_d"}
+
+#: `C` (OBIS quantity group) -> (field prefix, required Unit), for energy
+#: (``D=8``, class 3 Register) columns. ``C=5`` (reactive Q1) is deliberately
+#: absent — no screen has ever shown it (SPEC §3.6).
+_BILLING_ENERGY_BY_C: dict[int, tuple[str, Unit]] = {
+    1: ("import_active_kwh", Unit.ACTIVE_ENERGY),
+    2: ("export_active_kwh", Unit.ACTIVE_ENERGY),
+    3: ("import_reactive_kvarh", Unit.REACTIVE_ENERGY),
+    4: ("export_reactive_kvarh", Unit.REACTIVE_ENERGY),
+}
+
+#: `C` -> (field prefix, required Unit), for maximum-demand (``D=6``, class 4
+#: ExtendedRegister) columns. Same four quantities as the energy map above.
+_BILLING_DEMAND_BY_C: dict[int, tuple[str, Unit]] = {
+    1: ("max_demand_import_active_kw", Unit.ACTIVE_POWER),
+    2: ("max_demand_export_active_kw", Unit.ACTIVE_POWER),
+    3: ("max_demand_import_reactive_kvar", Unit.REACTIVE_POWER),
+    4: ("max_demand_export_reactive_kvar", Unit.REACTIVE_POWER),
+}
+
+#: Every mapped billing capture column, keyed by its own OBIS:
+#: ``{capture_obis: (BillingReading field, COSEM class, required Unit)}``.
+#: Spelled out from the two prefix maps above rather than hand-typed forty
+#: times, but the **result** — the field set on :class:`BillingReading` — is
+#: still spelled out there (step 2). A capture column absent from this dict
+#: (``C=5``, the Clock, the period counter) is dropped structurally, exactly
+#: as the twelve unmapped load-profile columns are (D3/D4, issue #10).
+_MAPPED_BILLING_COLUMNS: dict[str, tuple[str, type, Unit]] = {
+    **{
+        f"1.0.{c}.8.{e}.255": (f"{prefix}_{suffix}", GXDLMSRegister, unit)
+        for c, (prefix, unit) in _BILLING_ENERGY_BY_C.items()
+        for e, suffix in _BILLING_RATE_SUFFIX.items()
+    },
+    **{
+        f"1.0.{c}.6.{e}.255": (f"{prefix}_{suffix}", GXDLMSExtendedRegister, unit)
+        for c, (prefix, unit) in _BILLING_DEMAND_BY_C.items()
+        for e, suffix in _BILLING_RATE_SUFFIX.items()
+    },
+}
 
 #: The seven mapped capture columns that carry a measurement, keyed by their
 #: own OBIS: ``{capture_obis: (IntervalReading field, sibling OBIS to borrow
@@ -431,6 +482,213 @@ class Smw110Driver(DlmsDriver):
                     current_l3=fields.get("current_l3"),
                     freq=None,
                     import_active_kwh=fields.get("import_active_kwh"),
+                )
+            )
+        return readings
+
+    def supports_billing(self) -> bool:
+        """Yes — the billing profile (``1.0.98.1.0.255``), by a 43-column span
+        (M6a, issue #21, D3/ADR 0009)."""
+        return True
+
+    def _read_scaler_unit(
+        self,
+        obis: str,
+        cosem_class: type,
+        required_unit: Unit,
+        cache: dict[tuple[str, type, Unit], float | None],
+    ) -> float | None:
+        """Read *obis*'s own ``scaler_unit`` (attr 3) as an object of *cosem_class*.
+
+        Memoized per *cache* — a fresh dict :meth:`read_billing` builds once
+        per call and threads through every column, so the ``E=0`` sibling a
+        whole tariff group falls back to is read once, not once per tariff
+        (review finding on issue #21: up to four redundant reads of the same
+        address per group, each holding the Transport Endpoint a DLMS
+        round trip longer for no new information).
+
+        Returns:
+            The multiplier, or ``None`` if the object could not be read or
+            reports a unit other than *required_unit*.
+        """
+        key = (obis, cosem_class, required_unit)
+        if key in cache:
+            return cache[key]
+
+        obj = cosem_class(obis)
+        self._client.objects.append(obj)
+        try:
+            self._reader.read(obj, 3)
+        except Exception:  # noqa: BLE001 — an unreadable object degrades to Unit.NONE below, never guessed.
+            multiplier = None
+        else:
+            multiplier = obj.scaler if obj.unit == required_unit else None
+
+        cache[key] = multiplier
+        return multiplier
+
+    def _billing_multiplier(
+        self,
+        capture_obis: str,
+        cosem_class: type,
+        required_unit: Unit,
+        column: str,
+        cache: dict[tuple[str, type, Unit], float | None],
+    ) -> float | None:
+        """Resolve *capture_obis*'s multiplier: its own ``scaler_unit`` first,
+        then the ``E=0`` (total) sibling of the same ``C.D`` group (step 3.7).
+
+        Unlike the load-profile path (which this meter denies ``scaler_unit``
+        on for *every* capture column), the billing energy total
+        (``1.0.1.8.0.255``) is known readable (Finding 5) — so the "own
+        object" attempt is tried first here, and the sibling is the fallback,
+        not the only path.
+
+        Returns:
+            The multiplier, or ``None`` if neither attempt resolves — the
+            column is left ``None`` on every row rather than storing an
+            unscaled number that looks like data.
+        """
+        multiplier = self._read_scaler_unit(capture_obis, cosem_class, required_unit, cache)
+        if multiplier is None:
+            parts = capture_obis.split(".")
+            sibling_obis = ".".join([*parts[:4], "0", parts[5]])
+            if sibling_obis != capture_obis:
+                multiplier = self._read_scaler_unit(sibling_obis, cosem_class, required_unit, cache)
+
+        if multiplier is None:
+            logger.warning(
+                "%s: could not resolve a scaler for %s (%s) — %s stays unscaled (None) on every row",
+                self.model_name,
+                capture_obis,
+                column,
+                column,
+            )
+        return multiplier
+
+    def read_billing(self) -> list[BillingReading]:
+        """Read the whole billing buffer (``1.0.98.1.0.255``) through a
+        43-column span (M6a, issue #21).
+
+        A full-width ``readRowsByEntry`` answers "Data Block Unavailable" on
+        this profile (docs/meter-notes/smw110w4-scan.md:240-267) — the vendored
+        :class:`~arichds.vendor.gurux.GXDLMSReader` has no span parameter, and
+        editing it is forbidden (CLAUDE.md). The way through, without touching
+        any vendored file, is the installed ``GXDLMSClient.readRowsByEntry``
+        (which does take a ``columns`` span) reached through ``self._client``
+        — that method returns a **request**, not rows, so the data block is
+        driven by hand and the reply parsed against the span, exactly as
+        ``scripts/probe_smw110_serial.py:530-543`` does.
+
+        Returns:
+            Every row the meter holds, newest first (the order this profile
+            returns them in) — the first row is the device's Open Period
+            (``is_open=True``); every other row is a closed period.
+        """
+        if self._reader is None or self._client is None:
+            logger.warning("read_billing() called on a disconnected driver %s", self)
+            return []
+
+        pg = GXDLMSProfileGeneric(BILLING_PROFILE_OBIS)
+        self._client.objects.append(pg)
+
+        self._reader.read(pg, 3)  # populates pg.captureObjects — live, never cached (D7)
+        entries_in_use = int(self._reader.read(pg, 7))
+        if entries_in_use <= 0:
+            return []
+
+        full_capture_objects = list(pg.captureObjects)
+        span = full_capture_objects[:BILLING_COLUMN_SPAN]
+
+        positions = {str(obj.logicalName): i for i, (obj, _cap) in enumerate(span)}
+        expected_cell_count = len(span)
+        clock_pos = positions.get(_CLOCK_OBIS)
+
+        # One cache for the whole call, so a tariff group's shared E=0 sibling
+        # is read once no matter how many of its tariff columns fall back to
+        # it (review finding — up to four redundant reads of the same address
+        # per group otherwise, each holding the Transport Endpoint one more
+        # DLMS round trip for no new information).
+        scaler_cache: dict[tuple[str, type, Unit], float | None] = {}
+        multipliers = {
+            capture_obis: self._billing_multiplier(capture_obis, cosem_class, unit, field, scaler_cache)
+            for capture_obis, (field, cosem_class, unit) in _MAPPED_BILLING_COLUMNS.items()
+            if capture_obis in positions
+        }
+
+        original_capture_objects = pg.captureObjects
+        try:
+            request = self._client.readRowsByEntry(pg, 1, entries_in_use, span)
+            reply = GXReplyData()
+            self._reader.readDataBlock(request, reply)
+            pg.captureObjects = span
+            rows = self._client.updateValue(pg, 2, reply.value) or []
+        finally:
+            pg.captureObjects = original_capture_objects
+
+        try:
+            meter_serial = self.read_meter_serial()
+        except Exception:  # noqa: BLE001 — an annotation column must not cost the whole read.
+            logger.warning(
+                "%s: meter serial read failed after the billing buffer was already read — "
+                "rows stored with meter_serial=None",
+                self.model_name,
+            )
+            meter_serial = None
+
+        readings: list[BillingReading] = []
+        for position, row in enumerate(rows):
+            if len(row) != expected_cell_count:
+                logger.warning(
+                    "%s: billing row has %d cells, span width is %d — skipping",
+                    self.model_name,
+                    len(row),
+                    expected_cell_count,
+                )
+                if position == 0:
+                    logger.warning(
+                        "%s: entry 1 (the running billing period) was malformed — "
+                        "no Open Period will be recorded from this read",
+                        self.model_name,
+                    )
+                continue
+
+            local_dt = _coerce_clock_cell(row[clock_pos]) if clock_pos is not None else None
+            if local_dt is None:
+                if position == 0:
+                    logger.warning(
+                        "%s: the running billing period (entry 1) has no usable timestamp — "
+                        "no Open Period will be recorded from this read",
+                        self.model_name,
+                    )
+                else:
+                    logger.warning("%s: billing row has no usable timestamp — skipping", self.model_name)
+                continue
+            bill_date = _meter_local_to_utc(local_dt)
+
+            fields: dict[str, float | None] = {}
+            for capture_obis, (field, _cosem_class, _unit) in _MAPPED_BILLING_COLUMNS.items():
+                pos = positions.get(capture_obis)
+                multiplier = multipliers.get(capture_obis)
+                raw = row[pos] if pos is not None else None
+                # Same guard as the load-profile loop above: a non-numeric cell
+                # must not reach `raw * multiplier`, and the billing path
+                # divides every column by WH_TO_KWH_DIVISOR unconditionally —
+                # unlike `_normalize()`, which only divides the load profile's
+                # frozen ENERGY_COLUMNS_WH set (step 8; these forty columns are
+                # a different table with a different contract).
+                if raw is None or multiplier is None or not isinstance(raw, (Decimal, int, float)):
+                    fields[field] = None
+                else:
+                    fields[field] = (float(raw) * multiplier) / WH_TO_KWH_DIVISOR
+
+            readings.append(
+                BillingReading(
+                    bill_date=bill_date,
+                    source=self.source,
+                    is_open=position == 0,
+                    meter_serial=meter_serial,
+                    **fields,
                 )
             )
         return readings

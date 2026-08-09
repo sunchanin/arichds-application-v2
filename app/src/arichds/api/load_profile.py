@@ -37,11 +37,15 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from arichds.api.deps import SessionDep, get_current_user
+from arichds.api.deps import SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
 from arichds.db.models import Device, LoadProfileReading
 
-router = APIRouter(prefix="/api/load-profile", tags=["load-profile"], dependencies=[Depends(get_current_user)])
+router = APIRouter(
+    prefix="/api/load-profile",
+    tags=["load-profile"],
+    dependencies=[Depends(get_current_user), Depends(require_feature("load_profile"))],
+)
 
 
 class LoadProfileRowOut(BaseModel):

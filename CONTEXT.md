@@ -135,6 +135,19 @@ the original**, so it protects against a wrong delete or a corrupted database an
 the disk failing. The destination is fixed, not a setting.
 _Avoid_: snapshot, dump, export (that's the CSV feature), replica
 
+**Capture**:
+A PDF (and, when sold, an xlsx) document for one closed Billing Reading, written to a folder an
+admin chooses (`capture_dir`, ADR 0010) — never a fixed path, because the folder **is** the
+handoff mechanism: the operator hands the file to a customer through whatever their own
+workflow already reaches (a network share, a synced folder, their mail client's watched
+directory). Its path is derived from convention every time —
+`<capture_dir>/<meter_serial>/<bill_date>.pdf` — and never stored in the database, so changing
+`capture_dir` orphans every existing capture by design: old files stay exactly where they are
+and simply stop being reachable from the Billing page. Created eagerly, synchronously, the
+moment a closed period is inserted; a missing one is rendered again on download rather than
+tracked as a failure. The Open Period never has one.
+_Avoid_: report, export (that's a different feature), snapshot
+
 **Output Parity**:
 The acceptance rule for domain modules: numbers shown by v2 must equal v1's output at v1's
 default settings (`divide_by_1000=on` → kWh) on the same meter. Internals may differ freely.

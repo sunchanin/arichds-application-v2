@@ -1,0 +1,252 @@
+"""Billing API — reading a device's stored Billing Readings (M6a, issue #21).
+
+Mirrors ``test_api_load_profile.py``, with the differences SPEC §3.6 and this
+issue's step 9 call for:
+
+* **``status`` is required** — ``closed`` or ``open`` — the two Billing page
+  tabs, keyed off ``record_status``.
+* **``device_id`` and the date range are optional**, unlike Load Profile's
+  mandatory range: billing is ~13 rows per device per year, so forcing a range
+  would only hide data, not protect the browser from row volume.
+* **Eight ``*_total`` columns only** — the 32 tariff columns are stored but not
+  returned; a response carries exactly what the page renders.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from fakes import FakeMeterState
+from fastapi.testclient import TestClient
+
+pytestmark = pytest.mark.usefixtures("fake_meter")
+
+DEVICE = {
+    "name": "Main Incomer",
+    "brand": "mitsu",
+    "model": "smw110",
+    "site_name": "Plant A",
+    "transport": {"kind": "net", "host": "127.0.0.1", "port": 4059},
+    "password": "hunter2",
+}
+
+BASE = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
+
+
+def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = "SN-1", **overrides: object) -> int:
+    fake_meter.meter_serial = serial
+    response = client.post("/api/devices", json={**DEVICE, **overrides})
+    assert response.status_code == 201, response.text
+    return response.json()["data"]["id"]
+
+
+def seed_closed(device_id: int, bill_date: datetime, **columns: float) -> None:
+    from arichds.db.models import BillingReading
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        session.add(
+            BillingReading(
+                device_id=device_id,
+                bill_date=bill_date,
+                read_at=bill_date,
+                record_status=None,
+                source="dlms",
+                meter_serial="1232002893",
+                **columns,
+            )
+        )
+
+
+def seed_open(device_id: int, bill_date: datetime, **columns: float) -> None:
+    from arichds.db.models import BillingReading
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        session.add(
+            BillingReading(
+                device_id=device_id,
+                bill_date=bill_date,
+                read_at=bill_date,
+                record_status="open",
+                source="dlms",
+                meter_serial="1232002893",
+                **columns,
+            )
+        )
+
+
+def fetch(client: TestClient, status: str, **params: object):
+    query = {"status": status, **params}
+    return client.get("/api/billing", params=query)
+
+
+class TestStatusTabs:
+    def test_closed_status_never_returns_an_open_row(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE)
+        seed_open(device_id, BASE + timedelta(days=1))
+
+        response = fetch(admin_client, "closed")
+
+        assert response.status_code == 200, response.text
+        items = response.json()["data"]["items"]
+        assert len(items) == 1
+        assert items[0]["bill_date"].startswith("2026-08-01")
+
+    def test_open_status_never_returns_a_closed_row(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE)
+        seed_open(device_id, BASE + timedelta(days=1))
+
+        response = fetch(admin_client, "open")
+
+        assert response.status_code == 200, response.text
+        items = response.json()["data"]["items"]
+        assert len(items) == 1
+        assert items[0]["bill_date"].startswith("2026-08-02")
+
+    def test_an_invalid_status_is_422(self, admin_client: TestClient) -> None:
+        assert fetch(admin_client, "pending").status_code == 422
+
+
+class TestEmptyIsNotAnError:
+    def test_a_device_with_no_periods_is_a_200_with_an_empty_page(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+
+        response = fetch(admin_client, "closed", device_id=device_id)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"] == {"items": [], "total": 0, "limit": 100, "offset": 0}
+
+
+class TestDeviceIdAndRangeAreOptional:
+    def test_omitting_device_id_returns_every_devices_rows(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        mine = add_device(admin_client, fake_meter, serial="SN-1")
+        theirs = add_device(
+            admin_client, fake_meter, serial="SN-2", name="Second", transport={**DEVICE["transport"], "port": 4060}
+        )
+        seed_closed(mine, BASE)
+        seed_closed(theirs, BASE)
+
+        response = fetch(admin_client, "closed")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["total"] == 2
+
+    def test_omitting_the_range_returns_everything(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE)
+        seed_closed(device_id, BASE - timedelta(days=365))
+
+        response = fetch(admin_client, "closed", device_id=device_id)
+
+        assert response.json()["data"]["total"] == 2
+
+    def test_an_unknown_device_id_is_404(self, admin_client: TestClient) -> None:
+        assert fetch(admin_client, "closed", device_id=4242).status_code == 404
+
+
+class TestRange:
+    def test_the_range_is_half_open_on_bill_date(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE)
+        seed_closed(device_id, BASE + timedelta(days=30))
+
+        response = fetch(
+            admin_client,
+            "closed",
+            device_id=device_id,
+            start=BASE.isoformat(),
+            end=(BASE + timedelta(days=30)).isoformat(),
+        )
+
+        assert response.json()["data"]["total"] == 1
+
+    def test_end_not_later_than_start_is_422(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        device_id = add_device(admin_client, fake_meter)
+
+        response = fetch(admin_client, "closed", device_id=device_id, start=BASE.isoformat(), end=BASE.isoformat())
+
+        assert response.status_code == 422, response.text
+
+
+class TestRowShape:
+    def test_the_eight_totals_are_present_and_the_thirty_two_tariffs_are_not(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(
+            device_id,
+            BASE,
+            import_active_kwh_total=200464.501,
+            import_active_kwh_rate_a=1.0,  # a tariff column — must not be returned
+        )
+
+        response = fetch(admin_client, "closed", device_id=device_id)
+
+        row = response.json()["data"]["items"][0]
+        assert set(row) == {
+            "id",  # M6b, issue #22 — the download-capture link needs the row's own id
+            "device_id",
+            "device_name",
+            "bill_date",
+            "read_at",
+            "meter_serial",
+            "import_active_kwh_total",
+            "export_active_kwh_total",
+            "import_reactive_kvarh_total",
+            "export_reactive_kvarh_total",
+            "max_demand_import_active_kw_total",
+            "max_demand_export_active_kw_total",
+            "max_demand_import_reactive_kvar_total",
+            "max_demand_export_reactive_kvar_total",
+        }
+        assert row["import_active_kwh_total"] == pytest.approx(200464.501)
+        assert row["device_name"] == "Main Incomer"
+        assert row["meter_serial"] == "1232002893"
+
+    def test_a_null_total_stays_null(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE)  # no measurement columns supplied
+
+        response = fetch(admin_client, "closed", device_id=device_id)
+
+        row = response.json()["data"]["items"][0]
+        assert row["max_demand_import_active_kw_total"] is None
+
+
+class TestOrdering:
+    def test_newest_bill_date_first(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE)
+        seed_closed(device_id, BASE + timedelta(days=30))
+        seed_closed(device_id, BASE - timedelta(days=30))
+
+        response = fetch(admin_client, "closed", device_id=device_id)
+
+        dates = [row["bill_date"] for row in response.json()["data"]["items"]]
+        assert dates == sorted(dates, reverse=True)
+
+
+class TestAccess:
+    def test_an_anonymous_caller_is_refused(self, anon_client: TestClient) -> None:
+        assert fetch(anon_client, "closed").status_code == 401
+
+    def test_a_plain_user_may_read(
+        self, user_client: TestClient, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE)
+
+        response = fetch(user_client, "closed", device_id=device_id)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["total"] == 1

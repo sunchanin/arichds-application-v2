@@ -10,10 +10,13 @@ the meter's own load profile from #15
 (:func:`~arichds.acquisition.load_profile.read_and_store_load_profile`), and the
 Scheduler's job does the same on a cadence from #16 — but neither *reports* a
 value, they report whether the meter answered and how many intervals were
-stored. Reading those rows back out belongs to
-:mod:`arichds.api.load_profile`, not here. The other handler touching
-:class:`~arichds.db.models.LoadProfileReading` is Delete all data, which counts
-the rows it destroys.
+stored. M6a (issue #21) adds the same pair for billing
+(:func:`~arichds.acquisition.billing.read_and_store_billing`). Reading either
+set of rows back out belongs to :mod:`arichds.api.load_profile` and
+:mod:`arichds.api.billing`, not here. The other handler touching
+:class:`~arichds.db.models.LoadProfileReading` and
+:class:`~arichds.db.models.BillingReading` is Delete all data, which counts the
+rows it destroys.
 
 Three independent gates sit in front of every handler here:
 
@@ -61,6 +64,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, st
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import delete, func, select
 
+from arichds.acquisition.billing import read_and_store_billing
 from arichds.acquisition.catalog import CATALOG, ModelSpec
 from arichds.acquisition.connection_params import connection_params_from_transport
 from arichds.acquisition.drivers.factory import supported_models
@@ -77,8 +81,8 @@ from arichds.acquisition.status import (
 )
 from arichds.api.deps import AdminDep, CurrentUserDep, LicenseServiceDep, PollerDep, SessionDep, get_current_user
 from arichds.api.envelope import ApiResponse
-from arichds.constants import JOB_LIVENESS, JOB_LOAD_PROFILE
-from arichds.db.models import Device, DeviceEvent, LoadProfileReading
+from arichds.constants import JOB_BILLING, JOB_LIVENESS, JOB_LOAD_PROFILE
+from arichds.db.models import BillingReading, Device, DeviceEvent, LoadProfileReading
 
 logger = logging.getLogger(__name__)
 
@@ -497,10 +501,9 @@ class ReadNowJobResult(BaseModel):
     """What one job of a Read now did.
 
     Attributes:
-        job: Which job this entry is about —
-            :data:`~arichds.constants.JOB_LIVENESS` or
-            :data:`~arichds.constants.JOB_LOAD_PROFILE` (M5a-1). M6 adds
-            ``billing``.
+        job: Which job this entry is about — :data:`~arichds.constants.JOB_LIVENESS`,
+            :data:`~arichds.constants.JOB_LOAD_PROFILE` (M5a-1) or
+            :data:`~arichds.constants.JOB_BILLING` (M6a).
         ok: Whether it succeeded. A meter that refuses reports ``False`` here,
             not through an HTTP status (D10) — and so does a job that could not
             run at all, which is the same thing from the operator's side.
@@ -518,8 +521,8 @@ class ReadNowJobResult(BaseModel):
 class ReadNowOut(BaseModel):
     """What a Read now produced.
 
-    A **list** of job results — ``liveness`` and, from M5a-1, ``load_profile``;
-    M6 adds ``billing`` — because a multi-job read can be partially successful,
+    A **list** of job results — ``liveness``, ``load_profile`` (M5a-1) and
+    ``billing`` (M6a) — because a multi-job read can be partially successful,
     which is exactly what a single HTTP status cannot say.
 
     Attributes:
@@ -1108,7 +1111,7 @@ def read_now(device_id: DeviceIdPath, session: SessionDep, user: CurrentUserDep)
     device: Pause governs background reads only, and a person asking whether a
     meter they just fixed is answering is precisely what Read now is for.
 
-    Two jobs run, in this order:
+    Three jobs run, in this order:
 
     1. ``liveness`` — the same :func:`~arichds.acquisition.probe.probe_meter`
        Create and Update use: one association, one register (the Meter Serial),
@@ -1121,7 +1124,11 @@ def read_now(device_id: DeviceIdPath, session: SessionDep, user: CurrentUserDep)
        Manual Read acquisition and stores what it reads. It runs only after the
        liveness read succeeded: a meter that did not answer one register will
        not answer a profile, and asking anyway would just spend the operator's
-       wait. M6 adds ``billing`` to the same list without changing this contract.
+       wait.
+    3. ``billing`` (M6a, issue #21) — :func:`~arichds.acquisition.billing.read_and_store_billing`,
+       which reads the whole billing buffer in one round trip (ADR 0009 — no
+       window, no watermark) and stores it. Same "only after liveness
+       succeeded" rule, and its failure is never a strike either.
 
     Every job that was *considered* gets an entry, including one that could not
     run (D12) — see :class:`ReadNowOut`.
@@ -1177,6 +1184,13 @@ def read_now(device_id: DeviceIdPath, session: SessionDep, user: CurrentUserDep)
                     detail="Skipped — the meter did not answer the liveness read.",
                 )
             )
+            results.append(
+                ReadNowJobResult(
+                    job=JOB_BILLING,
+                    ok=False,
+                    detail="Skipped — the meter did not answer the liveness read.",
+                )
+            )
         except ValueError as exc:
             # A malformed stored transport — never produced by this module's
             # own Create/Update, which always validate first, but a config
@@ -1190,6 +1204,7 @@ def read_now(device_id: DeviceIdPath, session: SessionDep, user: CurrentUserDep)
             record_success(device_id)
             results.append(ReadNowJobResult(job=JOB_LIVENESS, ok=True, detail=f"The meter answered at {endpoint}."))
             results.append(_read_load_profile_job(device_id, device.model))
+            results.append(_read_billing_job(device_id, device.model))
 
     # Re-read: the recorders wrote through their own session (they have to — the
     # Poller calls them with no request session), so this request's identity map
@@ -1239,22 +1254,57 @@ def _read_load_profile_job(device_id: int, model: str) -> ReadNowJobResult:
     return ReadNowJobResult(job=JOB_LOAD_PROFILE, ok=True, detail=detail)
 
 
+def _read_billing_job(device_id: int, model: str) -> ReadNowJobResult:
+    """Run the billing job (M6a, issue #21) for a device whose liveness read
+    just succeeded.
+
+    Never touches device status (ADR 0004, D11) — same reason as
+    :func:`_read_load_profile_job`: a billing read that failed afterwards must
+    not undo an Online the meter just earned, and it is never a strike.
+    """
+    outcome = read_and_store_billing(device_id)
+
+    if not outcome.supported:
+        detail = outcome.error or f"Model {model!r} has no billing profile in this build — nothing was read."
+        return ReadNowJobResult(job=JOB_BILLING, ok=False, detail=detail)
+
+    if outcome.error is not None:
+        return ReadNowJobResult(job=JOB_BILLING, ok=False, detail=outcome.error)
+
+    if outcome.stored == 0 and not outcome.open_updated:
+        return ReadNowJobResult(job=JOB_BILLING, ok=True, detail="The meter had no new billing periods to store.")
+
+    parts: list[str] = []
+    if outcome.stored:
+        parts.append(f"{outcome.stored} closed billing period{'s' if outcome.stored != 1 else ''}")
+    if outcome.open_updated:
+        parts.append("the Open Period")
+    return ReadNowJobResult(job=JOB_BILLING, ok=True, detail=f"Stored {' and '.join(parts)}.")
+
+
 @router.post("/{device_id}/readings/clear")
 def clear_readings(
     device_id: DeviceIdPath, payload: ClearReadingsRequest, session: SessionDep, admin: AdminDep
 ) -> ApiResponse[int]:
-    """Delete every Interval Reading of one device, keeping the device and its history.
+    """Delete every Interval Reading and Billing Reading of one device, keeping
+    the device and its history.
 
     **It deletes real rows from M5a-1 on.** ADR 0007 stopped the Poller writing
     rows (M3-4), so between then and now this always answered ``0``; issue #15
     landed the load-profile reader that fills ``load_profile_readings``, and this
-    is the one place they are removed again. Nothing else about the endpoint
-    changed — the confirmation ritual and the Device Event it records were
-    written as the contract M5 would land against, and it landed against them.
+    is the one place they are removed again. **M6a (issue #21) extends it to
+    cover ``billing_readings`` too** — one button, one confirmation, both tables,
+    rather than a second irreversible-delete ritual for the same device.
 
-    Deleting the rows also resets what the load-profile job knows: the watermark
-    **is** the data (ADR 0008), so the next Read now starts its walk 90 days back
-    rather than where the deleted rows ended.
+    Deleting the load-profile rows also resets what the load-profile job knows:
+    the watermark **is** the data (ADR 0008), so the next Read now starts its
+    walk 90 days back rather than where the deleted rows ended. Billing has no
+    watermark to reset — ADR 0009's read is always the whole buffer — but the
+    same fact makes the deleted billing periods **come back**: the next billing
+    read (Manual or the daily job) re-imports every closed period still in the
+    meter. That repairs a value that was wrong on *our* side (a scaler fix,
+    re-read correctly); it is a no-op for a value the meter itself reports
+    wrong. The frontend confirmation text says so.
 
     Admin only (SPEC §3.2). The device's Device Events are kept **on purpose**:
     they are the evidence of who deleted the data, and destroying that evidence
@@ -1272,7 +1322,9 @@ def clear_readings(
             deleted**.
 
     Returns:
-        How many Interval Readings were deleted, so the toast can say.
+        The **total** rows deleted (interval readings plus billing periods),
+        so the toast can say — the API contract stays one number for a device
+        event detail that already names both counts.
     """
     device = _require_device(session, device_id)
     if payload.confirm_name != device.name:
@@ -1281,22 +1333,31 @@ def clear_readings(
             detail="The confirmation name does not match this device. Nothing was deleted.",
         )
 
-    result = session.execute(
+    intervals = session.execute(
         delete(LoadProfileReading).where(LoadProfileReading.device_id == device_id),
         execution_options={"synchronize_session": False},
-    )
-    deleted = result.rowcount
+    ).rowcount
+    periods = session.execute(
+        delete(BillingReading).where(BillingReading.device_id == device_id),
+        execution_options={"synchronize_session": False},
+    ).rowcount
     record_event(
         session,
         device_id=device_id,
         kind=DeviceEventKind.DATA_CLEARED,
-        detail=f"Deleted {deleted} interval readings.",
+        detail=f"Deleted {intervals} interval readings and {periods} billing periods.",
         actor=admin.username,
     )
     session.commit()
-    logger.info("Deleted %d interval readings of device %s by %s", deleted, device.name, admin.username)
+    logger.info(
+        "Deleted %d interval readings and %d billing periods of device %s by %s",
+        intervals,
+        periods,
+        device.name,
+        admin.username,
+    )
 
-    return ApiResponse.ok(deleted)
+    return ApiResponse.ok(intervals + periods)
 
 
 @router.get("/{device_id}/events")

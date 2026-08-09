@@ -532,8 +532,19 @@ SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register 
 > คนละเลข) และ Premier 550 (คอลัมน์ชนกัน) จะเดินจริงที่ M4c
 
 ### M6 — Billing
-open-period upsert slot (ADR 0018) · backfill · capture PDF/xlsx · หน้า Billing
+open-period upsert slot (ADR 0018) · **เส้นทางอ่านเส้นเดียว — "backfill" ถูกยุบเป็นแนวคิด (ADR 0009)** ·
+capture PDF/xlsx · feature entitlement · หน้า Billing
 (modbus billing cut ย้ายไปอยู่ M4b — มันเกิดได้ต่อเมื่อเส้นทาง modbus เขียนข้อมูลแล้ว)
+
+> ✅ **โค้ดลงครบแล้ว (2026-08-09)** — **M6a = issue #21** (`c27ba96`: schema + span read 43 คอลัมน์ +
+> open slot + job รายวัน + Read now + Delete all data + API + หน้า Billing) · **M6b = issue #22**
+> (`e8fef84`: `require_feature` ทาครบทั้ง billing/load_profile/records + ตาราง `settings` +
+> `capture_dir` + capture PDF/xlsx + ดาวน์โหลดที่ render เมื่อไฟล์หาย) · เทสเต็ม **977 passed**
+>
+> ⏳ **เหลือข้อเดียวที่ปิด M6 ไม่ได้ด้วยโค้ด**: probe บนมิเตอร์จริงสองเครื่อง ซึ่งเป็นงานของเจ้าของ
+> (เครื่องพัฒนายิงไม่ถึงทั้งคู่) · ปิด 5 ช่องว่าง — scaler ของคอลัมน์ billing · ค่าอัตรา `E=1..4`
+> มีจริงไหม · max-demand เป็น 0 จริงไหม · เวลาอ่าน 13×43 บน serial 19200 · **และตัวจำแนกเปิด/ปิด
+> ตอนมิเตอร์ตัดรอบจริง ซึ่งต้องรอวันตัดรอบรายเดือน**
 **Exit**: replay parity จาก buffer ที่บันทึกไว้ + **probe ยืนยันบนมิเตอร์จริงทั้งสองเครื่อง**
 (TCP + serial) + เทสผ่าน
 

@@ -1,7 +1,12 @@
 # Billing has one read path — every read reads the whole buffer
 
-Status: accepted (2026-08-09, owner decision during M6 grilling). **Not implemented yet** — M6
-has not started. This ADR is written before the code so the issues can cite it.
+Status: accepted (2026-08-09, owner decision during M6 grilling). **Implemented** — M6a
+(issue #21) landed the schema (`billing_readings`, both partial unique indexes), the
+`Smw110Driver.read_billing()` 43-column span read, `read_and_store_billing()` /
+`billing_cycle()`, the `billing` Read now job and scheduler entry, `Delete all data`
+covering both tables, the read-only `GET /api/billing` endpoint and the Billing page.
+This ADR was written before the code so the issues could cite it; it now describes what
+shipped.
 
 Reverses: v1's three billing read paths and two daemon schedulers —
 `cewe/cewe-worker/src/billing/docs/adr/0012` (Backfill as a separate operator action),
@@ -112,9 +117,10 @@ repair thread.
 
 - **A read costs a whole-buffer transfer.** Thirteen rows against a daily job is not a
   problem, but nobody has timed it on **serial at 19200 baud** — the probe runs recorded that
-  the read succeeds, never how long it took. The first M6 issue measures it and records the
-  number in `docs/meter-notes/`. If it turns out expensive, that is when a narrowing is added,
-  with a measurement behind it.
+  the read succeeds, never how long it took. **Still true after issue #21**: that issue's own
+  scope forbids a real meter read (the two units are at the customer site and read-only), so
+  the timing is still owner's milestone-exit work, not something M6a's code could measure. If
+  it turns out expensive, that is when a narrowing is added, with a measurement behind it.
 - **Deleted rows come back.** `Delete all data` for a device removes its billing rows, and the
   next cycle re-imports every closed period still in the meter. That makes the button a repair
   tool for values that were wrong on *our* side (a scaler fix, re-read correctly) and a no-op

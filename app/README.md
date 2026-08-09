@@ -14,13 +14,17 @@ src/arichds/
 ├── fe_static.py       locates the built SPA (env → frozen bundle → web/dist)
 ├── db/                models, engine/session, programmatic `alembic upgrade head`
 ├── migrations/        the single Alembic set (render_as_batch=True from 0001)
-├── licensing/         Machine ID, Activation Codes, Limited Mode enforcement
+├── licensing/         Machine ID, Activation Codes, Limited Mode enforcement, feature
+│                      entitlement (features.py) and the process-wide LicenseService holder
+│                      for background code (current.py, M6b issue #22)
 ├── auth/              Role enum, bcrypt/PyJWT primitives, token service — no HTTP types
 ├── acquisition/       ConnectionParams, drivers, Poller, catalog, probe, endpoint locks,
 │                      device status (the ADR 0004 state machine the tick feeds)
 │   └── drivers/       MeterDriver ABC, Prometer100 (DLMS/TCP), factory
 ├── api/               health, auth, license, devices routers + the {success,data,error}
-│                      envelope; deps.py holds the JWT guard dependencies
+│                      envelope; deps.py holds the JWT guard dependencies + require_feature
+├── capture/           billing capture PDF/xlsx (M6b, issue #22): path validation, the two
+│                      renderers off one shared section module, the hardened write
 └── vendor/gurux/      GX*.py copied verbatim from v1 — never edited, never linted
 ```
 
@@ -57,6 +61,8 @@ Every knob is an `ARICHDS_*` environment variable:
 | `ARICHDS_FE_DIST` | *(unset)* | Override the SPA directory |
 | `ARICHDS_TOKEN_EXPIRE_MINUTES` | `480` | Access Token lifetime (8 hours) |
 | `ARICHDS_JWT_SECRET` | *(unset)* | Overrides the per-install key at `<data>\secret\jwt_secret.key` (ADR 0003) |
+| `ARICHDS_FEATURES` | *(unset)* | Comma-separated feature keys requested; empty/unset requests every key in `constants.FEATURE_KEYS`. Enabled = this ∩ the licensed feature set (M6b, issue #22) |
+| `ARICHDS_CAPTURE_ALLOWLIST` | *(unset)* | `os.pathsep`-separated absolute roots the `capture_dir` setting must resolve within; empty/unset means no root restriction (ADR 0010, M6b issue #22) |
 
 ## Quality gate
 

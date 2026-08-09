@@ -1222,8 +1222,12 @@ export function Devices({ role }: { role: "admin" | "user" }) {
       >
         <Space direction="vertical" size="small" style={{ width: "100%" }}>
           <Text>
-            This permanently deletes every stored reading for {selected?.name ?? NOTHING}. The device itself and
-            its history are kept. This cannot be undone.
+            This permanently deletes every stored Interval Reading and billing period for{" "}
+            {selected?.name ?? NOTHING}. The device itself and its history are kept. This cannot be undone.
+          </Text>
+          <Text type="secondary">
+            Billing periods still held by the meter come back on the next read — this repairs a value that was
+            wrong on our side, but it is a no-op for a value the meter itself reports.
           </Text>
           <Text type="secondary">Type the device name to confirm.</Text>
           <Input

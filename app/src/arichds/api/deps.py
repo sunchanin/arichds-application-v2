@@ -27,8 +27,10 @@ from sqlalchemy.orm import Session
 from arichds.acquisition.poller import Poller
 from arichds.auth.roles import Role
 from arichds.auth.service import resolve_token
+from arichds.config import get_settings
 from arichds.db.models import User
 from arichds.db.session import get_session_factory
+from arichds.licensing.features import feature_enabled
 from arichds.licensing.service import LicenseService
 
 #: ``auto_error=False`` on purpose: with the default, FastAPI answers a missing
@@ -118,3 +120,51 @@ def require_admin(user: CurrentUserDep) -> User:
 
 
 AdminDep = Annotated[User, Depends(require_admin)]
+
+
+class FeatureDisabledError(Exception):
+    """Raised by :func:`require_feature` when *feature* is not enabled.
+
+    A plain exception, not :class:`~fastapi.HTTPException`, because the
+    response needs the ``{success, data, error}`` envelope shape with
+    ``code="FEATURE_DISABLED"`` and ``reason=<feature key>`` (decision 5,
+    issue #22) — a bare ``HTTPException`` only renders ``{"detail": ...}``.
+    Translated to a 403 by the handler registered in
+    :func:`~arichds.main.create_app`.
+    """
+
+    def __init__(self, feature: str) -> None:
+        self.feature = feature
+        super().__init__(f"Feature {feature!r} is not enabled for this deployment.")
+
+
+def require_feature(name: str):  # noqa: ANN201 — returns a dependency function, not a fixed type.
+    """Return a dependency enforcing that feature *name* is enabled (M6b, issue #22).
+
+    Reads ``.env FEATURES ∩ license features`` live through the
+    :class:`~arichds.licensing.service.LicenseService` on every call (ADR
+    0001) — never a cached snapshot. Router-level use, mirroring v1's
+    ``require_feature`` (``api/dependencies.py:110-140``)::
+
+        router = APIRouter(
+            ...,
+            dependencies=[Depends(get_current_user), Depends(require_feature("billing"))],
+        )
+
+    This **refines an already-valid license**: an invalid one is blocked
+    wholesale by ``LimitedModeMiddleware`` (403 ``LICENSE_INVALID``) before
+    any dependency on the route runs.
+
+    Args:
+        name: The feature key, e.g. ``"billing"``.
+
+    Returns:
+        A dependency function raising :class:`FeatureDisabledError` when
+        *name* is not in the effective feature set.
+    """
+
+    def _check(license_service: LicenseServiceDep) -> None:
+        if not feature_enabled(name, license_service=license_service, settings=get_settings()):
+            raise FeatureDisabledError(name)
+
+    return _check

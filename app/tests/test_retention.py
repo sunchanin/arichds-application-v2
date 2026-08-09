@@ -18,7 +18,7 @@ from sqlalchemy import event, select
 from arichds.acquisition.load_profile import read_and_store_load_profile
 from arichds.config import Settings
 from arichds.constants import LOAD_PROFILE_BACKFILL_DAYS, RETENTION_DAYS, SOURCE_DLMS
-from arichds.db.models import Device, DeviceEvent, LoadProfileReading
+from arichds.db.models import BillingReading, Device, DeviceEvent, LoadProfileReading
 from arichds.db.retention import purge_expired
 from arichds.db.session import get_engine, session_scope
 
@@ -259,6 +259,33 @@ class TestRetentionCannotMoveTheWatermark:
             f"the walk restarted from {first_window_start.isoformat()} — a device purged empty must backfill "
             f"from {LOAD_PROFILE_BACKFILL_DAYS} days back, which is what a NULL watermark means"
         )
+
+
+class TestBillingReadingsAreNeverPurged:
+    """SPEC §5 / ADR 0009 — ``billing_readings`` is not one of the two tables
+    this job touches. Stored history is never rewritten by a read either
+    (ADR 0009); the only way to remove a billing row is ``Delete all data``."""
+
+    def test_a_billing_row_far_past_the_retention_window_survives(self, migrated_db: Settings) -> None:
+        device_id = make_device()
+        long_ago = NOW - timedelta(days=RETENTION_DAYS * 4)
+        with session_scope() as session:
+            session.add(
+                BillingReading(
+                    device_id=device_id,
+                    bill_date=long_ago,
+                    read_at=long_ago,
+                    record_status=None,
+                    source=SOURCE_DLMS,
+                    import_active_kwh_total=1.0,
+                )
+            )
+
+        purge_expired(now=NOW)
+
+        with session_scope() as session:
+            rows = session.scalars(select(BillingReading).where(BillingReading.device_id == device_id)).all()
+            assert len(rows) == 1
 
 
 class TestAnEmptyDatabase:

@@ -26,6 +26,7 @@ import pytest
 from fakes import fake_meter_state
 from sqlalchemy import select
 
+from arichds.acquisition.billing import billing_cycle
 from arichds.acquisition.drivers.base import IntervalReading
 from arichds.acquisition.load_profile import (
     LoadProfileReadResult,
@@ -37,6 +38,7 @@ from arichds.acquisition.status import DeviceStatus
 from arichds.config import Settings
 from arichds.constants import (
     BACKUP_INTERVAL_SEC,
+    BILLING_INTERVAL_SEC,
     LOAD_PROFILE_INTERVAL_SEC,
     MANUAL_READ_LOCK_TIMEOUT_SEC,
     RETENTION_INTERVAL_SEC,
@@ -378,21 +380,22 @@ class TestSchedulerMasterSwitch:
 
 
 class TestTheDefaultRegistry:
-    """D12 — three jobs at M5c. M6/M8 add theirs one line at a time."""
+    """D12 — four jobs at M6a. M8 adds sync one line at a time."""
 
-    def test_it_holds_the_load_profile_backup_and_retention_jobs(self) -> None:
+    def test_it_holds_the_load_profile_billing_backup_and_retention_jobs(self) -> None:
         jobs = default_jobs()
 
-        # Asserted deliberately so that whoever adds M6's billing auto-read has
-        # to come here and update the count on purpose.
-        assert len(jobs) == 3
-        assert [job.name for job in jobs] == ["load_profile", "backup", "retention"]
+        # Asserted deliberately so that whoever adds M8's sync has to come
+        # here and update the count on purpose.
+        assert len(jobs) == 4
+        assert [job.name for job in jobs] == ["load_profile", "billing", "backup", "retention"]
         assert [job.interval_sec for job in jobs] == [
             LOAD_PROFILE_INTERVAL_SEC,
+            BILLING_INTERVAL_SEC,
             BACKUP_INTERVAL_SEC,
             RETENTION_INTERVAL_SEC,
         ]
-        assert [job.fn for job in jobs] == [load_profile_cycle, backup_database, purge_expired]
+        assert [job.fn for job in jobs] == [load_profile_cycle, billing_cycle, backup_database, purge_expired]
 
     def test_backup_runs_before_retention(self) -> None:
         """Deliberate order (issue #19): the backup still holds the rows retention

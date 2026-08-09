@@ -23,16 +23,21 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from arichds import __version__
 from arichds.acquisition.poller import Poller
-from arichds.api import auth, devices, health, license, load_profile, records, users
+from arichds.api import auth, billing, devices, health, license, load_profile, records, users
+from arichds.api.deps import FeatureDisabledError
+from arichds.api.envelope import ApiResponse
 from arichds.config import Settings, get_settings
+from arichds.constants import ERROR_FEATURE_DISABLED
 from arichds.db.migrate import upgrade_to_head
 from arichds.db.session import dispose_engine, init_engine
 from arichds.fe_static import resolve_fe_dist
 from arichds.jobs.scheduler import Scheduler
+from arichds.licensing.current import set_current_license_service
 from arichds.licensing.middleware import LimitedModeMiddleware
 from arichds.licensing.service import LicenseService
 from arichds.logging_config import configure_logging
@@ -59,6 +64,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.license_service = license_service
     app.state.poller = poller
     app.state.scheduler = scheduler
+    # Published for background code with no Request — the eager capture path
+    # in acquisition/billing.py (M6b, issue #22). Holds the service, never a
+    # state snapshot (ADR 0001) — see arichds.licensing.current.
+    set_current_license_service(license_service)
 
     # Subscribing BEFORE the first evaluation means an already-licensed machine
     # starts polling on boot, and a freshly activated one starts on activation.
@@ -69,6 +78,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        set_current_license_service(None)
         poller.stop()
         # Stopped here and not only on the license listener: a thread that
         # outlives its app keeps reading meters and writing rows into a database
@@ -96,8 +106,23 @@ def create_app() -> FastAPI:
     app.include_router(license.router)
     app.include_router(devices.router)
     app.include_router(load_profile.router)
+    app.include_router(billing.router)
     app.include_router(records.router)
     app.include_router(users.router)
+
+    @app.exception_handler(FeatureDisabledError)
+    async def handle_feature_disabled(_request: Request, exc: FeatureDisabledError) -> JSONResponse:
+        """403 in the ``{success, data, error}`` envelope (decision 5, issue #22).
+
+        A ``reason`` naming the missing feature key so the SPA (or an operator
+        reading the response) knows exactly what to ask for.
+        """
+        envelope = ApiResponse.failed(
+            ERROR_FEATURE_DISABLED,
+            "This feature is not enabled for this deployment.",
+            reason=exc.feature,
+        )
+        return JSONResponse(status_code=403, content=envelope.model_dump())
 
     # Enforcement wraps everything but only guards /api/* minus health and
     # license (see arichds.licensing.middleware). The service is resolved per

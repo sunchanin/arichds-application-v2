@@ -38,13 +38,18 @@ const { Header, Sider, Content } = Layout;
  *
  * M5b-1 lights up **Load Profile** — the read-only view of the Interval
  * Readings the meter recorded — for **every** role, so it carries no gate the
- * way User Management does. Billing, Energy and Settings stay disabled until
- * M6-M7 own them.
+ * way User Management does. Energy and Settings stay disabled until M7 owns
+ * them.
  *
  * M5b-2 lights up **Records** — whether those stored Readings are *complete*,
  * counted per meter and logger against the meter's own capture period — for
  * every role too, and for the same reason: it only reads rows that are already
  * on disk.
+ *
+ * M6a lights up **Billing** — the read-only view of the Billing Readings the
+ * meter itself froze when it closed a period, for every role, same reason as
+ * Load Profile and Records. Energy and Settings stay disabled until M7 owns
+ * them.
  *
  * The header carries who is signed in, the way to change your own password
  * (every role — the modal is owned here, so no page has to pass a prop for it),
@@ -77,9 +82,9 @@ export function AppShell({
     { key: "devices", icon: <DatabaseOutlined />, label: "Devices" },
     { key: "load-profile", icon: <AreaChartOutlined />, label: "Load Profile" },
     { key: "records", icon: <TableOutlined />, label: "Records" },
+    { key: "billing", icon: <FileTextOutlined />, label: "Billing" },
     // Owned by later milestones — visible so the shape is honest, disabled so
     // nothing pretends to work yet.
-    { key: "billing", icon: <FileTextOutlined />, label: "Billing", disabled: true },
     { key: "energy", icon: <ThunderboltOutlined />, label: "Energy", disabled: true },
     ...(role === "admin"
       ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]

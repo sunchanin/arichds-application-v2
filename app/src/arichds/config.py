@@ -11,10 +11,17 @@ is a property here so there is exactly one place that decides where data lives.
 
 from __future__ import annotations
 
+import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from arichds.constants import FEATURE_KEYS
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -41,6 +48,21 @@ class Settings(BaseSettings):
         jwt_secret: Explicit JWT signing secret. ``ARICHDS_JWT_SECRET``. When
             unset the secret is generated per install and persisted under
             :attr:`jwt_secret_path` (ADR 0003).
+        features: Comma-separated feature keys ``.env`` asks for. A plain
+            ``str`` field, not ``list[str]`` — pydantic-settings parses
+            complex-typed env vars as JSON, and a bare comma-separated value
+            would fail to parse (v1 ``config.py:323-349`` makes the same
+            choice). ``ARICHDS_FEATURES``. Empty/unset means every key in
+            :data:`~arichds.constants.FEATURE_KEYS` is requested — see
+            :meth:`enabled_feature_keys`.
+        capture_allowlist: ``os.pathsep``-separated list of absolute roots
+            ``capture_dir`` (a `settings` value, not an env var — ADR 0010)
+            must resolve within. ``ARICHDS_CAPTURE_ALLOWLIST``. ``os.pathsep``
+            because a bare ``:`` split would shred a Windows drive letter
+            (e.g. ``C:`` would split from the rest of the path) — v1 makes
+            the same choice (``config.py:274-283``). Empty/unset means no
+            root restriction (decision 17, issue #22) — see
+            :meth:`capture_allowlist_roots`.
     """
 
     model_config = SettingsConfigDict(env_prefix="ARICHDS_", env_file=".env", extra="ignore")
@@ -52,6 +74,59 @@ class Settings(BaseSettings):
     poll_enabled: bool = True
     token_expire_minutes: int = 480
     jwt_secret: str | None = None
+    features: str = ""
+    capture_allowlist: str = ""
+
+    def capture_allowlist_roots(self) -> list[Path]:
+        """Resolve ``ARICHDS_CAPTURE_ALLOWLIST`` into absolute root paths.
+
+        Empty/unset means **no root restriction** on ``capture_dir`` (decision
+        17, issue #22) — unlike v1, which defaulted the allowlist to its own
+        env-configured ``capture_dir``. v2's ``capture_dir`` is an operator
+        setting rather than an env var, so defaulting the allowlist to it
+        would be circular (an operator could set both to whatever they like
+        in the same action).
+        """
+        raw = self.capture_allowlist.strip()
+        if not raw:
+            return []
+        return [Path(part.strip()).resolve() for part in raw.split(os.pathsep) if part.strip()]
+
+    @field_validator("features")
+    @classmethod
+    def _warn_unknown_feature_keys(cls, value: str) -> str:
+        """WARN about any ``ARICHDS_FEATURES`` key that gates nothing (a
+        typo, or a key a newer portal knows and this build does not) — v1's
+        exact shape (``config.py:329-344``), a ``field_validator`` so it
+        fires **once, at construction**, not once per
+        :meth:`enabled_feature_keys` call. ``get_settings()`` is
+        ``lru_cache``d, so construction happens once per process — but
+        :meth:`enabled_feature_keys` is called once per request by
+        :func:`~arichds.api.deps.require_feature` on three routers, and a
+        warning inside it would write the same line into a 10 MB × 5
+        rotating log file once per HTTP request, burying the one signal an
+        operator chasing a missing feature actually needs.
+        """
+        listed = {part.strip() for part in value.split(",") if part.strip()}
+        unknown = listed - FEATURE_KEYS
+        if unknown:
+            logger.warning(
+                "ARICHDS_FEATURES lists unknown key(s) %s that gate no feature. Known keys: %s",
+                ", ".join(sorted(unknown)),
+                ", ".join(sorted(FEATURE_KEYS)),
+            )
+        return value
+
+    def enabled_feature_keys(self) -> frozenset[str]:
+        """The feature keys ``ARICHDS_FEATURES`` asks for (M6b, issue #22).
+
+        Empty/unset expands to every key in
+        :data:`~arichds.constants.FEATURE_KEYS` (decision 2, issue #22) — on a
+        real install the license alone is then the ceiling. Pure parsing —
+        the unknown-key warning lives in :meth:`_warn_unknown_feature_keys`.
+        """
+        listed = {part.strip() for part in self.features.split(",") if part.strip()}
+        return frozenset(listed) if listed else FEATURE_KEYS
 
     # ── Derived paths (single source of truth for "where does X live") ────────
 
@@ -84,9 +159,12 @@ class Settings(BaseSettings):
     def backup_dir(self) -> Path:
         """Directory holding the daily database backups (M5c, issue #19).
 
-        Fixed, not configurable: SPEC §5 wanted a configurable destination, and
-        M5c overrules that — a stored setting needs the ``settings`` table and
-        the page that edits it, both M7's. Singular ``backup``, matching SPEC §5.
+        Fixed, not configurable — ADR 0010: a backup is written for the
+        machine (its only consumer is a restore, performed by whoever is
+        already at this command prompt), while `capture_dir` is written for a
+        person who hands the file to someone else. Only the latter earns the
+        cost of a user-choosable destination. Singular ``backup``, matching
+        SPEC §5.
         """
         return self.data_dir.resolve() / "backup"
 

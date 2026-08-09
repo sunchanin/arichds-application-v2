@@ -1,7 +1,8 @@
 # The capture directory is an operator setting; the backup directory is not
 
-Status: accepted (2026-08-09, owner decision during M6 grilling). **Not implemented yet** — M6
-has not started.
+Status: accepted (2026-08-09, owner decision during M6 grilling). **Fully implemented** — the
+`settings` table, `capture_dir` validation/API/form, the two renderers, the hardened write and
+the render-on-miss download all landed with issue #22/M6b.
 
 Reverses nothing. This ADR exists because two v2 decisions about "where does the program write
 a file" landed on **opposite** answers, and the difference is not visible from either one alone.
