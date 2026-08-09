@@ -271,7 +271,7 @@ class FakeTccLoggerReader:
         assert isinstance(obj, GXDLMSProfileGeneric)
         if attr == 3:
             # The profile self-reference is recorded at attr -1 (PROFILE_GENERIC,
-            # tcc-obis-scan.md:650); every other column is attr 2 — unmapped
+            # tcc-obis-scan.md:651); every other column is attr 2 — unmapped
             # either way, but faithful to the scan rather than a blanket 2.
             obj.captureObjects = [
                 (

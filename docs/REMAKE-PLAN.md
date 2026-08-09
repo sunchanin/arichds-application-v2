@@ -69,7 +69,7 @@ flowchart TD
     M2["<b>M2 · Auth & Login</b><br/>JWT · หน้า Login + User Mgmt"]
     M3["<b>M3 · Device Manager</b><br/>CRUD + probe-first · events · สถานะจาก poller<br/>pause/resume · priority lock · หน้า Devices"]
     M4["<b>M4 · Acquisition</b><br/>a: SMW110W4 รุ่นเดียว (≤ วันที่ 5)<br/>b: Modbus + billing cut (วันที่ 6–14)<br/>ปิดเรื่อง scaler ×10 ที่ M4a"]
-    M4C["<b>M4c · รุ่นที่เหลือ</b><br/>Prometer100 · Saral305 · Premier550<br/>SMART TCC ×5<br/><i>exit: parity บนเคส 2 logger</i>"]
+    M4C["<b>M4c · รุ่นที่เหลือ</b><br/>c1: CEWE ×3 (#24) — โค้ดลงแล้ว อ่านมิเตอร์จริงแล้ว<br/>c2: SMART TCC ×5 (#25) — โค้ดลงแล้ว ลิงก์ยังตาย<br/><i>exit: เทียบสด v1 vs v2 ที่ระดับแถว — ยังไม่ทำ</i>"]
     M5["<b>M5 · Load Profile</b><br/>a: job+สคีมา · b: หน้าจอ · c: งานบ้าน<br/><i>exit: replay + probe มิเตอร์จริง</i>"]
     M6["<b>M6 · Billing</b><br/>open period · backfill · capture<br/><i>exit: parity กับ v1</i>"]
     M7["<b>M7 · โมดูลเบาที่เหลือ</b><br/>Energy · Holidays · SpecialDays<br/>Battery · ExportFormat · AppLog<br/><i>exit: parity กับ v1 + นับหน้าครบ</i>"]
@@ -464,6 +464,12 @@ Read now / Test connection ได้คิวก่อน poller + เทสผ�
 > และ Premier 550 (คาบเท่ากันแต่คอลัมน์ชนกัน) — ทั้งคู่บันทึกไว้ใน
 > [`meter-notes/load-profile-capture-objects.md`](meter-notes/load-profile-capture-objects.md)
 > ⇒ **M4c ต้องถือว่า parity ยังไม่ผ่านจนกว่าสองเคสนี้จะเดินจริง**
+>
+> ✅ **ทั้งสองเคสเดินจริงแล้วที่ issue #24 (2026-08-09)** — Prometer 100 คืน Logger 1 ที่ 900 วิ
+> และ Logger 2 ที่ 300 วิ จากเครื่องเดียวกัน · Premier 550 คืนสอง logger ที่ 900 วิ ทั้งคู่ ·
+> unique key `(device_id, logger_id, read_at)` และ watermark ต่อ logger จึงถูกทดสอบด้วยข้อมูลจริง
+> เป็นครั้งแรก · **แต่ "parity" ในความหมายเทียบกับ v1 ยังไม่ถูกวัด** — นั่นเป็นการรัน v1 คู่กัน
+> ซึ่งเป็นงานของเจ้าของ ไม่ใช่สิ่งที่ #24 ทำ
 
 **M4a (ภายในวันที่ 5) — SMW110W4 รุ่นเดียว ทั้ง DLMS serial และ TCP**:
 driver + serial transport (`ConnectionParams.serial()`) ·

@@ -32,13 +32,20 @@ MySQL, and ~30 tables.
   `/readings/latest` are gone; items 2/3/5/6 with issue #8 — the tick reads the Meter Serial and
   discards it, and `interval_readings` became `load_profile_readings`, empty until M5) ·
   0008 (the load-profile watermark is the data, not a job record — no job table, no `read_end`,
-  no persisted scheduler state; **fully implemented**: the read path with issue #15 and the
-  one-thread job-registry scheduler with issue #16) ·
+  no persisted scheduler state; **fully implemented**: the read path with issue #15, the
+  one-thread job-registry scheduler with issue #16, and the watermark becoming **per
+  `(device, logger)`** with issue #24 — which *implements* the ADR's own Decision rather than
+  reversing it; the shipped code had been taking the MIN across loggers, which stalled one
+  logger behind another) ·
   0009 (billing has **one** read path — every read reads the whole buffer, so "Backfill"
   dissolves as a concept; no backfill endpoint, no `billing_backfilled_at`, no is_latest
   reconciler — the invariant it healed becomes two partial unique indexes instead;
   **fully implemented**: the `billing_readings` schema, the 43-column span read, the read
-  path and the read-only page all landed with issue #21/M6a) ·
+  path and the read-only page all landed with issue #21/M6a · extended at M4c (#24/#25):
+  the column key became **`(OBIS, attribute)`** because a max-demand value and its capture
+  time share one OBIS, the 43-column span became a **driver attribute** rather than a module
+  constant, and the profile OBIS / bill-date candidates / reset-reason key / cumulative-demand
+  COSEM class all became per-driver declarations) ·
   0010 (the capture directory is an operator setting while the backup directory is fixed —
   a capture is a document a human carries to a customer, a backup is not; **do not "make these
   consistent"**; **fully implemented**: the `settings` table, `capture_dir` API/form, path
