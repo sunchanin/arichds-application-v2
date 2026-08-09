@@ -22,10 +22,13 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from arichds.acquisition.billing import billing_cycle
 from arichds.acquisition.load_profile import load_profile_cycle
 from arichds.constants import (
     BACKUP_INTERVAL_SEC,
+    BILLING_INTERVAL_SEC,
     JOB_BACKUP,
+    JOB_BILLING,
     JOB_LOAD_PROFILE,
     JOB_RETENTION,
     LOAD_PROFILE_INTERVAL_SEC,
@@ -249,9 +252,9 @@ def default_jobs() -> list[Job]:
     """The registry the product runs.
 
     **Adding a job is adding one line here**, plus its function in the module
-    that owns its domain. M5c's retention and backup landed that way, and M6's
-    billing auto-read and M8's sync will — no new thread, no new class, no
-    subclass of anything.
+    that owns its domain. M5c's retention and backup landed that way, M6a's
+    billing auto-read did too, and M8's sync will — no new thread, no new
+    class, no subclass of anything.
 
     A function returning a fresh list rather than a module-level constant,
     mirroring ``drivers.factory._registry()``: one ``monkeypatch.setattr`` then
@@ -264,6 +267,9 @@ def default_jobs() -> list[Job]:
     """
     return [
         Job(name=JOB_LOAD_PROFILE, interval_sec=LOAD_PROFILE_INTERVAL_SEC, fn=load_profile_cycle),
+        # Billing sits with the other read job, before backup/retention — a
+        # read job belongs with the read job (M6a, issue #21).
+        Job(name=JOB_BILLING, interval_sec=BILLING_INTERVAL_SEC, fn=billing_cycle),
         # Backup runs BEFORE retention, deliberately (M5c, issue #19): the
         # backup then still contains the rows retention is about to delete, so a
         # retention bug stays recoverable for the seven days of backups that are

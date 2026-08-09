@@ -40,13 +40,16 @@ OFFLINE_AFTER_CONSECUTIVE_FAILURES: Final[int] = 3
 
 # ─── Read now jobs (SPEC §3.3) ────────────────────────────────────────────────
 # The identity read that proves the meter answers a real register read, writing
-# no Interval Reading (ADR 0007). M6 adds "billing" to this same list — the
-# naming is fixed here so each module does not invent its own.
+# no Interval Reading (ADR 0007). The naming is fixed here so each module does
+# not invent its own — JOB_LOAD_PROFILE and JOB_BILLING below are its siblings.
 JOB_LIVENESS: Final[str] = "liveness"
 # The load-profile read (M5a-1, issue #15): stores Interval Readings. Reported
 # as its own entry in `results` even when it could not run, because the Read now
 # modal renders a row per entry and nothing at all for an absent one.
 JOB_LOAD_PROFILE: Final[str] = "load_profile"
+# The billing read (M6a, issue #21): stores Billing Readings. Same reporting
+# rule as JOB_LOAD_PROFILE — its own `results` entry even when it could not run.
+JOB_BILLING: Final[str] = "billing"
 
 # ─── Load profile (SPEC §3.5, ADR 0008) ───────────────────────────────────────
 # How far back the walk starts on a device with no stored rows.
@@ -72,6 +75,13 @@ LOAD_PROFILE_READ_BUDGET_SEC: Final[float] = 60.0
 # behind it in the same thread are delayed by the overrun. That is the trigger to
 # measure, not to add a second thread.
 LOAD_PROFILE_INTERVAL_SEC: Final[int] = 900
+
+# ─── Billing (SPEC §3.6, ADR 0009, M6a issue #21) ─────────────────────────────
+# How often the Scheduler runs the billing cycle over every device. A billing
+# period is monthly and every read is a full-buffer read (ADR 0009 — there is
+# no window, so no watermark and no catch-up to reason about); once a day is
+# the SPEC-mandated cadence, not a tuned value.
+BILLING_INTERVAL_SEC: Final[int] = 86400
 
 # ─── Scheduler (SPEC §4, M5a-2) ───────────────────────────────────────────────
 # How long `Scheduler.stop()` waits for the one job thread to finish the job it
@@ -137,9 +147,12 @@ DLMS_INTER_REQUEST_DELAY_MS: Final[int] = 200
 # The DLMS clock object. **Nothing reads it today**: the driver-level
 # reachability probe that did left with ADR 0007 (issue #8), and the liveness
 # tick reads the Meter Serial instead — one register that proves both the
-# association and a real read.
-# Kept, not deleted, because it is a field-proven OBIS code from v1 and M6's
-# billing period logic needs the meter's own clock.
+# association and a real read. Kept, not deleted, because it is a field-proven
+# OBIS code from v1. M6a's billing read (issue #21) needed the meter's own
+# clock too, but reads it through the load-profile capture-column pattern's own
+# local ``_CLOCK_OBIS`` in each driver, not this constant — the clock cell's
+# *position* comes from the live captureObjects (D7), never assumed, so a
+# shared constant here would only name the value, not save a read.
 HEALTH_CHECK_OBIS_CODE: Final[str] = "0.0.1.0.0.255"
 HEALTH_CHECK_OBIS_ATTR: Final[int] = 2
 

@@ -2,8 +2,11 @@
 
 SPEC §5: ``load_profile_readings`` is cut on ``read_at`` and ``device_events`` on
 ``created_at``, both at :data:`~arichds.constants.RETENTION_DAYS`. Nothing else
-expires here — ``billing_readings`` is M6's, and ``user_tokens`` needs no job
-because :mod:`arichds.auth.service` purges expired tokens on every login.
+expires here — ``billing_readings`` (M6a, issue #21) is deliberately excluded:
+ADR 0009 says a closed period is never rewritten once stored, and the only way
+to remove one is ``Delete all data`` on the Devices page, not a daily purge.
+``user_tokens`` needs no job either, because :mod:`arichds.auth.service` purges
+expired tokens on every login.
 
 It lives under ``db/`` rather than ``acquisition/`` because it reads no meter,
 builds no driver and takes no Transport Endpoint lock: its domain is the rows.

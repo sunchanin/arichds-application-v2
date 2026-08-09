@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import Any
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers.base import IntervalReading, MeterDriver
+from arichds.acquisition.drivers.base import BillingReading, IntervalReading, MeterDriver
 from arichds.constants import SOURCE_DLMS
 
 #: The serial the fake meter reports unless a test says otherwise.
@@ -57,6 +57,13 @@ class FakeMeterState:
         load_profile_error: What a failing load-profile read raises.
         load_profile_fail_after: Succeed for this many reads, then raise. The
             mid-walk failure a chunked backfill has to survive.
+        billing_rows: The whole billing buffer :class:`FakeSmw110Driver`
+            replays from — one call returns all of it (ADR 0009: every billing
+            read is a full-buffer read, unlike the load profile's windowed
+            walk), in the order given, so a test controls entry ordering (and
+            therefore the open/closed discriminator) by list order.
+        billing_reads: How many times ``read_billing()`` was called.
+        billing_error: What a failing billing read raises.
     """
 
     meter_serial: str | None = DEFAULT_FAKE_SERIAL
@@ -70,6 +77,9 @@ class FakeMeterState:
     load_profile_windows: list[tuple[datetime, datetime]] = field(default_factory=list)
     load_profile_error: Exception | None = None
     load_profile_fail_after: int | None = None
+    billing_rows: list[BillingReading] = field(default_factory=list)
+    billing_reads: int = 0
+    billing_error: Exception | None = None
 
 
 _STATE = FakeMeterState()
@@ -198,3 +208,23 @@ class FakeSmw110Driver(FakeMeterDriver):
             raise error
 
         return [row for row in rows if start_utc <= row.read_at <= end_utc]
+
+    def supports_billing(self) -> bool:
+        """Yes — like the real ``Smw110Driver`` (M6a, issue #21)."""
+        return True
+
+    def read_billing(self) -> list[BillingReading]:
+        """Record the call, honour the failure knob, replay the seeded buffer whole.
+
+        No window, no filtering — ADR 0009's whole-buffer-every-time contract,
+        unlike :meth:`read_load_profile` above.
+        """
+        with _GUARD:
+            _STATE.billing_reads += 1
+            error = _STATE.billing_error
+            rows = list(_STATE.billing_rows)
+
+        if error is not None:
+            raise error
+
+        return rows

@@ -16,7 +16,7 @@ nothing instantaneous, so the Poller's tick reads
 :meth:`MeterDriver.read_meter_serial` — one register, the same seam the Probe
 uses — and discards the answer. An abstract method with no caller is not a
 contract, it is a leftover, and every base class M4 adds would have had to
-implement it. Billing (M6) is the one read path still behind in v1.
+implement it.
 
 **The load-profile read path moved onto this base class at M5a-1 (issue #15).**
 It landed on the leaf :class:`~arichds.acquisition.drivers.smw110.Smw110Driver`
@@ -30,6 +30,12 @@ asks. The pairing is deliberate — a non-abstract
 the question. ``hasattr`` would make a driver that **forgot** the method
 indistinguishable from one that deliberately lacks it, and only one of those two
 is a bug.
+
+**Billing (M6a, issue #21) landed the same pairing** —
+:meth:`MeterDriver.supports_billing` / :meth:`MeterDriver.read_billing` — on this
+base class from the start, since the billing job needed to ask every driver the
+same question on day one. It was the last read path still behind in v1; it no
+longer is.
 """
 
 from __future__ import annotations
@@ -97,6 +103,154 @@ class IntervalReading:
             "current_l3": self.current_l3,
             "freq": self.freq,
             "import_active_kwh": self.import_active_kwh,
+        }
+
+
+@dataclass(frozen=True)
+class BillingReading:
+    """One normalized Billing Reading, produced by a driver's billing read
+    (M6a, issue #21).
+
+    Field names match ``billing_readings`` columns exactly, mirroring
+    :class:`IntervalReading`'s contract: UTC, kWh/kvarh/kW/kvar, normalized at
+    write time in the driver (CONTEXT.md — Billing Reading).
+
+    Attributes:
+        bill_date: The meter's own Clock cell for this period —
+            **timezone-aware UTC, always** (CONTEXT.md — Bill Date).
+        source: Which acquisition path produced it (``dlms`` / ``modbus``).
+        is_open: Whether this is the device's Open Period — the running
+            period the meter is still accumulating into, at most one per
+            device. The driver reports what it saw on the wire; the
+            ``NULL``/``"open"`` storage encoding is the writer's concern, not
+            the driver's (CONTEXT.md — Open Period).
+        meter_serial: Snapshot per row, or None if the driver could not read
+            one.
+        import_active_kwh_total/rate_a/rate_b/rate_c/rate_d: Imported active
+            energy, from OBIS ``1.0.1.8.{0..4}.255``.
+        export_active_kwh_total/rate_a/rate_b/rate_c/rate_d: Exported active
+            energy, from OBIS ``1.0.2.8.{0..4}.255``.
+        import_reactive_kvarh_total/rate_a/rate_b/rate_c/rate_d: Imported
+            reactive energy, from OBIS ``1.0.3.8.{0..4}.255``.
+        export_reactive_kvarh_total/rate_a/rate_b/rate_c/rate_d: Exported
+            reactive energy, from OBIS ``1.0.4.8.{0..4}.255``.
+        max_demand_import_active_kw_total/rate_a/rate_b/rate_c/rate_d: Maximum
+            demand, imported active power, from OBIS ``1.0.1.6.{0..4}.255``.
+        max_demand_export_active_kw_total/rate_a/rate_b/rate_c/rate_d: Maximum
+            demand, exported active power, from OBIS ``1.0.2.6.{0..4}.255``.
+        max_demand_import_reactive_kvar_total/rate_a/rate_b/rate_c/rate_d:
+            Maximum demand, imported reactive power, from OBIS
+            ``1.0.3.6.{0..4}.255``.
+        max_demand_export_reactive_kvar_total/rate_a/rate_b/rate_c/rate_d:
+            Maximum demand, exported reactive power, from OBIS
+            ``1.0.4.6.{0..4}.255``.
+
+    ``C=5`` (reactive Q1) has no fields here — no screen has ever shown it
+    (SPEC §3.6), and a field nothing sets is speculative.
+    """
+
+    bill_date: datetime
+    source: str
+    is_open: bool
+    meter_serial: str | None = None
+
+    import_active_kwh_total: float | None = None
+    import_active_kwh_rate_a: float | None = None
+    import_active_kwh_rate_b: float | None = None
+    import_active_kwh_rate_c: float | None = None
+    import_active_kwh_rate_d: float | None = None
+
+    export_active_kwh_total: float | None = None
+    export_active_kwh_rate_a: float | None = None
+    export_active_kwh_rate_b: float | None = None
+    export_active_kwh_rate_c: float | None = None
+    export_active_kwh_rate_d: float | None = None
+
+    import_reactive_kvarh_total: float | None = None
+    import_reactive_kvarh_rate_a: float | None = None
+    import_reactive_kvarh_rate_b: float | None = None
+    import_reactive_kvarh_rate_c: float | None = None
+    import_reactive_kvarh_rate_d: float | None = None
+
+    export_reactive_kvarh_total: float | None = None
+    export_reactive_kvarh_rate_a: float | None = None
+    export_reactive_kvarh_rate_b: float | None = None
+    export_reactive_kvarh_rate_c: float | None = None
+    export_reactive_kvarh_rate_d: float | None = None
+
+    max_demand_import_active_kw_total: float | None = None
+    max_demand_import_active_kw_rate_a: float | None = None
+    max_demand_import_active_kw_rate_b: float | None = None
+    max_demand_import_active_kw_rate_c: float | None = None
+    max_demand_import_active_kw_rate_d: float | None = None
+
+    max_demand_export_active_kw_total: float | None = None
+    max_demand_export_active_kw_rate_a: float | None = None
+    max_demand_export_active_kw_rate_b: float | None = None
+    max_demand_export_active_kw_rate_c: float | None = None
+    max_demand_export_active_kw_rate_d: float | None = None
+
+    max_demand_import_reactive_kvar_total: float | None = None
+    max_demand_import_reactive_kvar_rate_a: float | None = None
+    max_demand_import_reactive_kvar_rate_b: float | None = None
+    max_demand_import_reactive_kvar_rate_c: float | None = None
+    max_demand_import_reactive_kvar_rate_d: float | None = None
+
+    max_demand_export_reactive_kvar_total: float | None = None
+    max_demand_export_reactive_kvar_rate_a: float | None = None
+    max_demand_export_reactive_kvar_rate_b: float | None = None
+    max_demand_export_reactive_kvar_rate_c: float | None = None
+    max_demand_export_reactive_kvar_rate_d: float | None = None
+
+    def as_columns(self) -> dict[str, Any]:
+        """Return the **forty measurement** fields as ``billing_readings`` column values.
+
+        Measurements only — ``bill_date``, ``source``, ``is_open`` and
+        ``meter_serial`` are the row's identity, not values it measured, and
+        the writer composes them alongside this dict (mirrors
+        :meth:`IntervalReading.as_columns`).
+        """
+        return {
+            "import_active_kwh_total": self.import_active_kwh_total,
+            "import_active_kwh_rate_a": self.import_active_kwh_rate_a,
+            "import_active_kwh_rate_b": self.import_active_kwh_rate_b,
+            "import_active_kwh_rate_c": self.import_active_kwh_rate_c,
+            "import_active_kwh_rate_d": self.import_active_kwh_rate_d,
+            "export_active_kwh_total": self.export_active_kwh_total,
+            "export_active_kwh_rate_a": self.export_active_kwh_rate_a,
+            "export_active_kwh_rate_b": self.export_active_kwh_rate_b,
+            "export_active_kwh_rate_c": self.export_active_kwh_rate_c,
+            "export_active_kwh_rate_d": self.export_active_kwh_rate_d,
+            "import_reactive_kvarh_total": self.import_reactive_kvarh_total,
+            "import_reactive_kvarh_rate_a": self.import_reactive_kvarh_rate_a,
+            "import_reactive_kvarh_rate_b": self.import_reactive_kvarh_rate_b,
+            "import_reactive_kvarh_rate_c": self.import_reactive_kvarh_rate_c,
+            "import_reactive_kvarh_rate_d": self.import_reactive_kvarh_rate_d,
+            "export_reactive_kvarh_total": self.export_reactive_kvarh_total,
+            "export_reactive_kvarh_rate_a": self.export_reactive_kvarh_rate_a,
+            "export_reactive_kvarh_rate_b": self.export_reactive_kvarh_rate_b,
+            "export_reactive_kvarh_rate_c": self.export_reactive_kvarh_rate_c,
+            "export_reactive_kvarh_rate_d": self.export_reactive_kvarh_rate_d,
+            "max_demand_import_active_kw_total": self.max_demand_import_active_kw_total,
+            "max_demand_import_active_kw_rate_a": self.max_demand_import_active_kw_rate_a,
+            "max_demand_import_active_kw_rate_b": self.max_demand_import_active_kw_rate_b,
+            "max_demand_import_active_kw_rate_c": self.max_demand_import_active_kw_rate_c,
+            "max_demand_import_active_kw_rate_d": self.max_demand_import_active_kw_rate_d,
+            "max_demand_export_active_kw_total": self.max_demand_export_active_kw_total,
+            "max_demand_export_active_kw_rate_a": self.max_demand_export_active_kw_rate_a,
+            "max_demand_export_active_kw_rate_b": self.max_demand_export_active_kw_rate_b,
+            "max_demand_export_active_kw_rate_c": self.max_demand_export_active_kw_rate_c,
+            "max_demand_export_active_kw_rate_d": self.max_demand_export_active_kw_rate_d,
+            "max_demand_import_reactive_kvar_total": self.max_demand_import_reactive_kvar_total,
+            "max_demand_import_reactive_kvar_rate_a": self.max_demand_import_reactive_kvar_rate_a,
+            "max_demand_import_reactive_kvar_rate_b": self.max_demand_import_reactive_kvar_rate_b,
+            "max_demand_import_reactive_kvar_rate_c": self.max_demand_import_reactive_kvar_rate_c,
+            "max_demand_import_reactive_kvar_rate_d": self.max_demand_import_reactive_kvar_rate_d,
+            "max_demand_export_reactive_kvar_total": self.max_demand_export_reactive_kvar_total,
+            "max_demand_export_reactive_kvar_rate_a": self.max_demand_export_reactive_kvar_rate_a,
+            "max_demand_export_reactive_kvar_rate_b": self.max_demand_export_reactive_kvar_rate_b,
+            "max_demand_export_reactive_kvar_rate_c": self.max_demand_export_reactive_kvar_rate_c,
+            "max_demand_export_reactive_kvar_rate_d": self.max_demand_export_reactive_kvar_rate_d,
         }
 
 
@@ -196,6 +350,42 @@ class MeterDriver(ABC):
             NotImplementedError: Always, on a driver that has no load profile.
         """
         raise NotImplementedError(f"{type(self).__name__} has no load profile — check supports_load_profile() first")
+
+    def supports_billing(self) -> bool:
+        """Whether this driver can read a billing profile (M6a, issue #21).
+
+        Non-abstract and ``False`` by default, for the same reason as
+        :meth:`supports_load_profile`: most models have no scanned billing
+        profile yet, and the billing job must be able to ask every driver the
+        same question. A model that can read one overrides this to ``True``
+        **and** implements :meth:`read_billing`.
+
+        Returns:
+            False, unless a concrete driver says otherwise.
+        """
+        return False
+
+    def read_billing(self) -> list[BillingReading]:
+        """Read the meter's whole billing buffer (ADR 0009 — every read is a
+        full-buffer read; there is no window argument).
+
+        Callable only when :meth:`supports_billing` returns ``True``. Assumes
+        :meth:`connect` succeeded.
+
+        Non-abstract and raising, rather than absent, so the job never has to
+        ask ``hasattr`` — the same pairing and the same reason as
+        :meth:`read_load_profile`: a driver that *forgot* this method must not
+        look like one that deliberately lacks it.
+
+        Returns:
+            Every row the meter holds, already normalized to UTC timestamps
+            and kWh/kvarh/kW/kvar, in whatever order the meter returns them —
+            entry ordering is a property of the *profile*, not assumed here.
+
+        Raises:
+            NotImplementedError: Always, on a driver that has no billing profile.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no billing profile — check supports_billing() first")
 
 
 class MeterConnectionError(RuntimeError):

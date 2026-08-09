@@ -269,8 +269,20 @@ unreachable by entry access on this meter.
 ### What the rows contain
 
 The first 43 columns are Clock, a period counter (`1.0.0.1.1.255`), the energy
-registers `1.0.{1..5}.8.{0..4}` (total plus four tariffs), and the maximum-demand
-registers `1.0.{1..5}.6.{0..4}`.
+registers `1.0.{1..5}.8.{0..4}` (total plus four tariffs, columns 3-27) and the
+maximum-demand registers — but **not** the full `1.0.{1..5}.6.{0..4}` set that
+would take: 5 quantities × 5 tariffs is 25 columns, and the span has only 16
+left after the clock, the counter and the 25 energy columns — nine short. What
+the span actually carries (`raw/smw110w4-serial-probe-2026-08-07.txt:137-153`,
+corrected 2026-08-09/issue #21) is `1.0.{1..5}.6.{0,1,2}` (columns 28-42 —
+total plus two tariffs, all five quantities) **plus one more cell**,
+`1.0.1.6.3.255` (column 43 — quantity 1's third tariff only). The demand set is
+truncated **mid-tariff**, not mid-quantity: `1.0.2.6.3.255` (raw line 153) is
+the first column past the span, and no `E=4` demand column is reachable by
+entry access on this meter at all. Practical effect for M6a's driver:
+`max_demand_*_rate_c` is fillable only for quantity 1 (import active power),
+and `max_demand_*_rate_d` is fillable
+for nothing — not a bug, the meter's own span ceiling.
 
 Read 2026-08-07 (raw, unscaled):
 

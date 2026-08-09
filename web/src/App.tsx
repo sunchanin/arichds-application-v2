@@ -5,6 +5,7 @@ import { api, type LicenseStatus } from "./api";
 import { type Session, clearSession, getSession, onSessionChange, setSession } from "./auth";
 import { AppShell } from "./components/AppShell";
 import { Activation } from "./pages/Activation";
+import { Billing } from "./pages/Billing";
 import { Devices } from "./pages/Devices";
 import { LoadProfile } from "./pages/LoadProfile";
 import { Login } from "./pages/Login";
@@ -14,9 +15,9 @@ import { Users } from "./pages/Users";
 import { LICENSE_POLL_MS } from "./theme";
 
 /** The in-shell pages. Every other menu key belongs to a milestone that has not shipped. */
-type Page = "devices" | "load-profile" | "records" | "users";
+type Page = "devices" | "load-profile" | "records" | "billing" | "users";
 
-const PAGES: readonly Page[] = ["devices", "load-profile", "records", "users"];
+const PAGES: readonly Page[] = ["devices", "load-profile", "records", "billing", "users"];
 
 /** Read a menu key as a page, falling back to Devices for anything unrecognised. */
 function toPage(key: string): Page {
@@ -195,6 +196,8 @@ export default function App() {
         <LoadProfile />
       ) : active === "records" ? (
         <Records />
+      ) : active === "billing" ? (
+        <Billing />
       ) : (
         <Devices role={session.role} />
       )}

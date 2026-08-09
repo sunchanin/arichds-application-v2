@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -243,6 +243,147 @@ class LoadProfileReading(Base):
         # job's deliberate re-read of the watermark row an upsert instead of a
         # duplicate.
         UniqueConstraint("device_id", "logger_id", "read_at", name="uq_load_profile_readings_device_logger_read_at"),
+    )
+
+
+class BillingReading(Base):
+    """One Billing Reading — a register snapshot the meter itself froze when it
+    closed a billing period (M6a, issue #21; CONTEXT.md — Billing Reading).
+
+    Like an Interval Reading it is UTC, kWh/kvarh/kW/kvar, and COSEM-named flat
+    columns normalized at write time in the driver — but it is not on a fixed
+    cadence, because the meter decides when a period ends, and one of its rows
+    is provisional (see ``record_status``).
+
+    **Forty measurement columns, all nullable, all a total plus four tariffs**
+    (``rate_a``..``rate_d``, SPEC §3.6 — v1 stopped at three because CEWE sites
+    use three; the SMW110W4 exposes ``E=1..4``). ``C=5`` (reactive Q1) is
+    deliberately absent — no screen has ever shown it. A register a meter
+    reports but no screen shows is read and dropped, not stored.
+
+    Attributes:
+        id: Surrogate primary key.
+        device_id: Owning device.
+        bill_date: The meter's own Clock cell for this period, converted to UTC
+            (CONTEXT.md — Bill Date). Never the server's clock.
+        read_at: When *we* read it (UTC).
+        record_status: ``"open"`` for the one Open Period slot a device may
+            hold, ``NULL`` for a closed period. This is v1's own encoding, and
+            the two partial unique indexes below key on it.
+        source: Which acquisition path produced it (``dlms``) — a property of
+            the reading, never a branch in read-path code.
+        meter_serial: Snapshot per row (SPEC §3.6).
+        created_at: When this row was first written (UTC).
+        updated_at: When this row last changed (UTC). Required because the
+            Open Period slot is upserted **in place** on every read (SPEC
+            §3.8) — a watermark alone cannot tell push sync that row changed.
+        import_active_kwh_total/rate_a/rate_b/rate_c/rate_d: Imported active
+            energy, from OBIS ``1.0.1.8.{0..4}.255``.
+        export_active_kwh_total/rate_a/rate_b/rate_c/rate_d: Exported active
+            energy, from OBIS ``1.0.2.8.{0..4}.255``.
+        import_reactive_kvarh_total/rate_a/rate_b/rate_c/rate_d: Imported
+            reactive energy, from OBIS ``1.0.3.8.{0..4}.255``.
+        export_reactive_kvarh_total/rate_a/rate_b/rate_c/rate_d: Exported
+            reactive energy, from OBIS ``1.0.4.8.{0..4}.255``.
+        max_demand_import_active_kw_total/rate_a/rate_b/rate_c/rate_d: Maximum
+            demand, imported active power, from OBIS ``1.0.1.6.{0..4}.255``.
+        max_demand_export_active_kw_total/rate_a/rate_b/rate_c/rate_d: Maximum
+            demand, exported active power, from OBIS ``1.0.2.6.{0..4}.255``.
+        max_demand_import_reactive_kvar_total/rate_a/rate_b/rate_c/rate_d:
+            Maximum demand, imported reactive power, from OBIS
+            ``1.0.3.6.{0..4}.255``.
+        max_demand_export_reactive_kvar_total/rate_a/rate_b/rate_c/rate_d:
+            Maximum demand, exported reactive power, from OBIS
+            ``1.0.4.6.{0..4}.255``.
+    """
+
+    __tablename__ = "billing_readings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    bill_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    record_status: Mapped[str | None] = mapped_column(String(16), default=None)
+    source: Mapped[str] = mapped_column(String(16))
+    meter_serial: Mapped[str | None] = mapped_column(String(64), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    import_active_kwh_total: Mapped[float | None] = mapped_column(default=None)
+    import_active_kwh_rate_a: Mapped[float | None] = mapped_column(default=None)
+    import_active_kwh_rate_b: Mapped[float | None] = mapped_column(default=None)
+    import_active_kwh_rate_c: Mapped[float | None] = mapped_column(default=None)
+    import_active_kwh_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    export_active_kwh_total: Mapped[float | None] = mapped_column(default=None)
+    export_active_kwh_rate_a: Mapped[float | None] = mapped_column(default=None)
+    export_active_kwh_rate_b: Mapped[float | None] = mapped_column(default=None)
+    export_active_kwh_rate_c: Mapped[float | None] = mapped_column(default=None)
+    export_active_kwh_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    import_reactive_kvarh_total: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvarh_rate_a: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvarh_rate_b: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvarh_rate_c: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvarh_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    export_reactive_kvarh_total: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvarh_rate_a: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvarh_rate_b: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvarh_rate_c: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvarh_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    max_demand_import_active_kw_total: Mapped[float | None] = mapped_column(default=None)
+    max_demand_import_active_kw_rate_a: Mapped[float | None] = mapped_column(default=None)
+    max_demand_import_active_kw_rate_b: Mapped[float | None] = mapped_column(default=None)
+    max_demand_import_active_kw_rate_c: Mapped[float | None] = mapped_column(default=None)
+    max_demand_import_active_kw_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    max_demand_export_active_kw_total: Mapped[float | None] = mapped_column(default=None)
+    max_demand_export_active_kw_rate_a: Mapped[float | None] = mapped_column(default=None)
+    max_demand_export_active_kw_rate_b: Mapped[float | None] = mapped_column(default=None)
+    max_demand_export_active_kw_rate_c: Mapped[float | None] = mapped_column(default=None)
+    max_demand_export_active_kw_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    max_demand_import_reactive_kvar_total: Mapped[float | None] = mapped_column(default=None)
+    max_demand_import_reactive_kvar_rate_a: Mapped[float | None] = mapped_column(default=None)
+    max_demand_import_reactive_kvar_rate_b: Mapped[float | None] = mapped_column(default=None)
+    max_demand_import_reactive_kvar_rate_c: Mapped[float | None] = mapped_column(default=None)
+    max_demand_import_reactive_kvar_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    max_demand_export_reactive_kvar_total: Mapped[float | None] = mapped_column(default=None)
+    max_demand_export_reactive_kvar_rate_a: Mapped[float | None] = mapped_column(default=None)
+    max_demand_export_reactive_kvar_rate_b: Mapped[float | None] = mapped_column(default=None)
+    max_demand_export_reactive_kvar_rate_c: Mapped[float | None] = mapped_column(default=None)
+    max_demand_export_reactive_kvar_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    device: Mapped[Device] = relationship()
+
+    __table_args__ = (
+        # The Billing page's query (M6a): one device's periods over a date
+        # range, either tab.
+        Index("ix_billing_readings_device_bill_date", "device_id", "bill_date"),
+        # Closed-period dedup — reading the same buffer twice stores nothing
+        # new (ADR 0009).
+        Index(
+            "uq_billing_readings_closed",
+            "device_id",
+            "bill_date",
+            unique=True,
+            sqlite_where=text("record_status IS NULL"),
+        ),
+        # At most one Open Period slot per device, ever — the invariant the
+        # whole module rests on. v1 never enforced this at the database and
+        # needed an is_latest reconciler to heal the races that followed; this
+        # constraint is what lets M6a not carry that reconciler over.
+        Index(
+            "uq_billing_readings_open",
+            "device_id",
+            unique=True,
+            sqlite_where=text("record_status = 'open'"),
+        ),
     )
 
 

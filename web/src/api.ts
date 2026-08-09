@@ -162,6 +162,42 @@ export interface LoadProfilePage {
   offset: number;
 }
 
+/** Which Billing page tab a row belongs to — closed periods (History) or the
+ * one Open Period slot (Current), from `GET /api/billing`'s `status` query. */
+export type BillingStatus = "closed" | "open";
+
+/**
+ * One Billing Reading as `GET /api/billing` returns it — the eight `*_total`
+ * columns only. The 32 tariff columns are stored but not returned (a later
+ * slice's job); `null` here means the meter never captured that quantity,
+ * never `0`, so it must render as an em dash (see `Billing.tsx`).
+ */
+export interface BillingRow {
+  device_id: number;
+  device_name: string;
+  /** The meter's own Clock cell — UTC, ISO-8601 (CONTEXT.md — Bill Date). */
+  bill_date: string;
+  /** When *we* read it — UTC, ISO-8601. */
+  read_at: string;
+  meter_serial: string | null;
+  import_active_kwh_total: number | null;
+  export_active_kwh_total: number | null;
+  import_reactive_kvarh_total: number | null;
+  export_reactive_kvarh_total: number | null;
+  max_demand_import_active_kw_total: number | null;
+  max_demand_export_active_kw_total: number | null;
+  max_demand_import_reactive_kvar_total: number | null;
+  max_demand_export_reactive_kvar_total: number | null;
+}
+
+/** One page of Billing Readings. `total` is the unpaged count the pager needs. */
+export interface BillingPage {
+  items: BillingRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 /**
  * One meter-logger's completeness on one local day, from `GET /api/records`.
  *
@@ -509,6 +545,29 @@ export const api = {
     request<LoadProfilePage>(
       `/api/load-profile?device_id=${deviceId}&start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}&limit=${limit}&offset=${offset}`,
     ),
+
+  /**
+   * One page of Billing Readings, either tab.
+   *
+   * Unlike `loadProfile` above, `deviceId` and the range are **optional** —
+   * billing's row volume never justifies forcing either (SPEC §3.6). The
+   * range, when given, is half-open on `bill_date`: `startIso` included,
+   * `endIso` excluded.
+   */
+  billing: (
+    billingStatus: BillingStatus,
+    deviceId: number | undefined,
+    startIso: string | undefined,
+    endIso: string | undefined,
+    limit: number,
+    offset: number,
+  ) => {
+    const params = new URLSearchParams({ status: billingStatus, limit: String(limit), offset: String(offset) });
+    if (deviceId !== undefined) params.set("device_id", String(deviceId));
+    if (startIso !== undefined) params.set("start", startIso);
+    if (endIso !== undefined) params.set("end", endIso);
+    return request<BillingPage>(`/api/billing?${params.toString()}`);
+  },
 
   /**
    * The completeness grid over a range of local calendar dates.

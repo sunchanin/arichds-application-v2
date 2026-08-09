@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from fakes import FakeMeterState
@@ -1001,15 +1001,16 @@ class TestReadNow:
 
         assert response.status_code == 200
         data = response.json()["data"]
-        # Two entries from M5a-1 on: the load-profile job reports that this
-        # model has none rather than silently leaving the list one row short
-        # (D12). ``TestReadNowRunsTheLoadProfileJob`` owns that second entry.
+        # Three entries from M6a on: the load-profile and billing jobs both
+        # report that this model has neither rather than silently leaving the
+        # list short (D12). ``TestReadNowRunsTheLoadProfileJob`` owns those
+        # entries.
         assert data["results"][0] == {
             "job": "liveness",
             "ok": True,
             "detail": "The meter answered at 127.0.0.1:4059.",
         }
-        assert [result["job"] for result in data["results"]] == ["liveness", "load_profile"]
+        assert [result["job"] for result in data["results"]] == ["liveness", "load_profile", "billing"]
         assert data["status"] == "online"
         assert data["checked_at"] is not None
 
@@ -1191,11 +1192,13 @@ class TestReadNowRunsTheLoadProfileJob:
     ) -> None:
         response = admin_client.post(f"/api/devices/{prometer_id}/read-now")
 
-        assert self.jobs(response) == ["liveness", "load_profile"]
+        assert self.jobs(response) == ["liveness", "load_profile", "billing"]
         results = response.json()["data"]["results"]
         assert results[0]["ok"] is True
         assert results[1]["ok"] is False
         assert "no load profile in this build" in results[1]["detail"]
+        assert results[2]["ok"] is False
+        assert "no billing profile in this build" in results[2]["detail"]
         assert count_readings(prometer_id) == 0
 
     def test_a_supported_model_stores_its_intervals(
@@ -1205,7 +1208,7 @@ class TestReadNowRunsTheLoadProfileJob:
 
         response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
 
-        assert self.jobs(response) == ["liveness", "load_profile"]
+        assert self.jobs(response) == ["liveness", "load_profile", "billing"]
         load_profile = response.json()["data"]["results"][1]
         assert load_profile["ok"] is True
         assert "Stored 1 Interval Readings up to" in load_profile["detail"]
@@ -1214,19 +1217,19 @@ class TestReadNowRunsTheLoadProfileJob:
     def test_a_supported_model_with_nothing_new_says_so(self, admin_client: TestClient, smw110_id: int) -> None:
         response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
 
-        assert self.jobs(response) == ["liveness", "load_profile"]
+        assert self.jobs(response) == ["liveness", "load_profile", "billing"]
         load_profile = response.json()["data"]["results"][1]
         assert load_profile["ok"] is True
         assert load_profile["detail"] == "The meter had no new intervals to store."
 
-    def test_a_meter_that_refuses_the_liveness_read_skips_the_load_profile(
+    def test_a_meter_that_refuses_the_liveness_read_skips_the_load_profile_and_billing(
         self, admin_client: TestClient, fake_meter: FakeMeterState, smw110_id: int
     ) -> None:
         fake_meter.connect_error = ConnectionRefusedError("refused")
 
         response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
 
-        assert self.jobs(response) == ["liveness", "load_profile"]
+        assert self.jobs(response) == ["liveness", "load_profile", "billing"]
         results = response.json()["data"]["results"]
         assert results[0]["ok"] is False
         assert results[1] == {
@@ -1234,8 +1237,64 @@ class TestReadNowRunsTheLoadProfileJob:
             "ok": False,
             "detail": "Skipped — the meter did not answer the liveness read.",
         }
+        assert results[2] == {
+            "job": "billing",
+            "ok": False,
+            "detail": "Skipped — the meter did not answer the liveness read.",
+        }
         # Skipped means skipped: the endpoint was never asked for a second time.
         assert fake_meter.load_profile_windows == []
+        assert fake_meter.billing_reads == 0
+
+    def test_a_supported_model_stores_its_billing_periods(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, smw110_id: int
+    ) -> None:
+        from arichds.acquisition.drivers.base import BillingReading
+
+        fake_meter.billing_rows = [
+            BillingReading(
+                bill_date=datetime(2026, 8, 7, 4, 37, 58, tzinfo=UTC),
+                source="dlms",
+                is_open=True,
+                import_active_kwh_total=200464.501,
+            ),
+            BillingReading(
+                bill_date=datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC),
+                source="dlms",
+                is_open=False,
+                import_active_kwh_total=198685.030,
+            ),
+        ]
+
+        response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
+
+        assert self.jobs(response) == ["liveness", "load_profile", "billing"]
+        billing = response.json()["data"]["results"][2]
+        assert billing["ok"] is True
+        assert "1 closed billing period" in billing["detail"]
+        assert "Open Period" in billing["detail"]
+
+    def test_a_failed_billing_read_reports_the_sentence(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, smw110_id: int
+    ) -> None:
+        fake_meter.billing_error = TimeoutError("the meter went away")
+
+        response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
+
+        billing = response.json()["data"]["results"][2]
+        assert billing["ok"] is False
+        assert "TimeoutError" in billing["detail"]
+
+    def test_a_failed_billing_read_is_not_a_strike(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, smw110_id: int
+    ) -> None:
+        """ADR 0004 — only ``liveness`` touches device status."""
+        fake_meter.billing_error = TimeoutError("the meter went away")
+
+        response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
+
+        assert response.json()["data"]["status"] == "online"
+        assert stored_status(smw110_id) == "online"
 
     def test_a_failed_load_profile_read_reports_what_it_stored(
         self, admin_client: TestClient, fake_meter: FakeMeterState, smw110_id: int
@@ -1310,7 +1369,7 @@ class TestClearReadings:
         event = events_of(admin_client, device_id)[0]
         assert event["kind"] == "data_cleared"
         assert event["actor"] == "admin"
-        assert event["detail"] == "Deleted 3 interval readings."
+        assert event["detail"] == "Deleted 3 interval readings and 0 billing periods."
 
     def test_a_wrong_name_is_a_409(self, admin_client: TestClient, device_id: int) -> None:
         assert self.clear(admin_client, device_id, "main incomer").status_code == 409
@@ -1332,7 +1391,33 @@ class TestClearReadings:
         response = self.clear(admin_client, device_id, "Second")
 
         assert response.json()["data"] == 0
-        assert events_of(admin_client, device_id)[0]["detail"] == "Deleted 0 interval readings."
+        assert events_of(admin_client, device_id)[0]["detail"] == "Deleted 0 interval readings and 0 billing periods."
+
+    def test_it_deletes_billing_periods_too_and_counts_them_in_the_total(
+        self, admin_client: TestClient, device_id: int
+    ) -> None:
+        write_billing_rows(device_id, 2)
+
+        response = self.clear(admin_client, device_id, "Main Incomer")
+
+        assert response.json()["data"] == 5  # 3 interval readings + 2 billing periods
+        assert count_readings(device_id) == 0
+        assert count_billing_rows(device_id) == 0
+
+    def test_the_device_event_names_both_counts(self, admin_client: TestClient, device_id: int) -> None:
+        write_billing_rows(device_id, 2)
+
+        self.clear(admin_client, device_id, "Main Incomer")
+
+        event = events_of(admin_client, device_id)[0]
+        assert event["detail"] == "Deleted 3 interval readings and 2 billing periods."
+
+    def test_a_wrong_name_deletes_no_billing_periods_either(self, admin_client: TestClient, device_id: int) -> None:
+        write_billing_rows(device_id, 2)
+
+        self.clear(admin_client, device_id, "Wrong Name")
+
+        assert count_billing_rows(device_id) == 2
 
     def test_it_leaves_another_device_alone(
         self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
@@ -1682,6 +1767,44 @@ def count_readings(device_id: int) -> int:
         return (
             session.scalar(
                 select(func.count()).select_from(LoadProfileReading).where(LoadProfileReading.device_id == device_id)
+            )
+            or 0
+        )
+
+
+def write_billing_rows(device_id: int, count: int) -> None:
+    """Write *count* closed Billing Readings straight into the table."""
+    from datetime import UTC, timedelta
+
+    from arichds.db.models import BillingReading
+    from arichds.db.session import session_scope
+
+    now = datetime.now(UTC)
+    with session_scope() as session:
+        for index in range(count):
+            session.add(
+                BillingReading(
+                    device_id=device_id,
+                    bill_date=now - timedelta(days=30 * index),
+                    read_at=now,
+                    record_status=None,
+                    source="dlms",
+                    import_active_kwh_total=100.0 + index,
+                )
+            )
+
+
+def count_billing_rows(device_id: int) -> int:
+    """How many Billing Readings a device has, straight from the table."""
+    from sqlalchemy import func, select
+
+    from arichds.db.models import BillingReading
+    from arichds.db.session import session_scope
+
+    with session_scope() as session:
+        return (
+            session.scalar(
+                select(func.count()).select_from(BillingReading).where(BillingReading.device_id == device_id)
             )
             or 0
         )

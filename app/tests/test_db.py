@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import inspect, select, text
+from sqlalchemy.exc import IntegrityError
 
 from arichds.config import Settings
 from arichds.constants import SOURCE_DLMS
-from arichds.db.models import Device, LoadProfileReading
+from arichds.db.models import BillingReading, Device, LoadProfileReading
 from arichds.db.session import get_engine, session_scope
 
 
@@ -44,7 +46,14 @@ class TestMigration:
         exactly what v2 refused to carry over.
         """
         tables = set(inspect(get_engine()).get_table_names()) - {"alembic_version"}
-        assert tables == {"devices", "load_profile_readings", "users", "user_tokens", "device_events"}
+        assert tables == {
+            "devices",
+            "load_profile_readings",
+            "users",
+            "user_tokens",
+            "device_events",
+            "billing_readings",
+        }
 
     def test_wal_is_enabled(self, migrated_db: Settings) -> None:
         with get_engine().connect() as connection:
@@ -112,15 +121,13 @@ class TestDeviceAndReading:
             assert stored.read_at.replace(tzinfo=UTC) == moment
 
     def test_device_names_are_unique(self, migrated_db: Settings) -> None:
-        import sqlalchemy.exc
-
         with session_scope() as session:
             session.add(make_device("Duplicate"))
 
         try:
             with session_scope() as session:
                 session.add(make_device("Duplicate"))
-        except sqlalchemy.exc.IntegrityError:
+        except IntegrityError:
             pass
         else:
             raise AssertionError("expected a unique-constraint violation")
@@ -170,6 +177,114 @@ class TestDeviceAndReading:
             ).first()
             assert latest is not None
             assert latest.volt_l1 == 230.0
+
+
+class TestBillingReading:
+    """M6a (issue #21) — the ORM shape and ADR 0009's two partial unique indexes."""
+
+    def test_create_a_closed_period(self, migrated_db: Settings) -> None:
+        with session_scope() as session:
+            device = make_device(model="smw110")
+            session.add(device)
+            session.flush()
+            device_id = device.id
+
+            session.add(
+                BillingReading(
+                    device_id=device_id,
+                    bill_date=datetime(2026, 7, 1, tzinfo=UTC),
+                    read_at=datetime(2026, 8, 7, 4, 37, 58, tzinfo=UTC),
+                    record_status=None,
+                    source=SOURCE_DLMS,
+                    meter_serial="1232002893",
+                    import_active_kwh_total=189917.399,
+                )
+            )
+
+        with session_scope() as session:
+            row = session.scalars(select(BillingReading)).one()
+            assert row.device_id == device_id
+            assert row.record_status is None
+            assert row.import_active_kwh_total == pytest.approx(189917.399)
+            # Untouched columns default to None — the fixed 40-column shape,
+            # not a subset the driver happened to fill (SPEC §3.6).
+            assert row.max_demand_export_reactive_kvar_rate_d is None
+
+    def test_a_second_closed_row_with_the_same_bill_date_is_rejected(self, migrated_db: Settings) -> None:
+        """The natural key — reading the same buffer twice must not duplicate a
+        closed period (ADR 0009)."""
+        with session_scope() as session:
+            device = make_device(model="smw110")
+            session.add(device)
+            session.flush()
+            device_id = device.id
+            bill_date = datetime(2026, 7, 1, tzinfo=UTC)
+            session.add(
+                BillingReading(
+                    device_id=device_id, bill_date=bill_date, read_at=bill_date, record_status=None, source=SOURCE_DLMS
+                )
+            )
+
+        with pytest.raises(IntegrityError), session_scope() as session:
+            session.add(
+                BillingReading(
+                    device_id=device_id,
+                    bill_date=bill_date,
+                    read_at=bill_date,
+                    record_status=None,
+                    source=SOURCE_DLMS,
+                )
+            )
+
+    def test_a_second_open_row_for_one_device_is_rejected(self, migrated_db: Settings) -> None:
+        """At most one Open Period slot per device — the invariant the whole
+        module rests on (ADR 0009)."""
+        with session_scope() as session:
+            device = make_device(model="smw110")
+            session.add(device)
+            session.flush()
+            device_id = device.id
+            session.add(
+                BillingReading(
+                    device_id=device_id,
+                    bill_date=datetime(2026, 8, 7, tzinfo=UTC),
+                    read_at=datetime(2026, 8, 7, tzinfo=UTC),
+                    record_status="open",
+                    source=SOURCE_DLMS,
+                )
+            )
+
+        with pytest.raises(IntegrityError), session_scope() as session:
+            session.add(
+                BillingReading(
+                    device_id=device_id,
+                    bill_date=datetime(2026, 8, 8, tzinfo=UTC),
+                    read_at=datetime(2026, 8, 8, tzinfo=UTC),
+                    record_status="open",
+                    source=SOURCE_DLMS,
+                )
+            )
+
+    def test_deleting_a_device_deletes_its_billing_rows(self, migrated_db: Settings) -> None:
+        with session_scope() as session:
+            device = make_device(model="smw110")
+            session.add(device)
+            session.flush()
+            session.add(
+                BillingReading(
+                    device_id=device.id,
+                    bill_date=datetime(2026, 7, 1, tzinfo=UTC),
+                    read_at=datetime(2026, 7, 1, tzinfo=UTC),
+                    record_status=None,
+                    source=SOURCE_DLMS,
+                )
+            )
+
+        with session_scope() as session:
+            session.delete(session.scalars(select(Device)).one())
+
+        with session_scope() as session:
+            assert session.scalars(select(BillingReading)).all() == []
 
 
 class TestTransportEndpoint:

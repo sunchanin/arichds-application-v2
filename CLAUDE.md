@@ -36,10 +36,13 @@ MySQL, and ~30 tables.
   one-thread job-registry scheduler with issue #16) ·
   0009 (billing has **one** read path — every read reads the whole buffer, so "Backfill"
   dissolves as a concept; no backfill endpoint, no `billing_backfilled_at`, no is_latest
-  reconciler — the invariant it healed becomes two partial unique indexes instead) ·
+  reconciler — the invariant it healed becomes two partial unique indexes instead;
+  **fully implemented**: the `billing_readings` schema, the 43-column span read, the read
+  path and the read-only page all landed with issue #21/M6a) ·
   0010 (the capture directory is an operator setting while the backup directory is fixed —
   a capture is a document a human carries to a customer, a backup is not; **do not "make these
-  consistent"**). **0009 and 0010 are written but not implemented — M6 has not started.**
+  consistent"**). **0010 is written but not implemented** — capture PDF/xlsx is a later M6
+  slice.
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
 - `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,
