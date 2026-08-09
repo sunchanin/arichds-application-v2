@@ -53,7 +53,7 @@ MySQL, and ~30 tables.
   in v2 yet* so nobody cites v1 code as if it were ours.
 - `docs/meter-notes/` — OBIS and capture-object maps **scanned off real meters**, not vendor
   datasheets: `load-profile-capture-objects.md` (CEWE ×3, 2026-08-05 — including the evidence
-  that SPEC §3.5's Logger-1/2 merge is impossible), plus `tcc-obis-scan-partial.md` and
+  that SPEC §3.5's Logger-1/2 merge is impossible), plus `tcc-obis-scan.md` and
   `mitsu-obis-scan.md` ported from v1. The skill above says *how* to read a register; these
   say *which*. Each carries its own limitations section — read it before trusting a value.
 

@@ -34,7 +34,7 @@ from typing import Any
 from gurux_dlms.enums import Unit
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers._cewe import CeweDriver
+from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver
 from arichds.acquisition.obis import INSTANTANEOUS_OBIS
 
 #: This model's own read timeout — 90 s, wider than every other CEWE model's
@@ -71,7 +71,7 @@ _LOGGER_2_COLUMNS: dict[tuple[str, int], tuple[str, str | None, Unit]] = {
 }
 
 
-class Premier550Driver(CeweDriver):
+class Premier550Driver(DlmsProfileDriver):
     """CEWE Premier 550 over DLMS/COSEM HDLC."""
 
     _INTERFACE = "HDLC"

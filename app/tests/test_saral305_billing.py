@@ -10,7 +10,7 @@ cumul_kw_demand_rate_a/b/c, kvar_demand_total, kvar_demand_time,
 cumul_kvar_demand_total."* Corroborated by v1
 ``adr/0004-driver-abstraction-obis-map.md:232-239``.
 
-Nothing in :class:`Saral305Driver` or :mod:`~arichds.acquisition.drivers._cewe`
+Nothing in :class:`Saral305Driver` or :mod:`~arichds.acquisition.drivers._dlms_profile`
 special-cases these six columns — the shared billing read simply finds no
 position for their OBIS codes in this model's live capture list and leaves
 the field ``None``, exactly as it would for any absent column. This test

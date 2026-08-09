@@ -20,7 +20,7 @@ The OBIS subset is byte-identical to v1's map — see
 
 **Load profile and billing landed at M4c (issue #24)**, sharing their
 transport and column-mapping logic with the other two CEWE models through
-:mod:`~arichds.acquisition.drivers._cewe` (D6). This model captures **two**
+:mod:`~arichds.acquisition.drivers._dlms_profile` (D6). This model captures **two**
 loggers (D15, ``docs/meter-notes/load-profile-capture-objects.md``):
 
 * Logger 1 (``1.0.99.1.0.255``, 900 s) — the four energy columns, V/I per
@@ -47,7 +47,7 @@ from typing import Any
 from gurux_dlms.enums import Unit
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers._cewe import CeweDriver
+from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver
 from arichds.acquisition.obis import INSTANTANEOUS_OBIS
 from arichds.constants import DLMS_INTER_REQUEST_DELAY_MS, TCP_READ_TIMEOUT_SEC
 
@@ -86,7 +86,7 @@ _LOGGER_2_COLUMNS: dict[tuple[str, int], tuple[str, str | None, Unit]] = {
 }
 
 
-class Prometer100Driver(CeweDriver):
+class Prometer100Driver(DlmsProfileDriver):
     """CEWE Prometer 100 over DLMS/COSEM WRAPPER."""
 
     _INTERFACE = "WRAPPER"

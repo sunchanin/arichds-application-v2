@@ -1,19 +1,41 @@
-"""Shared read logic for the three CEWE models — Prometer 100, Saral 305,
-Premier 550 (M4c, issue #24).
+"""Shared read logic for every DLMS meter whose load profile and billing are
+ProfileGeneric buffers — the three CEWE models (Prometer 100, Saral 305,
+Premier 550, M4c issue #24) and, since M4c issue #25, the SMART TCC family
+(:mod:`~arichds.acquisition.drivers.smart_tcc`).
 
-All three share one billing-profile shape (F4): OBIS ``1.0.98.2.0.255``,
-entry 1 = newest, full width, no span — genuinely simpler than the SMW110W4's
-hand-driven 43-column span (:mod:`~arichds.acquisition.drivers.smw110`, which
-stays on its own leaf implementation because its *transport* is genuinely
-different — D6). What is identical across all three CEWE models lives here
-once: the billing column map (with the twenty new Demand Time / Cumulative
-Demand columns, D10-D12), the bill-date candidate list (D8), the open/closed
-classification from the meter's own reset-reason cell (D9), and the
-full-buffer entry-access read itself.
+**Renamed from ``_cewe.py``/``CeweDriver`` at issue #25** (the same move
+issue #9 made for ``_dlms_tcp.py`` -> ``_dlms.py`` /
+``TcpDlmsDriver`` -> ``DlmsDriver`` — see that module's docstring): once a
+second brand derives from this class, a name built out of one brand's
+initials is a lie the codebase would repeat at every future brand.
+``DlmsProfileDriver`` says what it actually is — a DLMS driver that reads its
+data out of ProfileGeneric buffers.
 
-A concrete CEWE driver supplies only what genuinely differs: its connection
-parameters (F9), its per-logger load-profile column map (F7 + the omissions
-each model's field scan requires, D16), and which loggers it has (D15).
+The three CEWE models share one billing-profile shape (F4, issue #24): OBIS
+``1.0.98.2.0.255``, entry 1 = newest, full width, no span — genuinely simpler
+than the SMW110W4's hand-driven 43-column span
+(:mod:`~arichds.acquisition.drivers.smw110`, which stays on its own leaf
+implementation because its *transport* is genuinely different — D6 of that
+issue). What is identical across every model on this base lives here once:
+the billing read shape (full-width entry access, D=6/D=8 groups, Demand Time
+/ Cumulative Demand columns), the ``(OBIS, attribute)`` position map, and the
+open/closed classification shape (ask the meter first, positional fallback
+second).
+
+**What genuinely differs per model is now a declared class attribute, not a
+module constant a subclass cannot see (D5, issue #25)**: the billing profile
+OBIS, the bill-date candidate list, the reset-reason key (``None`` when a
+model has no such register — declared absent, not discovered absent), and
+the COSEM class of the ``D=2`` Cumulative Demand group. CEWE's three drivers
+inherit this base's defaults unchanged — the values themselves keep their
+``CEWE_``-prefixed module-constant names below, because they *are* CEWE's own
+field-measured values; only the mechanism that lets a driver replace them is
+new. :class:`~arichds.acquisition.drivers.smart_tcc.SmartTccDriver` is the
+first (and so far only) subclass that overrides them.
+
+A concrete driver on this base supplies only what genuinely differs: its
+connection parameters, its per-logger load-profile column map, which loggers
+it has, and — since issue #25 — the four D5 declarations above.
 
 **No ``if/elif`` on model anywhere in this file** — every per-model difference
 is a class attribute or an OBIS map a subclass declares, never a branch here.
@@ -42,13 +64,26 @@ from arichds.constants import METER_LOCAL_UTC_OFFSET_HOURS, WH_TO_KWH_DIVISOR
 
 logger = logging.getLogger(__name__)
 
-#: The billing ProfileGeneric every CEWE model shares (F4).
-BILLING_PROFILE_OBIS = "1.0.98.2.0.255"
+#: The billing ProfileGeneric every CEWE model shares (F4). Renamed from the
+#: unqualified ``BILLING_PROFILE_OBIS`` at issue #25 (review): once
+#: :attr:`DlmsProfileDriver.BILLING_PROFILE_OBIS` existed as the actual
+#: per-driver seam, a same-named module constant with no link between the
+#: two was a name collision waiting to desync — this is genuinely CEWE's own
+#: value, so it keeps the ``CEWE_`` prefix (D4) and the class attribute below
+#: references it directly, the same way :attr:`~DlmsProfileDriver.BILL_DATE_CANDIDATES`
+#: references :data:`CEWE_BILL_DATE_CANDIDATES`. Still imported by
+#: ``scripts/probe_m4c_read.py`` to open a real association against the CEWE
+#: fleet — that import was updated in the same change.
+CEWE_BILLING_PROFILE_OBIS = "1.0.98.2.0.255"
 
 #: Ordered bill-date candidates, first present in the live capture list wins
-#: (D8). CEWE's own bill-date column, then the DLMS-standard Clock as a
-#: fallback — a concrete driver may override this tuple, but no CEWE model
-#: needs to.
+#: (D8, issue #24). CEWE's own bill-date column, then the DLMS-standard Clock
+#: as a fallback. **This module constant itself is not what a subclass
+#: overrides** — module constants cannot be overridden the way class
+#: attributes can. What a subclass actually replaces is
+#: :attr:`DlmsProfileDriver.BILL_DATE_CANDIDATES` (D5, issue #25), whose
+#: default value is this tuple; every CEWE driver inherits that default
+#: unchanged, so this constant is still exactly what every CEWE read uses.
 CEWE_BILL_DATE_CANDIDATES: tuple[tuple[str, int], ...] = (("0.0.0.1.2.255", 2), ("0.0.1.0.0.255", 2))
 
 #: The reset-reason cell (F5): ``255`` = not reset = the Open Period; any
@@ -88,28 +123,55 @@ _CUMUL_DEMAND_BY_C: dict[int, tuple[str, Unit]] = {
     3: ("cumul_demand_import_reactive_kvar", Unit.REACTIVE_POWER),
 }
 
-#: Every mapped billing capture column that carries a **scaled number**, keyed
-#: on ``(OBIS, attribute)`` — identical scheme to
-#: :mod:`~arichds.acquisition.drivers.smw110`'s billing map, extended with the
-#: twenty M4c columns (D10). Demand Time is deliberately absent here — it is a
-#: timestamp, mapped separately in :data:`CEWE_DEMAND_TIME_COLUMNS` below.
-CEWE_MAPPED_BILLING_COLUMNS: dict[tuple[str, int], tuple[str, type, Unit]] = {
-    **{
-        (f"1.0.{c}.8.{e}.255", 2): (f"{prefix}_{suffix}", GXDLMSRegister, unit)
-        for c, (prefix, unit) in _ENERGY_BY_C.items()
-        for e, suffix in _RATE_SUFFIX.items()
-    },
-    **{
-        (f"1.0.{c}.6.{e}.255", 2): (f"{prefix}_{suffix}", GXDLMSExtendedRegister, unit)
-        for c, (prefix, unit) in _DEMAND_BY_C.items()
-        for e, suffix in _RATE_SUFFIX.items()
-    },
-    **{
-        (f"1.0.{c}.2.{e}.255", 2): (f"{prefix}_{suffix}", GXDLMSExtendedRegister, unit)
-        for c, (prefix, unit) in _CUMUL_DEMAND_BY_C.items()
-        for e, suffix in _RATE_SUFFIX.items()
-    },
-}
+
+def _build_mapped_billing_columns(
+    cumul_demand_cosem_class: type,
+) -> dict[tuple[str, int], tuple[str, type, Unit]]:
+    """Build the full mapped-billing-columns dict for one driver, keyed on
+    ``(OBIS, attribute)`` (D5, issue #25).
+
+    The energy (``D=8``, always ``GXDLMSRegister``) and max-demand (``D=6``,
+    always ``GXDLMSExtendedRegister``) groups are identical on every model
+    this base serves (F12) and are never parameterized. Only the Cumulative
+    Demand (``D=2``) group's COSEM class varies per model — CEWE is
+    ``GXDLMSExtendedRegister``, SMART TCC is ``GXDLMSRegister`` (F9) — hence
+    *cumul_demand_cosem_class* is the one argument.
+
+    Demand Time is deliberately absent here — it is a timestamp, mapped
+    separately in :data:`CEWE_DEMAND_TIME_COLUMNS` below (identical scheme to
+    :mod:`~arichds.acquisition.drivers.smw110`'s billing map, extended with
+    the twenty M4c columns, D10).
+    """
+    return {
+        **{
+            (f"1.0.{c}.8.{e}.255", 2): (f"{prefix}_{suffix}", GXDLMSRegister, unit)
+            for c, (prefix, unit) in _ENERGY_BY_C.items()
+            for e, suffix in _RATE_SUFFIX.items()
+        },
+        **{
+            (f"1.0.{c}.6.{e}.255", 2): (f"{prefix}_{suffix}", GXDLMSExtendedRegister, unit)
+            for c, (prefix, unit) in _DEMAND_BY_C.items()
+            for e, suffix in _RATE_SUFFIX.items()
+        },
+        **{
+            (f"1.0.{c}.2.{e}.255", 2): (f"{prefix}_{suffix}", cumul_demand_cosem_class, unit)
+            for c, (prefix, unit) in _CUMUL_DEMAND_BY_C.items()
+            for e, suffix in _RATE_SUFFIX.items()
+        },
+    }
+
+
+#: CEWE's own mapped billing columns — every mapped billing capture column
+#: that carries a **scaled number**, keyed on ``(OBIS, attribute)``.
+#: :attr:`DlmsProfileDriver.CUMUL_DEMAND_COSEM_CLASS` defaults to
+#: ``GXDLMSExtendedRegister`` (CEWE's value), so
+#: :meth:`DlmsProfileDriver._mapped_billing_columns` returns exactly this
+#: dict for every CEWE driver — kept as a module constant, unrenamed (D4),
+#: because it genuinely is CEWE's own value and existing tests import it
+#: directly.
+CEWE_MAPPED_BILLING_COLUMNS: dict[tuple[str, int], tuple[str, type, Unit]] = _build_mapped_billing_columns(
+    GXDLMSExtendedRegister
+)
 
 #: Every mapped Demand Time column, keyed on ``(OBIS, attribute)`` — attribute
 #: **5** on the same OBIS the value's own attribute-2 cell uses (F2's
@@ -287,9 +349,9 @@ def resolve_load_profile_multiplier(
     2026-08-09 scan: every measurement column's own-address read was refused.
 
     *cache* is threaded through from the caller so a chunked walk — which
-    calls :meth:`CeweDriver.read_load_profile` once per 24 h chunk, up to 90
-    times for a full backfill — resolves each column's multiplier once per
-    connection, not once per chunk (review finding 3).
+    calls :meth:`DlmsProfileDriver.read_load_profile` once per 24 h chunk, up
+    to 90 times for a full backfill — resolves each column's multiplier once
+    per connection, not once per chunk (review finding 3).
     """
     candidates = [capture_obis]
     if sibling_obis is not None:
@@ -299,25 +361,76 @@ def resolve_load_profile_multiplier(
     )
 
 
-class CeweDriver(DlmsDriver):
-    """Shared billing + load-profile read logic for the three CEWE models.
+class DlmsProfileDriver(DlmsDriver):
+    """Shared billing + load-profile read logic for a DLMS meter whose data
+    lives in ProfileGeneric buffers — the three CEWE models and, since issue
+    #25, the SMART TCC family.
 
     Subclasses declare :attr:`LOAD_PROFILE_COLUMN_MAP` (``{logger_id:
     {(obis, attr): (IntervalReading field, sibling OBIS to borrow scaler_unit
-    from or None, required Unit)}}``) and the connection hooks
+    from or None, required Unit)}}``), the connection hooks
     (:meth:`~arichds.acquisition.drivers._dlms.DlmsDriver._protocol_args`,
-    :meth:`~arichds.acquisition.drivers._dlms.DlmsDriver._read_timeout_ms`).
-    Everything else — billing, the bill-date/open-closed logic, the
-    load-profile transport (range read, meter-local conversion) — lives here.
+    :meth:`~arichds.acquisition.drivers._dlms.DlmsDriver._read_timeout_ms`),
+    and — since issue #25 (D5) — four billing declarations a subclass may
+    override: :attr:`BILLING_PROFILE_OBIS`, :attr:`BILL_DATE_CANDIDATES`,
+    :attr:`RESET_REASON_KEY` and :attr:`CUMUL_DEMAND_COSEM_CLASS`. Every one
+    of the four defaults to CEWE's own field-measured value, so a CEWE driver
+    declares nothing and gets identical behaviour to before this class was
+    renamed. Everything else — the billing read shape, the position map, the
+    load-profile transport (range read, meter-local conversion) — lives here,
+    common to every model on this base.
     """
 
     #: ``{logger_id: {(obis, attr): (field, sibling OBIS or None, required
-    #: Unit)}}``. Empty on the base — every concrete CEWE driver overrides it
-    #: (D15). The sibling is what :func:`resolve_load_profile_multiplier`
+    #: Unit)}}``. Empty on the base — every concrete driver overrides it
+    #: (D15, issue #24). The sibling is what :func:`resolve_load_profile_multiplier`
     #: falls back to when the column's own address denies ``scaler_unit``
     #: (review finding 1) — ``None`` for a column with no known working
     #: sibling.
     LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], tuple[str, str | None, Unit]]] = {}
+
+    #: D5 (issue #25) — the billing ProfileGeneric this driver reads. Defaults
+    #: to CEWE's shared profile (F4); :class:`~arichds.acquisition.drivers.smart_tcc.SmartTccDriver`
+    #: overrides with its Scheme 1 profile (F5) — Scheme 2 is a daily snapshot,
+    #: never a bill cut (F8), and is never named by any declaration here.
+    BILLING_PROFILE_OBIS: str = CEWE_BILLING_PROFILE_OBIS
+
+    #: D5 (issue #25) — ordered bill-date candidates, first present in the
+    #: live capture list wins. Defaults to CEWE's own bill-date column, then
+    #: the DLMS-standard Clock as a fallback (D8, issue #24).
+    #: :class:`~arichds.acquisition.drivers.smart_tcc.SmartTccDriver` overrides
+    #: with Clock only (F6) — CEWE's own bill-date OBIS is absent from TCC's
+    #: capture list and its DLMS-standard-Clock-shaped near-miss reads
+    #: UNSET/year-2000 in the buffer.
+    BILL_DATE_CANDIDATES: tuple[tuple[str, int], ...] = CEWE_BILL_DATE_CANDIDATES
+
+    #: D5 (issue #25) — the reset-reason cell: ``255`` = not reset = the Open
+    #: Period; any other integer = a closed cut (F5, issue #24). ``None``
+    #: means this model has **no** such register — a *declared* absence, not
+    #: a discovered one: :meth:`read_billing` reaches the positional fallback
+    #: silently for a driver that declares ``None`` here, but still WARNs for
+    #: one that expects a key and does not find it in the live capture list
+    #: (D5's distinction). Defaults to CEWE's own key; every other CEWE-family
+    #: model that lacks the register overrides this to ``None``.
+    RESET_REASON_KEY: tuple[str, int] | None = _RESET_REASON_KEY
+
+    #: D5 (issue #25) — COSEM class of the ``D=2`` Cumulative Demand group.
+    #: ``GXDLMSExtendedRegister`` on every CEWE model (the default); SMART TCC
+    #: is ``GXDLMSRegister`` instead (F9) — the one COSEM-class difference
+    #: this family has from CEWE. Read by :meth:`_mapped_billing_columns`,
+    #: which builds the full billing map from this and the two D=6/D=8 groups
+    #: (identical across the whole family — F12).
+    CUMUL_DEMAND_COSEM_CLASS: type = GXDLMSExtendedRegister
+
+    @classmethod
+    def _mapped_billing_columns(cls) -> dict[tuple[str, int], tuple[str, type, Unit]]:
+        """This driver's full mapped-billing-columns dict (D5) — the shared
+        energy (D=8) and max-demand (D=6) groups, identical for every model
+        on this base, plus this driver's own :attr:`CUMUL_DEMAND_COSEM_CLASS`
+        for the ``D=2`` group. Equals :data:`CEWE_MAPPED_BILLING_COLUMNS`
+        exactly when :attr:`CUMUL_DEMAND_COSEM_CLASS` is left at its default
+        (``GXDLMSExtendedRegister``) — every CEWE driver today."""
+        return _build_mapped_billing_columns(cls.CUMUL_DEMAND_COSEM_CLASS)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Add the per-connection load-profile scaler cache (review finding
@@ -335,11 +448,12 @@ class CeweDriver(DlmsDriver):
     def get_obis_map(self) -> dict[str, tuple[str, int]]:
         """No instantaneous set for these models in v2 (ADR 0007) — no
         production caller since that ADR removed the instantaneous read.
-        Kept only to satisfy the abstract interface; each concrete CEWE
-        driver returns ``dict(INSTANTANEOUS_OBIS)`` (the same shared,
-        field-proven map ``scripts/probe_meter.py`` walks), unlike
-        :class:`~arichds.acquisition.drivers.smw110.Smw110Driver`, which
-        returns ``{}`` because its instantaneous set differs from this one."""
+        Kept only to satisfy the abstract interface; each concrete driver on
+        this base returns ``dict(INSTANTANEOUS_OBIS)`` (the same shared,
+        field-proven map ``scripts/probe_meter.py`` walks — D10, issue #25),
+        unlike :class:`~arichds.acquisition.drivers.smw110.Smw110Driver`,
+        which returns ``{}`` because its instantaneous set differs from this
+        one."""
 
     # ── Load profile ─────────────────────────────────────────────────────────
 
@@ -453,24 +567,32 @@ class CeweDriver(DlmsDriver):
     # ── Billing ───────────────────────────────────────────────────────────────
 
     def supports_billing(self) -> bool:
-        """Yes — every CEWE model shares the billing profile (F4)."""
+        """Yes — every model on this base shares the ProfileGeneric billing
+        shape (F4, issue #24)."""
         return True
 
     def read_billing(self) -> list[BillingReading]:
-        """Read the whole billing buffer (``1.0.98.2.0.255``) full width, one
-        entry-access call, entry 1 = newest (F4, F6) — no span, unlike the
-        SMW110W4.
+        """Read the whole billing buffer full width, one entry-access call,
+        entry 1 = newest (F4/F6, issue #24) — no span, unlike the SMW110W4.
+
+        Which profile, which bill-date column, whether a reset-reason column
+        is expected, and which COSEM class the Cumulative Demand group uses
+        are all read off this instance's D5 declarations
+        (:attr:`BILLING_PROFILE_OBIS`, :attr:`BILL_DATE_CANDIDATES`,
+        :attr:`RESET_REASON_KEY`, :attr:`CUMUL_DEMAND_COSEM_CLASS`) — never a
+        module constant, so a subclass's override actually takes effect.
 
         Returns:
             Every row the meter holds, newest first — the meter's own
             reset-reason cell decides which row (if any) is the Open Period
-            (D9), never entry position alone unless that column is absent.
+            (D9), never entry position alone unless that column is absent or
+            declared absent (D5).
         """
         if self._reader is None or self._client is None:
             logger.warning("read_billing() called on a disconnected driver %s", self)
             return []
 
-        pg = GXDLMSProfileGeneric(BILLING_PROFILE_OBIS)
+        pg = GXDLMSProfileGeneric(self.BILLING_PROFILE_OBIS)
         self._client.objects.append(pg)
 
         self._reader.read(pg, 3)  # populates pg.captureObjects — live, never cached (D7)
@@ -481,31 +603,41 @@ class CeweDriver(DlmsDriver):
         positions = positions_by_obis_attr(pg.captureObjects)
         expected_cell_count = len(pg.captureObjects)
 
-        bill_date_key = next((key for key in CEWE_BILL_DATE_CANDIDATES if key in positions), None)
+        bill_date_key = next((key for key in self.BILL_DATE_CANDIDATES if key in positions), None)
         if bill_date_key is None:
             logger.warning(
                 "%s: no bill-date candidate present in the live capture list — nothing was stored", self.model_name
             )
             return []
 
-        reset_reason_key = _RESET_REASON_KEY if _RESET_REASON_KEY in positions else None
-        if reset_reason_key is None:
+        declared_reset_reason_key = self.RESET_REASON_KEY
+        if declared_reset_reason_key is None:
+            # Declared absent (D5) — this model has no reset-reason register
+            # at all, so falling back to the positional classifier is the
+            # documented normal case, not a discovery. No WARNing here: it
+            # would otherwise fire on every read forever.
+            reset_reason_key = None
+        elif declared_reset_reason_key in positions:
+            reset_reason_key = declared_reset_reason_key
+        else:
+            reset_reason_key = None
             logger.warning(
                 "%s: reset-reason column %s is absent from the live capture list — "
                 "falling back to positional open/closed classification (entry 1 = open)",
                 self.model_name,
-                _RESET_REASON_KEY[0],
+                declared_reset_reason_key[0],
             )
 
+        mapped_billing_columns = self._mapped_billing_columns()
         scaler_cache: dict[tuple[str, type, Unit], float | None] = {}
         multipliers = {
             key: resolve_billing_multiplier(
                 self._reader, self._client, scaler_cache, key[0], cosem_class, unit, field, self.model_name
             )
-            for key, (field, cosem_class, unit) in CEWE_MAPPED_BILLING_COLUMNS.items()
+            for key, (field, cosem_class, unit) in mapped_billing_columns.items()
             if key in positions
         }
-        column_map = {key: field for key, (field, _cls, _unit) in CEWE_MAPPED_BILLING_COLUMNS.items()}
+        column_map = {key: field for key, (field, _cls, _unit) in mapped_billing_columns.items()}
         demand_time_map = {key: field for key, field in CEWE_DEMAND_TIME_COLUMNS.items() if key in positions}
         column_map.update(demand_time_map)
 

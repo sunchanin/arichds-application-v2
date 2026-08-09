@@ -1,5 +1,7 @@
-"""``acquisition.drivers._cewe`` — the shared billing/load-profile logic every
-CEWE model uses (D6/D8/D9/D10, M4c issue #24).
+"""``acquisition.drivers._dlms_profile`` — the shared billing/load-profile
+logic every CEWE model uses (D6/D8/D9/D10, M4c issue #24). Renamed from
+``_cewe``/``CeweDriver`` at issue #25, when the SMART TCC family became a
+second driver family on this base — see the module's own docstring.
 """
 
 from __future__ import annotations
@@ -13,11 +15,11 @@ from gurux_dlms.enums import Unit
 from gurux_dlms.objects import GXDLMSProfileGeneric
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers._cewe import (
+from arichds.acquisition.drivers._dlms_profile import (
     CEWE_BILL_DATE_CANDIDATES,
     CEWE_DEMAND_TIME_COLUMNS,
     CEWE_MAPPED_BILLING_COLUMNS,
-    CeweDriver,
+    DlmsProfileDriver,
     meter_local_to_utc_inverse,
     resolve_billing_multiplier,
     resolve_load_profile_multiplier,
@@ -106,7 +108,7 @@ class FakeCeweBillingReader:
         return self._buffer[index - 1 : index - 1 + count]
 
 
-def _build_driver(reader: FakeCeweBillingReader) -> CeweDriver:
+def _build_driver(reader: FakeCeweBillingReader) -> DlmsProfileDriver:
     driver = Prometer100Driver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
     driver._reader = reader  # noqa: SLF001
     driver._client = SimpleNamespace(objects=[])  # noqa: SLF001

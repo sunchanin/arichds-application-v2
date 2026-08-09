@@ -5,7 +5,7 @@ finding 1, M4c issue #24).
 data problem 1's whole fix rests on — roughly 20 of them, spread across three
 driver files, edited by hand and the kind of thing touched again when a
 fourth CEWE model arrives. The Unit check inside
-:func:`~arichds.acquisition.drivers._cewe.resolve_scaler_candidates` catches
+:func:`~arichds.acquisition.drivers._dlms_profile.resolve_scaler_candidates` catches
 a sibling from the *wrong physical quantity* (a current register reporting
 ``Unit.CURRENT`` where ``Unit.VOLTAGE`` was required) — but it cannot catch a
 transposition **within** one Unit family: ``volt_l1`` borrowing L2's sibling
@@ -33,8 +33,13 @@ import pytest
 from arichds.acquisition.drivers.premier550 import Premier550Driver
 from arichds.acquisition.drivers.prometer100 import Prometer100Driver
 from arichds.acquisition.drivers.saral305 import Saral305Driver
+from arichds.acquisition.drivers.smart_tcc import SmartTccDriver
 
-_DRIVERS = (Prometer100Driver, Saral305Driver, Premier550Driver)
+#: Every DlmsProfileDriver-family driver whose LOAD_PROFILE_COLUMN_MAP this
+#: guard walks. Not auto-discovered (module docstring) — SmartTccDriver was
+#: added here at M4c issue #25; a fifth driver added later must be added by
+#: hand too, or its map is silently uncovered.
+_DRIVERS = (Prometer100Driver, Saral305Driver, Premier550Driver, SmartTccDriver)
 
 #: The only D-value transitions a CEWE load-profile sibling may use (F7/F8):
 #: interval energy (D=29) borrows cumulative energy (D=8); V/I averaging

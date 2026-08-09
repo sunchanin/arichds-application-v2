@@ -9,8 +9,8 @@ be told apart from v1, which applied none.
 
 **Read-only, exactly like every other script under this directory.** It opens
 one association, reads attributes and the two profiles through the product's
-own driver methods (:meth:`~arichds.acquisition.drivers._cewe.CeweDriver.read_load_profile`
-/ :meth:`~arichds.acquisition.drivers._cewe.CeweDriver.read_billing`), and
+own driver methods (:meth:`~arichds.acquisition.drivers._dlms_profile.DlmsProfileDriver.read_load_profile`
+/ :meth:`~arichds.acquisition.drivers._dlms_profile.DlmsProfileDriver.read_billing`), and
 disconnects. **It never writes to a meter** — no register write, no clock set,
 no MD reset, on any transport, ever (``CLAUDE.md``).
 
@@ -34,7 +34,7 @@ from typing import Any
 from gurux_dlms.objects import GXDLMSProfileGeneric
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers._cewe import BILLING_PROFILE_OBIS
+from arichds.acquisition.drivers._dlms_profile import CEWE_BILLING_PROFILE_OBIS
 from arichds.acquisition.drivers.factory import create_driver, supported_models
 
 _LOAD_PROFILE_WINDOW_HOURS = 6
@@ -85,8 +85,8 @@ def probe_one(model: str, host: str, port: int, password: str) -> None:
                 print(f"      sample fields: {first.as_columns()}")
 
         # ── Billing ──────────────────────────────────────────────────────────
-        print(f"\n=== Billing ({BILLING_PROFILE_OBIS}) ===")
-        columns, entries_in_use = _read_profile_shape(driver, BILLING_PROFILE_OBIS)
+        print(f"\n=== Billing ({CEWE_BILLING_PROFILE_OBIS}) ===")
+        columns, entries_in_use = _read_profile_shape(driver, CEWE_BILLING_PROFILE_OBIS)
         print(f"    {len(columns)} live capture column(s):")
         _print_columns(columns)
         print(f"    entries_in_use: {entries_in_use}")

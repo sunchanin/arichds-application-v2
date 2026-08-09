@@ -24,7 +24,7 @@ not track at all — ``cumul_kw_demand_rate_a/b/c``, ``kvar_demand_total``,
 ``kvar_demand_time``, ``cumul_kvar_demand_total`` (v1
 ``drivers/saral305.py:63-67``; corroborated by v1
 ``adr/0004-driver-abstraction-obis-map.md:232-239``). Nothing in this driver
-special-cases that — the shared :mod:`~arichds.acquisition.drivers._cewe`
+special-cases that — the shared :mod:`~arichds.acquisition.drivers._dlms_profile`
 billing read simply finds no position for those OBIS codes in the live
 capture list and leaves the corresponding fields ``None``, exactly as it does
 for any column absent from a model's own capture list.
@@ -37,7 +37,7 @@ from typing import Any
 from gurux_dlms.enums import Unit
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers._cewe import CeweDriver
+from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver
 from arichds.acquisition.obis import INSTANTANEOUS_OBIS
 from arichds.constants import TCP_READ_TIMEOUT_SEC
 
@@ -62,7 +62,7 @@ _LOGGER_1_COLUMNS: dict[tuple[str, int], tuple[str, str | None, Unit]] = {
 }
 
 
-class Saral305Driver(CeweDriver):
+class Saral305Driver(DlmsProfileDriver):
     """CEWE Saral 305 over DLMS/COSEM HDLC."""
 
     _INTERFACE = "HDLC"

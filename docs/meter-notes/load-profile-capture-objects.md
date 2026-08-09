@@ -175,7 +175,8 @@ be written knowing it, or a correct v2 will look like a regression.
   the SMW110W4 already documents for load profile. The fix is the same shape
   as SMW110W4's proven resolver: each mapped column now declares a sibling
   OBIS to borrow `scaler_unit` from (`resolve_load_profile_multiplier`,
-  `acquisition/drivers/_cewe.py`), and a live re-read confirmed it resolves
+  `acquisition/drivers/_dlms_profile.py`, renamed from `_cewe.py` at issue
+  #25), and a live re-read confirmed it resolves
   real values on all three models — voltage, current and energy on Prometer
   100 and Saral 305's Logger 1, energy on Premier 550's Logger 1 and V/I on
   its Logger 2. The one column still `NULL` after the fix is Prometer 100's

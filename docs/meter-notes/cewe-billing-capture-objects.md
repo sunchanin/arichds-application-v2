@@ -37,7 +37,8 @@ model: the driver tried the column's own `scaler_unit` (attr 3) and the `E=0`
 sibling of the same `C.2` group; both were refused. **The meter denies
 `scaler_unit` on every `D=6` (max demand) tariff column too** (`E=1`..`E=4`),
 not just `D=2` — only each `D` group's own total (`E=0`) answers directly.
-`resolve_billing_multiplier` (`acquisition/drivers/_cewe.py`) now tries, in
+`resolve_billing_multiplier` (`acquisition/drivers/_dlms_profile.py`, renamed
+from `_cewe.py` at issue #25) now tries, in
 order: the column's own address, the `E=0` sibling of its own group, the
 same-tariff `D=6` sibling, and finally the `D=6` group's own total (`E=0`) —
 that last step is what actually resolves every Cumulative Demand column on

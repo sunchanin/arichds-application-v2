@@ -45,6 +45,28 @@ class TestTheThreeCeweModelsAreDrivable:
         assert set(_registry()) <= set(CATALOG)
 
 
+class TestTheFiveSmartTccModelsAreDrivable:
+    """D2/D5, M4c issue #25 — one driver class, five catalog keys, all
+    resolving to the same :class:`SmartTccDriver`."""
+
+    def test_all_five_tcc_keys_are_registered(self) -> None:
+        assert {"st3c", "st3cl", "st33tl", "st3tl", "st3dh"} <= set(_registry())
+
+    def test_all_five_resolve_to_the_same_driver_class(self) -> None:
+        from arichds.acquisition.drivers.smart_tcc import SmartTccDriver
+
+        registry = _registry()
+        for key in ("st3c", "st3cl", "st33tl", "st3tl", "st3dh"):
+            assert registry[key] is SmartTccDriver
+
+    def test_the_earlier_four_models_are_still_registered(self) -> None:
+        """The registry grew again — it must not have lost anything on the way."""
+        assert {"prometer100", "saral305", "premier550", "smw110"} <= set(_registry())
+
+    def test_every_registered_model_is_still_in_the_catalog(self) -> None:
+        assert set(_registry()) <= set(CATALOG)
+
+
 class TestCatalogShape:
     def test_nine_models(self) -> None:
         assert len(CATALOG) == 9
