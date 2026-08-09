@@ -188,7 +188,11 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   — ⚠️ **และต้องตัดสินอีกครั้งตอน M4c ว่าจะทำจริงไหม**: v1 `smart_tcc.py` เก็บคีย์ TCC เป็น
   **module constant ในไดรเวอร์ ไม่ได้เก็บต่อ device** (ลูกค้ายืนยันว่าทุกเครื่อง TCC ใช้ชุดเดียวกัน)
   และไดรเวอร์ *"absorbs and ignores"* คีย์ที่ส่งมาจากฟอร์ม ⇒ เป็นไปได้ว่าสองช่องนี้ไม่ต้องมีเลย
-- billing: `first_bill_date` + `bill_day_feb28/29/30/31` — ช่องอยู่ที่นี่ ตรรกะการตัดงวดอยู่ M6
+- billing: `first_bill_date` + `bill_day_feb28/29/30/31` — **ช่องบันทึกค่าล้วน ๆ เหมือน `site_code` /
+  `customer` / `meter_number` ข้างบน: ห้ามประดิษฐ์พฤติกรรมให้** (เจ้าของยืนยัน grill M6, 2026-08-09) ·
+  บรรทัดเดิมเขียนว่า *"ตรรกะการตัดงวดอยู่ M6"* ซึ่งผิด — ฝั่ง DLMS **มิเตอร์เป็นเจ้าของการตัดรอบเอง**
+  (v1 ADR 0002) และของเดียวที่เคยอ่านห้าช่องนี้คือ modbus billing cut ซึ่งอยู่ **M4b** ·
+  ชะตาของ modbus cut ยังไม่ตัดสิน — ดู §5 คำถามค้าง
 
 **Probe-first identity (ADR 0005)** — `meter_serial` มาจากมิเตอร์เสมอ:
 - **Create ต่อมิเตอร์จริงก่อนเขียนแถว** อ่าน serial มาใส่ให้ · probe ล้ม (timeout / auth / unreachable)
@@ -433,7 +437,13 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
 - CSV auto-export → **ย้ายไป M7** (ดูเหตุผลด้านล่าง) · manual read-now → **M5b**
 - Retention (ตัวเลขเดิม v1) — job รายวัน → **M5c** (เคาะที่ grill M5):
   **ครอบเท่าที่มีตารางจริงตอน M5c** = `load_profile_readings` (**90 วัน**, ตัดตาม `read_at`)
-  และ `device_events` (**90 วัน**, ตัดตาม `created_at`) · billing 365 วันเป็นของ **M6** ·
+  และ `device_events` (**90 วัน**, ตัดตาม `created_at`) ·
+  ~~billing 365 วัน~~ → ✅ **grill M6 (2026-08-09): `billing_readings` ไม่โดน retention เลย** —
+  360 แถว/ปี (30 มิเตอร์ × 12 รอบ) ไม่ใช่ปัญหาพื้นที่ และมันคือหลักฐานทางธุรกิจที่ลูกค้าย้อนดู
+  ต่างจาก interval reading ที่เป็นข้อมูลดิบ · ที่สำคัญกว่านั้น **365 วันทับพอดีกับความลึกของ buffer**
+  (13 entry = 1 รอบเปิด + 12 รอบปิดรายเดือน) ⇒ รอบปิดที่เก่าที่สุดจะถูกลบแล้วถูกอ่านกลับมา insert ใหม่
+  ทุกวัน พร้อม render capture ใหม่และ push ซ้ำ — เป็นตำแหน่งที่แย่ที่สุดที่จะวางเส้นตัด ·
+  M6 จึงไม่แตะ `db/retention.py` เลย
   `user_tokens` **ไม่ต้องมี** — `auth/service.py:162` เรียก `purge_expired_tokens()` ตอน login แล้ว
   · LP 90 วันเข้าคู่กับ backfill 90 วันพอดี: ดึงมาเท่าที่ตั้งใจเก็บ แล้ว retention ตัดหางไปเรื่อย ๆ
   · ลบ `device_events` **ทุกแถวเท่ากันหมด ไม่แยก `actor`** — เจ้าของงานเลือกความเรียบง่าย
@@ -473,13 +483,114 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
 
 ### 3.6 Billing (M6)
 
-- Open period = upsert slot เดียวต่อ device (ADR 0018) · ปิดงวดตาม reset-reason / driver capability
-- Backfill ประวัติจากมิเตอร์ · manual read · auto-read ตามเวลา (job ใน registry)
-- Capture PDF/xlsx ลง filesystem (ตาม v1) — gated ด้วย feature `auto_capture` / `billing_excel_export`
-- Modbus billing cut (ระบบตัดบิลแทนมิเตอร์ที่ตัดเองไม่ได้) — **เขียน ADR ใหม่** อ่านจาก
-  `load_profile_readings` (กฎธุรกิจเดิมของ ADR 0019: ตัดที่ 00:00 ของวันบิล, catch-up, idempotent) —
-  มากับเฟส modbus หลังวันที่ 5
-- หน้า: Billing
+> เคาะทั้งหมดที่ **grill M6 (2026-08-09)** — 16 ข้อ · ที่ไม่ตรงกับ v1 มีเหตุผลกำกับทุกข้อ
+
+> ⚠️ **การอ่าน billing ไม่ใช่การล้อ `read_load_profile` — มันต้องใช้กลไกอ่านคนละตัว**
+> (พบตอน scrutinize แผน 2026-08-09 · ข้อนี้เปลี่ยนขนาดของงาน อย่าอ่านผ่าน)
+>
+> `smw110.py:378` อ่าน load profile ด้วย `self._reader.readRowsByEntry(pg, start, count)` เต็มความกว้าง
+> แต่ **billing ของรุ่นนี้อ่านเต็มความกว้างไม่ได้** — ตอบ *"Data Block Unavailable"* ต้องส่ง span
+> 43 คอลัมน์เท่านั้น (`smw110w4-scan.md:246-253`) · และ `vendor/gurux/GXDLMSReader.py:400`
+> **ไม่มีช่องใส่ span** ส่วนการแก้ไฟล์ vendored ถูกห้ามโดย invariant ใน `CLAUDE.md`
+>
+> **ทางออกไม่ต้องแตะไฟล์ vendored เลย**: `GXDLMSClient.readRowsByEntry(pg, index, count, columns=None)`
+> รับ span อยู่แล้ว และ `_dlms.py:255` แสดงว่า driver ถือ `self._client` อยู่ในมือ · พิสูจน์มาแล้วสองที่ —
+> v1 `_tcp_driver_base.py:771` (พร้อม fallback ที่ :757-761) และสคริปต์ของเราเอง
+> `app/scripts/probe_smw110_serial.py:534`
+>
+> **แต่มันไม่ฟรี**: เมธอดนั้นคืน **request** ไม่ใช่แถว ⇒ driver ต้องขับ data-block loop เอง สลับ
+> `pg.captureObjects` → span ก่อน `updateValue` แล้วคืนค่าใน `finally` · และ `smw110.py:369-370`
+> ที่สร้าง `positions` / `expected_cell_count` จาก `captureObjects` เต็ม ต้องอิง span แทน
+> ⇒ **แยกเป็น issue ของตัวเอง** อ้างสคริปต์ probe เป็นต้นแบบ และบังคับ skill `gurux-dlms`
+>
+> ⚠️ **ลำดับ entry เป็นสมบัติของ "โปรไฟล์" ไม่ใช่ของ "มิเตอร์"** — `smw110.py:143` ฝังไว้ว่า
+> load profile *"entry 1 is the OLDEST"* แต่ billing ของเครื่องเดียวกันเรียง **newest-first**
+> (`scan:288`) · positional fallback ที่ใช้จำแนกรอบเปิดยืนอยู่บนข้อนี้พอดี — ห้ามใช้ค่าคงที่ลำดับ
+> ร่วมกันสองโปรไฟล์
+
+**เส้นทางอ่าน — มีเส้นเดียว** `read_and_store_billing(device_id, *, locks, background, now)`
+รูปทรงภายนอกล้อ `acquisition/load_profile.py` (ลายเซ็น · lock · จุดเรียก) แต่**ข้างในเป็นกลไกอ่าน
+คนละตัวตามกรอบข้างบน** · **อ่านทั้ง buffer ทุกครั้ง** ⇒ คำว่า "Backfill" หายไปเป็นแนวคิด
+เพราะทุกการอ่านคือ backfill · ไม่มี endpoint backfill แยก ไม่มี `billing_backfilled_at`
+ไม่มี is_latest reconciler · เหตุผล: ไม่มีรุ่นไหนที่ buffer ใหญ่พอจะเป็นข้ออ้างให้อ่านแค่ entry เดียว
+(SMW110W4 = 13 · CEWE = 3/5/13 · TCC = 1) และสามเส้นทางของ v1 เป็นผลของ ADR 0002 → 0012 → 0013 → 0018
+ที่ปะกันมาทีละชั้น ไม่ใช่การออกแบบ
+
+**ตั้งเวลา** — job เดียวใน registry รอบคงที่ **1 วัน** เพิ่มหนึ่งบรรทัดใน `default_jobs()` ·
+**ไม่มี HH:MM ไม่มี catch-up ไม่มี `last_auto_run_date`** — ADR 0008 ห้าม persisted scheduler state
+และเหตุผลที่ v1 ต้องมีมัน (กันอ่านซ้ำทั้ง fleet หลัง restart) หายไปเมื่อการอ่านเป็น idempotent ·
+job จับ lock แบบ `background=True` — ชนแล้ว**ข้าม ไม่ต่อคิว** (ADR 0006)
+
+**ตาราง `billing_readings`** — คอลัมน์แบนชื่อตาม COSEM ล้อ `load_profile_readings` ·
+ชุดฟิลด์ของ v1 **ขยายจาก 3 เป็น 4 อัตรา** (`rate_a`…`rate_d`) เพราะ SMW110W4 เผย `E=1..4` ซึ่งเป็น
+เงื่อนไขที่ v1 ADR 0001 ตั้งไว้เองว่าจะรื้อเมื่อไร · **ไม่เติม `C=5`** (reactive Q1) เพราะไม่มีหน้าจอไหน
+เคยแสดง — เส้นแบ่งคือ "เติมกลุ่มคอลัมน์ที่มีอยู่ให้ครบ" ไม่ใช่ "เพิ่มแนวคิดใหม่" ·
+เวลา: `read_at` · `bill_date` · `created_at` · **`updated_at`** (จำเป็นสำหรับ push §3.8) ·
+`meter_serial` snapshot ต่อแถว (path ของ capture ประกอบจากมัน)
+
+**คีย์ — สองตัว ไม่ใช่ตัวเดียว** (แก้ตอน scrutinize 2026-08-09):
+`UNIQUE(device_id, bill_date) WHERE record_status IS NULL` สำหรับ dedup รอบปิด ·
+`UNIQUE(device_id) WHERE record_status='open'` สำหรับบังคับ "1 open slot ต่อ device" ·
+partial index ทั้งคู่ (SQLite รองรับ · Alembic batch mode เอาอยู่) · **เหตุผลสองข้อ**: (1) คีย์เดียว
+แบบ v1 จะชนกันเองได้ — ทันทีหลังตัดรอบ entry 2 ถูกตราที่ `00:00:00` ส่วน entry 1 ตราด้วยเวลาที่อ่าน
+การอ่านที่ตกวินาทีเดียวกันทำให้ upsert รอบเปิดโดน IntegrityError · (2) คีย์เดียว **ไม่ห้าม open slot
+สองแถว** ซึ่งเป็นข้อสมมติที่ทั้งโมดูลยืนอยู่ — v1 ไม่เคยบังคับที่ DB จึงต้องมี is_latest reconciler
+มาไล่ซ่อม (v1 ADR 0012 §Consequences · ADR 0013 §4) และ**เราเพิ่งลบ reconciler นั้นทิ้งไปในข้อ 2**
+⇒ ต้องปิดรูที่มันเคยรองอยู่ด้วย constraint แทน
+
+**รอบเปิด** — ยก ADR 0018 มา: 1 แถว/device ที่ `record_status="open"` **upsert ทับที่เดิม**
+(หาแถวด้วย `device_id + record_status`, **ไม่ใช่** `bill_date` ซึ่งขยับทุกการอ่าน) · **ตัวจำแนกของ v1 ใช้กับ SMW110W4 ไม่ได้** —
+reset-reason `0.0.0.1.12.255` ไม่อยู่ใน 43 คอลัมน์แรก ⇒ ใช้ positional fallback ที่ ADR 0018
+เขียนรองรับไว้แล้ว (entry 1 = เปิด) ผ่าน driver capability ไม่ใช่ `if/elif` ตามรุ่น
+
+**สเกล** — ÷1000 ครั้งเดียวที่ driver ตอน write ตาม ADR 0002 · **ห้ามยก ÷10000 ของ v1 มา** ·
+ตรวจกับฟิสิกส์ของมิเตอร์เองแล้ว: Δ ระหว่าง entry 2→1 = 1,779,471 ใน 155.6 ชม. ⇒ ÷1000 ได้ 11.4 kW
+เฉลี่ย เทียบ instantaneous 23.7 kW ตอน probe (สมเหตุสมผล) ส่วน ÷10000 ได้ 1.14 kW (ผิดราว 20 เท่า) ·
+คอลัมน์ที่อ่าน `scaler_unit` ไม่ได้ให้ยืมจาก sibling `E=0` ของกลุ่ม `C.D` เดียวกันพร้อมเช็ค unit —
+ยืมไม่ได้ก็ **เก็บเป็น NULL ห้ามเดา multiplier**
+
+**แถวรอบปิดไม่เปลี่ยนหลังบันทึก** — เจอ `bill_date` ซ้ำแล้วค่าไม่ตรง = **ข้าม + WARN** ·
+`billing_readings` **ไม่โดน retention เลย** (ดู §4) · ทางเดียวที่ลบได้คือปุ่ม **Delete all data**
+ที่หน้า Devices ซึ่ง **M6 ขยายให้ครอบ `billing_readings` ด้วย** (เดิมลบเฉพาะ `load_profile_readings`)
+· ⚠️ **และปุ่มนี้ลบแล้วข้อมูลกลับมา** — job รอบถัดไปอ่านทั้ง buffer (ข้อ "เส้นทางอ่าน") แล้ว insert
+รอบปิดที่ยังอยู่ในมิเตอร์กลับมาครบ ~12 เดือน ⇒ มันซ่อมได้จริง**เฉพาะค่าที่ผิดเพราะฝั่งเรา**
+(แก้สเกลแล้วอ่านใหม่ได้ค่าถูก) ส่วนค่าที่ผิดเพราะมิเตอร์รายงานมาแบบนั้น ปุ่มนี้เป็น no-op ·
+อาการเดียวกับ LP ที่ `CONTEXT.md` เขียนกำกับไว้แล้ว — **ข้อความยืนยันบนปุ่มต้องบอกเรื่องนี้
+ไม่งั้นปุ่มโกหก**
+
+**Capture PDF/xlsx** — gate ด้วย `auto_capture` / `billing_excel_export` · เขียนลงโฟลเดอร์ที่ admin
+ตั้งได้ (`capture_dir` ใน `settings`) แบบ v1 พร้อมงานตรวจ path/symlink/TOCTOU ทั้งชุด ·
+path มาจาก convention **ไม่มีตาราง `billing_captures`** (ดู §4) · สร้าง **eager ตอน insert รอบปิด**
+แบบ synchronous นอก endpoint lock — **รอบเปิดไม่สร้าง** · **ไม่มี regenerate endpoint**: endpoint
+ดาวน์โหลด render ให้ตรงนั้นถ้าไฟล์หาย ⇒ ตัดทั้งสถานะ "capture พลาดถาวร" และ retry 2 วินาทีของ v1 ·
+ข้อความในเอกสารเป็น**อังกฤษ** และค่าที่ operator พิมพ์ซึ่งไม่ใช่ ASCII แทนที่ด้วย `?` + WARN แบบ v1
+(ไม่ฝังฟอนต์ไทย)
+
+**Feature entitlement** — v2 ยังไม่มีกลไกนี้เลย (license มี `features` แต่ไม่มีใครอ่าน) ·
+**M6 สร้าง `require_feature` แล้วทาให้ครบทั้ง `billing` และ `load_profile`/`records` ที่ M5 ค้างไว้** —
+gate ที่ทาครึ่งเดียวคือโรงงานผลิตบั๊ก · ✅ **คีย์ที่คุมหน้า Records ชื่อ `records`** — เจ้าของตัดสิน
+2026-08-09 ปิดคำถามที่ §5 ค้างมาตั้งแต่ก่อน M5 · ชื่อคีย์เป็น contract กับ portal ไม่ใช่ของที่
+implementer เลือกเอง จึงต้องปิดก่อนเขียน issue นี้ (พบตอน scrutinize 2026-08-09)
+
+**ลำดับสไลซ์ — รอบปิดต้องลงก่อน open slot** (scrutinize 2026-08-09): รอบปิดไม่ต้องจำแนกอะไรเลย
+มันคือสิ่งที่อยู่ใน buffer ที่ Clock หยุดนิ่ง dedup ด้วย natural key จบ · ส่วน open slot คือสิ่งที่ลาก
+`record_status` · ตัวจำแนกเปิด/ปิด · driver capability · เส้นทาง upsert · คีย์ตัวที่สอง และ **probe gap
+ข้อเดียวที่ไม่มีหลักฐานบางส่วนรองรับเลย** (พฤติกรรมตอนมิเตอร์ตัดรอบจริง) มาทั้งพวง ⇒ ถ้าตัวจำแนก
+ผิดตอนเจอ reset จริง จะกระทบสไลซ์เดียว และลูกค้ายังมีบิลที่ถูกต้องอยู่ในมือ
+
+> **M6 ใหญ่กว่า M5** — M5 ใช้ 5 issue โดยไม่มีของใหม่ระดับ "ตารางที่ยังไม่เคยมี" หรือ "กลไกที่ยัง
+> ไม่เคยมี" เลย · M6 มีสาม: กลไกอ่านแบบ span · ตาราง `settings` · `require_feature` — บวก capture
+> อีก ~400 บรรทัดที่พอร์ตมา `/to-issues` ต้องรู้ก่อนตัดสไลซ์
+
+**หน้า Billing — สองแท็บแบบ v1** · History = รอบปิดเท่านั้น · Current = open slot เท่านั้น
+(แยกด้วย `record_status` ตาม ADR 0018) · แบ่งหน้าฝั่งเซิร์ฟเวอร์ · ปุ่มดาวน์โหลด capture ต่อแถว ·
+ฟอร์ม `capture_dir` (admin) · **ไม่มีปุ่มคุยกับมิเตอร์บนหน้านี้** — Read now อยู่ที่หน้า Devices และ
+M6 เติม job `billing` เข้า list เดิม (§3.3) โดย **billing ที่ล้มไม่นับ strike** (มีแต่ `liveness`
+ที่แตะสถานะ device)
+
+**Modbus billing cut — ไม่อยู่ใน M6** (อยู่ M4b) และ**ชะตายังไม่ตัดสิน**: เจ้าของยืนยันที่ grill M6 ว่า
+*"เราไม่มีตรรกะตัดงวด … เรามีหน้าที่อ่านค่าจาก meter (read only) เท่านั้น"* ซึ่งขัดกับตัวฟีเจอร์
+(มันเป็นการตัดงวดฝั่งระบบ แม้จะไม่เขียนอะไรลงมิเตอร์ก็ตาม) · **ปิดคำถามตอน grill M4b** — ดู §5
 
 ### 3.7 โมดูลเบา (M7)
 
@@ -518,9 +629,16 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
   ลบ device แล้ว slot ไม่คืน · เกิน `max_meters` ต้องใช้ key — **ทั้งย่อหน้านี้เริ่มมีผลที่ M9**
   (redeem ต้องมี portal) · **M3 บังคับด้วยการนับจำนวนอย่างเดียว ไม่มีช่อง Meter Key ในฟอร์ม** (§3.3)
 - **Feature entitlement**: enabled = `.env FEATURES ∩ license features` · sellable 8 ตัว (เท่า v1):
-  `billing` `load_profile` `energy_summary` `special_days` `instantaneous` `battery` `auto_capture`
-  `billing_excel_export` · ops-only (ใน .env เท่านั้น): `auto_read_billing` `auto_backfill` `app_log`
+  `billing` `load_profile` `energy_summary` `special_days` **`records`** `battery` `auto_capture`
+  `billing_excel_export` · ops-only (ใน .env เท่านั้น): `app_log`
   (`api_config` ของ v1 ตายไปกับหน้า ApiConfig)
+  — ✅ **`instantaneous` → `records` (เจ้าของตัดสิน grill M6, 2026-08-09)**: หน้าที่คีย์นี้คุมชื่อ
+  **Records** ตั้งแต่ grill M3 · คีย์ชื่อเดิมขัด `CONTEXT.md` (ซึ่ง `_Avoid_: instantaneous records`
+  ไว้ตรง ๆ) และขัด ADR 0007 ที่ตัดสินว่า v2 **ไม่มีอะไรที่เป็น instantaneous เลย** ·
+  เปลี่ยนได้ฟรีเพราะยังไม่มี license ใบไหนระบุ `features` — หน้าต่างนี้ปิดถาวรตอนออกใบแรก
+  — ⚠️ **`auto_read_billing` และ `auto_backfill` ถูกถอดออกจาก ops-only**: `auto_backfill` ตายไปกับ
+  ADR 0009 (ไม่มี backfill เป็นแนวคิดอีกแล้ว) และ `auto_read_billing` ไม่มีอะไรให้คุม — job billing
+  เป็นรายการหนึ่งใน registry ที่ `ARICHDS_POLL_ENABLED` กับ Limited Mode คุมอยู่แล้วเหมือนทุก job
 - ชื่อเชิง cryptographic ทั้งหมดเปลี่ยนเป็น ARICHDS (fingerprint salt, signing version, keypair ใหม่)
   — ทำได้เพราะไม่มี license v1 ในสนาม · **v2 คือผู้นิยาม contract แล้ว portal v2 ทำตาม**
 
@@ -539,10 +657,14 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
   transport endpoint) + scheduler thread เดียวรันทุก periodic job จาก registry
   `[(name, interval, fn)]` (LP scheduler, billing auto-read, retention, backup, sync, license recheck)
   — **ไม่มี health-check job**: สถานะมิเตอร์เป็นผลพลอยได้จาก poller tick (ADR 0004)
-- **Data model** (12 ตาราง): `devices` (`transport` เป็น JSON column เดียว — status/strike เป็นคอลัมน์มีชนิด) ·
+- **Data model** (11 ตาราง): `devices` (`transport` เป็น JSON column เดียว — status/strike เป็นคอลัมน์มีชนิด) ·
   `device_events` · `load_profile_readings` (COSEM shape 12 คอลัมน์วัดค่า + `source` + `interval_sec`) ·
-  `billing_readings` · `billing_captures` · `energy_register_readings` · `battery_readings` ·
+  `billing_readings` · `energy_register_readings` · `battery_readings` ·
   `holidays` · `settings` (key/value) · `users` · `user_tokens` · `sync_state`
+  — **`billing_captures` ถูกตัดออกที่ grill M6 (2026-08-09)**: มัน**ไม่เคยมีอยู่ใน v1** (grep ทั้งรีโป
+  ได้ศูนย์ผลลัพธ์) และถูกนับเข้ามาตอนวางแผนโดยเข้าใจผิดว่ายกมาจาก v1 · v1 ตัดสินไว้ที่
+  `billing/docs/adr/0003` ว่า *"ไม่เก็บ path ใน DB — derive จาก convention ทุกครั้ง"* แล้วเดินแบบนั้นจริง
+  ⇒ v2 ทำตาม พร้อมเช็คว่าไฟล์มีอยู่จริงตอน list
 - **Interfaces**:
   - ขาออก: push endpoint บน server เดิมของทีม (JSON/15min/JWT) — field-level contract ออกแบบร่วม
     ฝั่ง server ที่ M8 · portal v2 (`/activate` `/renew` `/redeem`) — contract นิยามที่ M0 ใช้จริง M9
@@ -573,15 +695,25 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
 - **Field-level contract ของ push** — โครงตัดสินแล้ว (JSON/15min/JWT/ครบทุกแถว) แต่รายชื่อ field
   ต่อ payload ออกแบบร่วมฝั่ง server ตอน M8 — รวมถึง **วิธีที่ server verify JWT ที่ออกแบบ offline**
   (ช่วงไม่มี portal, vendor CLI เป็นผู้ออก token → server ต้องมี key สำหรับ verify)
-- **`billing_captures`** — ยังไม่ยืนยันว่าจำเป็นเป็นตารางแยก หรือเก็บ metadata ใน filesystem พอ
-  (ตัดสินตอน M6)
+- ~~**`billing_captures`**~~ — ✅ **ปิดแล้วที่ grill M6 (2026-08-09): ไม่สร้างตาราง** · derive path
+  จาก convention เหมือน v1 ADR 0003 · จำนวนตารางใน §4 ลดจาก 12 เป็น 11
+- **ชะตาของ modbus billing cut** (เปิดที่ grill M6, 2026-08-09) — เจ้าของระบุว่า *"เราไม่มีตรรกะ
+  ตัดงวด … เรามีหน้าที่อ่านค่าจาก meter (read only) เท่านั้น"* ซึ่งขัดกับฟีเจอร์นี้โดยตรง: มันคือ
+  **การตัดงวดที่ระบบทำแทนมิเตอร์** (แม้จะไม่เขียนอะไรลงมิเตอร์ — มันอ่านค่าสะสมของ modbus logger
+  แล้วเขียนแถวใน DB เรา) · ราคาของการยกเลิก: **device ฝั่ง modbus จะไม่มีข้อมูล billing เลยตลอดไป**
+  เพราะมิเตอร์กลุ่มนั้นไม่มี billing ProfileGeneric ให้อ่าน — และ v1 บันทึกว่านี่เป็นคำขอจากลูกค้า
+  โดยตรง (ux-dual-source ก.ค. 2026) · **ปิดคำถามตอน grill M4b** ก่อนเฟส modbus เริ่ม
 - **Portal v2** — timeline ยังไม่กำหนด · M9 บล็อกอยู่จนกว่า portal จะมี `/activate` `/renew` `/redeem`
   ตาม contract ที่ v2 นิยาม (ระหว่างนั้น lease renew ยังทำไม่ได้ → license ที่ออกช่วงนี้ต้องเป็น
   offline mode ไม่มี lease หรือ lease ยาวพิเศษ — **ต้องเลือกก่อนออก license จริงตัวแรก**)
 - (assumed) **SMW110 DLMS-over-serial อยู่ในเป้า 5 วัน** — เป็นรุ่น DLMS จึงจัดอยู่เฟสแรก
   แต่ถ้าการต่อ serial จริงช้ากว่าแผน ให้เลื่อนไปกับเฟส modbus ได้โดยไม่กระทบรุ่น TCP
-- **ชื่อ feature key `instantaneous`** — หน้าที่มันคุมถูกเปลี่ยนชื่อเป็น **Records** และย้ายไป M5
-  (grill M3) แต่ key ยังชื่อเดิมตาม v1 · CONTEXT.md บังคับให้ใช้คำเดียวกันทุกชั้น ⇒ ควรเปลี่ยนเป็น
-  `records` หรือไม่ — เป็นการแก้ contract กับ portal ที่ v2 เป็นผู้นิยาม (§3.9) จึงเปลี่ยนได้ฟรี
-  **ตราบใดที่ยังไม่มี license ตัวไหนระบุ `features`** · ต้องตัดสินก่อน M5 และก่อนออก license
-  ที่ใส่ features จริงตัวแรก
+- ~~**ชื่อ feature key `instantaneous`**~~ — ✅ **ปิดแล้วที่ grill M6 (2026-08-09): เปลี่ยนเป็น
+  `records`** · ดู §3.9 · ข้อความเดิมเก็บไว้ข้างล่างเป็นบันทึกว่าคำถามนี้เคยค้างมาตั้งแต่ก่อน M5
+  > *ข้อความเดิม:* หน้าที่มันคุมถูกเปลี่ยนชื่อเป็น **Records** และย้ายไป M5 (grill M3) แต่ key
+  > ยังชื่อเดิมตาม v1 · CONTEXT.md บังคับให้ใช้คำเดียวกันทุกชั้น ⇒ ควรเปลี่ยนเป็น `records` หรือไม่
+  > — เป็นการแก้ contract กับ portal ที่ v2 เป็นผู้นิยาม (§3.9) จึงเปลี่ยนได้ฟรี **ตราบใดที่ยังไม่มี
+  > license ตัวไหนระบุ `features`** · ต้องตัดสินก่อน M5 และก่อนออก license ที่ใส่ features จริงตัวแรก
+  >
+  > *คำถามนี้ค้างข้าม M5 มาทั้ง milestone — ไม่มีใครสะดุด เพราะ M5 ไม่ได้ทา gate เลย
+  > มันถูกบังคับให้ตอบตอน M6 เพราะ M6 เป็นโมดูลแรกที่สร้าง `require_feature` ขึ้นมาจริง*

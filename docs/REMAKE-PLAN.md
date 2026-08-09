@@ -534,7 +534,21 @@ SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register 
 ### M6 — Billing
 open-period upsert slot (ADR 0018) · backfill · capture PDF/xlsx · หน้า Billing
 (modbus billing cut ย้ายไปอยู่ M4b — มันเกิดได้ต่อเมื่อเส้นทาง modbus เขียนข้อมูลแล้ว)
-**Exit**: **output parity กับ v1** (ที่ setting default `divide_by_1000=on`) + เทสผ่าน
+**Exit**: replay parity จาก buffer ที่บันทึกไว้ + **probe ยืนยันบนมิเตอร์จริงทั้งสองเครื่อง**
+(TCP + serial) + เทสผ่าน
+
+> **Exit ของ M6 ไม่ใช่ parity เทียบ v1 — ด้วยเหตุผลเดียวกับ M5 เป๊ะ** (grill M6, 2026-08-09)
+> เดิมเขียนว่า *"output parity กับ v1 ที่ setting default `divide_by_1000=on`"* ซึ่งทำจริงไม่ได้:
+> รุ่นเดียวที่เดินถึง billing ก่อน M4c คือ SMW110W4 และ **v1 ต่อรุ่นนี้ไม่ติดเลย** (ฮาร์ดโค้ด
+> client address 5 · ทั้งสองเครื่องตอบเฉพาะ 6) ⇒ ไม่มี output ของ v1 ให้เทียบ
+>
+> ซ้ำร้าย **ตัวเลข billing ของ v1 สำหรับรุ่นนี้ไม่มีอยู่จริงเชิงแนวคิดด้วย** — v1
+> `billing/docs/adr/0015-billing-values-scaled-at-read.md` §Consequences บอกเองว่า scale ของ
+> SMW110 *"ยัง unconfirmed"* และตัวหาร ÷10000 ผูก empirical extra ×10 ของ Premier 550 (issue #45)
+> ไว้ด้วย ⇒ ต่อให้ v1 อ่านได้ ก็ไม่ใช่ค่าที่ลูกค้ายืนยัน
+>
+> **parity ของ billing ย้ายไปเป็น exit ของ M4c** พร้อม CEWE ทั้งสามรุ่น ซึ่งต่อได้จากเครื่องพัฒนา
+> — บรรทัด 462 พูดถึง M5/M6 คู่กันอยู่แล้ว แต่บรรทัดนี้ไม่เคยถูกแก้ตามตอน grill M5
 
 ### M7 — โมดูลเบาที่เหลือทั้งหมด
 Energy Summary (TOU buckets — ADR 0016) · Holidays · Special Days (`src/special_days/` — v1 มีโมดูลจริง อย่าลืมตามที่ ADR 0020 ระบุว่ายังไม่ gated) ·

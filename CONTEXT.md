@@ -92,6 +92,32 @@ capture period and is counted against the most common one). The counts are
 computed live from `load_profile_readings` on every request.
 _Avoid_: records_96, completeness table, instantaneous records
 
+**Billing Reading**:
+One row of `billing_readings` — the register snapshot the meter itself froze when it closed a
+billing period. Like an Interval Reading it is UTC, kWh, and COSEM-named flat columns
+normalized at write time in the driver; unlike one it is **not** on a fixed cadence, because
+the meter decides when a period ends. The energy and demand columns carry a total plus **four
+tariffs** (`rate_a`…`rate_d`) — v1 stopped at three because CEWE sites use three, and the
+SMW110W4 exposes `E=1..4`. Registers a meter reports but no screen shows are read and dropped,
+not stored.
+_Avoid_: bill row, billing record, meter snapshot
+
+**Bill Date**:
+The timestamp the **meter** stamped on a billing period, and the natural key of a closed one:
+`(device, bill_date)` is unique, so reading the same buffer twice stores nothing new. It comes
+from the meter's clock, never the server's — a period read a day late still belongs to the day
+the meter cut it.
+_Avoid_: read time (that's `read_at`), cut date, period date
+
+**Open Period**:
+The billing period a meter is still accumulating into — at most one per device, held in a
+single row that every read **overwrites in place**. It gets a slot rather than a new row
+because its Bill Date is the meter's live clock and advances on every read: keyed normally it
+would write one junk row per read, which is exactly what it did in v1 until ADR 0018. It is
+provisional by definition, and it is the one place billing shows a number that is not yet a
+bill.
+_Avoid_: current billing, running row, latest reading (that's whichever period is newest)
+
 **Retention**:
 The daily job that deletes rows past 90 days — Interval Readings by `read_at`, Device Events by
 `created_at`. **Device Events go uniformly**: a status transition the machine wrote and an

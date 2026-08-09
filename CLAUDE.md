@@ -33,7 +33,13 @@ MySQL, and ~30 tables.
   discards it, and `interval_readings` became `load_profile_readings`, empty until M5) ·
   0008 (the load-profile watermark is the data, not a job record — no job table, no `read_end`,
   no persisted scheduler state; **fully implemented**: the read path with issue #15 and the
-  one-thread job-registry scheduler with issue #16).
+  one-thread job-registry scheduler with issue #16) ·
+  0009 (billing has **one** read path — every read reads the whole buffer, so "Backfill"
+  dissolves as a concept; no backfill endpoint, no `billing_backfilled_at`, no is_latest
+  reconciler — the invariant it healed becomes two partial unique indexes instead) ·
+  0010 (the capture directory is an operator setting while the backup directory is fixed —
+  a capture is a document a human carries to a customer, a backup is not; **do not "make these
+  consistent"**). **0009 and 0010 are written but not implemented — M6 has not started.**
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
 - `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,
@@ -98,6 +104,12 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
 
 ## Invariants (load-bearing — violating these is a bug even if tests pass)
 
+- **The product only ever READS a meter — it never writes to one** (owner, grill M6 2026-08-09).
+  No register write, no clock set, no MD-reset, no configuration push, on any transport, in any
+  module, ever. The meter is the authority; we are an observer. This is stated separately from
+  the read-only rule for the *test* meters below because it is a property of the shipped
+  product, not a lab courtesy — and it is the reason billing periods are read as the meter cut
+  them rather than cut by us.
 - **Interval Readings are UTC + kWh + COSEM column names, normalized at write time in the
   driver** — never at read time. No source-dependent branches on the read path; `source`
   is data, not control flow.
