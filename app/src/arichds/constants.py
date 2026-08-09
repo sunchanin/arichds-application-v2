@@ -39,11 +39,84 @@ MANUAL_READ_LOCK_TIMEOUT_SEC: Final[float] = 120.0
 OFFLINE_AFTER_CONSECUTIVE_FAILURES: Final[int] = 3
 
 # ─── Read now jobs (SPEC §3.3) ────────────────────────────────────────────────
-# The one job Read now runs at M3: an identity read that proves the meter
-# answers a real register read, writing no Interval Reading (ADR 0007).
-# M5 adds "load_profile" and M6 adds "billing" to this same list — the naming is
-# fixed here now precisely so those two modules do not each invent one.
+# The identity read that proves the meter answers a real register read, writing
+# no Interval Reading (ADR 0007). M6 adds "billing" to this same list — the
+# naming is fixed here so each module does not invent its own.
 JOB_LIVENESS: Final[str] = "liveness"
+# The load-profile read (M5a-1, issue #15): stores Interval Readings. Reported
+# as its own entry in `results` even when it could not run, because the Read now
+# modal renders a row per entry and nothing at all for an absent one.
+JOB_LOAD_PROFILE: Final[str] = "load_profile"
+
+# ─── Load profile (SPEC §3.5, ADR 0008) ───────────────────────────────────────
+# How far back the walk starts on a device with no stored rows.
+LOAD_PROFILE_BACKFILL_DAYS: Final[int] = 90
+# The window is walked in chunks this wide, oldest first, each written before
+# the next is fetched (v1's LP_READ_CHUNK_HOURS).
+LOAD_PROFILE_CHUNK_HOURS: Final[int] = 24
+# How long the whole walk may keep going. Checked before starting each chunk
+# except the first — a DLMS read cannot be interrupted mid-flight, and a call
+# that reads nothing at all makes no progress against the watermark.
+# Half of MANUAL_READ_LOCK_TIMEOUT_SEC on purpose: the walk holds the Transport
+# Endpoint under ONE Manual Read acquisition, and a concurrent Manual Read waits
+# that long, so this leaves room for the in-flight chunk to finish without
+# timing the other caller out. Nobody has measured how long one chunk takes on
+# this hardware — which is exactly why this is a budget and not a chunk count.
+LOAD_PROFILE_READ_BUDGET_SEC: Final[float] = 60.0
+# How often the Scheduler runs the load-profile cycle over every device
+# (M5a-2, issue #16). 900 s is v1's `LP_READ_INTERVAL_SEC` carried over as an
+# **assumption, not a measured number**: nobody has measured how long one
+# device's LP read takes on this hardware, let alone a whole site's. If a site's
+# cycle overruns 900 s nothing breaks — the watermark is the data (ADR 0008), so
+# the next cycle resumes exactly where this one stopped — but the jobs queued
+# behind it in the same thread are delayed by the overrun. That is the trigger to
+# measure, not to add a second thread.
+LOAD_PROFILE_INTERVAL_SEC: Final[int] = 900
+
+# ─── Scheduler (SPEC §4, M5a-2) ───────────────────────────────────────────────
+# How long `Scheduler.stop()` waits for the one job thread to finish the job it
+# is inside. Deliberately shorter than a worst-case load-profile cycle (which is
+# LOAD_PROFILE_READ_BUDGET_SEC per device, times however many devices a site
+# has): the thread is expected to outlast this and exit on its own afterwards,
+# because its shutdown event is already set. Mirrors
+# POLLER_STOP_JOIN_TIMEOUT_SEC and for the same reason — shutdown stays
+# responsive instead of waiting out a meter.
+SCHEDULER_STOP_JOIN_TIMEOUT_SEC: Final[float] = 5.0
+# The floor on the scheduler's sleep between passes. Only ever reached by a job
+# whose interval is zero or negative — a real one is 900 s — and it exists so
+# such a job costs a busy-ish loop instead of a hot one that pins a core.
+SCHEDULER_MIN_SLEEP_SEC: Final[float] = 0.01
+
+# ─── Retention & backup (SPEC §5, M5c, issue #19) ─────────────────────────────
+# How long rows are kept, for `load_profile_readings` (by `read_at`) and
+# `device_events` (by `created_at`) alike. **One constant because it is one
+# owner rule**, not two coincidences — and deliberately NOT reused from
+# LOAD_PROFILE_BACKFILL_DAYS even though that is also 90: one says how far back a
+# fresh device is read, this says how long any row survives. Tying them means
+# tuning either one silently retunes the other.
+RETENTION_DAYS: Final[int] = 90
+# How many rows one DELETE statement removes, so the SQLite write lock is
+# released between batches instead of held for the whole purge. **Measured**
+# (2026-08-07, CPython's bundled SQLite 3.50.4) at REMAKE-PLAN §272's worst case
+# — 20 all-Modbus meters, 28,800 rows/day, a 2.62 M-row / 375 MB table: one day's
+# rows took 7 batches / 1.61 s at this size, planned as a covering-index scan on
+# `ix_load_profile_readings_device_read_at`. That measurement is why no new index
+# and no migration ship with this job.
+RETENTION_DELETE_BATCH_SIZE: Final[int] = 5000
+# How often the Scheduler purges expired rows, and how often it backs the
+# database up. **Two constants, not one shared**: they are independent policies
+# that happen to agree today, and sharing would mean retuning backup to 12 h
+# silently retunes retention. Both are measured from service start (SPEC §5) —
+# the registry's fixed interval, with no clock logic and no persisted state
+# (ADR 0008).
+RETENTION_INTERVAL_SEC: Final[int] = 86400
+BACKUP_INTERVAL_SEC: Final[int] = 86400
+# How many backup files survive rotation (SPEC §5).
+BACKUP_KEEP_COUNT: Final[int] = 7
+# The scheduler-registry names for both jobs. Deliberately not under "Read now
+# jobs" above: neither ever appears in a Read now response.
+JOB_RETENTION: Final[str] = "retention"
+JOB_BACKUP: Final[str] = "backup"
 
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"

@@ -535,6 +535,8 @@ class TestReadLoadProfile:
         assert field_names == {
             "read_at",
             "source",
+            "logger_id",
+            "interval_sec",
             "volt_l1",
             "volt_l2",
             "volt_l3",
@@ -606,3 +608,113 @@ class TestReadLoadProfile:
         readings = driver.read_load_profile(datetime(2020, 1, 1, tzinfo=UTC), datetime(2020, 1, 1, 1, tzinfo=UTC))
 
         assert readings == []
+
+
+class TestTheCapabilityContract:
+    """M5a-1 D3 — ``supports_load_profile()`` is how the job asks, and it is the
+    only way it may ask.
+
+    ``hasattr`` is forbidden by ``CLAUDE.md``'s "no model branch in generic code"
+    invariant for a specific reason: it makes a driver that *forgot* the method
+    indistinguishable from one that deliberately lacks it, and the second failure
+    is silent. So the method exists on every driver, answering ``False`` by
+    default, and :meth:`read_load_profile` exists too — raising rather than
+    missing.
+    """
+
+    def test_the_base_class_answers_no(self) -> None:
+        from arichds.acquisition.drivers.prometer100 import Prometer100Driver
+
+        driver = Prometer100Driver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        assert driver.supports_load_profile() is False
+
+    def test_the_smw110_answers_yes(self) -> None:
+        driver = Smw110Driver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        assert driver.supports_load_profile() is True
+
+    def test_calling_the_base_read_raises_rather_than_being_absent(self) -> None:
+        from arichds.acquisition.drivers.prometer100 import Prometer100Driver
+
+        driver = Prometer100Driver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        with pytest.raises(NotImplementedError):
+            driver.read_load_profile(datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC))
+
+
+class TestLoggerIdComesFromTheObis:
+    """M5a-1 D5 — the id is a property of the profile that was read, never of the
+    order profiles happened to be discovered in (ADR 0005's principle applied to
+    a logger instead of a serial)."""
+
+    def test_the_two_scanned_profiles_map_to_one_and_two(self) -> None:
+        from arichds.acquisition.obis import logger_id_for_profile
+
+        assert logger_id_for_profile("1.0.99.1.0.255") == 1
+        assert logger_id_for_profile("1.0.99.2.0.255") == 2
+
+    def test_an_unscanned_profile_raises_rather_than_minting_an_id(self) -> None:
+        """An explicit map, not a parse of the OBIS group: a parse would silently
+        mint ids for profiles nobody has scanned, which is the same class of
+        failure as deriving one from discovery order."""
+        from arichds.acquisition.obis import logger_id_for_profile
+
+        with pytest.raises(ValueError):
+            logger_id_for_profile("1.0.99.3.0.255")
+
+    def test_every_row_carries_the_id_of_the_profile_that_was_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reading Logger 2 must stamp ``2``. Under a discovery-order derivation
+        the only profile read is the first one, so this yields ``1`` — which is
+        what makes this test fail for the right reason.
+
+        (The SMW110W4 itself has no Logger 2 — both field units answer "undefined
+        object" — so this drives the driver at a profile OBIS it would never see
+        in the field, on purpose: the *derivation* is what is under test.)
+        """
+        monkeypatch.setattr("arichds.acquisition.drivers.smw110.LOAD_PROFILE_OBIS", "1.0.99.2.0.255")
+        reader = FakeLoadProfileReader(
+            capture_objects=[CLOCK_OBIS, ENERGY_OBIS],
+            buffer=[[datetime(2026, 8, 7, 11, 0), 10138], [datetime(2026, 8, 7, 11, 15), 10279]],
+            sibling_scalers={ENERGY_SIBLING: (1.0, Unit.ACTIVE_ENERGY)},
+        )
+        driver = _build_driver(reader)
+
+        readings = driver.read_load_profile(
+            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+        )
+
+        assert len(readings) == 2
+        assert [r.logger_id for r in readings] == [2, 2]
+
+    def test_logger_one_is_what_this_model_really_reads(self) -> None:
+        reader = FakeLoadProfileReader(
+            capture_objects=[CLOCK_OBIS, ENERGY_OBIS],
+            buffer=[[datetime(2026, 8, 7, 11, 0), 10138]],
+            sibling_scalers={ENERGY_SIBLING: (1.0, Unit.ACTIVE_ENERGY)},
+        )
+        driver = _build_driver(reader)
+
+        readings = driver.read_load_profile(
+            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+        )
+
+        assert readings[0].logger_id == 1
+
+
+class TestIntervalSecIsTheMetersOwnPeriod:
+    """M5a-1 D4 — seconds straight off ProfileGeneric attr 4, no label conversion
+    and no assumed 900 (SPEC §3.5: a Prometer 100's Logger 2 is 300 s)."""
+
+    def test_the_live_capture_period_is_stamped_on_every_row(self) -> None:
+        reader = FakeLoadProfileReader(
+            capture_objects=[CLOCK_OBIS, ENERGY_OBIS],
+            buffer=[[datetime(2026, 8, 7, 11, 0), 10138], [datetime(2026, 8, 7, 11, 5), 10279]],
+            capture_period_sec=300,
+            sibling_scalers={ENERGY_SIBLING: (1.0, Unit.ACTIVE_ENERGY)},
+        )
+        driver = _build_driver(reader)
+
+        readings = driver.read_load_profile(
+            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+        )
+
+        assert len(readings) == 2
+        assert [r.interval_sec for r in readings] == [300, 300]

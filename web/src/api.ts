@@ -127,6 +127,86 @@ export interface DeviceEventPage {
   offset: number;
 }
 
+/**
+ * One Interval Reading, from `GET /api/load-profile`.
+ *
+ * Every measurement is `number | null`, and the null is load-bearing: the only
+ * meter model in service captures seven of the twelve columns, so the other five
+ * arrive as `null` on every row. They must render as an em dash, never as `0` —
+ * which is why nothing here may be read with `??` or `||` (see `LoadProfile.tsx`).
+ */
+export interface LoadProfileRow {
+  /** UTC, ISO-8601. Rendered in the browser's local clock. */
+  read_at: string;
+  /** Which of the meter's load profiles the row came from. Never a merge key. */
+  logger_id: number;
+  import_active_kwh: number | null;
+  import_reactive_kvarh: number | null;
+  export_active_kwh: number | null;
+  export_reactive_kvarh: number | null;
+  avg_geo_pf: number | null;
+  volt_l1: number | null;
+  volt_l2: number | null;
+  volt_l3: number | null;
+  current_l1: number | null;
+  current_l2: number | null;
+  current_l3: number | null;
+  freq: number | null;
+}
+
+/** One page of Interval Readings. `total` is the unpaged count the pager needs. */
+export interface LoadProfilePage {
+  items: LoadProfileRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * One meter-logger's completeness on one local day, from `GET /api/records`.
+ *
+ * `expected` and `interval_sec` are null **only** when `status` is `missing`:
+ * with no rows stored that day there is no capture period to compute an
+ * expectation from, which is exactly what makes "nothing at all" a different
+ * answer from "short by everything". Every other status carries both.
+ *
+ * `expected` is always `86400 / interval_sec` — never 96. A Prometer 100's
+ * Logger 2 runs at 300 s, so a complete day for it is 288.
+ */
+export interface RecordsCell {
+  /** The local calendar day, `YYYY-MM-DD`. */
+  date: string;
+  count: number;
+  expected: number | null;
+  /** The capture period the count is judged against; the day's **modal** one when it changed. */
+  interval_sec: number | null;
+  status: "complete" | "short" | "missing" | "period_changed";
+}
+
+/**
+ * One line of the Records grid — a `(meter, logger)` pair, never a meter alone.
+ *
+ * `logger_id` is null only for a meter that recorded nothing at all in the
+ * range: there is no logger to name, and the row still appears because a
+ * completeness page that drops the silent meter is broken exactly where it
+ * matters.
+ */
+export interface RecordsRow {
+  device_id: number;
+  device_name: string;
+  site_name: string;
+  logger_id: number | null;
+  /** One per entry in `RecordsGrid.dates`, same order and length. */
+  cells: RecordsCell[];
+}
+
+/** The completeness grid: the date axis, and a row per meter-logger. */
+export interface RecordsGrid {
+  /** Every date in the requested range, ascending, `YYYY-MM-DD`. */
+  dates: string[];
+  rows: RecordsRow[];
+}
+
 /** How many meters this machine has and may have, from `GET /api/devices/quota`. */
 export interface Quota {
   used: number;
@@ -417,6 +497,35 @@ export const api = {
 
   deviceEvents: (id: number, limit: number, offset: number) =>
     request<DeviceEventPage>(`/api/devices/${id}/events?limit=${limit}&offset=${offset}`),
+
+  /**
+   * One page of a device's stored Interval Readings.
+   *
+   * The range is **half-open**: `startIso` is included, `endIso` is *excluded*,
+   * so a whole day is `[day 00:00, next day 00:00)` with nothing to round. Both
+   * are required, and `end <= start` is refused with 422.
+   */
+  loadProfile: (deviceId: number, startIso: string, endIso: string, limit: number, offset: number) =>
+    request<LoadProfilePage>(
+      `/api/load-profile?device_id=${deviceId}&start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}&limit=${limit}&offset=${offset}`,
+    ),
+
+  /**
+   * The completeness grid over a range of local calendar dates.
+   *
+   * The dates are plain `YYYY-MM-DD` and **both ends are inclusive** — unlike
+   * `loadProfile` above, whose range is half-open. A date axis is discrete, so
+   * there is nothing to round, and a missing last column would be a surprise.
+   * The server refuses a range longer than 31 days with 422.
+   *
+   * `utcOffsetMinutes` is the minutes to **add to UTC** to reach the caller's
+   * local time (ICT is 420), which is what decides which column a reading falls
+   * in.
+   */
+  records: (startDate: string, endDate: string, utcOffsetMinutes: number) =>
+    request<RecordsGrid>(
+      `/api/records?start_date=${startDate}&end_date=${endDate}&utc_offset_minutes=${utcOffsetMinutes}`,
+    ),
 
   clearReadings: (id: number, confirmName: string) =>
     request<number>(`/api/devices/${id}/readings/clear`, {

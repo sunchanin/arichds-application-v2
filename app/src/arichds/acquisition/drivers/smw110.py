@@ -55,6 +55,7 @@ from gurux_dlms.objects import GXDLMSProfileGeneric, GXDLMSRegister
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers._dlms import DlmsDriver
 from arichds.acquisition.drivers.base import IntervalReading
+from arichds.acquisition.obis import logger_id_for_profile
 from arichds.constants import METER_LOCAL_UTC_OFFSET_HOURS, TCP_READ_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
@@ -298,15 +299,26 @@ class Smw110Driver(DlmsDriver):
             return None
         return obj.scaler
 
+    def supports_load_profile(self) -> bool:
+        """Yes — Logger 1, by entry access (M5a-1, D3).
+
+        Overriding the base class's ``False`` is the **only** way the
+        load-profile job learns this model can be read: no catalog flag (the
+        catalog stopped deciding driver behaviour when issue #9 removed
+        ``supports_serial``) and no ``hasattr``.
+        """
+        return True
+
     def read_load_profile(self, start_utc: datetime, end_utc: datetime) -> list[IntervalReading]:
         """Read Logger 1 (``1.0.99.1.0.255``) over ``[start_utc, end_utc]``.
 
-        **Lives on this leaf driver, not on ``MeterDriver`` or ``DlmsDriver``**
-        (D1, issue #10): exactly one model has the field evidence a shared
-        method would need today, and a base method shaped by one user is
-        exactly what a second model would have had to reshape later —
-        ``base.py``'s module docstring already records the "no caller, no
-        contract" principle this follows.
+        **Overrides** :meth:`~arichds.acquisition.drivers.base.MeterDriver.read_load_profile`,
+        which is where the method's contract now lives (M5a-1, D3). It was on
+        this leaf driver alone at issue #10 (D1) because nothing called it and
+        one model's evidence is a poor shape for a shared abstraction; the
+        load-profile job is that caller now, and it has to ask every driver the
+        same question, so the contract moved up while this implementation stayed
+        exactly where the field evidence is.
 
         Selective access is by entry: this meter refuses ``readRowsByRange``
         with "Read-Write denied" (smw110w4-scan.md:73,186-188), and entry 1 is
@@ -322,9 +334,11 @@ class Smw110Driver(DlmsDriver):
 
         Returns:
             Rows already normalized to UTC timestamps and kWh energy, oldest
-            first, filtered to the requested window. Twelve capture columns
-            are dropped structurally (D3) and ``freq`` is always ``None`` —
-            this model's load profile has no frequency column.
+            first, filtered to the requested window, each stamped with the
+            ``logger_id`` derived from :data:`LOAD_PROFILE_OBIS` and the live
+            capture period as ``interval_sec``. Twelve capture columns are
+            dropped structurally (issue #10, D3) and ``freq`` is always ``None``
+            — this model's load profile has no frequency column.
 
         Raises:
             ValueError: If either bound is a naive datetime (D8).
@@ -335,6 +349,10 @@ class Smw110Driver(DlmsDriver):
         if self._reader is None or self._client is None:
             logger.warning("read_load_profile() called on a disconnected driver %s", self)
             return []
+
+        # Derived once per call from the OBIS actually being read, never from
+        # the order profiles were discovered in (D5).
+        logger_id = logger_id_for_profile(LOAD_PROFILE_OBIS)
 
         pg = GXDLMSProfileGeneric(LOAD_PROFILE_OBIS)
         self._client.objects.append(pg)
@@ -403,6 +421,8 @@ class Smw110Driver(DlmsDriver):
                 IntervalReading(
                     read_at=read_at,
                     source=self.source,
+                    logger_id=logger_id,
+                    interval_sec=capture_period_sec,
                     volt_l1=fields.get("volt_l1"),
                     volt_l2=fields.get("volt_l2"),
                     volt_l3=fields.get("volt_l3"),

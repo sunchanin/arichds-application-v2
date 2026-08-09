@@ -30,7 +30,10 @@ MySQL, and ~30 tables.
   0007 (the Poller tick proves liveness, not data — no live-value display, nothing
   instantaneous persisted; **fully implemented**: item 1 with issue #6 — Monitor and
   `/readings/latest` are gone; items 2/3/5/6 with issue #8 — the tick reads the Meter Serial and
-  discards it, and `interval_readings` became `load_profile_readings`, empty until M5).
+  discards it, and `interval_readings` became `load_profile_readings`, empty until M5) ·
+  0008 (the load-profile watermark is the data, not a job record — no job table, no `read_end`,
+  no persisted scheduler state; **fully implemented**: the read path with issue #15 and the
+  one-thread job-registry scheduler with issue #16).
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
 - `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,
@@ -56,7 +59,8 @@ MySQL, and ~30 tables.
   English-only UI). No Tailwind — AntD tokens + its layout primitives cover the UI. pnpm.
 - `installer/` — Inno Setup script + NSSM service wrapper (`installer/vendor/nssm.exe` is a
   vendor drop, never committed). Installs to `Program Files\ARICHDS`, data at
-  `%ProgramData%\ARICHDS` (`arichds.db`, `license\`, `logs\`, and `secret\jwt_secret.key` —
+  `%ProgramData%\ARICHDS` (`arichds.db`, `license\`, `logs\`, `backup\`, and
+  `secret\jwt_secret.key` —
   generated on first run, ADR 0003; deleting it signs everyone out). Port 8000, firewall
   rule. Migration runs at service start — no installer migrate step.
 - `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code signing. Private keys are

@@ -1001,7 +1001,15 @@ class TestReadNow:
 
         assert response.status_code == 200
         data = response.json()["data"]
-        assert data["results"] == [{"job": "liveness", "ok": True, "detail": "The meter answered at 127.0.0.1:4059."}]
+        # Two entries from M5a-1 on: the load-profile job reports that this
+        # model has none rather than silently leaving the list one row short
+        # (D12). ``TestReadNowRunsTheLoadProfileJob`` owns that second entry.
+        assert data["results"][0] == {
+            "job": "liveness",
+            "ok": True,
+            "detail": "The meter answered at 127.0.0.1:4059.",
+        }
+        assert [result["job"] for result in data["results"]] == ["liveness", "load_profile"]
         assert data["status"] == "online"
         assert data["checked_at"] is not None
 
@@ -1050,7 +1058,12 @@ class TestReadNow:
         from arichds.acquisition.drivers.base import IntervalReading
         from arichds.api.devices import ReadNowOut
 
-        measurements = {f.name for f in fields(IntervalReading)} - {"read_at", "source"}
+        measurements = {f.name for f in fields(IntervalReading)} - {
+            "read_at",
+            "source",
+            "logger_id",
+            "interval_sec",
+        }
         assert measurements, "the measurement set must not be empty, or this test proves nothing"
         assert schema_property_names(ReadNowOut) & measurements == set()
 
@@ -1125,6 +1138,145 @@ class TestReadNow:
     ) -> None:
         fake_meter.connect_error = ConnectionRefusedError("refused")
         assert "hunter2" not in admin_client.post(f"/api/devices/{device_id}/read-now").text
+
+
+class TestReadNowRunsTheLoadProfileJob:
+    """M5a-1 (issue #15), D12 — ``results`` holds one entry per job Read now
+    **considered**, not per job that ran.
+
+    The Read-now modal renders a row per entry and nothing at all for an absent
+    one (``web/src/pages/Devices.tsx:632``), so a job that silently did not run
+    tells the operator nothing. ``ok=False`` for a job that could not run is
+    already this handler's established meaning — the unknown-model branch
+    reports the liveness job that way having touched no meter.
+
+    Every assertion is on the **whole** job list: ``results[0]`` would pass just
+    as happily with the second entry missing.
+    """
+
+    @pytest.fixture
+    def prometer_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        """A model whose driver has no load profile — the default payload."""
+        return add_device(admin_client, fake_meter).json()["data"]["id"]
+
+    @pytest.fixture
+    def smw110_id(self, admin_client: TestClient, fake_meter: FakeMeterState) -> int:
+        """The one model that can read a load profile today."""
+        response = add_device(admin_client, fake_meter, brand="mitsu", model="smw110", name="Mitsu Feeder")
+        assert response.status_code == 201, response.text
+        return response.json()["data"]["id"]
+
+    def one_recent_interval(self) -> list:
+        """One Interval Reading an hour old, so it lands inside the walk's window."""
+        from datetime import UTC, timedelta
+
+        from arichds.acquisition.drivers.base import IntervalReading
+
+        return [
+            IntervalReading(
+                read_at=(datetime.now(UTC) - timedelta(hours=1)).replace(microsecond=0),
+                source="dlms",
+                logger_id=1,
+                interval_sec=900,
+                volt_l1=228.188,
+                import_active_kwh=13.130,
+            )
+        ]
+
+    def jobs(self, response) -> list[str]:
+        return [result["job"] for result in response.json()["data"]["results"]]
+
+    def test_a_model_without_a_load_profile_still_gets_an_entry(
+        self, admin_client: TestClient, prometer_id: int
+    ) -> None:
+        response = admin_client.post(f"/api/devices/{prometer_id}/read-now")
+
+        assert self.jobs(response) == ["liveness", "load_profile"]
+        results = response.json()["data"]["results"]
+        assert results[0]["ok"] is True
+        assert results[1]["ok"] is False
+        assert "no load profile in this build" in results[1]["detail"]
+        assert count_readings(prometer_id) == 0
+
+    def test_a_supported_model_stores_its_intervals(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, smw110_id: int
+    ) -> None:
+        fake_meter.load_profile_rows = self.one_recent_interval()
+
+        response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
+
+        assert self.jobs(response) == ["liveness", "load_profile"]
+        load_profile = response.json()["data"]["results"][1]
+        assert load_profile["ok"] is True
+        assert "Stored 1 Interval Readings up to" in load_profile["detail"]
+        assert count_readings(smw110_id) == 1
+
+    def test_a_supported_model_with_nothing_new_says_so(self, admin_client: TestClient, smw110_id: int) -> None:
+        response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
+
+        assert self.jobs(response) == ["liveness", "load_profile"]
+        load_profile = response.json()["data"]["results"][1]
+        assert load_profile["ok"] is True
+        assert load_profile["detail"] == "The meter had no new intervals to store."
+
+    def test_a_meter_that_refuses_the_liveness_read_skips_the_load_profile(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, smw110_id: int
+    ) -> None:
+        fake_meter.connect_error = ConnectionRefusedError("refused")
+
+        response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
+
+        assert self.jobs(response) == ["liveness", "load_profile"]
+        results = response.json()["data"]["results"]
+        assert results[0]["ok"] is False
+        assert results[1] == {
+            "job": "load_profile",
+            "ok": False,
+            "detail": "Skipped — the meter did not answer the liveness read.",
+        }
+        # Skipped means skipped: the endpoint was never asked for a second time.
+        assert fake_meter.load_profile_windows == []
+
+    def test_a_failed_load_profile_read_reports_what_it_stored(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, smw110_id: int
+    ) -> None:
+        fake_meter.load_profile_error = TimeoutError("the meter went away")
+
+        response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
+
+        assert response.status_code == 200
+        load_profile = response.json()["data"]["results"][1]
+        assert load_profile["ok"] is False
+        assert "Stored 0 Interval Readings before the read stopped" in load_profile["detail"]
+
+    def test_a_failed_load_profile_read_is_not_a_strike(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, smw110_id: int
+    ) -> None:
+        """D11 / ADR 0004 — status comes from the Poller's evidence, and the
+        liveness read is that evidence. A load profile that failed afterwards
+        must not undo an Online the meter just earned."""
+        fake_meter.load_profile_error = TimeoutError("the meter went away")
+
+        response = admin_client.post(f"/api/devices/{smw110_id}/read-now")
+
+        assert response.json()["data"]["status"] == "online"
+        assert stored_status(smw110_id) == "online"
+
+    def test_a_model_with_no_driver_reports_the_liveness_job_alone(self, admin_client: TestClient) -> None:
+        """There is no driver to ask whether it has a load profile."""
+        device_id = insert_undrivable_device()
+
+        response = admin_client.post(f"/api/devices/{device_id}/read-now")
+
+        assert self.jobs(response) == ["liveness"]
+
+    def test_an_unusable_transport_reports_the_liveness_job_alone(self, admin_client: TestClient) -> None:
+        """Same reason: nothing can be built to ask."""
+        device_id = insert_device_with_transport({"kind": "net"})
+
+        response = admin_client.post(f"/api/devices/{device_id}/read-now")
+
+        assert self.jobs(response) == ["liveness"]
 
 
 class TestClearReadings:
@@ -1491,19 +1643,24 @@ def insert_undrivable_device() -> int:
 
 def write_readings(device_id: int, count: int) -> None:
     """Write *count* Interval Readings straight into the table."""
-    from datetime import UTC
+    from datetime import UTC, timedelta
 
     from arichds.db.models import LoadProfileReading
     from arichds.db.session import session_scope
 
+    now = datetime.now(UTC)
     with session_scope() as session:
         for index in range(count):
             session.add(
                 LoadProfileReading(
                     device_id=device_id,
-                    read_at=datetime.now(UTC),
+                    # Distinct timestamps: ``(device_id, logger_id, read_at)`` is
+                    # unique from migration 0006 on, so ``count`` identical rows
+                    # would now be one row.
+                    read_at=now - timedelta(minutes=15 * index),
                     source="dlms",
-                    interval="15m",
+                    logger_id=1,
+                    interval_sec=900,
                     import_active_kwh=100.0 + index,
                 )
             )

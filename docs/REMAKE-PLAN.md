@@ -629,7 +629,9 @@ v2 เขียน scaler ให้ถูกต้องได้ ตราบ�
 
 #### ตัดสิน: เก็บในหน้าตาที่โปรแกรมใช้จริง — **แปลงตอนเขียน แทนแปลงตอนอ่าน**
 
-`load_profile_readings` = ตารางเดียว หน้าตา COSEM ~24 คอลัมน์ + `source` (`dlms`/`modbus`) + `interval`
+`load_profile_readings` = ตารางเดียว หน้าตา COSEM **12 คอลัมน์วัดค่า** + `source` (`dlms`/`modbus`) + `interval_sec`
+(เคาะที่ grill M5 · ทำจริงที่ M5a-1 issue #15 — `interval` (String) ถูกตัดออก, `interval_sec` (int) เก็บ
+capture period ของมิเตอร์ตรง ๆ และมี `logger_id` เป็นส่วนหนึ่งของ unique key)
 driver ฝั่ง Modbus map register → field ของ COSEM **ตั้งแต่ตอน poll** ไม่ใช่ตอน query
 
 ```mermaid
@@ -648,7 +650,7 @@ flowchart LR
         direction TB
         E1["DLMS"] --> X["driver แปลงเป็นหน้าตา COSEM"]
         E2["Modbus"] --> X
-        X --> F[("load_profile_readings<br/>~24 คอลัมน์")]
+        X --> F[("load_profile_readings<br/>12 คอลัมน์วัดค่า")]
         F --> G["หน้า LP · CSV · push"]
     end
     style F fill:#238636,color:#fff
@@ -664,7 +666,7 @@ flowchart LR
 |---|---|---|
 | แถว/วัน | 1,728 + 2,880 + 576 + 192 = **5,376** | 1,728 + 2,880 = **4,608** |
 | ตาราง | 4 | **1** |
-| คอลัมน์กว้างสุด | 91 | ~24 |
+| คอลัมน์กว้างสุด | 91 | **12** (คอลัมน์วัดค่า) |
 
 ที่ลดลงคือ **ตาราง aggregate** (`_5m` 576 + `_15m` 192) ไม่ใช่จังหวะการอ่าน — modbus ยังเก็บนาทีละแถว
 เหมือนเดิม แค่ลงตารางเดียว · **Poller ไม่เพิ่มแถวใด ๆ เข้าตารางนี้** (ADR 0007, M3-4): tick พิสูจน์ว่ามิเตอร์

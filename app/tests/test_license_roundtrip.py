@@ -279,6 +279,17 @@ class TestActivationAppliesLive:
         # it must be *running*, which is what proves the listener fired.
         assert client.app.state.poller.running
 
+    def test_activation_starts_the_scheduler(self, client: TestClient, vendor_cli, vendor_keys: Path) -> None:
+        """The periodic jobs come up on activation too (issue #16), no restart.
+
+        Same listener mechanism as the Poller above, and the same reason it has
+        to be subscribed before the first evaluation: an already-licensed machine
+        must start its jobs on boot.
+        """
+        code = issue_code(vendor_cli, vendor_keys, machine_id=TEST_MACHINE_ID)
+        client.post("/api/license/activate", json={"code": code})
+        assert client.app.state.scheduler.running
+
     def test_rejected_code_returns_the_reason_and_stays_limited(
         self, client: TestClient, vendor_cli, vendor_keys: Path
     ) -> None:

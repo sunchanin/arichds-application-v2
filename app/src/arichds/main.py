@@ -7,9 +7,10 @@ Boot order matters and is fixed (SPEC §3.1):
 2. Run ``alembic upgrade head`` **before** anything serves. The installer and
    updater therefore have no migrate step of their own.
 3. Build the LicenseService and evaluate the license once.
-4. Build the Poller and subscribe it to the license state, so it starts if the
-   machine is already licensed — and starts *the instant* one is activated,
-   with no restart (ADR 0001).
+4. Build the Poller and the Scheduler and subscribe **both** to the license
+   state, so they start if the machine is already licensed — and start *the
+   instant* one is activated, with no restart (ADR 0001). Between them they are
+   SPEC §4's fixed two background threads plus one Poller worker per meter.
 5. Serve.
 
 Run it with ``fastapi dev`` / ``fastapi run`` (the entrypoint is declared in
@@ -26,11 +27,12 @@ from fastapi import FastAPI
 
 from arichds import __version__
 from arichds.acquisition.poller import Poller
-from arichds.api import auth, devices, health, license, users
+from arichds.api import auth, devices, health, license, load_profile, records, users
 from arichds.config import Settings, get_settings
 from arichds.db.migrate import upgrade_to_head
 from arichds.db.session import dispose_engine, init_engine
 from arichds.fe_static import resolve_fe_dist
+from arichds.jobs.scheduler import Scheduler
 from arichds.licensing.middleware import LimitedModeMiddleware
 from arichds.licensing.service import LicenseService
 from arichds.logging_config import configure_logging
@@ -53,18 +55,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     license_service = LicenseService(settings.license_path)
     poller = Poller(enabled=settings.poll_enabled)
+    scheduler = Scheduler(enabled=settings.poll_enabled)
     app.state.license_service = license_service
     app.state.poller = poller
+    app.state.scheduler = scheduler
 
     # Subscribing BEFORE the first evaluation means an already-licensed machine
     # starts polling on boot, and a freshly activated one starts on activation.
     license_service.add_listener(poller.on_license_state)
+    license_service.add_listener(scheduler.on_license_state)
     license_service.re_evaluate()
 
     try:
         yield
     finally:
         poller.stop()
+        # Stopped here and not only on the license listener: a thread that
+        # outlives its app keeps reading meters and writing rows into a database
+        # nobody is serving from any more.
+        scheduler.stop()
         dispose_engine()
         logger.info("ARICHDS stopped")
 
@@ -86,6 +95,8 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(license.router)
     app.include_router(devices.router)
+    app.include_router(load_profile.router)
+    app.include_router(records.router)
     app.include_router(users.router)
 
     # Enforcement wraps everything but only guards /api/* minus health and

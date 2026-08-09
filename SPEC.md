@@ -66,7 +66,7 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
   `arichds.exe` เป็น Windows service (สูตรเดียวกับ v1 ที่พิสูจน์แล้ว: auto-start, restart on exit,
   log rotation 50 MB)
 - ที่อยู่: โปรแกรม `Program Files\ARICHDS` · ข้อมูลทั้งหมด `%ProgramData%\ARICHDS\`
-  (`arichds.db`, license, logs, captures, backups)
+  (`arichds.db`, license, logs, captures, `backup\`)
 - พอร์ต **8000** · bind LAN ได้ — installer เปิด firewall rule ให้เครื่องอื่นในไซต์เข้า
   `http://<ip>:8000` ได้
 - **Migration รันอัตโนมัติตอน service start** (alembic upgrade head ก่อนเปิด API) —
@@ -291,7 +291,12 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - **SMW110W4 อ่าน load profile (Logger 1) ได้แล้วที่ M4a-2 (issue #10, 2026-08-07)**:
   `Smw110Driver.read_load_profile()` อ่านผ่าน `readRowsByEntry` เท่านั้น (เมิเตอร์ปฏิเสธ
   `readRowsByRange`) คืนแถวเป็น UTC + kWh ผ่านมิเตอร์จริง 8 คอลัมน์ (ตัด 12 คอลัมน์ที่ยังไม่รู้
-  ความหมายทิ้ง) — ยังไม่มีตาราง/scheduled job/หน้าเว็บ (ของ M5 ดูด้านล่าง)
+  ความหมายทิ้ง) — **ตารางมีแล้วที่ M5a-1 (issue #15, 2026-08-07)**: Read now เขียนลง
+  `load_profile_readings` จริง (migration 0006 + `acquisition/load_profile.py`) ·
+  **scheduler thread + job registry มาแล้วที่ M5a-2 (issue #16)**: `jobs/scheduler.py`
+  รัน `load_profile_cycle` ทุก 900 วิ (ข้าม device ที่ Offline/ปิดใช้งาน) ·
+  **หน้าเว็บมาแล้วทั้งสองหน้า**: Load Profile (M5b-1, issue #17 — `GET /api/load-profile`)
+  และ Records (M5b-2, issue #18 — `GET /api/records`)
 
 ### 3.5 Load Profile (M5)
 
@@ -308,8 +313,11 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   ⇒ ข้อความเดิมที่ว่า "Logger 2 เป็นของ Premier 550" และ "Logger 1 = energy, Logger 2 = V/I/PF"
   **ผิดทั้งคู่** — Prometer 100 ก็มี Logger 2 · และ Logger 1 ของมันมีทั้งพลังงานและ V/I/PF/freq
 - **ห้ามสมมติว่า capture period คือ 900 วิ** — อ่าน attr 4 ของ ProfileGeneric ทุกครั้ง
-- **Records** (ย้ายมาจาก M3 — grill M3 2026-08-05): ตารางตรวจความครบของข้อมูล แถว = มิเตอร์
-  คอลัมน์ = วันที่ ช่อง = จำนวน interval ที่เก็บได้วันนั้น (ขาด = `N (-X)`, ไม่มีเลย = `0 (Missing)`)
+- **Records** (ย้ายมาจาก M3 — grill M3 2026-08-05): ตารางตรวจความครบของข้อมูล
+  **แถว = มิเตอร์ + logger** (ไม่ใช่มิเตอร์อย่างเดียว — Prometer 100 เดิน Logger 1 ที่ 900 วิ
+  และ Logger 2 ที่ 300 วิ พร้อมกันบนเครื่องเดียว ⇒ แถวระดับมิเตอร์ไม่มี "ครบวัน" ค่าเดียวให้เทียบ)
+  คอลัมน์ = วันที่ ช่อง = จำนวน interval ที่เก็บได้วันนั้น (ขาด = `N (-X)`, ไม่มีเลย = `0 (Missing)`,
+  คาบเปลี่ยนกลางวัน = `N (period changed)`)
   — v1 เรียกหน้านี้ว่า **Instantaneous Records** (เมนู "Records") แต่เป็นหน้าเปล่า:
   `DATES`/`DEVICE_ROWS` hardcode ว่าง ไม่มี API call และ worker ไม่มี endpoint รองรับ
   ⇒ v2 เป็นผู้เขียนหน้านี้ครั้งแรก และต้องมี load profile ก่อนจึงจะมีอะไรให้นับ จึงอยู่ที่ M5 ไม่ใช่ M3
@@ -361,11 +369,24 @@ one bad tick"* พร้อม guard ซ้อนใน handler)
 
 **Records** — "ครบวัน" คำนวณจาก **capture period จริงต่อ logger** ไม่ใช่ค่าคงที่ 96
 (96 = 86400÷900 ซึ่งขัดกับข้อ "ห้ามสมมติ 900 วิ" ข้างบน — และผิดจริงกับ Prometer 100 Logger 2
-ที่เป็น **300 วิ ⇒ ครบวัน = 288**) · **คำนวณสดด้วย `GROUP BY device_id, date(read_at)`
+ที่เป็น **300 วิ ⇒ ครบวัน = 288**) · **คำนวณสดด้วย
+`GROUP BY device_id, logger_id, date(read_at, ±offset), interval_sec`
 ไม่มีตาราง materialize** — หน้าที่เดียวของหน้านี้คือบอกว่าข้อมูลครบไหม การอ่านจากสำเนาที่อาจไม่ตรง
 กับต้นฉบับทำลายเหตุผลที่มันมีอยู่ (v1 มี `records_96` แต่เป็นคนละอย่าง — กางค่าเป็น 96 slot ต่อวัน
-และฮาร์ดโค้ด 96 ไว้ในชื่อตาราง) · ปริมาณจริง 90 วัน × 30 มิเตอร์ × 96 ≈ 259k แถว บน index
-`(device_id, read_at)` ที่มีอยู่แล้ว · **คาบเปลี่ยนกลางวัน**: คาดหวังตามคาบที่พบมากที่สุดของวันนั้น
+และฮาร์ดโค้ด 96 ไว้ในชื่อตาราง) · จัด group **ต่อ logger** เพราะถ้า group แค่ระดับ device
+Prometer 100 จะเจอสองคาบทุกวันและถูกทำเครื่องหมาย *คาบเปลี่ยน* ตลอดไป ·
+วันคือ**วันตามเวลาท้องถิ่นของผู้ใช้** — client ส่ง `utc_offset_minutes` (นาทีที่ **บวก** เข้ากับ UTC,
+ICT = `+420`) มาให้ bucket เพราะทุก timestamp บนจอแสดงเป็นเวลาท้องถิ่นอยู่แล้ว ถ้า bucket ด้วยวัน UTC
+ค่าที่อ่านได้ระหว่างเที่ยงคืน-07:00 จะไปโผล่คอลัมน์วันก่อนหน้า ⇒ ช่องที่ขาดจริงจะชี้ผิดวัน ·
+ช่วงที่ขอได้ครั้งละไม่เกิน **31 วัน** (นับปลายทั้งสองข้าง) — 90 คอลัมน์ไม่ใช่ตารางที่คนอ่านไหว
+และรายละเอียดเบื้องหลังช่องที่น่าสงสัยอยู่ที่หน้า Load Profile ·
+ปริมาณจริง 90 วัน × 30 มิเตอร์ × 96 ≈ 259k แถว — **query นี้ไม่ได้วิ่งบน index `(device_id, read_at)`**
+(ไม่มีเงื่อนไข `device_id =` และ `read_at` ไม่ใช่คอลัมน์นำของ index นั้น ⇒ seek ไม่ได้)
+วัดจริงบนสคีมาจริงที่ 259,200 แถวได้ `SCAN … USING INDEX sqlite_autoindex_load_profile_readings_1`
++ `USE TEMP B-TREE FOR GROUP BY` คือ**สแกนทั้งตารางไม่ว่าจะขอช่วงกี่วัน** ~70 ms ต่อครั้ง
+(1 วัน ~31 ms) ⇒ **รับได้ ไม่ต้องเพิ่ม index** เพราะหน้านี้โหลดตามคำสั่งคนเท่านั้น
+ส่วนการเพิ่ม index จะไปเพิ่มต้นทุนเขียนบนเส้นทางเก็บข้อมูลทุกแถว ·
+**คาบเปลี่ยนกลางวัน**: คาดหวังตามคาบที่พบมากที่สุดของวันนั้น
 และถ้าวันไหนมีมากกว่าหนึ่งคาบ ให้ทำเครื่องหมาย *คาบเปลี่ยน* แทนการรายงานว่าขาด — ข้อมูลไม่ได้ขาด แค่ถี่ต่างกัน
 
 **คอลัมน์วัดค่า — ขยายเป็น 12 ตัวที่ M5a** (เดิม 8) เพิ่ม `import_reactive_kvarh` ·
@@ -404,9 +425,10 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
 > watermark ตัวนี้ **ไม่ขัด ADR 0008** — ADR นั้นห้าม marker ที่รายงานเกินจริงแล้วทำให้**ข้อมูลหายถาวร**
 > ส่วนตัวนี้ถ้าเพี้ยน แถวหายจากไฟล์ CSV แต่ยังอยู่ในฐาน กู้ได้เสมอ
 
-> 🔧 **`SPEC.md` §4 บรรทัด `devices` เขียนผิด** — บอกว่ารวม settings/status เป็น **JSON columns**
-> แต่โค้ดจริงเก็บ `status` · `status_detail` · `status_checked_at` · ตัวนับ strike เป็น**คอลัมน์มีชนิด**
-> (มีแค่ `transport` ที่เป็น JSON) ⇒ แก้ตอนทำ M5a
+> ✅ **แก้แล้วตอนปิด M5a (2026-08-07)** — §4 บรรทัด `devices` เคยบอกว่ารวม settings/status เป็น
+> **JSON columns** ซึ่งไม่ตรงกับโค้ด: `status` · `status_detail` · `status_checked_at` ·
+> `consecutive_failures` เป็น**คอลัมน์มีชนิด** มีแค่ `transport` ที่เป็น JSON และ `capture_objects`
+> ไม่มีอยู่บนตารางนี้เลย · บรรทัดนั้นถูกแก้ให้ตรงกับ `db/models.py` แล้ว
 
 - CSV auto-export → **ย้ายไป M7** (ดูเหตุผลด้านล่าง) · manual read-now → **M5b**
 - Retention (ตัวเลขเดิม v1) — job รายวัน → **M5c** (เคาะที่ grill M5):
@@ -421,12 +443,19 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
   จึงไม่กระทบกัน และถ้าลบจนหมด (device ออฟไลน์เกิน 90 วัน) `MAX` เป็น `NULL` ⇒ กลับไป backfill
   90 วันใหม่เมื่อมันกลับมา ซึ่งถูกต้อง
 - Backup อัตโนมัติรายวัน → **M5c** (เคาะที่ grill M5):
-  `VACUUM INTO` · ปลายทางตั้งต้น **`%ProgramData%\ARICHDS\backup\`** และ **ตั้งค่าปลายทางได้**
+  `VACUUM INTO` · ปลายทาง **`%ProgramData%\ARICHDS\backup\` ตายตัว ตั้งค่าไม่ได้**
   (backup ที่อยู่ดิสก์เดียวกับต้นฉบับกันได้แค่ "ลบผิด/ข้อมูลเสีย" **กันดิสก์พังไม่ได้**) ·
   **เก็บ 7 ชุด** หมุนเวียนลบ · **ทุก 24 ชม. นับจากบริการเริ่ม** (เข้ากับ registry ตรง ๆ
   ไม่ต้องเพิ่มตรรกะเวลานาฬิกา) · **เขียนเป็น `.tmp` แล้ว rename เมื่อสำเร็จ** — `VACUUM INTO`
   กินพื้นที่เท่าฐานทั้งก้อนชั่วคราว ถ้าดิสก์เต็มกลางทางจะได้ไฟล์ที่ไม่สมบูรณ์ และไฟล์ backup
   ที่พังแต่ดูเหมือนใช้ได้ แย่กว่าไม่มี backup
+
+> ✅ **แก้แล้วตอนทำ M5c (issue #19)** — บรรทัดข้างบนเคยบอกว่า **ตั้งค่าปลายทางได้** ซึ่ง
+> **M5c ล้มข้อนั้น**: ค่าที่ผู้ใช้ตั้งได้ต้องมีตาราง `settings` (ยังไม่มี — อยู่ในรายการตารางอนาคต §4)
+> และหน้าตั้งค่าที่เป็นของ **M7** ⇒ ถ้าทำตอนนี้จะได้ค่าที่เก็บไว้แต่ไม่มีใครแก้ได้ ซึ่งคือครึ่งฟีเจอร์
+> (เหตุผลเดียวกับที่ CSV export ถูกย้ายไป M7) · **M5c จึงฮาร์ดโค้ดปลายทางเป็น
+> `%ProgramData%\ARICHDS\backup\`** และการตั้งค่าปลายทางไปพร้อมหน้า Settings ที่ M7
+
 - หน้า: Load Profile · Records → **M5b**
 
 **หน้า Load Profile (M5b) = ดูอย่างเดียว** — ตัวกรอง (group · brand · model · device) · ช่วงวันที่ ·
@@ -435,6 +464,12 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
 = 8,640 แถว/มิเตอร์ และถ้าเลือกทุกมิเตอร์คือ ~259,000 แถวยิงเข้าเบราว์เซอร์
 · **ไม่พอร์ต `resolution`** ที่ v1 มีในพารามิเตอร์ query — ยังบอกไม่ได้ว่าใครใช้ (`REMAKE-PLAN:182`)
 · ปุ่ม **Save CSV now** · สวิตช์ **auto-save** · ช่องเลือกโฟลเดอร์ → **ไปพร้อม CSV ที่ M7**
+
+> **แก้บรรทัด "ปุ่ม Read now" (issue #17, M5b-1)** — สไลซ์แรกของหน้านี้ออกมาเป็น **ดูอย่างเดียวล้วน
+> ไม่มีปุ่ม Read now บนหน้า Load Profile** เพราะ Manual Read มีอยู่แล้วบนหน้า Devices ตั้งแต่ #5 และ
+> เก็บ load profile ลงตารางตั้งแต่ #15 — ปุ่มบนหน้านี้จึงเป็นทางลัดซ้ำ ไม่ใช่ความสามารถใหม่ และ
+> ไม่มีเกณฑ์รับงานข้อไหนใน #17 รองรับ หน้านี้ **ไม่คุยกับมิเตอร์เลย** อ่านเฉพาะแถวที่เก็บไว้แล้ว
+> ถ้าจะเพิ่มปุ่มนี้จริง ให้เปิดเป็นงานของตัวเองพร้อมเกณฑ์รับงาน
 
 ### 3.6 Billing (M6)
 
@@ -504,7 +539,7 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
   transport endpoint) + scheduler thread เดียวรันทุก periodic job จาก registry
   `[(name, interval, fn)]` (LP scheduler, billing auto-read, retention, backup, sync, license recheck)
   — **ไม่มี health-check job**: สถานะมิเตอร์เป็นผลพลอยได้จาก poller tick (ADR 0004)
-- **Data model** (12 ตาราง): `devices` (รวม settings/status/capture_objects เป็น JSON columns) ·
+- **Data model** (12 ตาราง): `devices` (`transport` เป็น JSON column เดียว — status/strike เป็นคอลัมน์มีชนิด) ·
   `device_events` · `load_profile_readings` (COSEM shape 12 คอลัมน์วัดค่า + `source` + `interval_sec`) ·
   `billing_readings` · `billing_captures` · `energy_register_readings` · `battery_readings` ·
   `holidays` · `settings` (key/value) · `users` · `user_tokens` · `sync_state`

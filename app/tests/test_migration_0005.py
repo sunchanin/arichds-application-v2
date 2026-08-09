@@ -85,7 +85,10 @@ class TestTheSixtySecondRowsGo:
     @pytest.fixture
     def upgraded(self, db_at_0004: str) -> str:
         seed_pre_0005(db_at_0004)
-        upgrade_to_head(db_at_0004)
+        # Pinned to 0005, not head: 0006 drops the ``interval`` column these
+        # tests are about, and a test that describes 0005's world has to stop
+        # at 0005. ``TestDowngrade`` below deliberately keeps going to head.
+        command.upgrade(build_alembic_config(db_at_0004), "0005")
         return db_at_0004
 
     def test_no_60s_row_survives(self, upgraded: str) -> None:
@@ -106,7 +109,9 @@ class TestTheTableIsRenamed:
     @pytest.fixture
     def upgraded(self, db_at_0004: str) -> str:
         seed_pre_0005(db_at_0004)
-        upgrade_to_head(db_at_0004)
+        # Pinned to 0005 for the same reason as above: the exact column set
+        # asserted below is 0005's, and 0006 reshapes it.
+        command.upgrade(build_alembic_config(db_at_0004), "0005")
         return db_at_0004
 
     def test_the_new_name_exists(self, upgraded: str) -> None:
@@ -176,4 +181,10 @@ class TestDowngrade:
         # downgrade that resurrected the 60 s rows would have to have kept them
         # somewhere, which is exactly the "two kinds of row in one table" that
         # ADR 0007 removed.
-        assert rows(downgraded, "SELECT interval FROM interval_readings") == [{"interval": "15m"}]
+        #
+        # Asserted on ``volt_l1`` rather than on ``interval``: this fixture goes
+        # to head and back, so it now also round-trips 0006, which drops the
+        # cadence label on the way up and cannot reconstruct it on the way down.
+        # The seed gave the surviving 15 m row 240.0 V and the three 60 s rows
+        # 229–231 V, so this still fails if any of them come back.
+        assert rows(downgraded, "SELECT volt_l1 FROM interval_readings") == [{"volt_l1": 240.0}]

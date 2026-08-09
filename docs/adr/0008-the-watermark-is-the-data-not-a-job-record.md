@@ -1,6 +1,16 @@
 # The load-profile watermark is the data, not a job record — v2 has no read-job table
 
-Status: accepted (2026-08-07, owner decision during M5 grilling). Not yet implemented — M5.
+Status: accepted (2026-08-07, owner decision during M5 grilling). **Fully implemented**: the
+watermark, the oldest-first 24 h walk and the synchronous Manual Read landed with issue #15
+(M5a-1) in `acquisition/load_profile.py`, and the background scheduler that calls it on a
+cadence landed with issue #16 (M5a-2) in `jobs/scheduler.py` — one thread, a registry of
+`(name, interval, fn)`, with `load_profile_cycle` as its first entry.
+
+**Still no job table, and no persisted scheduler state of any kind.** The scheduler's due
+times live in memory and are lost on restart, deliberately: after a restart every job simply
+runs on its first pass, and the load-profile walk resumes from `MIN` of the per-logger
+`MAX(read_at)` over `load_profile_readings` — the rows themselves, exactly as below. There is
+no `last_run_at`, no `read_end`, and nothing a future reader could mistake for a watermark.
 
 Reverses: v1's `load_profile_reads` job table, and v2's own `SPEC.md` §4 data model, which
 listed `interval_read_jobs` among thirteen tables. **The count is now twelve.**
@@ -82,6 +92,22 @@ column any scheduler could mistake for a watermark, no "resume from the last job
 watermark stays derived from the data. That constraint is the entire point of this ADR, and a
 future change that quietly relaxes it should be treated as reversing this decision, not as
 extending it.
+
+## Checked against M5c's retention job (issue #19, 2026-08-07)
+
+Retention deletes rows out of `load_profile_readings`, which is where the watermark comes from,
+so it was checked against this ADR before shipping rather than after. **It cannot move a
+watermark**, and that is arithmetic rather than luck: retention deletes the *oldest* rows (those
+older than 90 days by `read_at`) while the watermark is `MIN` over the per-logger `MAX(read_at)`
+— the *newest*. The two ends of the table never meet except in one case, and that case is
+already correct: a device offline past the cutoff loses every row it had, the `GROUP BY`
+produces no groups, `func.min` returns `None`, and `load_profile.py` backfills from
+`LOAD_PROFILE_BACKFILL_DAYS` back when the device returns. A fresh 90-day backfill is the right
+answer there, and `tests/test_retention.py` asserts it through the real read path.
+
+Nothing was reversed and nothing was added: retention records nowhere that it ran, and the
+scheduler still holds its due times in memory only. The one INFO line per purge is the entire
+history, which is this ADR's cost paid a second time, deliberately.
 
 ## Alternatives considered
 

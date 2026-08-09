@@ -70,7 +70,8 @@ class TestDeviceAndReading:
                     device_id=device_id,
                     read_at=datetime.now(UTC),
                     source=SOURCE_DLMS,
-                    interval="15m",
+                    logger_id=1,
+                    interval_sec=900,
                     volt_l1=230.1,
                     volt_l2=229.8,
                     volt_l3=230.4,
@@ -100,7 +101,8 @@ class TestDeviceAndReading:
                     device_id=device.id,
                     read_at=moment,
                     source=SOURCE_DLMS,
-                    interval="15m",
+                    logger_id=1,
+                    interval_sec=900,
                 )
             )
 
@@ -133,7 +135,8 @@ class TestDeviceAndReading:
                     device_id=device.id,
                     read_at=datetime.now(UTC),
                     source=SOURCE_DLMS,
-                    interval="15m",
+                    logger_id=1,
+                    interval_sec=900,
                 )
             )
 
@@ -155,7 +158,8 @@ class TestDeviceAndReading:
                         device_id=device.id,
                         read_at=now - timedelta(minutes=offset),
                         source=SOURCE_DLMS,
-                        interval="15m",
+                        logger_id=1,
+                        interval_sec=900,
                         volt_l1=volts,
                     )
                 )

@@ -5,6 +5,7 @@ import {
   KeyOutlined,
   LogoutOutlined,
   SettingOutlined,
+  TableOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   UserOutlined,
@@ -33,8 +34,17 @@ const { Header, Sider, Content } = Layout;
  *
  * M3-3 lights up **Devices** and removes **Monitor**, which was M1 scaffolding
  * rather than a product page (ADR 0007). Devices is where a meter is added,
- * edited, paused, read and deleted, and it is what the app opens on. Load
- * Profile, Billing, Energy and Settings stay disabled until M5-M7 own them.
+ * edited, paused, read and deleted, and it is what the app opens on.
+ *
+ * M5b-1 lights up **Load Profile** — the read-only view of the Interval
+ * Readings the meter recorded — for **every** role, so it carries no gate the
+ * way User Management does. Billing, Energy and Settings stay disabled until
+ * M6-M7 own them.
+ *
+ * M5b-2 lights up **Records** — whether those stored Readings are *complete*,
+ * counted per meter and logger against the meter's own capture period — for
+ * every role too, and for the same reason: it only reads rows that are already
+ * on disk.
  *
  * The header carries who is signed in, the way to change your own password
  * (every role — the modal is owned here, so no page has to pass a prop for it),
@@ -65,9 +75,10 @@ export function AppShell({
 
   const items: ItemType<MenuItemType>[] = [
     { key: "devices", icon: <DatabaseOutlined />, label: "Devices" },
+    { key: "load-profile", icon: <AreaChartOutlined />, label: "Load Profile" },
+    { key: "records", icon: <TableOutlined />, label: "Records" },
     // Owned by later milestones — visible so the shape is honest, disabled so
     // nothing pretends to work yet.
-    { key: "load-profile", icon: <AreaChartOutlined />, label: "Load Profile", disabled: true },
     { key: "billing", icon: <FileTextOutlined />, label: "Billing", disabled: true },
     { key: "energy", icon: <ThunderboltOutlined />, label: "Energy", disabled: true },
     ...(role === "admin"

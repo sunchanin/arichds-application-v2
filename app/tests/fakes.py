@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers.base import MeterDriver
+from arichds.acquisition.drivers.base import IntervalReading, MeterDriver
 from arichds.constants import SOURCE_DLMS
 
 #: The serial the fake meter reports unless a test says otherwise.
@@ -47,6 +48,15 @@ class FakeMeterState:
             it. Lets a test hold the endpoint and observe the priority rule.
         connects: How many times ``connect()`` was called.
         disconnects: How many times ``disconnect()`` was called.
+        load_profile_rows: The whole buffer :class:`FakeSmw110Driver` replays
+            from — a read returns the subset falling inside the asked-for
+            window, inclusive on both bounds, like the real driver's filter.
+        load_profile_windows: Every window asked for, in call order. The walk's
+            *direction* is only observable here; row counts alone would pass
+            just as happily with the chunks reversed.
+        load_profile_error: What a failing load-profile read raises.
+        load_profile_fail_after: Succeed for this many reads, then raise. The
+            mid-walk failure a chunked backfill has to survive.
     """
 
     meter_serial: str | None = DEFAULT_FAKE_SERIAL
@@ -56,6 +66,10 @@ class FakeMeterState:
     hold_read: threading.Event | None = None
     connects: int = 0
     disconnects: int = 0
+    load_profile_rows: list[IntervalReading] = field(default_factory=list)
+    load_profile_windows: list[tuple[datetime, datetime]] = field(default_factory=list)
+    load_profile_error: Exception | None = None
+    load_profile_fail_after: int | None = None
 
 
 _STATE = FakeMeterState()
@@ -150,6 +164,37 @@ class FakeMeterDriver(MeterDriver):
 
 
 class FakeSmw110Driver(FakeMeterDriver):
-    """The same fake, registered under ``smw110`` (issue #9) with a truthful name."""
+    """The same fake, registered under ``smw110`` (issue #9) with a truthful name.
+
+    It is also the **only** fake that can read a load profile (M5a-1), mirroring
+    the product: :class:`FakeMeterDriver` inherits ``MeterDriver``'s ``False``,
+    so ``prometer100`` keeps proving the unsupported path.
+    """
 
     _MODEL_NAME = "smw110"
+
+    def supports_load_profile(self) -> bool:
+        """Yes — like the real ``Smw110Driver``."""
+        return True
+
+    def read_load_profile(self, start_utc: datetime, end_utc: datetime) -> list[IntervalReading]:
+        """Record the window, honour the failure knobs, replay the seeded rows.
+
+        Filtering inclusively on both bounds is the real driver's behaviour
+        (``smw110.py``), and it is what makes the job's deliberate re-read of the
+        watermark row come back rather than vanish.
+        """
+        with _GUARD:
+            _STATE.load_profile_windows.append((start_utc, end_utc))
+            reads = len(_STATE.load_profile_windows)
+            error = _STATE.load_profile_error
+            fail_after = _STATE.load_profile_fail_after
+            rows = list(_STATE.load_profile_rows)
+
+        if fail_after is not None:
+            if reads > fail_after:
+                raise error or TimeoutError("the meter stopped answering mid-walk")
+        elif error is not None:
+            raise error
+
+        return [row for row in rows if start_utc <= row.read_at <= end_utc]
