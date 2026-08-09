@@ -574,7 +574,8 @@ path มาจาก convention **ไม่มีตาราง `billing_captur
 ข้อความในเอกสารเป็น**อังกฤษ** และค่าที่ operator พิมพ์ซึ่งไม่ใช่ ASCII แทนที่ด้วย `?` + WARN แบบ v1
 (ไม่ฝังฟอนต์ไทย)
 
-**Feature entitlement** — v2 ยังไม่มีกลไกนี้เลย (license มี `features` แต่ไม่มีใครอ่าน) ·
+**Feature entitlement** — ✅ **ลงแล้วกับ issue #22 (M6b)** · ตอน grill M6 v2 ยังไม่มีกลไกนี้เลย
+(license มี `features` แต่ไม่มีใครอ่าน) ·
 **M6 สร้าง `require_feature` แล้วทาให้ครบทั้ง `billing` และ `load_profile`/`records` ที่ M5 ค้างไว้** —
 gate ที่ทาครึ่งเดียวคือโรงงานผลิตบั๊ก · ✅ **คีย์ที่คุมหน้า Records ชื่อ `records`** — เจ้าของตัดสิน
 2026-08-09 ปิดคำถามที่ §5 ค้างมาตั้งแต่ก่อน M5 · ชื่อคีย์เป็น contract กับ portal ไม่ใช่ของที่
