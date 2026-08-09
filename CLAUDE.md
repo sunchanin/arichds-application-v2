@@ -142,9 +142,17 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
 customer-confirmed ground truth; internals are not.** Domain modules must reproduce v1's
 numbers at v1's default settings (**Output Parity** — see CONTEXT.md), but never port v1's
 load-once license pattern, per-module scheduler threads, dual-DB access, or table sprawl.
-Real test meters reachable over TCP (read-only, normal 60s cadence, never write to them):
-CEWE `203.170.151.152:4059` (password `ABCD0001`), CEWE `203.170.151.217`, SMART TCC
-`203.170.148.103:4059` — connection patterns in `cewe/cewe-worker/scripts/probe_*.py`.
+Real test meters (read-only, normal 60s cadence, **never write to them**) — models confirmed
+from v1's own driver comments, TCP reachability re-tested 2026-08-09:
+
+| Model | Endpoint | |
+|---|---|---|
+| CEWE **Prometer 100** | `203.170.151.152:4059` (password `ABCD0001`) | ✅ open |
+| CEWE **Saral 305** | `203.170.151.217:4059` | ✅ open |
+| CEWE **Premier 550** | `49.229.159.44:`**`50001`** | ✅ open — **note the non-default port**; transport is a property of the install, not the model |
+| **SMART TCC** (3CL) | `203.170.148.103:4059` | ❌ timeout on 4059 *and* 50001 — no response at all, so this is a link/firewall problem we cannot fix from here. **5 of the 9 supported models sit behind it** |
+
+Connection patterns in `cewe/cewe-worker/scripts/probe_*.py`.
 
 ## Workflow — module ladder with test gates
 

@@ -99,8 +99,22 @@ normalized at write time in the driver; unlike one it is **not** on a fixed cade
 the meter decides when a period ends. The energy and demand columns carry a total plus **four
 tariffs** (`rate_a`…`rate_d`) — v1 stopped at three because CEWE sites use three, and the
 SMW110W4 exposes `E=1..4`. Registers a meter reports but no screen shows are read and dropped,
-not stored.
+not stored — which is why M4c added Demand Time and Cumulative Demand: v1's Billing page shows
+both, so by that same rule they were missing, not excluded.
 _Avoid_: bill row, billing record, meter snapshot
+
+**Demand Time**:
+When a maximum demand actually occurred — the COSEM `capture_time` an Extended Register carries
+at **attribute 5**, alongside the value at attribute 2. It shares its OBIS code with the value
+it belongs to, which is why a billing profile's columns are identified by `(OBIS, attribute)`
+and never by OBIS alone: keyed by OBIS the value and its time collapse onto one another.
+_Avoid_: peak time, demand timestamp, MD time
+
+**Cumulative Demand**:
+The running sum of a meter's maximum demands across billing periods (COSEM `D=2`) — a different
+quantity from the Maximum Demand of one period (`D=6`), not a total of it. Stored per tariff
+like every other billing group.
+_Avoid_: total demand, accumulated demand, sum of demand
 
 **Bill Date**:
 The timestamp the **meter** stamped on a billing period, and the natural key of a closed one:
@@ -151,6 +165,11 @@ _Avoid_: report, export (that's a different feature), snapshot
 **Output Parity**:
 The acceptance rule for domain modules: numbers shown by v2 must equal v1's output at v1's
 default settings (`divide_by_1000=on` → kWh) on the same meter. Internals may differ freely.
+**It is judged on stored rows, not on screens** (grill M4c, 2026-08-09) — the two products
+present the same data differently on purpose, and v1 has no screen at all for a second logger,
+so a screen-to-screen comparison would fail on presentation choices and would leave the
+two-logger case unmeasurable. Comparing v1's tables to v2's is also the only form of the test
+that can be frozen as a replay fixture and re-run without a meter.
 
 ### Acquisition
 
