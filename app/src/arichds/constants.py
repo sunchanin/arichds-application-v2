@@ -7,6 +7,7 @@ are marked — they are proven on site and must not be "tuned" without evidence.
 
 from __future__ import annotations
 
+import os
 from typing import Final
 
 # ─── Product identity ─────────────────────────────────────────────────────────
@@ -190,3 +191,34 @@ LOG_FILE_BACKUP_COUNT: Final[int] = 5
 
 # ─── API error codes ──────────────────────────────────────────────────────────
 ERROR_LICENSE_INVALID: Final[str] = "LICENSE_INVALID"
+ERROR_FEATURE_DISABLED: Final[str] = "FEATURE_DISABLED"
+
+# ─── Feature entitlement (SPEC §3.9, M6b issue #22) ───────────────────────────
+# Enabled = `.env FEATURES ∩ license features`. Eight sellable keys — the same
+# set v1 sold — plus one ops-only key that `.env` alone controls and the
+# license never governs. `records` (not `instantaneous`) is the key that gates
+# the Records page — owner decision 2026-08-09, SPEC §3.9.
+SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "billing",
+        "load_profile",
+        "energy_summary",
+        "special_days",
+        "records",
+        "battery",
+        "auto_capture",
+        "billing_excel_export",
+    }
+)
+FEATURE_KEYS: Final[frozenset[str]] = SELLABLE_FEATURE_KEYS | frozenset({"app_log"})
+
+# ─── Capture write hardening (ADR 0010, M6b issue #22; v1 constants.py:13-21) ─
+# Windows lacks O_NOFOLLOW (the symlink-open guard) — it degrades to 0 there.
+# That is an honest degradation, not a silent one: creating a symlink on
+# Windows needs admin/dev-mode privilege, and the `os.lstat` + `S_ISLNK`
+# pre-check in `capture/write.py` is what actually carries the symlink guard
+# on the platform this product ships on. O_BINARY is required on Windows for
+# byte-exact PDF/xlsx output (the CRT's text-mode translation would otherwise
+# corrupt binary data); it is 0 on POSIX, where there is no such mode.
+O_NOFOLLOW: Final[int] = getattr(os, "O_NOFOLLOW", 0)
+O_BINARY: Final[int] = getattr(os, "O_BINARY", 0)

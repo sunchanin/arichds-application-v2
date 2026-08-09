@@ -387,6 +387,31 @@ class BillingReading(Base):
     )
 
 
+class Setting(Base):
+    """One key/value row in `settings` (M6b, issue #22) — SPEC §4's eleven-table
+    list; ADR 0010's `capture_dir` is the first key it holds.
+
+    A missing key is not an error — :func:`arichds.db.app_settings.get_setting`
+    falls back to a documented default, so a fresh database answers
+    ``GET /api/billing/settings`` without a seed migration. More keys arrive
+    module by module, never speculatively (the same rule every other table in
+    this file follows).
+
+    Attributes:
+        key: The setting name, e.g. ``"capture_dir"``.
+        value: The stored value, or None.
+        updated_at: When this row last changed (UTC).
+    """
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str | None] = mapped_column(String(1024), default=None)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class DeviceEvent(Base):
     """One row recorded when something about a device *changes* (M3-2).
 

@@ -173,6 +173,8 @@ export type BillingStatus = "closed" | "open";
  * never `0`, so it must render as an em dash (see `Billing.tsx`).
  */
 export interface BillingRow {
+  /** The row's own id — used by the History tab's download-capture link (M6b, issue #22). */
+  id: number;
   device_id: number;
   device_name: string;
   /** The meter's own Clock cell — UTC, ISO-8601 (CONTEXT.md — Bill Date). */
@@ -196,6 +198,20 @@ export interface BillingPage {
   total: number;
   limit: number;
   offset: number;
+}
+
+/**
+ * The Billing settings, from `GET`/`PUT /api/billing/settings` (M6b, issue #22).
+ *
+ * `capture_dir` of `""` means "not configured" — capture is then skipped
+ * rather than defaulting to some fixed path (ADR 0010). `capture_count` is
+ * how many **closed** billing rows exist right now — the rows a capture
+ * could exist for — and is what the Save form's "this orphans existing
+ * captures" warning is based on; the backend never blocks on it.
+ */
+export interface BillingSettings {
+  capture_dir: string;
+  capture_count: number;
 }
 
 /**
@@ -415,6 +431,60 @@ function formatDetail(detail: unknown): string {
     .join("\n");
 }
 
+/**
+ * Download a billing capture and trigger a browser save (M6b, issue #22).
+ *
+ * A separate helper from `request<T>()` because that one always parses the
+ * response as JSON — a capture download is a binary body. Errors still come
+ * back as the `{success, data, error}` envelope, so this parses that shape
+ * on a non-OK response the same way `request()` does, just without the
+ * "always JSON" assumption on the success path.
+ */
+export async function downloadBillingCapture(readingId: number, format: "pdf" | "xlsx"): Promise<void> {
+  const session = getSession();
+  const response = await fetch(`/api/billing/captures/${readingId}?format=${format}`, {
+    headers: session ? { Authorization: `Bearer ${session.token}` } : {},
+  });
+
+  if (response.status === 401 && session) {
+    clearSession();
+  }
+
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    let code: string | null = null;
+    let reason: string | null = null;
+    try {
+      const body: unknown = await response.json();
+      if (body && typeof body === "object" && "error" in body) {
+        const error = (body as ApiResponse<unknown>).error;
+        if (error) {
+          message = error.message;
+          code = error.code;
+          reason = error.reason;
+        }
+      }
+    } catch {
+      // A non-JSON error body — fall through to the status-based message.
+    }
+    throw new ApiRequestError(message, code, reason);
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  const filename = match ? match[1] : `capture.${format}`;
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const session = getSession();
   const response = await fetch(path, {
@@ -568,6 +638,20 @@ export const api = {
     if (endIso !== undefined) params.set("end", endIso);
     return request<BillingPage>(`/api/billing?${params.toString()}`);
   },
+
+  /** The current `capture_dir` and how many closed periods exist (M6b, issue #22). */
+  billingSettings: () => request<BillingSettings>("/api/billing/settings"),
+
+  /**
+   * Save `capture_dir` — admin-only. An empty string disables capture; a
+   * non-empty value is validated server-side (ADR 0010) and a rejection
+   * comes back as a 422 the caller renders via `ApiRequestError.message`.
+   */
+  updateBillingSettings: (captureDir: string) =>
+    request<BillingSettings>("/api/billing/settings", {
+      method: "PUT",
+      body: JSON.stringify({ capture_dir: captureDir }),
+    }),
 
   /**
    * The completeness grid over a range of local calendar dates.

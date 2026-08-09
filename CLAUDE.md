@@ -41,8 +41,9 @@ MySQL, and ~30 tables.
   path and the read-only page all landed with issue #21/M6a) ·
   0010 (the capture directory is an operator setting while the backup directory is fixed —
   a capture is a document a human carries to a customer, a backup is not; **do not "make these
-  consistent"**). **0010 is written but not implemented** — capture PDF/xlsx is a later M6
-  slice.
+  consistent"**; **fully implemented**: the `settings` table, `capture_dir` API/form, path
+  validation, the two renderers off one shared section module, the hardened write and the
+  render-on-miss download all landed with issue #22/M6b).
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
 - `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,

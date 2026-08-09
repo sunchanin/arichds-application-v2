@@ -1,4 +1,4 @@
-import { App, Card, DatePicker, Empty, Flex, Select, Space, Table, Tabs } from "antd";
+import { App, Button, Card, DatePicker, Dropdown, Empty, Flex, Form, Input, Select, Space, Table, Tabs } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { TabsProps } from "antd/es/tabs";
 import dayjs, { type Dayjs } from "dayjs";
@@ -7,9 +7,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiRequestError,
   api,
+  downloadBillingCapture,
   isLicenseLapsed,
   type BillingPage as BillingPageData,
   type BillingRow,
+  type BillingSettings,
   type BillingStatus,
   type Device,
 } from "../api";
@@ -41,7 +43,7 @@ const num =
 
 const num3 = num(3);
 
-const COLUMNS: ColumnsType<BillingRow> = [
+const BASE_COLUMNS: ColumnsType<BillingRow> = [
   {
     title: "Bill Date",
     dataIndex: "bill_date",
@@ -116,13 +118,124 @@ const COLUMNS: ColumnsType<BillingRow> = [
   },
 ];
 
-/** The total of every column width, so the horizontal scroll has something to scroll to. */
-const TABLE_WIDTH = COLUMNS.reduce((sum, column) => sum + (Number(column.width) || 0), 0);
+/** Width of the History-only "Capture" column appended in `Billing`'s `columns`. */
+const CAPTURE_COLUMN_WIDTH = 130;
 
 const TAB_ITEMS: TabsProps["items"] = [
   { key: "closed", label: "History" },
   { key: "open", label: "Current" },
 ];
+
+/**
+ * Per-row PDF/xlsx download control (M6b, issue #22) — History tab only, the
+ * Open Period has no capture (SPEC §3.6). Errors surface through the page's
+ * `surface()` handler rather than a local toast, matching every other action
+ * on this page.
+ */
+function CaptureDownload({
+  readingId,
+  surface,
+}: {
+  readingId: number;
+  surface: (err: unknown, fallback: string) => void;
+}) {
+  const download = (format: "pdf" | "xlsx") => {
+    downloadBillingCapture(readingId, format).catch((err: unknown) => surface(err, "Could not download the capture."));
+  };
+
+  return (
+    <Dropdown
+      menu={{
+        items: [
+          { key: "pdf", label: "Download PDF", onClick: () => download("pdf") },
+          { key: "xlsx", label: "Download Excel", onClick: () => download("xlsx") },
+        ],
+      }}
+    >
+      <Button size="small">Capture</Button>
+    </Dropdown>
+  );
+}
+
+/**
+ * Admin-only `capture_dir` form (M6b, issue #22).
+ *
+ * Changing the value while captures already exist confirms first — the
+ * backend never blocks (ADR 0010: "warns, never blocks"), so this confirm
+ * dialog is the only place that fact is enforced at all.
+ */
+function CaptureSettingsCard({ surface }: { surface: (err: unknown, fallback: string) => void }) {
+  const { message, modal } = App.useApp();
+  const [form] = Form.useForm<{ capture_dir: string }>();
+  const [settings, setSettings] = useState<BillingSettings | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api
+      .billingSettings()
+      .then((data) => {
+        setSettings(data);
+        form.setFieldsValue({ capture_dir: data.capture_dir });
+      })
+      .catch((err: unknown) => surface(err, "Could not load the capture folder setting."));
+    // Loaded once on mount — the form owns edits from then on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const save = useCallback(
+    (captureDir: string) => {
+      setSaving(true);
+      api
+        .updateBillingSettings(captureDir)
+        .then((data) => {
+          setSettings(data);
+          form.setFieldsValue({ capture_dir: data.capture_dir });
+          message.success("Capture folder saved.");
+        })
+        .catch((err: unknown) => surface(err, "Could not save the capture folder."))
+        .finally(() => setSaving(false));
+    },
+    [form, message, surface],
+  );
+
+  const onFinish = (values: { capture_dir: string }) => {
+    const next = values.capture_dir.trim();
+    if (settings && next !== settings.capture_dir && settings.capture_count > 0) {
+      // `capture_count` is the number of CLOSED BILLING ROWS — the rows a
+      // capture could exist for — not the number of files actually written
+      // (the backend is honest about this; see `BillingSettingsOut`). On the
+      // very first configuration of a site that already has billing history,
+      // capture_count > 0 even though nothing has ever been captured, so the
+      // text below must not claim captures already exist — only that some
+      // *might*, under whatever folder is currently set.
+      modal.confirm({
+        title: "Change the capture folder?",
+        content: `${settings.capture_count} closed billing period(s) exist. Any captures already written under the current folder stay exactly where they are and will no longer be reachable from this page.`,
+        okText: "Change folder",
+        onOk: () => save(next),
+      });
+      return;
+    }
+    save(next);
+  };
+
+  return (
+    <Card size="small" title="Capture folder">
+      <Form form={form} layout="vertical" onFinish={onFinish}>
+        <Form.Item
+          name="capture_dir"
+          label="Folder path"
+          extra="Where billing PDF/xlsx captures are written. Leave empty to disable capture."
+        >
+          <Input placeholder="e.g. C:\Captures" allowClear />
+        </Form.Item>
+        <Button type="primary" htmlType="submit" loading={saving}>
+          Save
+        </Button>
+      </Form>
+    </Card>
+  );
+}
 
 /**
  * Billing (M6a, issue #21) — read a device's stored Billing Readings, either tab.
@@ -142,8 +255,11 @@ const TAB_ITEMS: TabsProps["items"] = [
  * Profile, which forces a range because one meter can hold 8,640 rows over 90
  * days. Billing is roughly a dozen rows per device per year, so forcing
  * either filter would only hide data.
+ *
+ * **The `capture_dir` form (M6b, issue #22) is admin-only**, shown above the
+ * tabs — SPEC §3.6 puts it on this page, next to the data it captures.
  */
-export function Billing() {
+export function Billing({ role }: { role: "admin" | "user" }) {
   const { message } = App.useApp();
 
   const [devices, setDevices] = useState<Device[]>([]);
@@ -187,6 +303,25 @@ export function Billing() {
     ],
     [devices],
   );
+
+  // The Capture column is History-only — the Open Period has no capture
+  // (SPEC §3.6), so appending it unconditionally would offer a download that
+  // always fails on the Current tab.
+  const columns: ColumnsType<BillingRow> = useMemo(() => {
+    if (tab !== "closed") return BASE_COLUMNS;
+    return [
+      ...BASE_COLUMNS,
+      {
+        title: "Capture",
+        key: "capture",
+        width: CAPTURE_COLUMN_WIDTH,
+        fixed: "right",
+        render: (_: unknown, row: BillingRow) => <CaptureDownload readingId={row.id} surface={surface} />,
+      },
+    ];
+  }, [tab, surface]);
+
+  const tableWidth = columns.reduce((sum, column) => sum + (Number(column.width) || 0), 0);
 
   const onTabChange = (key: string) => {
     setTab(key as BillingStatus);
@@ -242,6 +377,7 @@ export function Billing() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      {role === "admin" ? <CaptureSettingsCard surface={surface} /> : null}
       <Tabs activeKey={tab} onChange={onTabChange} items={TAB_ITEMS} />
       <Card size="small">
         <Flex gap="small" wrap align="center">
@@ -265,11 +401,11 @@ export function Billing() {
       <Card size="small">
         <Table<BillingRow>
           size="small"
-          rowKey={(row) => `${row.device_id}-${row.bill_date}`}
+          rowKey={(row) => row.id}
           loading={loading}
           dataSource={shown?.items ?? []}
-          columns={COLUMNS}
-          scroll={{ x: TABLE_WIDTH }}
+          columns={columns}
+          scroll={{ x: tableWidth }}
           locale={{
             emptyText: (
               <Empty

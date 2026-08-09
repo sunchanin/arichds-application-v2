@@ -66,7 +66,9 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
   `arichds.exe` เป็น Windows service (สูตรเดียวกับ v1 ที่พิสูจน์แล้ว: auto-start, restart on exit,
   log rotation 50 MB)
 - ที่อยู่: โปรแกรม `Program Files\ARICHDS` · ข้อมูลทั้งหมด `%ProgramData%\ARICHDS\`
-  (`arichds.db`, license, logs, captures, `backup\`)
+  (`arichds.db`, license, logs, `backup\`) — **capture ไม่อยู่ในนี้**: มันเป็นที่เดียวที่โปรแกรม
+  เขียนไฟล์ออกนอก `%ProgramData%\ARICHDS` เพราะปลายทางเป็น `capture_dir` ที่ admin ตั้งเอง
+  (ADR 0010, M6b issue #22)
 - พอร์ต **8000** · bind LAN ได้ — installer เปิด firewall rule ให้เครื่องอื่นในไซต์เข้า
   `http://<ip>:8000` ได้
 - **Migration รันอัตโนมัติตอน service start** (alembic upgrade head ก่อนเปิด API) —
@@ -464,7 +466,13 @@ lock ต่อ device ให้ scheduler กับ Manual Read ไม่เข�
 > **M5c ล้มข้อนั้น**: ค่าที่ผู้ใช้ตั้งได้ต้องมีตาราง `settings` (ยังไม่มี — อยู่ในรายการตารางอนาคต §4)
 > และหน้าตั้งค่าที่เป็นของ **M7** ⇒ ถ้าทำตอนนี้จะได้ค่าที่เก็บไว้แต่ไม่มีใครแก้ได้ ซึ่งคือครึ่งฟีเจอร์
 > (เหตุผลเดียวกับที่ CSV export ถูกย้ายไป M7) · **M5c จึงฮาร์ดโค้ดปลายทางเป็น
-> `%ProgramData%\ARICHDS\backup\`** และการตั้งค่าปลายทางไปพร้อมหน้า Settings ที่ M7
+> `%ProgramData%\ARICHDS\backup\`**
+>
+> ✅ **ปิดคำถามถาวรตอน grill M6 / ADR 0010 (2026-08-09)** — ตาราง `settings` มาจริงที่ M6b
+> (issue #22) แต่ **ปลายทาง backup ยังคงตายตัว ไม่ตั้งค่าได้** เหตุผลเปลี่ยนจาก "ยังไม่มีตาราง"
+> เป็นเหตุผลถาวร: backup เขียนเพื่อ "เครื่อง" (ผู้ใช้งานคนเดียวคือคนกู้คืน ซึ่งนั่งอยู่หน้าเครื่องอยู่แล้ว)
+> ส่วน `capture_dir` เขียนเพื่อ "คน" ที่ต้องส่งไฟล์ต่อให้คนอื่น — มีแต่แบบหลังที่คุ้มค่าที่จะให้ operator
+> เลือกปลายทางเอง (ADR 0010)
 
 - หน้า: Load Profile · Records → **M5b**
 

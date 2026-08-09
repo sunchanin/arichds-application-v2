@@ -22,25 +22,50 @@ exactly what the page renders. Surfacing tariffs is a later slice's job.
 
 from __future__ import annotations
 
+import os
+import stat
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from arichds.api.deps import SessionDep, get_current_user
+from arichds.api.deps import (
+    AdminDep,
+    FeatureDisabledError,
+    LicenseServiceDep,
+    SessionDep,
+    get_current_user,
+    require_feature,
+)
 from arichds.api.envelope import ApiResponse
+from arichds.capture.paths import validate_capture_dir_setting
+from arichds.capture.service import capture_target_paths, write_pdf_capture, write_xlsx_capture
+from arichds.config import get_settings
+from arichds.constants import O_BINARY, O_NOFOLLOW
+from arichds.db.app_settings import CAPTURE_DIR_DEFAULT, CAPTURE_DIR_KEY, get_setting, set_setting
 from arichds.db.models import BillingReading, Device
+from arichds.licensing.features import feature_enabled
 
-router = APIRouter(prefix="/api/billing", tags=["billing"], dependencies=[Depends(get_current_user)])
+router = APIRouter(
+    prefix="/api/billing",
+    tags=["billing"],
+    dependencies=[Depends(get_current_user), Depends(require_feature("billing"))],
+)
 
 
 class BillingRowOut(BaseModel):
     """One Billing Reading as the Billing page renders it — either tab.
 
     Attributes:
+        id: The row's own id — needed by the History tab's download-capture
+            link (M6b, issue #22: ``GET /api/billing/captures/{id}``), which
+            has no other way to name a specific closed period.
         device_id: Which device this period belongs to.
         device_name: Joined from ``devices.name`` — the page lists rows across
             devices, so the id alone is not enough to render a row.
@@ -50,6 +75,7 @@ class BillingRowOut(BaseModel):
         meter_serial: Snapshot per row, or None.
     """
 
+    id: int
     device_id: int
     device_name: str
     bill_date: datetime
@@ -174,6 +200,7 @@ def list_billing_readings(
 
     items = [
         BillingRowOut(
+            id=reading.id,
             device_id=reading.device_id,
             device_name=device_name,
             bill_date=reading.bill_date,
@@ -192,3 +219,200 @@ def list_billing_readings(
     ]
 
     return ApiResponse.ok(BillingPage(items=items, total=total, limit=limit, offset=offset))
+
+
+class BillingSettingsOut(BaseModel):
+    """The Billing settings, as the Billing page's admin form renders them.
+
+    Attributes:
+        capture_dir: The current value — ``""`` means "not configured"
+            (decision 16, issue #22).
+        capture_count: How many **closed** billing rows exist right now — the
+            rows a capture could exist for. Drives the frontend's "changing
+            this orphans N existing captures" warning; the backend never
+            blocks on it (decision 2d, ADR 0010).
+    """
+
+    capture_dir: str
+    capture_count: int
+
+
+class BillingSettingsIn(BaseModel):
+    """The body ``PUT /api/billing/settings`` takes."""
+
+    capture_dir: str
+
+
+def _closed_billing_count(session: Session) -> int:
+    """How many closed Billing Readings exist — the rows a capture could exist
+    for (decision 2d). Computed from the database, never by walking the
+    capture folder: a directory walk over a possible network share costs real
+    time for a number that only feeds a warning."""
+    return (
+        session.scalar(select(func.count()).select_from(BillingReading).where(BillingReading.record_status.is_(None)))
+        or 0
+    )
+
+
+@router.get("/settings")
+def get_billing_settings(session: SessionDep) -> ApiResponse[BillingSettingsOut]:
+    """Return the current ``capture_dir`` and how many closed rows exist.
+
+    Any authenticated caller — reading a setting is not admin-only, matching
+    the rest of this router (``list_billing_readings`` above).
+    """
+    capture_dir = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
+    return ApiResponse.ok(BillingSettingsOut(capture_dir=capture_dir, capture_count=_closed_billing_count(session)))
+
+
+@router.put("/settings")
+def put_billing_settings(
+    body: BillingSettingsIn, session: SessionDep, _admin: AdminDep
+) -> ApiResponse[BillingSettingsOut]:
+    """Save ``capture_dir`` — admin-only, validated before it is stored (ADR 0010).
+
+    An empty string is accepted without path validation — it means "disable
+    capture" (decision 16), not a path to reject. A non-empty value is
+    validated by :func:`~arichds.capture.paths.validate_capture_dir_setting`;
+    a rejection becomes 422 with the sentence an operator can act on.
+
+    **Never blocks on existing captures** (decision 2d, ADR 0010) — changing
+    the value orphans old files by design; the frontend is where the warning
+    about that lives, before this endpoint is even called.
+    """
+    if body.capture_dir.strip():
+        try:
+            resolved = validate_capture_dir_setting(body.capture_dir, get_settings().capture_allowlist_roots())
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        value = str(resolved)
+    else:
+        value = ""
+
+    set_setting(session, CAPTURE_DIR_KEY, value)
+    session.commit()
+
+    return ApiResponse.ok(BillingSettingsOut(capture_dir=value, capture_count=_closed_billing_count(session)))
+
+
+#: Media type per download format — the only two the capture package renders.
+_MEDIA_TYPES: dict[str, str] = {
+    "pdf": "application/pdf",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+#: The feature key gating each format, on top of the router's own `billing`
+#: gate (decision 14, issue #22).
+_FORMAT_FEATURE: dict[str, str] = {"pdf": "auto_capture", "xlsx": "billing_excel_export"}
+
+
+def _is_regular_file(path: Path) -> bool:
+    """``lstat`` + ``S_ISREG`` — never follows a symlink (v1 ``router.py:170-177``)."""
+    try:
+        file_stat = os.lstat(str(path))
+    except OSError:
+        return False
+    return stat.S_ISREG(file_stat.st_mode)
+
+
+def _stream_file(path: Path) -> Iterator[bytes]:
+    """Yield *path* in chunks through an ``O_NOFOLLOW`` open (v1 ``router.py:179-193``).
+
+    The fd is opened lazily, inside the generator, so a client that
+    disconnects before Starlette starts iterating never leaks one. Guards
+    ``fdopen`` itself (v1 ``router.py:184-188``): if it raises, the raw fd
+    must still be closed directly — nothing else owns it yet.
+    """
+    fd = os.open(str(path), os.O_RDONLY | O_NOFOLLOW | O_BINARY)
+    try:
+        file_obj = os.fdopen(fd, "rb")
+    except OSError:
+        os.close(fd)
+        raise
+    try:
+        while chunk := file_obj.read(65536):
+            yield chunk
+    finally:
+        file_obj.close()
+
+
+@router.get("/captures/{reading_id}")
+def download_billing_capture(
+    reading_id: int,
+    session: SessionDep,
+    license_service: LicenseServiceDep,
+    document_format: Annotated[
+        Literal["pdf", "xlsx"], Query(alias="format", description="Which document to download")
+    ] = "pdf",
+) -> StreamingResponse:
+    """Download the capture for one closed Billing Reading — render-on-miss
+    (decision 14, ADR 0010, issue #22).
+
+    Existing file -> streamed as-is. Missing -> rendered, hardened-written,
+    then streamed — this is what replaces v1's regenerate endpoint, its
+    permanently-failed-capture state, and its two-second frontend retry
+    entirely (ADR 0010 §"What we do not carry over from v1").
+
+    Gated per-format on top of the router's own ``billing`` gate: ``pdf``
+    needs ``auto_capture``, ``xlsx`` needs ``billing_excel_export`` — because
+    this endpoint is also a renderer, it carries the same entitlement the
+    writer does.
+
+    Raises:
+        HTTPException: 404 for an unknown id, the Open Period (which has no
+            capture — SPEC §3.6), an unconfigured ``capture_dir``, or a
+            capture that still could not be produced. 422 for a row whose
+            ``meter_serial`` fails path validation.
+    """
+    required_feature = _FORMAT_FEATURE[document_format]
+    if not feature_enabled(required_feature, license_service=license_service, settings=get_settings()):
+        raise FeatureDisabledError(required_feature)
+
+    row = session.get(BillingReading, reading_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such Billing Reading.")
+    if row.record_status == "open":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The Open Period has no capture.")
+
+    capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
+    if not capture_dir_str.strip():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="capture_dir is not configured — nothing to download."
+        )
+    capture_dir = Path(capture_dir_str)
+
+    device = session.get(Device, row.device_id)
+    device_name = device.name if device is not None else str(row.device_id)
+
+    try:
+        pdf_target, xlsx_target = capture_target_paths(capture_dir, row.meter_serial or "", row.bill_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    target = pdf_target if document_format == "pdf" else xlsx_target
+
+    if not _is_regular_file(target):
+        try:
+            if document_format == "pdf":
+                write_pdf_capture(row, device_name, target, capture_dir)
+            else:
+                write_xlsx_capture(row, device_name, target, capture_dir)
+        except FileExistsError:
+            pass  # a concurrent request just wrote it — fall through and serve it
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except OSError as exc:
+            # A real possibility on a network-share capture_dir: disk full,
+            # permission denied, the share unreachable. Structured 500 rather
+            # than an unhandled exception with no detail (v1's
+            # BILLING_CAPTURE_IO_ERROR — router.py:147 — makes the same call).
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not write the capture: {exc}"
+            ) from exc
+
+    if not _is_regular_file(target):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The capture could not be created.")
+
+    return StreamingResponse(
+        _stream_file(target),
+        media_type=_MEDIA_TYPES[document_format],
+        headers={"Content-Disposition": f'attachment; filename="{target.name}"'},
+    )

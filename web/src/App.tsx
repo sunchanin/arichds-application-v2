@@ -197,7 +197,7 @@ export default function App() {
       ) : active === "records" ? (
         <Records />
       ) : active === "billing" ? (
-        <Billing />
+        <Billing role={session.role} />
       ) : (
         <Devices role={session.role} />
       )}

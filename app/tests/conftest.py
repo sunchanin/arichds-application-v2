@@ -197,8 +197,10 @@ def sign_activation_code(monkeypatch: pytest.MonkeyPatch, vendor_cli) -> Callabl
     public_pem = private_key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
     monkeypatch.setattr(ac, "load_public_key_pem", lambda: public_pem)
 
-    def issue(*, max_meters: int | None = None) -> str:
-        payload = vendor_cli.build_payload(customer="Acme Co", machine_id=TEST_MACHINE_ID, max_meters=max_meters)
+    def issue(*, max_meters: int | None = None, features: list[str] | None = None) -> str:
+        payload = vendor_cli.build_payload(
+            customer="Acme Co", machine_id=TEST_MACHINE_ID, max_meters=max_meters, features=features
+        )
         return vendor_cli.sign_payload(private_pem, payload)
 
     return issue
@@ -212,10 +214,14 @@ def activation_code(sign_activation_code: Callable[..., str]) -> str:
 
 @pytest.fixture
 def relicense(sign_activation_code: Callable[..., str]) -> Callable[..., None]:
-    """Activate a fresh license on a running app, e.g. to change ``max_meters``."""
+    """Activate a fresh license on a running app, e.g. to change ``max_meters``
+    or ``features`` (M6b, issue #22)."""
 
-    def apply(client: TestClient, *, max_meters: int | None = None) -> None:
-        response = client.post("/api/license/activate", json={"code": sign_activation_code(max_meters=max_meters)})
+    def apply(client: TestClient, *, max_meters: int | None = None, features: list[str] | None = None) -> None:
+        response = client.post(
+            "/api/license/activate",
+            json={"code": sign_activation_code(max_meters=max_meters, features=features)},
+        )
         assert response.status_code == 200, response.text
         assert response.json()["success"] is True, response.text
 

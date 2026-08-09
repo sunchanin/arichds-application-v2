@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -40,10 +41,15 @@ from arichds.acquisition.drivers.base import BillingReading, MeterDriver
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
 from arichds.acquisition.poller import build_driver
 from arichds.acquisition.status import DeviceStatus
+from arichds.capture.service import capture_reading
+from arichds.config import get_settings
 from arichds.constants import MANUAL_READ_LOCK_TIMEOUT_SEC
+from arichds.db.app_settings import CAPTURE_DIR_DEFAULT, CAPTURE_DIR_KEY, get_setting
 from arichds.db.models import BillingReading as BillingReadingRow
 from arichds.db.models import Device
 from arichds.db.session import session_scope
+from arichds.licensing.current import current_license_service
+from arichds.licensing.features import feature_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +148,7 @@ def read_and_store_billing(
     stored = 0
     open_updated = False
     error: str | None = None
+    new_closed_ids: list[int] = []
 
     if background:
         # Never blocks, and never preempts what is in flight (ADR 0006).
@@ -149,15 +156,26 @@ def read_and_store_billing(
             if not acquired:
                 logger.info("Skipping billing of %s — %s is busy", device_name, endpoint)
                 return BillingReadResult(supported=True, stored=0, open_updated=False, error=None, skipped=True)
-            stored, open_updated, error = _read_while_holding(driver, device_id, device_name, endpoint, now_utc)
+            stored, open_updated, new_closed_ids, error = _read_while_holding(
+                driver, device_id, device_name, endpoint, now_utc
+            )
     else:
         try:
             with registry.get(endpoint).manual(timeout=lock_timeout_sec):
-                stored, open_updated, error = _read_while_holding(driver, device_id, device_name, endpoint, now_utc)
+                stored, open_updated, new_closed_ids, error = _read_while_holding(
+                    driver, device_id, device_name, endpoint, now_utc
+                )
         except TimeoutError as exc:
             logger.warning("Billing read of %s skipped: %s busy", device_name, endpoint)
             error = f"The line to {endpoint} was still busy after {lock_timeout_sec:g}s — nothing was read."
             _ = exc
+
+    # Outside the Transport Endpoint lock and after the rows committed (SPEC
+    # §3.6, decision 11) — capture is eager but must never make a meter read
+    # wait on a network share, and must never hold the endpoint a moment
+    # longer than the read itself needs it.
+    if new_closed_ids:
+        _capture_new_closed_periods(new_closed_ids, device_name)
 
     return BillingReadResult(supported=True, stored=stored, open_updated=open_updated, error=error)
 
@@ -168,18 +186,18 @@ def _read_while_holding(
     device_name: str,
     endpoint: str,
     read_at: datetime,
-) -> tuple[int, bool, str | None]:
+) -> tuple[int, bool, list[int], str | None]:
     """Connect, read the whole buffer, disconnect — with the endpoint already held.
 
     Returns:
-        ``(closed periods inserted, whether the open slot changed, an error
-        sentence or None)``.
+        ``(closed periods inserted, whether the open slot changed, the ids of
+        newly-inserted closed rows, an error sentence or None)``.
     """
     try:
         driver.connect()
     except Exception as exc:  # noqa: BLE001 — every meter failure becomes a sentence, never a 500.
         logger.exception("Billing read of %s at %s failed to connect", device_name, endpoint)
-        return 0, False, f"The read of {endpoint} stopped after a {type(exc).__name__}."
+        return 0, False, [], f"The read of {endpoint} stopped after a {type(exc).__name__}."
 
     try:
         # The store runs in the same try as the read (unlike load_profile.py's
@@ -191,14 +209,54 @@ def _read_while_holding(
         # than an unhandled exception reaching the API or `billing_cycle`'s
         # per-device guard.
         readings = driver.read_billing()
-        stored, open_updated = _store(device_id, device_name, readings, read_at)
+        stored, open_updated, new_closed_ids = _store(device_id, device_name, readings, read_at)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Billing read of %s at %s failed", device_name, endpoint)
-        return 0, False, f"The read of {endpoint} stopped after a {type(exc).__name__}."
+        return 0, False, [], f"The read of {endpoint} stopped after a {type(exc).__name__}."
     finally:
         driver.disconnect()
 
-    return stored, open_updated, None
+    return stored, open_updated, new_closed_ids, None
+
+
+def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> None:
+    """Render and write captures for newly-inserted closed periods (decision
+    11, SPEC §3.6, issue #22).
+
+    Called after the Transport Endpoint lock is released and after the rows
+    committed — capture never holds the endpoint and never blocks a meter
+    read. Gated on ``auto_capture`` (PDF) / ``billing_excel_export`` (xlsx
+    alongside it), checked fresh through the process-wide LicenseService
+    holder (:mod:`arichds.licensing.current`) — this path has no
+    ``Request``, unlike :func:`~arichds.api.deps.require_feature`.
+
+    A capture failure is logged and never propagates: a meter read that
+    succeeded must not be reported as failed because a network share was
+    unavailable or a row went missing between commit and this call.
+    """
+    settings = get_settings()
+    license_service = current_license_service()
+    if not feature_enabled("auto_capture", license_service=license_service, settings=settings):
+        return
+
+    with session_scope() as session:
+        capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
+    if not capture_dir_str.strip():
+        logger.debug("Capture skipped for %s — capture_dir is not configured", device_name)
+        return
+
+    capture_dir = Path(capture_dir_str)
+    write_excel = feature_enabled("billing_excel_export", license_service=license_service, settings=settings)
+
+    for reading_id in reading_ids:
+        try:
+            with session_scope() as session:
+                row = session.get(BillingReadingRow, reading_id)
+                if row is None:
+                    continue
+                capture_reading(row, device_name, capture_dir, write_excel=write_excel)
+        except Exception:  # noqa: BLE001 — capture must never fail the read that produced the row.
+            logger.exception("Capture failed for %s reading id %s", device_name, reading_id)
 
 
 def billing_cycle() -> None:
@@ -237,31 +295,39 @@ def billing_cycle() -> None:
             logger.exception("Billing cycle failed for device id %s", device_id)
 
 
-def _store(device_id: int, device_name: str, readings: list[BillingReading], read_at: datetime) -> tuple[int, bool]:
+def _store(
+    device_id: int, device_name: str, readings: list[BillingReading], read_at: datetime
+) -> tuple[int, bool, list[int]]:
     """Write the whole buffer in one unit of work: closed periods first, then
     the Open Period slot — the newly closed period must exist before the slot
     moves off it (ADR 0009).
 
     Returns:
-        ``(closed periods inserted, whether the open slot changed)``.
+        ``(closed periods inserted, whether the open slot changed, the ids of
+        newly-inserted closed rows — plain ints, not ORM objects, since
+        ``session_scope()`` closes below and the eager capture path re-reads
+        them fresh (decision 11, issue #22))``.
     """
     if not readings:
-        return 0, False
+        return 0, False, []
 
     closed = [reading for reading in readings if not reading.is_open]
     open_reading = next((reading for reading in readings if reading.is_open), None)
 
     stored = 0
+    new_closed_ids: list[int] = []
     with session_scope() as session:
         for reading in closed:
-            if _upsert_closed(session, device_id, device_name, reading, read_at):
+            new_id = _upsert_closed(session, device_id, device_name, reading, read_at)
+            if new_id is not None:
                 stored += 1
+                new_closed_ids.append(new_id)
 
         open_updated = False
         if open_reading is not None:
             open_updated = _upsert_open(session, device_id, open_reading, read_at)
 
-    return stored, open_updated
+    return stored, open_updated, new_closed_ids
 
 
 def _upsert_closed(
@@ -270,12 +336,12 @@ def _upsert_closed(
     device_name: str,
     reading: BillingReading,
     read_at: datetime,
-) -> bool:
+) -> int | None:
     """Insert a closed period if absent; skip and WARN if it exists with a
     different value; silent no-op if it exists and matches exactly.
 
     Returns:
-        True if a new row was inserted.
+        The new row's id if one was inserted, else None.
     """
     existing = session.scalar(
         select(BillingReadingRow).where(
@@ -287,18 +353,21 @@ def _upsert_closed(
     incoming = reading.as_columns()
 
     if existing is None:
-        session.add(
-            BillingReadingRow(
-                device_id=device_id,
-                bill_date=reading.bill_date,
-                read_at=read_at,
-                record_status=None,
-                source=reading.source,
-                meter_serial=reading.meter_serial,
-                **incoming,
-            )
+        row = BillingReadingRow(
+            device_id=device_id,
+            bill_date=reading.bill_date,
+            read_at=read_at,
+            record_status=None,
+            source=reading.source,
+            meter_serial=reading.meter_serial,
+            **incoming,
         )
-        return True
+        session.add(row)
+        # Flushed (not committed) so `row.id` is populated before
+        # `session_scope()` closes — the caller hands the id, not the row
+        # itself, up to the eager capture path.
+        session.flush()
+        return row.id
 
     # Exact comparison, no tolerance: both sides are round-tripped SQLite REALs
     # of the same computation, and None == None must count as equal.
@@ -309,7 +378,7 @@ def _upsert_closed(
             device_name,
             reading.bill_date.isoformat(),
         )
-    return False
+    return None
 
 
 def _upsert_open(

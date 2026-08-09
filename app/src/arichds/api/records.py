@@ -57,11 +57,15 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from arichds.api.deps import SessionDep, get_current_user
+from arichds.api.deps import SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
 from arichds.db.models import Device, LoadProfileReading
 
-router = APIRouter(prefix="/api/records", tags=["records"], dependencies=[Depends(get_current_user)])
+router = APIRouter(
+    prefix="/api/records",
+    tags=["records"],
+    dependencies=[Depends(get_current_user), Depends(require_feature("records"))],
+)
 
 #: The most local days one request may span, inclusive of both ends.
 MAX_DAYS = 31

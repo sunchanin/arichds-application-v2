@@ -194,6 +194,7 @@ class TestRowShape:
 
         row = response.json()["data"]["items"][0]
         assert set(row) == {
+            "id",  # M6b, issue #22 — the download-capture link needs the row's own id
             "device_id",
             "device_name",
             "bill_date",
