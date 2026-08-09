@@ -4,11 +4,17 @@ Status: accepted (2026-08-07, owner decision during M5 grilling). **Fully implem
 watermark, the oldest-first 24 h walk and the synchronous Manual Read landed with issue #15
 (M5a-1) in `acquisition/load_profile.py`, and the background scheduler that calls it on a
 cadence landed with issue #16 (M5a-2) in `jobs/scheduler.py` — one thread, a registry of
-`(name, interval, fn)`, with `load_profile_cycle` as its first entry.
+`(name, interval, fn)`, with `load_profile_cycle` as its first entry. **The read interface
+became genuinely per-logger at M4c** (issue #24): `MeterDriver.read_load_profile` now takes a
+`logger_id` and `load_profile_loggers()` names which ones a model has, so the walk below
+resumes each logger from its own watermark inside one connection — this *implements* the
+Decision below (which already said "for that device and logger"), rather than reversing it;
+what changed is that the driver interface issue #15 shipped with could not yet ask a meter for
+one logger at a time.
 
 **Still no job table, and no persisted scheduler state of any kind.** The scheduler's due
 times live in memory and are lost on restart, deliberately: after a restart every job simply
-runs on its first pass, and the load-profile walk resumes from `MIN` of the per-logger
+runs on its first pass, and the load-profile walk resumes from each logger's own
 `MAX(read_at)` over `load_profile_readings` — the rows themselves, exactly as below. There is
 no `last_run_at`, no `read_end`, and nothing a future reader could mistake for a watermark.
 
@@ -98,12 +104,15 @@ extending it.
 Retention deletes rows out of `load_profile_readings`, which is where the watermark comes from,
 so it was checked against this ADR before shipping rather than after. **It cannot move a
 watermark**, and that is arithmetic rather than luck: retention deletes the *oldest* rows (those
-older than 90 days by `read_at`) while the watermark is `MIN` over the per-logger `MAX(read_at)`
-— the *newest*. The two ends of the table never meet except in one case, and that case is
-already correct: a device offline past the cutoff loses every row it had, the `GROUP BY`
-produces no groups, `func.min` returns `None`, and `load_profile.py` backfills from
-`LOAD_PROFILE_BACKFILL_DAYS` back when the device returns. A fresh 90-day backfill is the right
-answer there, and `tests/test_retention.py` asserts it through the real read path.
+older than 90 days by `read_at`) while each logger's watermark is its own `MAX(read_at)` — the
+*newest* row for that logger (M4c, issue #24 — genuinely per-logger since the driver interface
+grew a `logger_id`; `_through`, shown to the operator, is the `MIN` **across** those per-logger
+watermarks, which is a display rollup, not the read watermark itself). The two ends of the
+table never meet except in one case, and that case is already correct: a device offline past
+the cutoff loses every row it had, the per-logger `GROUP BY` produces no groups for it, and
+`load_profile.py` backfills that logger from `LOAD_PROFILE_BACKFILL_DAYS` back when the device
+returns. A fresh 90-day backfill is the right answer there, and `tests/test_retention.py`
+asserts it through the real read path.
 
 Nothing was reversed and nothing was added: retention records nowhere that it ran, and the
 scheduler still holds its due times in memory only. The one INFO line per purge is the entire

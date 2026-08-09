@@ -134,3 +134,18 @@ repair thread.
   (`_tcp_driver_base.py:771`) and in our own `app/scripts/probe_smw110_serial.py:534`. One read
   path is a statement about **how many times we go to the meter**, not about how hard one visit
   is.
+
+## Amendment — M4c (issue #24, 2026-08-09)
+
+The 43-column span became a property of the driver rather than a module constant
+(`Smw110Driver.BILLING_COLUMN_SPAN`, base default `None`) — M4c is the first slice with models
+that need no span at all. The three CEWE models (Prometer 100, Saral 305, Premier 550) share
+one billing profile OBIS (`1.0.98.2.0.255`, F4) and read it full width through
+`self._reader.readRowsByEntry(pg, 1, entries_in_use)` — genuinely simpler than SMW110W4's
+hand-driven span, not a second read path: it is still one call per device per read, still no
+window, still every field a full-buffer transfer. The billing position map moved from
+OBIS-only to `(OBIS, attribute)` keying (`acquisition/drivers/_profile.py`) because the twenty
+new Demand Time / Cumulative Demand columns this issue added put a max-demand value and its own
+capture time on the same OBIS at different attributes (F2) — an OBIS-only map would have
+silently collapsed them. The one-read-path decision itself — every read is the whole buffer,
+no window, no watermark — is untouched.

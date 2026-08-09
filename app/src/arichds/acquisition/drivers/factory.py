@@ -27,11 +27,15 @@ logger = logging.getLogger(__name__)
 
 def _registry() -> dict[str, type[MeterDriver]]:
     """Lazily import and return the model → driver-class registry."""
+    from arichds.acquisition.drivers.premier550 import Premier550Driver
     from arichds.acquisition.drivers.prometer100 import Prometer100Driver
+    from arichds.acquisition.drivers.saral305 import Saral305Driver
     from arichds.acquisition.drivers.smw110 import Smw110Driver
 
     return {
         "prometer100": Prometer100Driver,
+        "saral305": Saral305Driver,
+        "premier550": Premier550Driver,
         "smw110": Smw110Driver,
     }
 

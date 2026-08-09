@@ -43,6 +43,54 @@ const num =
 
 const num3 = num(3);
 
+/** Format a Demand Time cell — a timestamp, not a number (D20, M4c issue #24). */
+const time = (value: string | null): string => (value == null ? NOTHING : dayjs(value).format("YYYY-MM-DD HH:mm:ss"));
+
+/** The four tariffs plus the total — every measurement group has exactly
+ * these five children (D20), mirroring `capture/_render_shared.py`'s
+ * `_measurement_section`. */
+const RATE_SUFFIXES = ["total", "rate_a", "rate_b", "rate_c", "rate_d"] as const;
+const RATE_LABELS: Record<(typeof RATE_SUFFIXES)[number], string> = {
+  total: "Total",
+  rate_a: "Rate A",
+  rate_b: "Rate B",
+  rate_c: "Rate C",
+  rate_d: "Rate D",
+};
+
+const MEASUREMENT_COLUMN_WIDTH = 110;
+const TIME_COLUMN_WIDTH = 170;
+
+/** One grouped-header column: a title spanning five children (Total,
+ * Rate A..D) reading `${prefix}_${suffix}` off the row (D20). */
+function measurementGroup(title: string, prefix: string): ColumnsType<BillingRow>[number] {
+  return {
+    title,
+    children: RATE_SUFFIXES.map((suffix) => ({
+      title: RATE_LABELS[suffix],
+      dataIndex: `${prefix}_${suffix}`,
+      key: `${prefix}_${suffix}`,
+      width: MEASUREMENT_COLUMN_WIDTH,
+      render: num3,
+    })),
+  };
+}
+
+/** Same shape as `measurementGroup`, but for a Demand Time group — its five
+ * children are timestamps, never `toFixed(3)` (D20/D11). */
+function demandTimeGroup(title: string, prefix: string): ColumnsType<BillingRow>[number] {
+  return {
+    title,
+    children: RATE_SUFFIXES.map((suffix) => ({
+      title: RATE_LABELS[suffix],
+      dataIndex: `${prefix}_${suffix}`,
+      key: `${prefix}_${suffix}`,
+      width: TIME_COLUMN_WIDTH,
+      render: time,
+    })),
+  };
+}
+
 const BASE_COLUMNS: ColumnsType<BillingRow> = [
   {
     title: "Bill Date",
@@ -52,71 +100,38 @@ const BASE_COLUMNS: ColumnsType<BillingRow> = [
     fixed: "left",
     render: (billDate: string) => dayjs(billDate).format("YYYY-MM-DD HH:mm"),
   },
-  { title: "Device", dataIndex: "device_name", key: "device_name", width: 180 },
+  { title: "Device", dataIndex: "device_name", key: "device_name", width: 180, fixed: "left" },
   {
     title: "Meter Serial",
     dataIndex: "meter_serial",
     key: "meter_serial",
     width: 150,
+    fixed: "left",
     render: (serial: string | null) => serial ?? NOTHING,
   },
-  {
-    title: "Import kWh Active",
-    dataIndex: "import_active_kwh_total",
-    key: "import_active_kwh_total",
-    width: 160,
-    render: num3,
-  },
-  {
-    title: "Export kWh Active",
-    dataIndex: "export_active_kwh_total",
-    key: "export_active_kwh_total",
-    width: 160,
-    render: num3,
-  },
-  {
-    title: "Import kvarh Reactive",
-    dataIndex: "import_reactive_kvarh_total",
-    key: "import_reactive_kvarh_total",
-    width: 180,
-    render: num3,
-  },
-  {
-    title: "Export kvarh Reactive",
-    dataIndex: "export_reactive_kvarh_total",
-    key: "export_reactive_kvarh_total",
-    width: 180,
-    render: num3,
-  },
-  {
-    title: "Max Demand Import (kW)",
-    dataIndex: "max_demand_import_active_kw_total",
-    key: "max_demand_import_active_kw_total",
-    width: 190,
-    render: num3,
-  },
-  {
-    title: "Max Demand Export (kW)",
-    dataIndex: "max_demand_export_active_kw_total",
-    key: "max_demand_export_active_kw_total",
-    width: 190,
-    render: num3,
-  },
-  {
-    title: "Max Demand Import (kvar)",
-    dataIndex: "max_demand_import_reactive_kvar_total",
-    key: "max_demand_import_reactive_kvar_total",
-    width: 200,
-    render: num3,
-  },
-  {
-    title: "Max Demand Export (kvar)",
-    dataIndex: "max_demand_export_reactive_kvar_total",
-    key: "max_demand_export_reactive_kvar_total",
-    width: 200,
-    render: num3,
-  },
+  measurementGroup("Import Active (kWh)", "import_active_kwh"),
+  measurementGroup("Export Active (kWh)", "export_active_kwh"),
+  measurementGroup("Import Reactive (kvarh)", "import_reactive_kvarh"),
+  measurementGroup("Export Reactive (kvarh)", "export_reactive_kvarh"),
+  measurementGroup("Max Demand Import Active (kW)", "max_demand_import_active_kw"),
+  measurementGroup("Max Demand Export Active (kW)", "max_demand_export_active_kw"),
+  measurementGroup("Max Demand Import Reactive (kvar)", "max_demand_import_reactive_kvar"),
+  measurementGroup("Max Demand Export Reactive (kvar)", "max_demand_export_reactive_kvar"),
+  demandTimeGroup("Demand Time Import Active", "max_demand_import_active_time"),
+  demandTimeGroup("Demand Time Import Reactive", "max_demand_import_reactive_time"),
+  measurementGroup("Cumulative Demand Import Active (kW)", "cumul_demand_import_active_kw"),
+  measurementGroup("Cumulative Demand Import Reactive (kvar)", "cumul_demand_import_reactive_kvar"),
 ];
+
+/** Sum every **leaf** column's width — a grouped header column has no width
+ * of its own, only its `children` do (D20's `scroll={{ x: tableWidth }}`
+ * still needs the true total so the page body never scrolls sideways). */
+function totalLeafWidth(columns: ColumnsType<BillingRow>): number {
+  return columns.reduce((sum, column) => {
+    if ("children" in column && column.children) return sum + totalLeafWidth(column.children as ColumnsType<BillingRow>);
+    return sum + (Number(column.width) || 0);
+  }, 0);
+}
 
 /** Width of the History-only "Capture" column appended in `Billing`'s `columns`. */
 const CAPTURE_COLUMN_WIDTH = 130;
@@ -321,7 +336,7 @@ export function Billing({ role }: { role: "admin" | "user" }) {
     ];
   }, [tab, surface]);
 
-  const tableWidth = columns.reduce((sum, column) => sum + (Number(column.width) || 0), 0);
+  const tableWidth = totalLeafWidth(columns);
 
   const onTabChange = (key: string) => {
     setTab(key as BillingStatus);

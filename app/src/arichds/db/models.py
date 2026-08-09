@@ -255,11 +255,13 @@ class BillingReading(Base):
     cadence, because the meter decides when a period ends, and one of its rows
     is provisional (see ``record_status``).
 
-    **Forty measurement columns, all nullable, all a total plus four tariffs**
+    **Sixty measurement columns, all nullable, all a total plus four tariffs**
     (``rate_a``..``rate_d``, SPEC §3.6 — v1 stopped at three because CEWE sites
     use three; the SMW110W4 exposes ``E=1..4``). ``C=5`` (reactive Q1) is
     deliberately absent — no screen has ever shown it. A register a meter
-    reports but no screen shows is read and dropped, not stored.
+    reports but no screen shows is read and dropped, not stored. Twenty of
+    the sixty (Demand Time, Cumulative Demand — import side only) arrived at
+    M4c, issue #24; the ten Demand Time columns are timestamps, never scaled.
 
     Attributes:
         id: Surrogate primary key.
@@ -358,6 +360,43 @@ class BillingReading(Base):
     max_demand_export_reactive_kvar_rate_b: Mapped[float | None] = mapped_column(default=None)
     max_demand_export_reactive_kvar_rate_c: Mapped[float | None] = mapped_column(default=None)
     max_demand_export_reactive_kvar_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    # ── M4c, issue #24 — the twenty columns v1's screen has always shown ──────
+    # Demand Time (never scaled, never divided — D11) and Cumulative Demand
+    # (scales like every other billing number — D12). Import side only (D10).
+    max_demand_import_active_time_total: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    max_demand_import_active_time_rate_a: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    max_demand_import_active_time_rate_b: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    max_demand_import_active_time_rate_c: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    max_demand_import_active_time_rate_d: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    max_demand_import_reactive_time_total: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    max_demand_import_reactive_time_rate_a: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    max_demand_import_reactive_time_rate_b: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    max_demand_import_reactive_time_rate_c: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    max_demand_import_reactive_time_rate_d: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
+    cumul_demand_import_active_kw_total: Mapped[float | None] = mapped_column(default=None)
+    cumul_demand_import_active_kw_rate_a: Mapped[float | None] = mapped_column(default=None)
+    cumul_demand_import_active_kw_rate_b: Mapped[float | None] = mapped_column(default=None)
+    cumul_demand_import_active_kw_rate_c: Mapped[float | None] = mapped_column(default=None)
+    cumul_demand_import_active_kw_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    cumul_demand_import_reactive_kvar_total: Mapped[float | None] = mapped_column(default=None)
+    cumul_demand_import_reactive_kvar_rate_a: Mapped[float | None] = mapped_column(default=None)
+    cumul_demand_import_reactive_kvar_rate_b: Mapped[float | None] = mapped_column(default=None)
+    cumul_demand_import_reactive_kvar_rate_c: Mapped[float | None] = mapped_column(default=None)
+    cumul_demand_import_reactive_kvar_rate_d: Mapped[float | None] = mapped_column(default=None)
 
     device: Mapped[Device] = relationship()
 

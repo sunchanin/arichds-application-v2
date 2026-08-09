@@ -118,7 +118,7 @@ class TestLockedVectors:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert len(readings) == 1
@@ -135,7 +135,7 @@ class TestLockedVectors:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert len(readings) == 1
@@ -152,7 +152,7 @@ class TestLockedVectors:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert len(readings) == 1
@@ -267,7 +267,7 @@ class TestScalerResolver:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         # Mutation-tested: pointing the energy column's sibling at POWER_SIBLING
@@ -405,20 +405,20 @@ class TestReadLoadProfile:
         driver = _build_driver(FakeLoadProfileReader(capture_objects=[], buffer=[]))
 
         with pytest.raises(ValueError, match="timezone-aware"):
-            driver.read_load_profile(datetime(2026, 8, 7, 3, 0), datetime(2026, 8, 7, 5, 0, tzinfo=UTC))
+            driver.read_load_profile(1, datetime(2026, 8, 7, 3, 0), datetime(2026, 8, 7, 5, 0, tzinfo=UTC))
 
     def test_naive_end_raises_value_error(self) -> None:
         driver = _build_driver(FakeLoadProfileReader(capture_objects=[], buffer=[]))
 
         with pytest.raises(ValueError, match="timezone-aware"):
-            driver.read_load_profile(datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0))
+            driver.read_load_profile(1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0))
 
     def test_disconnected_driver_returns_empty_list(self) -> None:
         """Mirrors ``read_register()``'s disconnected contract (D10)."""
         driver = Smw110Driver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert readings == []
@@ -432,7 +432,7 @@ class TestReadLoadProfile:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert len(readings) == 1
@@ -461,7 +461,7 @@ class TestReadLoadProfile:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert len(readings) == 1
@@ -487,7 +487,7 @@ class TestReadLoadProfile:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert len(readings) == 1
@@ -507,7 +507,7 @@ class TestReadLoadProfile:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert len(readings) == 1
@@ -516,7 +516,13 @@ class TestReadLoadProfile:
     def test_freq_is_always_none_and_no_dropped_column_leaks_through(self) -> None:
         """D3: the dataclass's fixed field set is the structural guarantee — the
         twelve dropped capture columns (status word, PERCENTAGE, PHASE_ANGLE_DEGREE)
-        have no field to leak into."""
+        have no field to leak into.
+
+        The four M4c fields (``import_reactive_kvarh``, ``export_active_kwh``,
+        ``export_reactive_kvarh``, ``avg_geo_pf`` — issue #24) exist on
+        ``IntervalReading`` now because the three CEWE drivers produce them,
+        but this model's load profile still has no columns for any of them,
+        so they must stay ``None`` on every SMW110W4 row."""
         from dataclasses import fields
 
         reader = FakeLoadProfileReader(
@@ -527,10 +533,14 @@ class TestReadLoadProfile:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert readings[0].freq is None
+        assert readings[0].import_reactive_kvarh is None
+        assert readings[0].export_active_kwh is None
+        assert readings[0].export_reactive_kvarh is None
+        assert readings[0].avg_geo_pf is None
         field_names = {f.name for f in fields(IntervalReading)}
         assert field_names == {
             "read_at",
@@ -545,6 +555,10 @@ class TestReadLoadProfile:
             "current_l3",
             "freq",
             "import_active_kwh",
+            "import_reactive_kvarh",
+            "export_active_kwh",
+            "export_reactive_kvarh",
+            "avg_geo_pf",
         }
 
     def test_reads_capture_objects_period_and_entries_live(self) -> None:
@@ -556,7 +570,7 @@ class TestReadLoadProfile:
         )
         driver = _build_driver(reader)
 
-        driver.read_load_profile(datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC))
+        driver.read_load_profile(1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC))
 
         assert ("__profile__", 3) in reader.calls
         assert ("__profile__", 4) in reader.calls
@@ -575,7 +589,7 @@ class TestReadLoadProfile:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert readings == []
@@ -589,7 +603,7 @@ class TestReadLoadProfile:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert readings == []
@@ -605,7 +619,7 @@ class TestReadLoadProfile:
         )
         driver = _build_driver(reader)
 
-        readings = driver.read_load_profile(datetime(2020, 1, 1, tzinfo=UTC), datetime(2020, 1, 1, 1, tzinfo=UTC))
+        readings = driver.read_load_profile(1, datetime(2020, 1, 1, tzinfo=UTC), datetime(2020, 1, 1, 1, tzinfo=UTC))
 
         assert readings == []
 
@@ -623,9 +637,34 @@ class TestTheCapabilityContract:
     """
 
     def test_the_base_class_answers_no(self) -> None:
-        from arichds.acquisition.drivers.prometer100 import Prometer100Driver
+        # A minimal MeterDriver stub, not a real production driver (M4c,
+        # issue #24: Prometer100Driver used to be "the driver with no load
+        # profile" — then it grew one, and this test broke for the wrong
+        # reason). Tests the base class's own default in isolation.
+        from arichds.acquisition.drivers.base import MeterDriver
 
-        driver = Prometer100Driver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        class _MinimalDriver(MeterDriver):
+            @property
+            def model_name(self) -> str:
+                return "minimal"
+
+            @property
+            def endpoint(self) -> str:
+                return "198.51.100.9:4059"
+
+            def get_obis_map(self) -> dict[str, tuple[str, int]]:
+                return {}
+
+            def connect(self) -> None:
+                pass
+
+            def disconnect(self) -> None:
+                pass
+
+            def read_meter_serial(self) -> str | None:
+                return None
+
+        driver = _MinimalDriver()
         assert driver.supports_load_profile() is False
 
     def test_the_smw110_answers_yes(self) -> None:
@@ -633,11 +672,32 @@ class TestTheCapabilityContract:
         assert driver.supports_load_profile() is True
 
     def test_calling_the_base_read_raises_rather_than_being_absent(self) -> None:
-        from arichds.acquisition.drivers.prometer100 import Prometer100Driver
+        from arichds.acquisition.drivers.base import MeterDriver
 
-        driver = Prometer100Driver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        class _MinimalDriver(MeterDriver):
+            @property
+            def model_name(self) -> str:
+                return "minimal"
+
+            @property
+            def endpoint(self) -> str:
+                return "198.51.100.9:4059"
+
+            def get_obis_map(self) -> dict[str, tuple[str, int]]:
+                return {}
+
+            def connect(self) -> None:
+                pass
+
+            def disconnect(self) -> None:
+                pass
+
+            def read_meter_serial(self) -> str | None:
+                return None
+
+        driver = _MinimalDriver()
         with pytest.raises(NotImplementedError):
-            driver.read_load_profile(datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC))
+            driver.read_load_profile(1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC))
 
 
 class TestLoggerIdComesFromTheObis:
@@ -678,7 +738,7 @@ class TestLoggerIdComesFromTheObis:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert len(readings) == 2
@@ -693,7 +753,7 @@ class TestLoggerIdComesFromTheObis:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert readings[0].logger_id == 1
@@ -713,7 +773,7 @@ class TestIntervalSecIsTheMetersOwnPeriod:
         driver = _build_driver(reader)
 
         readings = driver.read_load_profile(
-            datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
+            1, datetime(2026, 8, 7, 3, 0, tzinfo=UTC), datetime(2026, 8, 7, 5, 0, tzinfo=UTC)
         )
 
         assert len(readings) == 2

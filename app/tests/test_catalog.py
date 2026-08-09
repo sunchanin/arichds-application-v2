@@ -16,6 +16,34 @@ from arichds.acquisition.catalog import (
     get_model_spec,
 )
 
+# Imported directly (not through `factory.supported_models()`) so this module
+# sees the REAL driver registry rather than the fake one the suite's autouse
+# `fake_meter` fixture installs for every other test (conftest.py) — that
+# fixture patches the `factory` module's own `_registry` attribute, which a
+# direct `from ... import _registry` here does not go through (M4c, issue #24,
+# D22b: "the catalog endpoint marks all three CEWE models drivable").
+from arichds.acquisition.drivers.factory import _registry
+
+
+class TestTheThreeCeweModelsAreDrivable:
+    """D22b — narrows the "created, probed and read from the UI" acceptance
+    criterion to what an agent can verify without a live device: the driver
+    registry (which `GET /api/devices/catalog` filters `CATALOG` against,
+    `api/devices.py:760`) actually carries all three new models."""
+
+    def test_all_three_cewe_models_are_registered(self) -> None:
+        assert {"prometer100", "saral305", "premier550"} <= set(_registry())
+
+    def test_smw110_is_still_registered(self) -> None:
+        """The registry grew — it must not have lost anything on the way."""
+        assert "smw110" in _registry()
+
+    def test_every_registered_model_is_in_the_catalog(self) -> None:
+        """The registry and the catalog must agree on the product's
+        vocabulary — a driver for a model the catalog does not know would be
+        undrivable from the UI regardless."""
+        assert set(_registry()) <= set(CATALOG)
+
 
 class TestCatalogShape:
     def test_nine_models(self) -> None:

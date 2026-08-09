@@ -89,7 +89,10 @@ data requires. v1's ADR-6 exists for exactly this.
 `1.0.1/2/16/3/4/9/10.29.0.255`.
 
 `1.0.149.4.0.255` and `1.0.16.29.0.255` are **not in v1's OBIS map** — they were
-being read and discarded. Decide at M5 whether they matter.
+being read and discarded. **Decided at M4c (issue #24, D16): dropped.** No
+screen shows either; `1.0.149.4.0.255` is a manufacturer-range register with
+no nameable meaning, and `1.0.16.29.0.255`/`1.0.9.29.0.255`/`1.0.10.29.0.255`
+are apparent-kVAh variants no page shows either.
 
 **Premier 550** — 900 s, 7 columns
 
@@ -155,8 +158,29 @@ be written knowing it, or a correct v2 will look like a regression.
 - The load-profile table needs `logger_id` in its unique key —
   `(device_id, logger_id, read_at)`.
 - Reading Logger 2 on a Prometer 100 at 300 s costs **288 rows/device/day** against
-  Logger 1's 96, for three line-to-line voltages and a duplicated frequency. Whether
-  that is worth storing is an open question for M5.
+  Logger 1's 96, for three line-to-line voltages and a duplicated frequency.
+  **Decided at M4c (issue #24, D17): stored anyway.** Only `freq` maps to a
+  column (the three line-to-line voltages are dropped structurally, no field
+  for them), but Logger 2 is read and stored regardless — it is the only
+  case in this build that exercises the per-logger watermark and the
+  96-vs-288-row Records case on one physical meter, both of which need real
+  coverage.
 - Three model-specific OBIS codes (`1.0.149.4.0.255`, `1.0.11.132.0.255`,
   `1.0.11.132.124.255`, `1.0.12.132.124.255`) are captured by meters in the field and
-  mapped nowhere. M5 decides whether they get columns or stay dropped.
+  mapped nowhere. **Decided at M4c (issue #24, D16): stay dropped** — same
+  reasoning as `1.0.149.4.0.255` above, no screen shows any of them.
+- **Field-verified 2026-08-09, fixed the same day** (`docs/meter-notes/cewe-billing-capture-objects.md`):
+  all three models refuse `scaler_unit` on essentially every load-profile
+  measurement column when read at its own address — the same denial pattern
+  the SMW110W4 already documents for load profile. The fix is the same shape
+  as SMW110W4's proven resolver: each mapped column now declares a sibling
+  OBIS to borrow `scaler_unit` from (`resolve_load_profile_multiplier`,
+  `acquisition/drivers/_cewe.py`), and a live re-read confirmed it resolves
+  real values on all three models — voltage, current and energy on Prometer
+  100 and Saral 305's Logger 1, energy on Premier 550's Logger 1 and V/I on
+  its Logger 2. The one column still `NULL` after the fix is Prometer 100's
+  `avg_geo_pf` (total power factor) — its own address and its declared
+  sibling (`1.0.13.7.0.255`) both fail to resolve; D12 still applies (no
+  guessed multiplier), so it stays `NULL` rather than storing an invented
+  number. See `cewe-billing-capture-objects.md`'s "Load-profile scalers"
+  section for the resolved/NULL counts per model.

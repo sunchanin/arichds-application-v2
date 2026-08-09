@@ -167,10 +167,15 @@ export interface LoadProfilePage {
 export type BillingStatus = "closed" | "open";
 
 /**
- * One Billing Reading as `GET /api/billing` returns it — the eight `*_total`
- * columns only. The 32 tariff columns are stored but not returned (a later
- * slice's job); `null` here means the meter never captured that quantity,
+ * One Billing Reading as `GET /api/billing` returns it — **all sixty**
+ * measurement columns (D19, M4c issue #24; grew from the original eight
+ * `*_total`-only shape so the grouped-header Billing page, D20, can show
+ * every tariff). `null` here means the meter never captured that quantity,
  * never `0`, so it must render as an em dash (see `Billing.tsx`).
+ *
+ * Ten of the sixty (the Demand Time columns) are ISO-8601 UTC timestamp
+ * strings, not numbers — when a maximum demand actually occurred
+ * (CONTEXT.md — Demand Time), never scaled.
  */
 export interface BillingRow {
   /** The row's own id — used by the History tab's download-capture link (M6b, issue #22). */
@@ -182,14 +187,80 @@ export interface BillingRow {
   /** When *we* read it — UTC, ISO-8601. */
   read_at: string;
   meter_serial: string | null;
+
   import_active_kwh_total: number | null;
+  import_active_kwh_rate_a: number | null;
+  import_active_kwh_rate_b: number | null;
+  import_active_kwh_rate_c: number | null;
+  import_active_kwh_rate_d: number | null;
+
   export_active_kwh_total: number | null;
+  export_active_kwh_rate_a: number | null;
+  export_active_kwh_rate_b: number | null;
+  export_active_kwh_rate_c: number | null;
+  export_active_kwh_rate_d: number | null;
+
   import_reactive_kvarh_total: number | null;
+  import_reactive_kvarh_rate_a: number | null;
+  import_reactive_kvarh_rate_b: number | null;
+  import_reactive_kvarh_rate_c: number | null;
+  import_reactive_kvarh_rate_d: number | null;
+
   export_reactive_kvarh_total: number | null;
+  export_reactive_kvarh_rate_a: number | null;
+  export_reactive_kvarh_rate_b: number | null;
+  export_reactive_kvarh_rate_c: number | null;
+  export_reactive_kvarh_rate_d: number | null;
+
   max_demand_import_active_kw_total: number | null;
+  max_demand_import_active_kw_rate_a: number | null;
+  max_demand_import_active_kw_rate_b: number | null;
+  max_demand_import_active_kw_rate_c: number | null;
+  max_demand_import_active_kw_rate_d: number | null;
+
   max_demand_export_active_kw_total: number | null;
+  max_demand_export_active_kw_rate_a: number | null;
+  max_demand_export_active_kw_rate_b: number | null;
+  max_demand_export_active_kw_rate_c: number | null;
+  max_demand_export_active_kw_rate_d: number | null;
+
   max_demand_import_reactive_kvar_total: number | null;
+  max_demand_import_reactive_kvar_rate_a: number | null;
+  max_demand_import_reactive_kvar_rate_b: number | null;
+  max_demand_import_reactive_kvar_rate_c: number | null;
+  max_demand_import_reactive_kvar_rate_d: number | null;
+
   max_demand_export_reactive_kvar_total: number | null;
+  max_demand_export_reactive_kvar_rate_a: number | null;
+  max_demand_export_reactive_kvar_rate_b: number | null;
+  max_demand_export_reactive_kvar_rate_c: number | null;
+  max_demand_export_reactive_kvar_rate_d: number | null;
+
+  /** ISO-8601 UTC, or null — when the corresponding max demand occurred
+   * (CONTEXT.md — Demand Time). M4c, issue #24. */
+  max_demand_import_active_time_total: string | null;
+  max_demand_import_active_time_rate_a: string | null;
+  max_demand_import_active_time_rate_b: string | null;
+  max_demand_import_active_time_rate_c: string | null;
+  max_demand_import_active_time_rate_d: string | null;
+
+  max_demand_import_reactive_time_total: string | null;
+  max_demand_import_reactive_time_rate_a: string | null;
+  max_demand_import_reactive_time_rate_b: string | null;
+  max_demand_import_reactive_time_rate_c: string | null;
+  max_demand_import_reactive_time_rate_d: string | null;
+
+  cumul_demand_import_active_kw_total: number | null;
+  cumul_demand_import_active_kw_rate_a: number | null;
+  cumul_demand_import_active_kw_rate_b: number | null;
+  cumul_demand_import_active_kw_rate_c: number | null;
+  cumul_demand_import_active_kw_rate_d: number | null;
+
+  cumul_demand_import_reactive_kvar_total: number | null;
+  cumul_demand_import_reactive_kvar_rate_a: number | null;
+  cumul_demand_import_reactive_kvar_rate_b: number | null;
+  cumul_demand_import_reactive_kvar_rate_c: number | null;
+  cumul_demand_import_reactive_kvar_rate_d: number | null;
 }
 
 /** One page of Billing Readings. `total` is the unpaged count the pager needs. */

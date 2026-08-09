@@ -310,6 +310,20 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 
 #### ผลการ grill M4c (2026-08-09) — เคาะแล้ว 14 ข้อ
 
+> ✅ **c1 landed with issue #24 (2026-08-09)** — Prometer 100 / Saral 305 / Premier 550 อ่าน
+> load profile และ billing ได้แล้วผ่าน `acquisition/drivers/_cewe.py` (ตรรกะร่วม) และไดรเวอร์
+> เฉพาะรุ่นสามไฟล์ · billing schema ขยายจาก 40 → 60 คอลัมน์วัด (Demand Time + Cumulative
+> Demand, import ฝั่งเดียว) · load-profile watermark เป็นราย `(device, logger)` จริงแล้ว
+> (ดู ADR 0008's amendment) · รอบแรกที่อ่านจริง มิเตอร์ปฏิเสธ `scaler_unit` ที่คอลัมน์ของตัวเอง
+> ทั้ง load profile และ Cumulative Demand (แพทเทิร์นเดียวกับ SMW110W4) ⇒ **แก้ในรอบเดียวกัน**
+> ด้วย sibling-fallback resolver (v1-proven route, `cewe-worker/_tcp_driver_base.py:861-873`
+> สำหรับ Cumulative Demand) แล้วอ่านซ้ำยืนยัน: billing resolve 48/60 บน Prometer 100 และ
+> Premier 550 (เหลือแต่ rate_d ที่ฟลีทนี้ไม่มี tariff ที่ 4 จริง ๆ), 22/60 บน Saral 305
+> (ค่าที่วัดจริงของฮาร์ดแวร์รุ่นนี้ — F10 — ไม่เกี่ยวกับ scaler) · load profile resolve ค่าจริง
+> ครบทุกคอลัมน์ที่แมปไว้ ยกเว้น `avg_geo_pf` หนึ่งคอลัมน์บน Prometer 100 (sibling ก็ถูกปฏิเสธ
+> เช่นกัน — ยังคง NULL ตาม D12) — ดู `docs/meter-notes/cewe-billing-capture-objects.md`.
+> c2 (SMART TCC) ยังค้าง — issue #25.
+
 **เฟส — M4c แตกตาม "ยิงมิเตอร์ถึงหรือไม่" ไม่ใช่ตามยี่ห้อ** เพราะ exit ของมันคือ parity ซึ่ง
 ต้องมีมิเตอร์จริง:
 
@@ -489,17 +503,15 @@ ICT = `+420`) มาให้ bucket เพราะทุก timestamp บน�
   ฮาร์ดโค้ด `DEFAULT_LOGGER_ID = 1` ทั้งสามจุด ⇒ ค่านี้ไม่เคยขึ้นจอ และ CSV ก็เอาพลังงานจาก
   Logger 1 ⇒ Logger 2 ของรุ่นนี้เหลือหน้าที่เดียวคือจ่าย **V L-N ×3 และ I ×3**
 
-**⚠️ watermark เปลี่ยนเป็นต่อ `(device, logger)`** (เคาะที่ grill M4c) — ของเดิมคือ **ค่าน้อยที่สุด
-ของ MAX(read_at) รายกลุ่ม logger** (M5a D6) ซึ่ง `acquisition/load_profile.py:429-436` ฝากคำเตือน
-ไว้เองว่า *"the fix is a per-logger read interface — which must be designed against a model that
-actually has two"* · รุ่นนั้นมาถึงแล้ว และสถานการณ์ที่บังคับคือ Prometer 100: ถ้า Logger 2 (300 วิ)
-ล้มไปช่วงหนึ่ง watermark ค้าง ⇒ Logger 1 ถูกอ่านซ้ำช่วงเดิมทุกรอบไม่จบ (ข้อมูลไม่เสียเพราะ upsert
-แต่กินคิว endpoint) · v1 แก้ปัญหานี้ด้วยทางหนี `LP_L2_SKEW_MAX_HOURS` **ที่ชั้น CSV ไม่ใช่ชั้นอ่าน**
-⇒ v2 แก้ที่ราก: driver บอกว่ามี logger อะไรบ้าง ผู้เรียกเดินทีละ logger ด้วยหน้าต่างของตัวเอง
-ในการเชื่อมต่อครั้งเดียว · **กระทบลายเซ็น `read_load_profile()` และ `smw110.py` ที่ลงไปแล้ว**
-· และ `_through()` (`load_profile.py:450-456`) ยังคืน **MAX ระดับ device** อยู่ ⇒ เมื่อ watermark
-เป็นต่อ logger แล้ว ตัวเลขที่ตอบกลับ API จะเป็นของ logger ที่นำอยู่ ต้องตัดสินว่าจะให้มันเป็นค่าต่ำสุด
-ตามกันหรือคงไว้แบบเดิมโดยตั้งใจ
+**✅ watermark เปลี่ยนเป็นต่อ `(device, logger)` — landed with issue #24 (2026-08-09).** ของเดิมคือ
+**ค่าน้อยที่สุดของ MAX(read_at) รายกลุ่ม logger** (M5a D6) ซึ่ง `acquisition/load_profile.py`
+ฝากคำเตือนไว้เองว่า *"the fix is a per-logger read interface — which must be designed against a
+model that actually has two"* · รุ่นนั้นมาถึงแล้วที่ M4c: `MeterDriver.read_load_profile()` รับ
+`logger_id`, `load_profile_loggers()` บอกว่ามี logger อะไรบ้าง, และ `_walk_every_logger()` เดิน
+ทีละ logger ด้วยหน้าต่าง/watermark ของตัวเองในการเชื่อมต่อครั้งเดียว (budget เดียวใช้ร่วมกันทั้ง
+เที่ยว แต่ chunk แรกของทุก logger ผ่านเสมอ) · **`_through()` ตัดสินแล้วว่าเป็น MIN ข้าม
+per-logger watermark** (D4, ADR 0008's amendment) — ไม่ใช่ MAX ระดับ device ซึ่งจะรายงานความครบ
+เกินจริงตอนมี logger ค้าง; ทุกรุ่นที่มี logger เดียวไม่เห็นความต่างเลยเพราะ MIN==MAX ในกรณีนั้น
 
 **CSV export — ย้ายจาก M5c ไป M7 ทั้งก้อน** เพราะ **รูปแบบไฟล์ของมันเป็นค่าที่ผู้ใช้ตั้งได้**
 (v1 เก็บ `csv_filename_tmpl` ใน settings + API `get_export_format`/`put_export_format` ที่
@@ -702,15 +714,20 @@ v1 `adr/0004-driver-abstraction-obis-map.md:232-239` วัดไว้แล้
 ⇒ **3 ใน 4 หมวดใหม่ว่างบน Saral** และ **parity ของคอลัมน์ใหม่พิสูจน์ได้ที่ Prometer 100 ที่เดียว**
 (รุ่นเดียวที่ครอบ 25/25)
 
-**หน้า Billing ขยายเป็น 60 คอลัมน์ที่ M4c** (เจ้าของตัดสิน grill M4c) — ของเดิมแสดงเฉพาะ 8 ตัว
-`_total` ส่วนรายอัตราอยู่แต่ในเอกสาร capture · ของใหม่แสดงครบทุกอัตราเหมือนหน้าจอ v1
-⇒ ต้องมี **หัวตารางแบบจัดกลุ่ม** (AntD `children`) · ตรึง Bill Date / Device / Meter Serial ไว้ซ้าย
-· เลื่อนแนวนอนในกล่องของตัวเอง — เป็นงานออกแบบ ไม่ใช่การต่อท้ายคอลัมน์ ·
-`capture/_render_shared.py::ALL_SECTIONS` เพิ่มอีก 4 หมวดตามกัน
+**✅ หน้า Billing ขยายเป็น 60 คอลัมน์ — landed with issue #24 (2026-08-09)** (เจ้าของตัดสิน
+grill M4c) — ของเดิมแสดงเฉพาะ 8 ตัว `_total` ส่วนรายอัตราอยู่แต่ในเอกสาร capture · ของใหม่แสดง
+ครบทุกอัตราเหมือนหน้าจอ v1 ⇒ มี **หัวตารางแบบจัดกลุ่ม** (AntD `children`) · ตรึง Bill Date /
+Device / Meter Serial ไว้ซ้าย · เลื่อนแนวนอนในกล่องของตัวเอง (`web/src/pages/Billing.tsx`) ·
+`capture/_render_shared.py::ALL_SECTIONS` เพิ่ม **2 หมวดใหม่** ("Demand Time",
+"Cumulative Demand") ไม่ใช่ 4 หมวดตามที่วางแผนไว้แต่แรก — เพราะ `_SECTION_DEMAND` เดิมรวม 4 กลุ่ม
+เข้าหมวดเดียวอยู่แล้ว (import/export × active/reactive) ดังนั้นสองหมวดใหม่ก็รวม 2 กลุ่มเข้าหมวด
+เดียวแบบเดียวกัน (import active / import reactive) เพื่อให้สอดคล้องกับรูปแบบไฟล์เดิม (D18,
+issue #24)
 
-⚠️ **งานฝั่ง API ใหญ่กว่าที่ชื่อบอก** — `api/billing.py:62-92` `BillingRowOut` ประกาศฟิลด์วัดค่าไว้
-**8 ตัว ทั้งหมดเป็น `_total`** · ไม่มีคอลัมน์รายอัตราใน response เลยแม้แต่ตัวเดียว ⇒ หน้าจอแสดง 60
-คอลัมน์ไม่ได้จนกว่า schema จะโต **12 → 63 ฟิลด์**
+✅ **งานฝั่ง API — landed with issue #24**: `api/billing.py`'s `BillingRowOut` โตจาก 8 ฟิลด์
+(ทั้งหมด `_total`) เป็น 65 ฟิลด์ (id, device_id, device_name, bill_date, read_at, meter_serial +
+60 ฟิลด์วัดค่า — 10 ในนั้นเป็น `datetime | None` สำหรับ Demand Time) พร้อม validator ที่แนบ UTC
+ให้ทั้งฟิลด์บังคับและฟิลด์ที่เป็น `None` ได้
 
 **คีย์ — สองตัว ไม่ใช่ตัวเดียว** (แก้ตอน scrutinize 2026-08-09):
 `UNIQUE(device_id, bill_date) WHERE record_status IS NULL` สำหรับ dedup รอบปิด ·

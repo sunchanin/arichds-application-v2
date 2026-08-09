@@ -79,6 +79,20 @@ _SECTION_DEMAND = [
     *_measurement_section("Max Demand Export Reactive kvar", "max_demand_export_reactive_kvar"),
 ]
 
+# ── M4c, issue #24 — the twenty columns v1's screen has always shown ────────
+# CONTEXT.md already carries the glossary entries for Demand Time and
+# Cumulative Demand — these labels use those exact words (D18). Import side
+# only (D10) — no screen shows the export side.
+_SECTION_DEMAND_TIME = [
+    *_measurement_section("Demand Time Import Active", "max_demand_import_active_time"),
+    *_measurement_section("Demand Time Import Reactive", "max_demand_import_reactive_time"),
+]
+
+_SECTION_CUMULATIVE_DEMAND = [
+    *_measurement_section("Cumulative Demand Import Active kW", "cumul_demand_import_active_kw"),
+    *_measurement_section("Cumulative Demand Import Reactive kvar", "cumul_demand_import_reactive_kvar"),
+]
+
 _SECTION_META = [
     ("Bill Date", "bill_date"),
     ("Meter Serial", "meter_serial"),
@@ -89,9 +103,18 @@ _SECTION_META = [
 #: ``(section title, [(field label, row attribute name), ...])`` — the whole
 #: capture content, in render order. Both renderers iterate this and nothing
 #: else, so a field added here appears in both formats automatically.
+#:
+#: **Two sections, not four, for the M4c additions** (D18) — SPEC §3.6:709
+#: said "เพิ่มอีก 4 หมวด" (four more sections), but ``_SECTION_DEMAND`` above
+#: already bundles four *groups* into one section, so four sections here
+#: would be inconsistent with the file's own established shape. "Demand Time"
+#: and "Cumulative Demand" each bundle their two groups (import active /
+#: import reactive) the same way.
 ALL_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
     ("Energy (kWh)", _SECTION_ENERGY),
     ("Reactive Energy (kvarh)", _SECTION_REACTIVE),
     ("Maximum Demand", _SECTION_DEMAND),
+    ("Demand Time", _SECTION_DEMAND_TIME),
+    ("Cumulative Demand", _SECTION_CUMULATIVE_DEMAND),
     ("Metadata", _SECTION_META),
 ]

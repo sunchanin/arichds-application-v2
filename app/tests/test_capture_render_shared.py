@@ -36,7 +36,7 @@ class TestAsciiCell:
 
 
 class TestAllSectionsCoversEveryMeasurementColumn:
-    def test_every_one_of_the_forty_measurement_columns_appears_exactly_once(self) -> None:
+    def test_every_one_of_the_sixty_measurement_columns_appears_exactly_once(self) -> None:
         from arichds.db.models import BillingReading
 
         model_columns = {
@@ -59,9 +59,58 @@ class TestAllSectionsCoversEveryMeasurementColumn:
         field_attrs = [attr for title, fields in ALL_SECTIONS if title != "Metadata" for _label, attr in fields]
 
         assert set(field_attrs) == model_columns
-        assert len(field_attrs) == len(set(field_attrs)) == 40  # no duplicate, none dropped
+        assert len(field_attrs) == len(set(field_attrs)) == 60  # no duplicate, none dropped
 
     def test_metadata_fields_are_present(self) -> None:
         meta_section = next(fields for title, fields in ALL_SECTIONS if title == "Metadata")
         attrs = {attr for _label, attr in meta_section}
         assert attrs == {"bill_date", "meter_serial", "record_status", "read_at"}
+
+    def test_demand_time_and_cumulative_demand_sections_exist(self) -> None:
+        """D18 — two new sections, four new groups, twenty new rows (M4c,
+        issue #24)."""
+        titles = [title for title, _fields in ALL_SECTIONS]
+        assert "Demand Time" in titles
+        assert "Cumulative Demand" in titles
+
+    def test_demand_time_section_has_the_two_groups(self) -> None:
+        section = next(fields for title, fields in ALL_SECTIONS if title == "Demand Time")
+        attrs = {attr for _label, attr in section}
+        assert attrs == {
+            "max_demand_import_active_time_total",
+            "max_demand_import_active_time_rate_a",
+            "max_demand_import_active_time_rate_b",
+            "max_demand_import_active_time_rate_c",
+            "max_demand_import_active_time_rate_d",
+            "max_demand_import_reactive_time_total",
+            "max_demand_import_reactive_time_rate_a",
+            "max_demand_import_reactive_time_rate_b",
+            "max_demand_import_reactive_time_rate_c",
+            "max_demand_import_reactive_time_rate_d",
+        }
+
+    def test_cumulative_demand_section_has_the_two_groups(self) -> None:
+        section = next(fields for title, fields in ALL_SECTIONS if title == "Cumulative Demand")
+        attrs = {attr for _label, attr in section}
+        assert attrs == {
+            "cumul_demand_import_active_kw_total",
+            "cumul_demand_import_active_kw_rate_a",
+            "cumul_demand_import_active_kw_rate_b",
+            "cumul_demand_import_active_kw_rate_c",
+            "cumul_demand_import_active_kw_rate_d",
+            "cumul_demand_import_reactive_kvar_total",
+            "cumul_demand_import_reactive_kvar_rate_a",
+            "cumul_demand_import_reactive_kvar_rate_b",
+            "cumul_demand_import_reactive_kvar_rate_c",
+            "cumul_demand_import_reactive_kvar_rate_d",
+        }
+
+
+class TestFormatCellHandlesDemandTime:
+    def test_a_demand_time_datetime_formats_the_same_as_bill_date(self) -> None:
+        """SPEC §3.6:650 flagged this as needing new-type support in the
+        formatter — it does not (D18's own note): ``format_cell`` already
+        renders any ``datetime`` as ISO with a space separator, and a Demand
+        Time cell is a plain ``datetime`` like every other one."""
+        value = datetime(2026, 8, 5, 9, 12, 0, tzinfo=UTC)
+        assert format_cell(value) == "2026-08-05 09:12:00+00:00"

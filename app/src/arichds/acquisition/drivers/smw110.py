@@ -43,20 +43,24 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from datetime import UTC, datetime
 from typing import Any
 
-from gurux_dlms import GXDLMSClient, GXReplyData
+from gurux_dlms import GXReplyData
 from gurux_dlms.enums import Unit
-from gurux_dlms.enums.DataType import DataType
 from gurux_dlms.objects import GXDLMSExtendedRegister, GXDLMSProfileGeneric, GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers._dlms import DlmsDriver
+from arichds.acquisition.drivers._profile import (
+    build_fields,
+    coerce_clock_cell,
+    meter_local_to_utc,
+    positions_by_obis_attr,
+)
 from arichds.acquisition.drivers.base import BillingReading, IntervalReading
 from arichds.acquisition.obis import logger_id_for_profile
-from arichds.constants import METER_LOCAL_UTC_OFFSET_HOURS, TCP_READ_TIMEOUT_SEC, WH_TO_KWH_DIVISOR
+from arichds.constants import TCP_READ_TIMEOUT_SEC, WH_TO_KWH_DIVISOR
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +77,6 @@ _CLOCK_OBIS = "0.0.1.0.0.255"
 #: The billing profile (M6a, issue #21) — prefix ``1.0``, not the ``0.0``
 #: SMART TCC uses (docs/meter-notes/smw110w4-scan.md:228-238).
 BILLING_PROFILE_OBIS = "1.0.98.1.0.255"
-
-#: The widest column prefix this profile will serve — a full-width read
-#: answers "Data Block Unavailable"; 43 is the measured ceiling
-#: (docs/meter-notes/smw110w4-scan.md:240-267).
-BILLING_COLUMN_SPAN = 43
 
 #: `E` (capture-column tariff index) -> the ``billing_readings`` column suffix.
 _BILLING_RATE_SUFFIX: dict[int, str] = {0: "total", 1: "rate_a", 2: "rate_b", 3: "rate_c", 4: "rate_d"}
@@ -101,82 +100,50 @@ _BILLING_DEMAND_BY_C: dict[int, tuple[str, Unit]] = {
     4: ("max_demand_export_reactive_kvar", Unit.REACTIVE_POWER),
 }
 
-#: Every mapped billing capture column, keyed by its own OBIS:
-#: ``{capture_obis: (BillingReading field, COSEM class, required Unit)}``.
-#: Spelled out from the two prefix maps above rather than hand-typed forty
-#: times, but the **result** — the field set on :class:`BillingReading` — is
-#: still spelled out there (step 2). A capture column absent from this dict
-#: (``C=5``, the Clock, the period counter) is dropped structurally, exactly
-#: as the twelve unmapped load-profile columns are (D3/D4, issue #10).
-_MAPPED_BILLING_COLUMNS: dict[str, tuple[str, type, Unit]] = {
+#: Every mapped billing capture column, keyed on ``(OBIS, attribute)`` (D5):
+#: ``{(capture_obis, attr): (BillingReading field, COSEM class, required Unit)}``.
+#: Every column here is attribute 2 (the value) — this model maps no capture
+#: time (attribute 5), so it never hits the OBIS+attribute collision F2
+#: documents; the keying is still ``(obis, attr)`` so the position map it is
+#: read against (:func:`~arichds.acquisition.drivers._profile.positions_by_obis_attr`)
+#: is the same shape on every driver. Spelled out from the two prefix maps
+#: above rather than hand-typed forty times, but the **result** — the field
+#: set on :class:`BillingReading` — is still spelled out there (step 2). A
+#: capture column absent from this dict (``C=5``, the Clock, the period
+#: counter) is dropped structurally, exactly as the twelve unmapped
+#: load-profile columns are (D3/D4, issue #10).
+_MAPPED_BILLING_COLUMNS: dict[tuple[str, int], tuple[str, type, Unit]] = {
     **{
-        f"1.0.{c}.8.{e}.255": (f"{prefix}_{suffix}", GXDLMSRegister, unit)
+        (f"1.0.{c}.8.{e}.255", 2): (f"{prefix}_{suffix}", GXDLMSRegister, unit)
         for c, (prefix, unit) in _BILLING_ENERGY_BY_C.items()
         for e, suffix in _BILLING_RATE_SUFFIX.items()
     },
     **{
-        f"1.0.{c}.6.{e}.255": (f"{prefix}_{suffix}", GXDLMSExtendedRegister, unit)
+        (f"1.0.{c}.6.{e}.255", 2): (f"{prefix}_{suffix}", GXDLMSExtendedRegister, unit)
         for c, (prefix, unit) in _BILLING_DEMAND_BY_C.items()
         for e, suffix in _BILLING_RATE_SUFFIX.items()
     },
 }
 
-#: The seven mapped capture columns that carry a measurement, keyed by their
-#: own OBIS: ``{capture_obis: (IntervalReading field, sibling OBIS to borrow
-#: scaler_unit from, the Unit that sibling must report)}``. Twelve more capture
-#: columns exist on the wire (status word, six PERCENTAGE, five
-#: PHASE_ANGLE_DEGREE) and are deliberately dropped — see
+#: The seven mapped capture columns that carry a measurement, keyed on
+#: ``(OBIS, attribute)`` (D5): ``{(capture_obis, attr): (IntervalReading
+#: field, sibling OBIS to borrow scaler_unit from, the Unit that sibling must
+#: report)}``. Every column here is attribute 2. Twelve more capture columns
+#: exist on the wire (status word, six PERCENTAGE, five PHASE_ANGLE_DEGREE)
+#: and are deliberately dropped — see
 #: docs/meter-notes/smw110w4-scan.md:85-137,162-174; D3/D4 in issue #10.
-_MAPPED_CAPTURE_COLUMNS: dict[str, tuple[str, str, Unit]] = {
+_MAPPED_CAPTURE_COLUMNS: dict[tuple[str, int], tuple[str, str, Unit]] = {
     # D=29 interval energy borrows from D=8 cumulative energy — NOT from the
     # D=7 instantaneous-power sibling, which shares the same C-group and
     # answers first on the real meter (smw110w4-scan.md:129-137).
-    "1.0.1.29.0.255": ("import_active_kwh", "1.0.1.8.0.255", Unit.ACTIVE_ENERGY),
-    "1.0.32.27.0.255": ("volt_l1", "1.0.32.7.0.255", Unit.VOLTAGE),
-    "1.0.52.27.0.255": ("volt_l2", "1.0.52.7.0.255", Unit.VOLTAGE),
-    "1.0.72.27.0.255": ("volt_l3", "1.0.72.7.0.255", Unit.VOLTAGE),
-    "1.0.31.27.0.255": ("current_l1", "1.0.31.7.0.255", Unit.CURRENT),
-    "1.0.51.27.0.255": ("current_l2", "1.0.51.7.0.255", Unit.CURRENT),
-    "1.0.71.27.0.255": ("current_l3", "1.0.71.7.0.255", Unit.CURRENT),
+    ("1.0.1.29.0.255", 2): ("import_active_kwh", "1.0.1.8.0.255", Unit.ACTIVE_ENERGY),
+    ("1.0.32.27.0.255", 2): ("volt_l1", "1.0.32.7.0.255", Unit.VOLTAGE),
+    ("1.0.52.27.0.255", 2): ("volt_l2", "1.0.52.7.0.255", Unit.VOLTAGE),
+    ("1.0.72.27.0.255", 2): ("volt_l3", "1.0.72.7.0.255", Unit.VOLTAGE),
+    ("1.0.31.27.0.255", 2): ("current_l1", "1.0.31.7.0.255", Unit.CURRENT),
+    ("1.0.51.27.0.255", 2): ("current_l2", "1.0.51.7.0.255", Unit.CURRENT),
+    ("1.0.71.27.0.255", 2): ("current_l3", "1.0.71.7.0.255", Unit.CURRENT),
 }
-
-
-def _coerce_clock_cell(value: Any) -> datetime | None:
-    """Defensively coerce a load-profile clock cell to a plain ``datetime``.
-
-    Gurux hands back a clock cell as a ``GXDateTime`` (the value lives on
-    ``.value``, never the object itself — gurux-dlms skill, patterns.md's
-    "GXDateTime handling"), a plain ``datetime``, a raw ``bytearray`` when the
-    schema was not fully typed, or ``None`` for a time-compressed row. ``None``
-    out means the row has no usable timestamp — the caller skips it rather
-    than inventing one.
-    """
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value
-    if hasattr(value, "value") and isinstance(value.value, datetime):
-        return value.value
-    if isinstance(value, (bytes, bytearray)):
-        decoded = GXDLMSClient.changeType(value, DataType.DATETIME)
-        if decoded is not None and isinstance(getattr(decoded, "value", None), datetime):
-            return decoded.value
-    return None
-
-
-def _meter_local_to_utc(local_dt: datetime) -> datetime:
-    """Convert a load-profile clock reading to timezone-aware UTC.
-
-    The buffer stores meter-local time (ICT, UTC+7 — no DST) rather than UTC
-    (gurux-dlms skill, "Meter-local time in selective access";
-    :data:`~arichds.constants.METER_LOCAL_UTC_OFFSET_HOURS`). A naive cell is
-    the normal case on this meter; an aware one is handled the same way
-    ``datetime.astimezone`` always is, rather than assumed away.
-    """
-    if local_dt.tzinfo is not None:
-        return local_dt.astimezone(UTC)
-    offset = timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)
-    return (local_dt - offset).replace(tzinfo=UTC)
 
 
 def _entry_window(
@@ -247,6 +214,13 @@ class Smw110Driver(DlmsDriver):
     #: docstring; the standard register answers the factory placeholder
     #: ``99999999`` on this model.
     METER_SERIAL_OBIS: tuple[str, int] = ("1.0.199.128.134.255", 2)
+
+    #: The widest column prefix this profile will serve — a full-width read
+    #: answers "Data Block Unavailable"; 43 is the measured ceiling
+    #: (docs/meter-notes/smw110w4-scan.md:240-267). Moved off the module scope
+    #: onto the driver at M4c (D7) — the base class default is ``None``; the
+    #: three CEWE billing drivers leave it ``None`` and read full width.
+    BILLING_COLUMN_SPAN: int | None = 43
 
     def __init__(self, conn: ConnectionParams, password: str, **kwargs: Any) -> None:
         """Initialise the driver.
@@ -360,8 +334,17 @@ class Smw110Driver(DlmsDriver):
         """
         return True
 
-    def read_load_profile(self, start_utc: datetime, end_utc: datetime) -> list[IntervalReading]:
+    def load_profile_loggers(self) -> tuple[int, ...]:
+        """Logger 1 only (D2, M4c issue #24) — Logger 2 answers "undefined
+        object" on both field units (smw110w4-scan.md:176-181)."""
+        return (logger_id_for_profile(LOAD_PROFILE_OBIS),)
+
+    def read_load_profile(self, logger_id: int, start_utc: datetime, end_utc: datetime) -> list[IntervalReading]:
         """Read Logger 1 (``1.0.99.1.0.255``) over ``[start_utc, end_utc]``.
+
+        *logger_id* is accepted for interface symmetry with every other driver
+        (D2) but not branched on: this model has exactly one logger, named by
+        :meth:`load_profile_loggers`, so there is nothing to select between.
 
         **Overrides** :meth:`~arichds.acquisition.drivers.base.MeterDriver.read_load_profile`,
         which is where the method's contract now lives (M5a-1, D3). It was on
@@ -402,8 +385,10 @@ class Smw110Driver(DlmsDriver):
             return []
 
         # Derived once per call from the OBIS actually being read, never from
-        # the order profiles were discovered in (D5).
-        logger_id = logger_id_for_profile(LOAD_PROFILE_OBIS)
+        # the order profiles were discovered in (D5). *logger_id* the caller
+        # passed in is not used — see the docstring above.
+        row_logger_id = logger_id_for_profile(LOAD_PROFILE_OBIS)
+        _ = logger_id
 
         pg = GXDLMSProfileGeneric(LOAD_PROFILE_OBIS)
         self._client.objects.append(pg)
@@ -417,14 +402,15 @@ class Smw110Driver(DlmsDriver):
             return []
         start, count = window
 
-        positions = {str(obj.logicalName): i for i, (obj, _cap) in enumerate(pg.captureObjects)}
+        positions = positions_by_obis_attr(pg.captureObjects)
         expected_cell_count = len(pg.captureObjects)
-        clock_pos = positions.get(_CLOCK_OBIS)
+        clock_pos = positions.get((_CLOCK_OBIS, 2))
 
         multipliers = {
-            capture_obis: self._resolve_multiplier(sibling_obis, unit, field)
-            for capture_obis, (field, sibling_obis, unit) in _MAPPED_CAPTURE_COLUMNS.items()
+            capture_key: self._resolve_multiplier(sibling_obis, unit, field)
+            for capture_key, (field, sibling_obis, unit) in _MAPPED_CAPTURE_COLUMNS.items()
         }
+        column_map = {key: field for key, (field, _sibling, _unit) in _MAPPED_CAPTURE_COLUMNS.items()}
 
         rows = self._reader.readRowsByEntry(pg, start, count) or []
         readings: list[IntervalReading] = []
@@ -438,41 +424,28 @@ class Smw110Driver(DlmsDriver):
                 )
                 continue
 
-            local_dt = _coerce_clock_cell(row[clock_pos]) if clock_pos is not None else None
+            local_dt = coerce_clock_cell(row[clock_pos]) if clock_pos is not None else None
             if local_dt is None:
                 logger.warning("%s: row has no usable timestamp — skipping", self.model_name)
                 continue
-            read_at = _meter_local_to_utc(local_dt)
+            read_at = meter_local_to_utc(local_dt)
             if read_at < start_utc or read_at > end_utc:
                 continue
 
-            fields: dict[str, float | None] = {}
-            for capture_obis, (field, _sibling_obis, _unit) in _MAPPED_CAPTURE_COLUMNS.items():
-                pos = positions.get(capture_obis)
-                multiplier = multipliers.get(capture_obis)
-                raw = row[pos] if pos is not None else None
-                # A cell that is not a number (e.g. a raw bytearray or GXDateTime
-                # landing in a measurement column) must not reach `raw * multiplier`
-                # — that would raise and lose the whole row. Guard it the same way
-                # `_normalize()` already guards its own input, before the multiply
-                # rather than after, so a bad cell degrades to None for that column
-                # only (issue #10 review round 1, finding 1).
-                #
-                # `multiplier` is always a float (`obj.scaler` comes from
-                # `math.pow`), and `Decimal * float` is unsupported — coerce with
-                # `float(raw)` first, exactly like `_normalize()`'s own next line
-                # (`_dlms.py`), so an admitted `Decimal` cell is also a handled one
-                # rather than a second crash (issue #10 review round 2, finding 1).
-                if raw is None or multiplier is None or not isinstance(raw, (Decimal, int, float)):
-                    fields[field] = None
-                else:
-                    fields[field] = self._normalize(field, float(raw) * multiplier)
+            # A cell that is not a number (e.g. a raw bytearray or GXDateTime
+            # landing in a measurement column) must not reach `raw * multiplier`
+            # — that would raise and lose the whole row. `build_fields` guards
+            # it the same way `_normalize()` already guards its own input,
+            # before the multiply rather than after, so a bad cell degrades to
+            # None for that column only (issue #10 review round 1, finding 1;
+            # D6, issue #24 — the loop itself moved to the shared module).
+            fields = build_fields(row, positions, column_map, multipliers, scale=self._normalize)
 
             readings.append(
                 IntervalReading(
                     read_at=read_at,
                     source=self.source,
-                    logger_id=logger_id,
+                    logger_id=row_logger_id,
                     interval_sec=capture_period_sec,
                     volt_l1=fields.get("volt_l1"),
                     volt_l2=fields.get("volt_l2"),
@@ -598,11 +571,11 @@ class Smw110Driver(DlmsDriver):
             return []
 
         full_capture_objects = list(pg.captureObjects)
-        span = full_capture_objects[:BILLING_COLUMN_SPAN]
+        span = full_capture_objects[: self.BILLING_COLUMN_SPAN]
 
-        positions = {str(obj.logicalName): i for i, (obj, _cap) in enumerate(span)}
+        positions = positions_by_obis_attr(span)
         expected_cell_count = len(span)
-        clock_pos = positions.get(_CLOCK_OBIS)
+        clock_pos = positions.get((_CLOCK_OBIS, 2))
 
         # One cache for the whole call, so a tariff group's shared E=0 sibling
         # is read once no matter how many of its tariff columns fall back to
@@ -611,10 +584,11 @@ class Smw110Driver(DlmsDriver):
         # DLMS round trip for no new information).
         scaler_cache: dict[tuple[str, type, Unit], float | None] = {}
         multipliers = {
-            capture_obis: self._billing_multiplier(capture_obis, cosem_class, unit, field, scaler_cache)
-            for capture_obis, (field, cosem_class, unit) in _MAPPED_BILLING_COLUMNS.items()
-            if capture_obis in positions
+            capture_key: self._billing_multiplier(capture_key[0], cosem_class, unit, field, scaler_cache)
+            for capture_key, (field, cosem_class, unit) in _MAPPED_BILLING_COLUMNS.items()
+            if capture_key in positions
         }
+        column_map = {key: field for key, (field, _cosem_class, _unit) in _MAPPED_BILLING_COLUMNS.items()}
 
         original_capture_objects = pg.captureObjects
         try:
@@ -653,7 +627,7 @@ class Smw110Driver(DlmsDriver):
                     )
                 continue
 
-            local_dt = _coerce_clock_cell(row[clock_pos]) if clock_pos is not None else None
+            local_dt = coerce_clock_cell(row[clock_pos]) if clock_pos is not None else None
             if local_dt is None:
                 if position == 0:
                     logger.warning(
@@ -664,23 +638,19 @@ class Smw110Driver(DlmsDriver):
                 else:
                     logger.warning("%s: billing row has no usable timestamp — skipping", self.model_name)
                 continue
-            bill_date = _meter_local_to_utc(local_dt)
+            bill_date = meter_local_to_utc(local_dt)
 
-            fields: dict[str, float | None] = {}
-            for capture_obis, (field, _cosem_class, _unit) in _MAPPED_BILLING_COLUMNS.items():
-                pos = positions.get(capture_obis)
-                multiplier = multipliers.get(capture_obis)
-                raw = row[pos] if pos is not None else None
-                # Same guard as the load-profile loop above: a non-numeric cell
-                # must not reach `raw * multiplier`, and the billing path
-                # divides every column by WH_TO_KWH_DIVISOR unconditionally —
-                # unlike `_normalize()`, which only divides the load profile's
-                # frozen ENERGY_COLUMNS_WH set (step 8; these forty columns are
-                # a different table with a different contract).
-                if raw is None or multiplier is None or not isinstance(raw, (Decimal, int, float)):
-                    fields[field] = None
-                else:
-                    fields[field] = (float(raw) * multiplier) / WH_TO_KWH_DIVISOR
+            # Same guard as the load-profile loop above (now the shared
+            # `build_fields`, D6): a non-numeric cell must not reach
+            # `raw * multiplier`, and the billing path divides every column by
+            # WH_TO_KWH_DIVISOR unconditionally — unlike `_normalize()`, which
+            # only divides the load profile's frozen ENERGY_COLUMNS_WH set
+            # (step 8; these columns are a different table with a different
+            # contract). This model maps no Demand Time column, so nothing
+            # here is a passthrough key.
+            fields = build_fields(
+                row, positions, column_map, multipliers, scale=lambda _field, value: value / WH_TO_KWH_DIVISOR
+            )
 
             readings.append(
                 BillingReading(

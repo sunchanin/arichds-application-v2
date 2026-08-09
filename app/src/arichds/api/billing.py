@@ -59,6 +59,28 @@ router = APIRouter(
 )
 
 
+#: Every measurement column's field name, grouped like ``db/models.py`` and
+#: ``drivers/base.py`` spell them out — the whole sixty (D19, M4c issue #24):
+#: the response now carries every measurement, not just the eight totals, so
+#: the Billing page's grouped-header table (D20) has the tariff columns to
+#: show. Spelled out rather than generated, matching the same field set as
+#: ``BillingReading.as_columns()`` and ``capture/_render_shared.py``.
+_RATE_SUFFIXES = ("total", "rate_a", "rate_b", "rate_c", "rate_d")
+
+
+def _rated(prefix: str) -> tuple[str, ...]:
+    return tuple(f"{prefix}_{suffix}" for suffix in _RATE_SUFFIXES)
+
+
+#: The ten Demand Time field names — datetimes, never scaled (D11) — kept
+#: separate from the other measurement fields because they need the same
+#: UTC re-attachment ``bill_date``/``read_at`` get, not the float typing.
+_DEMAND_TIME_FIELDS: tuple[str, ...] = (
+    *_rated("max_demand_import_active_time"),
+    *_rated("max_demand_import_reactive_time"),
+)
+
+
 class BillingRowOut(BaseModel):
     """One Billing Reading as the Billing page renders it — either tab.
 
@@ -73,6 +95,11 @@ class BillingRowOut(BaseModel):
             — Bill Date).
         read_at: When *we* read it — UTC.
         meter_serial: Snapshot per row, or None.
+
+    **Every one of the sixty measurement columns is a field here** (D19) —
+    grown from the original eight totals so the grouped-header Billing page
+    (D20) can show every tariff. Ten of them (the Demand Time columns) are
+    ``datetime | None``, not ``float | None`` — see :data:`_DEMAND_TIME_FIELDS`.
     """
 
     id: int
@@ -83,13 +110,77 @@ class BillingRowOut(BaseModel):
     meter_serial: str | None
 
     import_active_kwh_total: float | None
+    import_active_kwh_rate_a: float | None
+    import_active_kwh_rate_b: float | None
+    import_active_kwh_rate_c: float | None
+    import_active_kwh_rate_d: float | None
+
     export_active_kwh_total: float | None
+    export_active_kwh_rate_a: float | None
+    export_active_kwh_rate_b: float | None
+    export_active_kwh_rate_c: float | None
+    export_active_kwh_rate_d: float | None
+
     import_reactive_kvarh_total: float | None
+    import_reactive_kvarh_rate_a: float | None
+    import_reactive_kvarh_rate_b: float | None
+    import_reactive_kvarh_rate_c: float | None
+    import_reactive_kvarh_rate_d: float | None
+
     export_reactive_kvarh_total: float | None
+    export_reactive_kvarh_rate_a: float | None
+    export_reactive_kvarh_rate_b: float | None
+    export_reactive_kvarh_rate_c: float | None
+    export_reactive_kvarh_rate_d: float | None
+
     max_demand_import_active_kw_total: float | None
+    max_demand_import_active_kw_rate_a: float | None
+    max_demand_import_active_kw_rate_b: float | None
+    max_demand_import_active_kw_rate_c: float | None
+    max_demand_import_active_kw_rate_d: float | None
+
     max_demand_export_active_kw_total: float | None
+    max_demand_export_active_kw_rate_a: float | None
+    max_demand_export_active_kw_rate_b: float | None
+    max_demand_export_active_kw_rate_c: float | None
+    max_demand_export_active_kw_rate_d: float | None
+
     max_demand_import_reactive_kvar_total: float | None
+    max_demand_import_reactive_kvar_rate_a: float | None
+    max_demand_import_reactive_kvar_rate_b: float | None
+    max_demand_import_reactive_kvar_rate_c: float | None
+    max_demand_import_reactive_kvar_rate_d: float | None
+
     max_demand_export_reactive_kvar_total: float | None
+    max_demand_export_reactive_kvar_rate_a: float | None
+    max_demand_export_reactive_kvar_rate_b: float | None
+    max_demand_export_reactive_kvar_rate_c: float | None
+    max_demand_export_reactive_kvar_rate_d: float | None
+
+    # ── M4c, issue #24 — the twenty columns v1's screen has always shown ──
+    max_demand_import_active_time_total: datetime | None
+    max_demand_import_active_time_rate_a: datetime | None
+    max_demand_import_active_time_rate_b: datetime | None
+    max_demand_import_active_time_rate_c: datetime | None
+    max_demand_import_active_time_rate_d: datetime | None
+
+    max_demand_import_reactive_time_total: datetime | None
+    max_demand_import_reactive_time_rate_a: datetime | None
+    max_demand_import_reactive_time_rate_b: datetime | None
+    max_demand_import_reactive_time_rate_c: datetime | None
+    max_demand_import_reactive_time_rate_d: datetime | None
+
+    cumul_demand_import_active_kw_total: float | None
+    cumul_demand_import_active_kw_rate_a: float | None
+    cumul_demand_import_active_kw_rate_b: float | None
+    cumul_demand_import_active_kw_rate_c: float | None
+    cumul_demand_import_active_kw_rate_d: float | None
+
+    cumul_demand_import_reactive_kvar_total: float | None
+    cumul_demand_import_reactive_kvar_rate_a: float | None
+    cumul_demand_import_reactive_kvar_rate_b: float | None
+    cumul_demand_import_reactive_kvar_rate_c: float | None
+    cumul_demand_import_reactive_kvar_rate_d: float | None
 
     @field_validator("bill_date", "read_at")
     @classmethod
@@ -100,6 +191,18 @@ class BillingRowOut(BaseModel):
         timezone type, so a column declared ``DateTime(timezone=True)`` comes
         back naive and would otherwise be read by the browser as local time.
         """
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    @field_validator(*_DEMAND_TIME_FIELDS)
+    @classmethod
+    def _ensure_utc_or_none(cls, value: datetime | None) -> datetime | None:
+        """The same re-attachment as :meth:`_ensure_utc`, but ``None``-safe
+        (D19) — unlike ``bill_date``/``read_at``, every one of these ten
+        fields is optional: most billing rows have never captured a max
+        demand at all, let alone the instant it happened.
+        """
+        if value is None:
+            return None
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
@@ -198,27 +301,35 @@ def list_billing_readings(
     ).all()
     total = session.scalar(select(func.count()).select_from(BillingReading).where(*matching)) or 0
 
-    items = [
-        BillingRowOut(
-            id=reading.id,
-            device_id=reading.device_id,
-            device_name=device_name,
-            bill_date=reading.bill_date,
-            read_at=reading.read_at,
-            meter_serial=reading.meter_serial,
-            import_active_kwh_total=reading.import_active_kwh_total,
-            export_active_kwh_total=reading.export_active_kwh_total,
-            import_reactive_kvarh_total=reading.import_reactive_kvarh_total,
-            export_reactive_kvarh_total=reading.export_reactive_kvarh_total,
-            max_demand_import_active_kw_total=reading.max_demand_import_active_kw_total,
-            max_demand_export_active_kw_total=reading.max_demand_export_active_kw_total,
-            max_demand_import_reactive_kvar_total=reading.max_demand_import_reactive_kvar_total,
-            max_demand_export_reactive_kvar_total=reading.max_demand_export_reactive_kvar_total,
-        )
-        for reading, device_name in rows
-    ]
+    items = [_to_row_out(reading, device_name) for reading, device_name in rows]
 
     return ApiResponse.ok(BillingPage(items=items, total=total, limit=limit, offset=offset))
+
+
+#: Every ``billing_readings`` column that is not part of a row's identity —
+#: the sixty measurement columns (D19), read off the ORM model itself so a
+#: column migration 0009 (or a future one) adds is picked up here without
+#: anyone hand-updating a sixty-line kwargs list (mirrors
+#: ``capture/_render_shared.py``'s own column-derived approach).
+_IDENTITY_COLUMNS = frozenset(
+    {"id", "device_id", "bill_date", "read_at", "record_status", "source", "meter_serial", "created_at", "updated_at"}
+)
+_MEASUREMENT_COLUMN_NAMES: tuple[str, ...] = tuple(
+    column.name for column in BillingReading.__table__.columns if column.name not in _IDENTITY_COLUMNS
+)
+
+
+def _to_row_out(reading: BillingReading, device_name: str) -> BillingRowOut:
+    """Build the response row for one ``BillingReading`` (D19)."""
+    return BillingRowOut(
+        id=reading.id,
+        device_id=reading.device_id,
+        device_name=device_name,
+        bill_date=reading.bill_date,
+        read_at=reading.read_at,
+        meter_serial=reading.meter_serial,
+        **{name: getattr(reading, name) for name in _MEASUREMENT_COLUMN_NAMES},
+    )
 
 
 class BillingSettingsOut(BaseModel):

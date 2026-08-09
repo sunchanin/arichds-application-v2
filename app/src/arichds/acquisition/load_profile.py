@@ -16,12 +16,17 @@ Three rules shape the walk, and each is load-bearing:
   inclusive on both bounds, so the boundary row is re-read and upserted. One
   row's worth of work, bought deliberately: a half-written boundary heals
   instead of becoming a hole.
-* **The watermark is the MINIMUM of the per-logger maxima** (D6). ADR 0008
-  defines it per ``(device, logger)``, but the driver's read is not per-logger —
-  ``read_load_profile(start, end)`` returns whatever loggers it reads. A
-  device-wide ``MAX`` would start the walk after the *leading* logger and skip
-  the lagging one forever. Taking the minimum over-fetches for the leading
-  logger, and over-fetching is free because the write is an upsert.
+* **The watermark is per ``(device, logger)``** (ADR 0008's own Decision,
+  implemented rather than reversed at M4c, issue #24). The read is now genuinely
+  per-logger — :meth:`~arichds.acquisition.drivers.base.MeterDriver.read_load_profile`
+  takes a ``logger_id`` and returns one profile's rows — so each logger walks
+  from its own watermark inside one connection, ascending
+  (:meth:`~arichds.acquisition.drivers.base.MeterDriver.load_profile_loggers`
+  order). A logger with no stored rows backfills its own 90 days rather than
+  inheriting a sibling's watermark; a stalled logger no longer holds another
+  logger's window open. This replaces the earlier "minimum of the per-logger
+  maxima" compromise, which the driver interface at the time could not do
+  better than.
 
 **This job never touches device status** (D11, ADR 0004): status comes from the
 Poller and from nothing else. A failed load-profile read is a log line and,
@@ -186,7 +191,6 @@ def read_and_store_load_profile(
             return LoadProfileReadResult(
                 supported=False, stored=0, through=None, budget_exhausted=False, error=str(exc)
             )
-        watermark = _watermark(session, device_id)
 
     if not driver.supports_load_profile():
         logger.debug("Device %s (%s) has no load profile — nothing to read", device_name, driver.model_name)
@@ -194,7 +198,15 @@ def read_and_store_load_profile(
             supported=False, stored=0, through=_through(device_id), budget_exhausted=False, error=None
         )
 
-    start = watermark if watermark is not None else now_utc - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
+    # Every logger's own start, computed once up front (D3) — each backfills
+    # its own 90 days if it has never been read, rather than inheriting a
+    # sibling logger's watermark.
+    with session_scope() as session:
+        per_logger_start = {
+            logger_id: _watermark(session, device_id, logger_id) or now_utc - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
+            for logger_id in driver.load_profile_loggers()
+        }
+
     endpoint = driver.endpoint
     stored = 0
     budget_exhausted = False
@@ -219,13 +231,13 @@ def read_and_store_load_profile(
                     skipped=True,
                 )
             stored, budget_exhausted, error = _read_while_holding(
-                driver, device_id, device_name, endpoint, start, now_utc, budget_sec
+                driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec
             )
     else:
         try:
             with registry.get(endpoint).manual(timeout=lock_timeout_sec):
                 stored, budget_exhausted, error = _read_while_holding(
-                    driver, device_id, device_name, endpoint, start, now_utc, budget_sec
+                    driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec
                 )
         except TimeoutError as exc:
             # Reachable from the manual path only — ``background()`` yields False
@@ -250,19 +262,20 @@ def _read_while_holding(
     device_id: int,
     device_name: str,
     endpoint: str,
-    start: datetime,
+    per_logger_start: dict[int, datetime],
     now_utc: datetime,
     budget_sec: float,
 ) -> tuple[int, bool, str | None]:
-    """Connect, walk the window, disconnect — with the endpoint already held.
+    """Connect once, walk every logger's window, disconnect — the endpoint
+    already held for the whole visit (D3, M4c issue #24).
 
     Extracted so the two acquisition paths differ **only** in how they take the
     lock: the read itself must not depend on who asked for it, or the priority
     rule would quietly become a second code path through the meter.
 
     Returns:
-        ``(rows stored, whether the budget stopped the walk, an error sentence
-        or None)``.
+        ``(rows stored across every logger, whether any logger's walk hit the
+        shared budget, the first error sentence encountered or None)``.
     """
     try:
         driver.connect()
@@ -273,9 +286,51 @@ def _read_while_holding(
         # `_walk` returns its own error rather than raising: a failure on chunk
         # three must still report the two chunks already committed, and an
         # exception unwinding past here would lose that count.
-        return _walk(driver, device_id, device_name, endpoint, start, now_utc, budget_sec)
+        return _walk_every_logger(driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec)
     finally:
         driver.disconnect()
+
+
+def _walk_every_logger(
+    driver: MeterDriver,
+    device_id: int,
+    device_name: str,
+    endpoint: str,
+    per_logger_start: dict[int, datetime],
+    now_utc: datetime,
+    budget_sec: float,
+) -> tuple[int, bool, str | None]:
+    """Walk every logger in :meth:`~arichds.acquisition.drivers.base.MeterDriver.load_profile_loggers`
+    order, ascending, all inside one Transport Endpoint acquisition.
+
+    **One budget for the whole visit, not one per logger** (D3) — the budget
+    exists to bound how long the endpoint is held, which is a property of the
+    visit, not of any one profile. Each logger's own first chunk is still let
+    through regardless of the deadline (the same "checked before starting each
+    chunk except the first" rule :func:`_walk` already applies within a
+    logger), so a logger can always make progress against its own watermark
+    even if an earlier logger already spent the whole budget.
+
+    Returns:
+        ``(rows stored across every logger, whether any logger's walk hit the
+        budget, the first error sentence encountered or None)``.
+    """
+    deadline = time.monotonic() + budget_sec
+    total_stored = 0
+    budget_exhausted = False
+    error: str | None = None
+
+    for logger_id in driver.load_profile_loggers():
+        start = per_logger_start[logger_id]
+        stored, exhausted, logger_error = _walk(
+            driver, device_id, device_name, endpoint, logger_id, start, now_utc, deadline
+        )
+        total_stored += stored
+        budget_exhausted = budget_exhausted or exhausted
+        if error is None:
+            error = logger_error
+
+    return total_stored, budget_exhausted, error
 
 
 def load_profile_cycle() -> None:
@@ -339,21 +394,30 @@ def _walk(
     device_id: int,
     device_name: str,
     endpoint: str,
+    logger_id: int,
     start: datetime,
     end: datetime,
-    budget_sec: float,
+    deadline: float,
 ) -> tuple[int, bool, str | None]:
-    """Fetch and store ``[start, end]`` in chunks, oldest first.
+    """Fetch and store one logger's ``[start, end]`` in chunks, oldest first.
 
-    A failing chunk **ends the walk and is reported**, never raised: the chunks
-    already committed are real rows, and the count of them is what the operator
-    is told. The watermark heals the rest on the next call.
+    *deadline* is a shared ``time.monotonic()`` instant, not a per-logger
+    budget (D3, M4c issue #24) — the caller computes it once for the whole
+    visit. Checked before starting each chunk **except this logger's first**:
+    a DLMS read cannot be interrupted mid-flight, a call that reads nothing at
+    all makes no progress against this logger's own watermark, and letting
+    every logger's first chunk through is what stops an earlier logger from
+    starving a later one even when the shared budget is already spent.
+
+    A failing chunk **ends this logger's walk and is reported**, never
+    raised: the chunks already committed are real rows, and the count of them
+    is what the operator is told. The watermark heals the rest on the next
+    call.
 
     Returns:
-        ``(rows stored, whether the budget stopped the walk, an error sentence
-        or None)``.
+        ``(rows stored, whether the deadline stopped this logger's walk, an
+        error sentence or None)``.
     """
-    deadline = time.monotonic() + budget_sec
     chunk = timedelta(hours=LOAD_PROFILE_CHUNK_HOURS)
     chunk_start = start
     stored = 0
@@ -362,21 +426,22 @@ def _walk(
     while chunk_start < end:
         if not first and time.monotonic() >= deadline:
             logger.info(
-                "Load profile walk of %s stopped on its %gs budget at %s — history remains",
+                "Load profile walk of %s logger %d stopped on the shared budget at %s — history remains",
                 device_name,
-                budget_sec,
+                logger_id,
                 chunk_start.isoformat(),
             )
             return stored, True, None
 
         chunk_end = min(chunk_start + chunk, end)
         try:
-            readings = driver.read_load_profile(chunk_start, chunk_end)
+            readings = driver.read_load_profile(logger_id, chunk_start, chunk_end)
             stored += _store(device_id, readings)
         except Exception as exc:  # noqa: BLE001 — every failure becomes a sentence, never a 500.
             logger.exception(
-                "Load profile read of %s at %s failed on the chunk starting %s",
+                "Load profile read of %s logger %d at %s failed on the chunk starting %s",
                 device_name,
+                logger_id,
                 endpoint,
                 chunk_start.isoformat(),
             )
@@ -420,37 +485,46 @@ def _store(device_id: int, readings: list[IntervalReading]) -> int:
     return len(values)
 
 
-def _watermark(session, device_id: int) -> datetime | None:  # noqa: ANN001 — a Session, typed by its only caller.
-    """Return the MINIMUM of this device's per-logger ``MAX(read_at)``, or None.
-
-    See the module docstring for why the minimum: a device-wide ``MAX`` would
-    start the walk after the leading logger and strand the lagging one.
+def _per_logger_watermarks(session, device_id: int) -> dict[int, datetime]:  # noqa: ANN001 — a Session, typed by its only caller.
+    """``{logger_id: MAX(read_at)}`` for every logger this device has stored
+    rows for (D3/D4, M4c issue #24) — the one source :func:`_watermark` and
+    :func:`_through` both derive from, so the two can never disagree.
 
     The grouping is over **stored** rows, so a logger that has never been read
-    contributes no group and does not drag the watermark back to ``None``. The
-    consequence, accepted with D6 and worth knowing at M4c: if a driver starts
-    returning a second logger *after* the first has been read for a while, that
-    logger's history behind the shared watermark is not fetched. No model in the
-    build today has a second logger, and the fix is a per-logger read interface —
-    which must be designed against a model that actually has two, not against
-    this one.
+    is simply absent from the result rather than dragging anything to
+    ``None`` — that absence is exactly what lets that logger's own 90-day
+    backfill happen (the fix this issue's D3 makes).
     """
-    per_logger = (
-        select(func.max(LoadProfileReading.read_at).label("logger_max"))
+    rows = session.execute(
+        select(LoadProfileReading.logger_id, func.max(LoadProfileReading.read_at))
         .where(LoadProfileReading.device_id == device_id)
         .group_by(LoadProfileReading.logger_id)
-        .subquery()
-    )
-    value = session.scalar(select(func.min(per_logger.c.logger_max)))
-    # SQLite hands back a naive datetime; the driver requires timezone-aware UTC
+    ).all()
+    # SQLite hands back naive datetimes; the driver requires timezone-aware UTC
     # and everything in this table is UTC by the normalization contract.
-    return value.replace(tzinfo=UTC) if value is not None else None
+    return {logger_id: read_at.replace(tzinfo=UTC) for logger_id, read_at in rows}
+
+
+def _watermark(session, device_id: int, logger_id: int) -> datetime | None:  # noqa: ANN001 — a Session, typed by its only caller.
+    """Return this logger's own ``MAX(read_at)``, or ``None`` when it has never
+    been read (D3) — the fix for the gap this module's docstring used to warn
+    about: a logger seen for the first time gets its own full backfill rather
+    than inheriting a sibling logger's watermark.
+    """
+    return _per_logger_watermarks(session, device_id).get(logger_id)
 
 
 def _through(device_id: int) -> datetime | None:
-    """The highest ``read_at`` now stored for this device — read back, not assumed."""
+    """The MINIMUM of this device's per-logger ``MAX(read_at)`` (D4).
+
+    Shown to a person as "Stored N Interval Readings up to X UTC"
+    (``api/devices.py``). A device-wide ``MAX`` would over-report coverage
+    while a stalled logger sat behind — the exact failure mode ADR 0008 exists
+    to prevent — so this reports the laggard's own progress, not the leader's.
+    On every single-logger model this equals the device-wide MAX, so nothing
+    observable changes for those models; it only becomes visible on a
+    multi-logger model (M4c).
+    """
     with session_scope() as session:
-        value = session.scalar(
-            select(func.max(LoadProfileReading.read_at)).where(LoadProfileReading.device_id == device_id)
-        )
-    return value.replace(tzinfo=UTC) if value is not None else None
+        per_logger = _per_logger_watermarks(session, device_id)
+    return min(per_logger.values()) if per_logger else None
