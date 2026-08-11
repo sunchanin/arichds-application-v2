@@ -57,6 +57,7 @@ from gurux_dlms.objects import GXDLMSProfileGeneric
 
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers._dlms_profile import CEWE_DEMAND_TIME_COLUMNS
+from arichds.acquisition.drivers._profile import coerce_clock_cell, meter_local_to_utc
 from arichds.acquisition.drivers.factory import create_driver, supported_models
 
 #: The five catalog keys this one driver serves. Any of them produces the same
@@ -104,6 +105,13 @@ _SWEEP_TIMEOUT_MS = 4000
 #: four hours - long enough that a working installation cannot be all zeros.
 _ACTIVITY_PROFILE = "1.0.99.2.0.255"
 _ACTIVITY_SAMPLE = 240
+
+#: The Clock capture column, used to stamp a raw row.
+_CLOCK_OBIS = "0.0.1.0.0.255"
+
+#: How many rows of each profile to dump raw. Enough to diff against an
+#: export without turning the CSV into a database.
+_RAW_SAMPLE = 96
 
 
 class Report:
@@ -204,17 +212,32 @@ _PROFILE_SURVEY: tuple[tuple[str, str], ...] = (
     ("1.0.98.3.0.255", "billing 1.0 prefix, Scheme 3"),
 )
 
-#: Cumulative energy totals. These are standalone Registers, not capture
-#: columns, and they answer the question a zero-valued load profile cannot:
-#: has this meter **ever** measured energy? A non-zero total with a zero load
-#: profile means "no load right now"; zero on both means the meter has never
-#: seen current, and no scaler on any energy column has ever been exercised.
-_ENERGY_TOTALS: tuple[tuple[str, str], ...] = (
-    ("1.0.1.8.0.255", "import active   (cumulative)"),
-    ("1.0.2.8.0.255", "export active   (cumulative)"),
-    ("1.0.3.8.0.255", "import reactive (cumulative)"),
-    ("1.0.4.8.0.255", "export reactive (cumulative)"),
+#: The **standalone** cumulative energy registers — the ones the Energy
+#: Registers page reads, not capture columns of any profile. Two questions in
+#: one sweep:
+#:
+#: * ``E=0`` answers what a zero-valued load profile cannot: has this meter
+#:   **ever** measured energy? A non-zero total with a zero load profile means
+#:   "no load right now"; zero on both means it has never seen current.
+#: * ``E=1..4`` answers whether this brand can serve the page at all. v1
+#:   implements Energy Registers on **one** driver (``smw110``), reading exactly
+#:   this 4x5 grid; whether a TCC answers the per-tariff addresses has never
+#:   been tested on hardware, and the catalog claims it does.
+#:
+#: A tariff address that refuses is a fact about the meter, not a failure of the
+#: probe — it is reported and the sweep continues.
+_ENERGY_QUANTITIES: tuple[tuple[str, str], ...] = (
+    ("1.0.1.8", "import active"),
+    ("1.0.2.8", "export active"),
+    ("1.0.3.8", "import reactive"),
+    ("1.0.4.8", "export reactive"),
 )
+_ENERGY_TARIFFS: tuple[int, ...] = (0, 1, 2, 3, 4)
+
+#: COSEM class-11 Special Days Table. Same story as the tariff registers above:
+#: v1 implements it on ``smw110`` alone while the catalog claims six models, so
+#: the only way to know is to ask a real TCC.
+_SPECIAL_DAYS_OBIS = "0.0.11.0.0.255"
 
 
 def _scan_for_activity(driver: Any, obis: str, sample: int, out: Report) -> None:
@@ -378,28 +401,117 @@ def _survey_profiles(driver: Any, out: Report) -> dict[str, tuple[int, int, int]
     return found
 
 
-def _read_energy_totals(driver: Any, out: Report) -> None:
-    """Read the cumulative energy registers - read-only.
+def _read_energy_registers(driver: Any, out: Report) -> list[dict[str, Any]]:
+    """Read the standalone energy registers, total and per tariff - read-only.
 
-    Attribute 3 before attribute 2 so Gurux applies the meter's own multiplier
-    (ADR 0002), the same order the product uses.
+    Attribute **2 first, then attribute 3** — the reverse of the product's
+    order, on purpose. Reading the value before the scaler is exactly the
+    mistake ADR 0002 exists to prevent, and here it is what yields the raw cell:
+    Gurux applies the multiplier inside ``setValue``, so a value read while
+    ``scaler`` is still 1 comes back unscaled. The probe then multiplies by hand
+    and prints both, which is the only way to see *which* of the two numbers a
+    disagreement lives in. The product still reads 3-then-2 and is untouched.
     """
     from gurux_dlms.objects import GXDLMSRegister
 
     out("")
-    out("=== CUMULATIVE ENERGY TOTALS - has this meter ever measured anything? ===")
-    for obis, label in _ENERGY_TOTALS:
-        obj = GXDLMSRegister(obis)
-        driver._client.objects.append(obj)
-        try:
-            driver._reader.read(obj, 3)
-            value = driver._reader.read(obj, 2)
-        except Exception as exc:  # noqa: BLE001 - a refusal is a result, not a crash
-            out(f"    {label:<30} {obis:<16} REFUSED: {type(exc).__name__}")
-            continue
-        unit = getattr(obj, "unit", None)
-        unit_text = f"{unit.name}({int(unit)})" if unit is not None else "-"
-        out(f"    {label:<30} {obis:<16} {value!s:>18}  unit={unit_text}")
+    out("=== STANDALONE ENERGY REGISTERS - what the Energy Registers page would show ===")
+    header = f"{'quantity':<18} {'E':>2} {'obis':<16} {'raw':>16} {'mult':>8} {'scaled':>18}  unit"
+    out(header)
+    out("-" * (len(header) + 12))
+
+    emitted: list[dict[str, Any]] = []
+    answered = refused = 0
+    for prefix, label in _ENERGY_QUANTITIES:
+        for tariff in _ENERGY_TARIFFS:
+            obis = f"{prefix}.{tariff}.255"
+            obj = GXDLMSRegister(obis)
+            driver._client.objects.append(obj)
+            try:
+                raw = driver._reader.read(obj, 2)  # unscaled - scaler not read yet
+                driver._reader.read(obj, 3)
+            except Exception as exc:  # noqa: BLE001 - a refusal is a result, not a crash
+                refused += 1
+                out(f"{label:<18} {tariff:>2} {obis:<16} {'REFUSED: ' + type(exc).__name__:>44}")
+                continue
+
+            answered += 1
+            mult = getattr(obj, "scaler", None)
+            unit = getattr(obj, "unit", None)
+            unit_text = f"{unit.name}({int(unit)})" if unit is not None else "-"
+            scaled = float(raw) * mult if isinstance(raw, (int, float)) and isinstance(mult, (int, float)) else None
+            out(
+                f"{label:<18} {tariff:>2} {obis:<16} {raw!s:>16} "
+                f"{mult if mult is not None else '-'!s:>8} {scaled!s:>18}  {unit_text}"
+            )
+            emitted.append(
+                {
+                    "kind": "energy_register",
+                    "stamp_utc": "",
+                    "logger_id": "",
+                    "capture_obis": obis,
+                    "field": f"{label} rate {tariff}" if tariff else f"{label} total",
+                    "raw": "" if raw is None else raw,
+                    "stored": "" if scaled is None else scaled,
+                }
+            )
+
+    total = len(_ENERGY_QUANTITIES) * len(_ENERGY_TARIFFS)
+    out("")
+    out(f"    {answered} of {total} addresses answered, {refused} refused")
+    if refused == 0:
+        out("    -> this model can serve the Energy Registers page in full (total + 4 tariffs).")
+    elif answered:
+        out("    -> PARTIAL. The refused addresses above would be blank columns on the page.")
+    else:
+        out("    -> this model has no standalone energy registers; the page cannot be served.")
+    return emitted
+
+
+def _read_special_days(driver: Any, out: Report) -> list[dict[str, Any]]:
+    """Read the COSEM class-11 Special Days Table - read-only.
+
+    An **empty table is a valid answer** and means the model supports the
+    feature with nothing configured; only a refusal means the model cannot
+    serve the page. v1 makes the same distinction
+    (``special_days/service.py`` — "an empty table is a valid response with
+    count 0").
+    """
+    from gurux_dlms.objects import GXDLMSSpecialDaysTable
+
+    out("")
+    out(f"=== SPECIAL DAYS TABLE ({_SPECIAL_DAYS_OBIS}) ===")
+    obj = GXDLMSSpecialDaysTable(_SPECIAL_DAYS_OBIS)
+    driver._client.objects.append(obj)
+    try:
+        driver._reader.read(obj, 2)
+    except Exception as exc:  # noqa: BLE001 - a refusal is THE result here
+        out(f"    REFUSED: {type(exc).__name__}: {exc}")
+        out("    -> this model cannot serve the Special Days page.")
+        return []
+
+    entries = list(getattr(obj, "entries", None) or [])
+    out(f"    the object exists and answered - {len(entries)} entr(y/ies)")
+    emitted: list[dict[str, Any]] = []
+    for entry in entries:
+        index = getattr(entry, "index", "")
+        day = getattr(entry, "date", "")
+        day_id = getattr(entry, "dayId", "")
+        out(f"      index={index}  date={day}  dayId={day_id}")
+        emitted.append(
+            {
+                "kind": "special_day",
+                "stamp_utc": "",
+                "logger_id": "",
+                "capture_obis": _SPECIAL_DAYS_OBIS,
+                "field": f"index {index}",
+                "raw": f"{day} dayId={day_id}",
+                "stored": "",
+            }
+        )
+    if not entries:
+        out("    -> supported, but the customer has configured no special days.")
+    return emitted
 
 
 def _profile_shape(driver: Any, obis: str) -> tuple[list[tuple[str, int]], int]:
@@ -412,12 +524,72 @@ def _profile_shape(driver: Any, obis: str) -> tuple[list[tuple[str, int]], int]:
     return columns, entries
 
 
+def _raw_rows(driver: Any, obis: str, logger_id: Any, sample: int, out: Report) -> list[dict[str, Any]]:
+    """Every raw cell of a profile buffer, keyed by capture OBIS - read-only.
+
+    The scaled value the driver produces is not enough to diagnose with. A
+    column the driver stores as ``None`` still has a cell on the wire, and that
+    cell is the only thing there is to compare against a manufacturer's export
+    or to divide by to recover a multiplier the meter would not tell us. The
+    Mitsubishi probe learned this; this one now does the same.
+
+    Emitted **unscaled and unlabelled** on purpose: raw is raw whatever the
+    multiplier turns out to be.
+    """
+    pg = GXDLMSProfileGeneric(obis)
+    driver._client.objects.append(pg)
+    try:
+        driver._reader.read(pg, 3)
+        entries = int(driver._reader.read(pg, 7))
+    except Exception as exc:  # noqa: BLE001 - a refusal is a result, not a crash
+        out(f"    raw read of {obis} could not open the profile: {type(exc).__name__}")
+        return []
+    if entries <= 0:
+        return []
+
+    count = min(sample, entries)
+    start = max(1, entries - count + 1)
+    try:
+        request = driver._client.readRowsByEntry(pg, start, count)
+        reply = GXReplyData()
+        driver._reader.readDataBlock(request, reply)
+        rows = driver._client.updateValue(pg, 2, reply.value) or []
+    except Exception as exc:  # noqa: BLE001 - a refusal is a result, not a crash
+        out(f"    raw read of {obis} failed: {type(exc).__name__}")
+        return []
+
+    names = [str(obj.logicalName) for obj, _cap in pg.captureObjects]
+    clock = names.index(_CLOCK_OBIS) if _CLOCK_OBIS in names else None
+
+    emitted: list[dict[str, Any]] = []
+    for row in rows:
+        local = coerce_clock_cell(row[clock]) if clock is not None and clock < len(row) else None
+        stamp = meter_local_to_utc(local).isoformat() if local is not None else ""
+        for position, name in enumerate(names):
+            if position >= len(row):
+                continue
+            cell = row[position]
+            emitted.append(
+                {
+                    "kind": "raw",
+                    "stamp_utc": stamp,
+                    "logger_id": logger_id,
+                    "capture_obis": name,
+                    "field": "",
+                    "raw": "" if cell is None else cell,
+                    "stored": "",
+                }
+            )
+    out(f"    raw cells captured from {obis}: {len(emitted)} (from {len(rows)} row(s))")
+    return emitted
+
+
 def _write_csv(path: Path, rows: list[dict[str, Any]], out: Report) -> None:
     """Dump every reading as one line per field, for diffing against any export."""
     if not rows:
         out("[*] nothing read - no CSV written")
         return
-    fields = ["kind", "stamp_utc", "logger_id", "field", "value"]
+    fields = ["kind", "stamp_utc", "logger_id", "capture_obis", "field", "raw", "stored"]
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
@@ -438,7 +610,8 @@ def probe(conn: ConnectionParams, model: str, out: Report) -> list[dict[str, Any
         out(f"[+] ASSOCIATION OPEN - meter serial: {driver.read_meter_serial()}")
 
         survey = _survey_profiles(driver, out)
-        _read_energy_totals(driver, out)
+        csv_rows.extend(_read_energy_registers(driver, out))
+        csv_rows.extend(_read_special_days(driver, out))
         _scan_for_activity(driver, _ACTIVITY_PROFILE, _ACTIVITY_SAMPLE, out)
 
         # ── Load profile ─────────────────────────────────────────────────────
@@ -453,6 +626,8 @@ def probe(conn: ConnectionParams, model: str, out: Report) -> list[dict[str, Any
                 out(f"      {column_obis:<20} attr={attr}")
 
             now = datetime.now(UTC)
+            csv_rows.extend(_raw_rows(driver, obis, logger_id, _RAW_SAMPLE, out))
+
             readings = driver.read_load_profile(logger_id, now - timedelta(hours=_LOAD_PROFILE_WINDOW_HOURS), now)
             out(f"    read_load_profile(last {_LOAD_PROFILE_WINDOW_HOURS}h) -> {len(readings)} row(s)")
             for reading in readings:
@@ -465,8 +640,10 @@ def probe(conn: ConnectionParams, model: str, out: Report) -> list[dict[str, Any
                             "kind": "load_profile",
                             "stamp_utc": reading.read_at.isoformat(),
                             "logger_id": logger_id,
+                            "capture_obis": "",
                             "field": name,
-                            "value": "" if value is None else value,
+                            "raw": "",
+                            "stored": "" if value is None else value,
                         }
                     )
 
@@ -479,6 +656,8 @@ def probe(conn: ConnectionParams, model: str, out: Report) -> list[dict[str, Any
             out(f"      {column_obis:<20} attr={attr}")
 
         _report_conformance(driver, lp_shapes, columns, survey, out)
+
+        csv_rows.extend(_raw_rows(driver, driver.BILLING_PROFILE_OBIS, "", _RAW_SAMPLE, out))
 
         billing = driver.read_billing()
         out(f"    read_billing() -> {len(billing)} row(s)")
@@ -496,8 +675,10 @@ def probe(conn: ConnectionParams, model: str, out: Report) -> list[dict[str, Any
                         "kind": "billing",
                         "stamp_utc": reading.bill_date.isoformat(),
                         "logger_id": "",
+                        "capture_obis": "",
                         "field": name,
-                        "value": "" if value is None else value,
+                        "raw": "",
+                        "stored": "" if value is None else value,
                     }
                 )
     finally:
