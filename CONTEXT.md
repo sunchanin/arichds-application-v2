@@ -172,6 +172,18 @@ per-brand guess.
 _Avoid_: remaining time, battery percentage, battery health (nothing in this build computes
 any of them — the register is a display code, not a duration)
 
+**App Log** (M7-4, issue #31):
+The **rotating application log file** (`%ProgramData%\ARICHDS\logs\arichds.log`) the process
+itself writes — read-only, tail-only, never written to or deleted by the product. Every line
+already passed `CredentialRedactionFilter` at write time (M1), so the App Log page shows it as
+read: there is no second redaction pass on read. A line that is not a parseable header (e.g. a
+traceback line) is joined onto the previous entry's message rather than becoming its own
+level-less entry, so filtering to a minimum level does not hide the traceback body a matching
+ERROR produced.
+_Avoid_: Device Event, audit log (`device_events` is a different thing with different
+retention — a status transition or an operator action, not a line of process output; the two
+are easy to conflate and must not be)
+
 **Holiday**:
 A day the Energy Summary counts into the Holiday bucket. Three things make a day one and they
 are equal in force: it is a Saturday or Sunday, or it matches an **annual** Holiday (month and

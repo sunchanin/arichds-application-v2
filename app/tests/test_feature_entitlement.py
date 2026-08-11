@@ -24,7 +24,11 @@ from arichds.licensing.service import LicenseState
 #: share `energy_summary` (decision 18 — both tabs and the calendar);
 #: `/api/special-days` gates on its own `special_days` key; `/api/battery`
 #: gates on its own `battery` key too — the job that fills it is not
-#: feature-gated (D6), only the read-back API is.
+#: feature-gated (D6), only the read-back API is. `/api/logs` is deliberately
+#: absent too (M7-4, issue #31, D11): `app_log` is ops-only and never in
+#: `SELLABLE_FEATURE_KEYS`, so it is never license-governed — the empty-license
+#: sweep below would correctly get a 200 from it, and adding it to this table
+#: would claim otherwise.
 GATED_PREFIXES: dict[str, str] = {
     "/api/billing": "billing",
     "/api/load-profile": "load_profile",

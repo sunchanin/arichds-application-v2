@@ -507,6 +507,27 @@ export interface BatteryPage {
 }
 
 /**
+ * One parsed entry from the rotating application log, from `GET /api/logs`
+ * (M7-4, issue #31). `timestamp` is the raw string the log line carried —
+ * local-time-with-offset, unlike every UTC value elsewhere in this API — and
+ * is rendered verbatim, never parsed with `dayjs`. `level`/`logger` are
+ * `null` for a leading continuation line with no preceding header; `message`
+ * carries any continuation lines (e.g. a traceback) joined onto it.
+ */
+export interface LogEntry {
+  timestamp: string | null;
+  level: string | null;
+  logger: string | null;
+  message: string;
+}
+
+/** The tail of the application log. Not a page — the client already knows
+ * what it asked for. */
+export interface LogTail {
+  items: LogEntry[];
+}
+
+/**
  * The machine-wide display-unit setting — `"kilo"` (kW/kWh/kvar/kvarh,
  * today's behaviour) or `"base"` (W/Wh/var/varh), from
  * `GET`/`PUT /api/settings/display`. One value for the whole machine, not
@@ -1098,5 +1119,16 @@ export const api = {
     if (startIso !== undefined) params.set("start", startIso);
     if (endIso !== undefined) params.set("end", endIso);
     return request<BatteryPage>(`/api/battery?${params.toString()}`);
+  },
+
+  /**
+   * The tail of the application log (M7-4, issue #31), newest last.
+   * `minLevel` omitted entirely when unset — the endpoint's own default is
+   * "no filtering".
+   */
+  logs: (lines: number, minLevel?: string) => {
+    const params = new URLSearchParams({ lines: String(lines) });
+    if (minLevel !== undefined) params.set("min_level", minLevel);
+    return request<LogTail>(`/api/logs?${params.toString()}`);
   },
 };

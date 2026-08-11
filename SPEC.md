@@ -994,6 +994,17 @@ ADR 0016 วางไว้ว่าใช้ `showDirectoryPicker` โดยอ
 ต้องเขียนเกณฑ์รับงานเอง** · v2 ทำเป็น **ตัวอ่านไฟล์ `%ProgramData%\ARICHDS\logs\`** — ท้ายไฟล์ N
 บรรทัด · กรองตามระดับ · **ไม่มีตาราง ไม่มีปุ่ม Clear** (ลบหลักฐานชิ้นเดียวที่มีตอนไล่ปัญหา และของ v1
 ก็ไม่ได้ลบไฟล์จริงอยู่แล้ว) · ไฟล์ผ่าน redaction filter ตั้งแต่ตอนเขียน (M1) ⇒ อ่านมาโชว์ได้เลย
+· ✅ **landed with issue #31 (M7 slice 4)**: `log_reader.py` (the reader counterpart to
+`logging_config.py` — header/continuation parsing, filter-before-tail) · `api/logs.py`
+(`GET /api/logs`) · `pages/AppLog.tsx`. Decisions the grill text above did not pin down:
+**no filename parameter** — the endpoint always reads exactly `settings.log_dir / "arichds.log"`,
+never a request-supplied path, so rotated siblings (`arichds.log.1` … `.5`) are unreachable
+through the API · **admin-only** — the log's content is machine-internal (usernames, Transport
+Endpoints, file paths, tracebacks), unlike the meter data every other read page shows ·
+`min_level` is a **minimum**, not an exact match (WARNING returns WARNING+ERROR+CRITICAL) ·
+a line that is not a parseable header is joined onto the previous entry's message — the concrete
+form of "a traceback survives a level filter", since a traceback is N level-less lines following
+one header.
 
 **ห้าก้อนของ M7 และลำดับ** (ให้ `/to-issues` ใช้):
 

@@ -38,6 +38,7 @@ from arichds.api import (
     holidays,
     license,
     load_profile,
+    logs,
     records,
     special_days,
     users,
@@ -126,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(holidays.router)
     app.include_router(special_days.router)
     app.include_router(battery.router)
+    app.include_router(logs.router)
     app.include_router(users.router)
     app.include_router(settings_router.router)
 

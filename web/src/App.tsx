@@ -5,6 +5,7 @@ import { api, type LicenseStatus } from "./api";
 import { type Session, clearSession, getSession, onSessionChange, setSession } from "./auth";
 import { AppShell } from "./components/AppShell";
 import { Activation } from "./pages/Activation";
+import { AppLog } from "./pages/AppLog";
 import { Battery } from "./pages/Battery";
 import { Billing } from "./pages/Billing";
 import { Devices } from "./pages/Devices";
@@ -31,6 +32,7 @@ type Page =
   | "special-days"
   | "battery"
   | "export-format"
+  | "app-log"
   | "users"
   | "settings";
 
@@ -44,6 +46,7 @@ const PAGES: readonly Page[] = [
   "special-days",
   "battery",
   "export-format",
+  "app-log",
   "users",
   "settings",
 ];
@@ -204,11 +207,12 @@ export default function App() {
     return <Activation status={status} role={session.role} onActivated={() => void refreshStatus()} />;
   }
 
-  // A `user` never reaches the Users page: the menu entry is absent for them,
-  // and this second check is what keeps a stale `page` from surviving a
-  // demotion that landed while the page was open. Load Profile and Records need
-  // no such gate — reading stored readings is open to both roles.
-  const active: Page = page === "users" && session.role !== "admin" ? "devices" : page;
+  // A `user` never reaches the Users or App Log pages: both menu entries are
+  // absent for them, and this second check is what keeps a stale `page` from
+  // surviving a demotion that landed while the page was open. Load Profile and
+  // Records need no such gate — reading stored readings is open to both roles.
+  const active: Page =
+    (page === "users" || page === "app-log") && session.role !== "admin" ? "devices" : page;
 
   return (
     <AppShell
@@ -237,6 +241,8 @@ export default function App() {
         <Battery />
       ) : active === "export-format" ? (
         <ExportFormat role={session.role} />
+      ) : active === "app-log" ? (
+        <AppLog />
       ) : active === "settings" ? (
         <Settings role={session.role} />
       ) : (

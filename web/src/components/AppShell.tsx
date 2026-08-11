@@ -3,6 +3,7 @@ import {
   CalendarOutlined,
   DatabaseOutlined,
   ExportOutlined,
+  FileSearchOutlined,
   FileTextOutlined,
   KeyOutlined,
   LogoutOutlined,
@@ -72,7 +73,16 @@ const { Header, Sider, Content } = Layout;
  * too: reading the current format is not admin-only, only saving it is
  * (the same split Settings.tsx's display-unit control already uses). The
  * auto-save switch and output folder live on the Load Profile page itself,
- * not here (D-16). App Log stays out of the menu — it belongs to #31.
+ * not here (D-16).
+ *
+ * M7 slice 4 (issue #31) lights up **App Log**, the last slice of M7 — a
+ * read-only tail viewer for the rotating application log. **Admin-only**,
+ * like User Management: the log's content is machine-internal (usernames,
+ * Transport Endpoints, file paths, tracebacks), unlike the meter data every
+ * other page in this group shows. The API answers `FEATURE_DISABLED` on a
+ * machine whose `.env` omits the ops-only `app_log` key; the page shows that
+ * inline rather than hiding the menu entry, since whether the feature is on
+ * is not this shell's business to know in advance.
  *
  * A later CR (display-unit setting, kW/kWh vs W/Wh) lights up **Settings**
  * for every role too — the one control on it is disabled for a `user`
@@ -124,6 +134,11 @@ export function AppShell({
     { key: "battery", icon: <PoweroffOutlined />, label: "Battery" },
     // M7 slice 3 (issue #30) — after Battery, SPEC §3.7's page order.
     { key: "export-format", icon: <ExportOutlined />, label: "Export Format" },
+    // M7 slice 4 (issue #31) — after Export Format, SPEC §3.7's page order.
+    // Admin-only, like User Management: the log's content is machine-internal
+    // (usernames, Transport Endpoints, file paths, tracebacks), unlike the
+    // meter data every other page in this group shows.
+    ...(role === "admin" ? [{ key: "app-log", icon: <FileSearchOutlined />, label: "App Log" }] : []),
     ...(role === "admin"
       ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]
       : []),
