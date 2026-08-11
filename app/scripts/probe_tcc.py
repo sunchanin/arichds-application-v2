@@ -52,9 +52,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from gurux_dlms import GXReplyData
 from gurux_dlms.objects import GXDLMSProfileGeneric
 
 from arichds.acquisition.connection_params import ConnectionParams
+from arichds.acquisition.drivers._dlms_profile import CEWE_DEMAND_TIME_COLUMNS
 from arichds.acquisition.drivers.factory import create_driver, supported_models
 
 #: The five catalog keys this one driver serves. Any of them produces the same
@@ -96,6 +98,12 @@ _LINE_CANDIDATES: tuple[tuple[int, int, str, int], ...] = (
 #: information there is. Once a line opens, the full read runs on the driver's
 #: real timeout, not this one.
 _SWEEP_TIMEOUT_MS = 4000
+
+#: The instantaneous profile scanned for any sign of load, and how many of its
+#: rows to pull. Logger 2 samples every 60 s on this model, so 240 rows is
+#: four hours - long enough that a working installation cannot be all zeros.
+_ACTIVITY_PROFILE = "1.0.99.2.0.255"
+_ACTIVITY_SAMPLE = 240
 
 
 class Report:
@@ -178,6 +186,222 @@ def _find_line_settings(
     return None
 
 
+#: Every ProfileGeneric on the 3CL that could plausibly hold load-profile or
+#: billing data, from the customer's association view. The driver reads exactly
+#: two of them - logger 1 and Scheme 1 - on reasoning inherited from a **v1 scan
+#: of a different unit**. Surveying all nine turns that inheritance into a
+#: measurement on the meter actually in front of us, and answers the obvious
+#: question when a buffer comes back empty: *is the data simply somewhere else?*
+_PROFILE_SURVEY: tuple[tuple[str, str], ...] = (
+    ("1.0.99.1.0.255", "load profile logger 1  <- the driver reads this"),
+    ("1.0.99.2.0.255", "load profile logger 2"),
+    ("1.0.99.3.0.255", "load profile logger 3"),
+    ("0.0.98.1.0.255", "billing Scheme 1       <- the driver reads this"),
+    ("0.0.98.2.0.255", "billing Scheme 2"),
+    ("0.0.98.3.0.255", "billing Scheme 3"),
+    ("1.0.98.1.0.255", "billing 1.0 prefix, Scheme 1"),
+    ("1.0.98.2.0.255", "billing 1.0 prefix, Scheme 2"),
+    ("1.0.98.3.0.255", "billing 1.0 prefix, Scheme 3"),
+)
+
+#: Cumulative energy totals. These are standalone Registers, not capture
+#: columns, and they answer the question a zero-valued load profile cannot:
+#: has this meter **ever** measured energy? A non-zero total with a zero load
+#: profile means "no load right now"; zero on both means the meter has never
+#: seen current, and no scaler on any energy column has ever been exercised.
+_ENERGY_TOTALS: tuple[tuple[str, str], ...] = (
+    ("1.0.1.8.0.255", "import active   (cumulative)"),
+    ("1.0.2.8.0.255", "export active   (cumulative)"),
+    ("1.0.3.8.0.255", "import reactive (cumulative)"),
+    ("1.0.4.8.0.255", "export reactive (cumulative)"),
+)
+
+
+def _scan_for_activity(driver: Any, obis: str, sample: int, out: Report) -> None:
+    """Has this meter EVER seen current? Scan a profile's raw cells - read-only.
+
+    The customer reports that this meter has current, voltage and energy; the
+    cumulative energy registers read 0.0. Both cannot be true, and a single
+    instantaneous read cannot settle it because it only speaks for one moment.
+
+    Logger 2 samples the **instantaneous** group (``D=7`` — power, current,
+    voltage, PF) every 60 s, so a few hundred of its rows cover the better part
+    of a day. Raw cells are reported without scaling on purpose: a non-zero raw
+    is non-zero whatever the multiplier turns out to be, so this answers the
+    question even on columns whose scaler has never been verified.
+    """
+    out("")
+    out(f"=== ACTIVITY SCAN on {obis} - was anything ever non-zero? ===")
+    pg = GXDLMSProfileGeneric(obis)
+    driver._client.objects.append(pg)
+    try:
+        driver._reader.read(pg, 3)
+        entries = int(driver._reader.read(pg, 7))
+    except Exception as exc:  # noqa: BLE001 - a refusal is a result, not a crash
+        out(f"    could not open the profile: {type(exc).__name__}: {exc}")
+        return
+    if entries <= 0:
+        out("    the profile is empty - nothing to scan")
+        return
+
+    count = min(sample, entries)
+    start = max(1, entries - count + 1)
+    out(f"    entries_in_use={entries}; reading {count} rows from entry {start}")
+    try:
+        request = driver._client.readRowsByEntry(pg, start, count)
+        reply = GXReplyData()
+        driver._reader.readDataBlock(request, reply)
+        rows = driver._client.updateValue(pg, 2, reply.value) or []
+    except Exception as exc:  # noqa: BLE001 - a refusal is a result, not a crash
+        out(f"    read failed: {type(exc).__name__}: {exc}")
+        return
+
+    names = [str(obj.logicalName) for obj, _cap in pg.captureObjects]
+    out(f"    {len(rows)} row(s) returned")
+    out("")
+    out(f"    {'capture obis':<20} {'non-zero rows':>14} {'max raw seen':>18}")
+    out("    " + "-" * 54)
+    any_activity = False
+    for position, name in enumerate(names):
+        values = [row[position] for row in rows if position < len(row) and isinstance(row[position], (int, float))]
+        nonzero = [v for v in values if v]
+        if nonzero:
+            any_activity = True
+        biggest = max((abs(v) for v in values), default=0)
+        out(f"    {name:<20} {len(nonzero):>6} of {len(values):<5} {biggest!s:>18}")
+
+    out("")
+    if any_activity:
+        out("    -> at least one column carried a non-zero value in this window.")
+    else:
+        out("    -> EVERY numeric cell in this window is zero. Combined with the")
+        out("       cumulative registers also reading 0.0, this meter has not")
+        out("       measured anything: no wiring fault on our side explains it.")
+
+
+def _report_conformance(
+    driver: Any,
+    lp_shapes: dict[int, list[tuple[str, int]]],
+    billing_columns: list[tuple[str, int]],
+    survey: dict[str, tuple[int, int, int]],
+    out: Report,
+) -> None:
+    """Does what this driver *declares* match what this meter actually serves?
+
+    This is the check that makes adding a model cheap. One driver class serves
+    all five TCC keys on the assumption they are identical (``smart_tcc.py``'s
+    D14 records that as an assumption, not a measurement) — and the CEWE
+    experience is the reason to distrust it: three models of one brand differ
+    in logger count, capture period *and* column set
+    (``docs/meter-notes/load-profile-capture-objects.md``).
+
+    So the answer for a new model is not a fresh investigation, it is this
+    verdict. Plug in, run, read one line.
+    """
+    out("")
+    out("=== DRIVER CONFORMANCE - do the driver's declarations hold on THIS model? ===")
+    verdicts: list[str] = []
+
+    for logger_id, live in lp_shapes.items():
+        declared = set(driver.LOAD_PROFILE_COLUMN_MAP.get(logger_id, {}))
+        present = declared & set(live)
+        missing = sorted(declared - set(live))
+        state = "PASS" if not missing else "FAIL"
+        verdicts.append(state)
+        out(f"  load profile logger {logger_id:<3} {len(present)}/{len(declared)} declared columns present     {state}")
+        for obis, attr in missing:
+            field = driver.LOAD_PROFILE_COLUMN_MAP[logger_id][obis, attr][0]
+            out(f"      MISSING {obis} attr={attr}  ({field})")
+
+    declared_billing = set(driver._mapped_billing_columns()) | set(CEWE_DEMAND_TIME_COLUMNS)
+    live_billing = set(billing_columns)
+    missing_billing = sorted(declared_billing - live_billing)
+    state = "PASS" if not missing_billing else "FAIL"
+    verdicts.append(state)
+    out(
+        f"  billing {driver.BILLING_PROFILE_OBIS:<16} "
+        f"{len(declared_billing & live_billing)}/{len(declared_billing)} declared columns present     {state}"
+    )
+    for obis, attr in missing_billing[:10]:
+        out(f"      MISSING {obis} attr={attr}")
+
+    # Profiles the meter is actively filling that this driver never opens. Not
+    # a failure - the driver may be right to ignore them - but it is the thing
+    # a reader should be told rather than left to spot in the survey table.
+    declared_lp = {f"1.0.99.{n}.0.255" for n in driver.load_profile_loggers()}
+    ignored = [
+        (obis, entries)
+        for obis, (entries, _period, _cols) in survey.items()
+        if entries > 0 and obis not in declared_lp and obis != driver.BILLING_PROFILE_OBIS
+    ]
+    if ignored:
+        out("  profiles holding data that this driver never reads:            REVIEW")
+        for obis, entries in sorted(ignored):
+            out(f"      {obis}  {entries} entries")
+
+    out("")
+    if "FAIL" in verdicts:
+        out("  VERDICT: FAIL - this model does not match the driver's declarations.")
+        out("           The missing columns above will store NULL on every row.")
+    else:
+        out("  VERDICT: PASS - every column this driver declares exists on this meter.")
+        out("           (Presence is not correctness: a column can be present and mis-scaled.")
+        out("            Only non-zero values prove scaling.)")
+
+
+def _survey_profiles(driver: Any, out: Report) -> dict[str, tuple[int, int, int]]:
+    """Report entries/period/width for every candidate profile - read-only.
+
+    Reads attributes 7 (entries in use), 4 (capture period) and 3 (capture
+    objects). A saved Director export cannot answer this: its stored counts are
+    whatever Director happened to have read, and on this meter its load-profile
+    figure was stale by a factor of six.
+    """
+    out("")
+    out("=== PROFILE SURVEY - where the data actually is ===")
+    header = f"{'obis':<16} {'entries':>8} {'period':>8} {'columns':>8}  what"
+    out(header)
+    out("-" * (len(header) + 12))
+    found: dict[str, tuple[int, int, int]] = {}
+    for obis, label in _PROFILE_SURVEY:
+        pg = GXDLMSProfileGeneric(obis)
+        driver._client.objects.append(pg)
+        try:
+            driver._reader.read(pg, 3)
+            entries = int(driver._reader.read(pg, 7))
+            period = int(driver._reader.read(pg, 4))
+        except Exception as exc:  # noqa: BLE001 - a refusal is a result, not a crash
+            out(f"{obis:<16} {'REFUSED: ' + type(exc).__name__:>26}  {label}")
+            continue
+        found[obis] = (entries, period, len(pg.captureObjects))
+        out(f"{obis:<16} {entries:>8} {period:>8} {len(pg.captureObjects):>8}  {label}")
+    return found
+
+
+def _read_energy_totals(driver: Any, out: Report) -> None:
+    """Read the cumulative energy registers - read-only.
+
+    Attribute 3 before attribute 2 so Gurux applies the meter's own multiplier
+    (ADR 0002), the same order the product uses.
+    """
+    from gurux_dlms.objects import GXDLMSRegister
+
+    out("")
+    out("=== CUMULATIVE ENERGY TOTALS - has this meter ever measured anything? ===")
+    for obis, label in _ENERGY_TOTALS:
+        obj = GXDLMSRegister(obis)
+        driver._client.objects.append(obj)
+        try:
+            driver._reader.read(obj, 3)
+            value = driver._reader.read(obj, 2)
+        except Exception as exc:  # noqa: BLE001 - a refusal is a result, not a crash
+            out(f"    {label:<30} {obis:<16} REFUSED: {type(exc).__name__}")
+            continue
+        unit = getattr(obj, "unit", None)
+        unit_text = f"{unit.name}({int(unit)})" if unit is not None else "-"
+        out(f"    {label:<30} {obis:<16} {value!s:>18}  unit={unit_text}")
+
+
 def _profile_shape(driver: Any, obis: str) -> tuple[list[tuple[str, int]], int]:
     """Read a ProfileGeneric's live capture list and ``entries_in_use`` - read-only."""
     pg = GXDLMSProfileGeneric(obis)
@@ -205,6 +429,7 @@ def probe(conn: ConnectionParams, model: str, out: Report) -> list[dict[str, Any
     """Run the whole probe on one association - read-only throughout."""
     driver = create_driver(model, conn, password="")
     csv_rows: list[dict[str, Any]] = []
+    lp_shapes: dict[int, list[tuple[str, int]]] = {}
 
     out(f"[*] {model} @ {conn.endpoint} - connecting (read-only, one association)")
     out("[*] HighGMAC + AuthenticationEncryption, keys owned by the driver - no password sent")
@@ -212,12 +437,17 @@ def probe(conn: ConnectionParams, model: str, out: Report) -> list[dict[str, Any
     try:
         out(f"[+] ASSOCIATION OPEN - meter serial: {driver.read_meter_serial()}")
 
+        survey = _survey_profiles(driver, out)
+        _read_energy_totals(driver, out)
+        _scan_for_activity(driver, _ACTIVITY_PROFILE, _ACTIVITY_SAMPLE, out)
+
         # ── Load profile ─────────────────────────────────────────────────────
         for logger_id in driver.load_profile_loggers():
             obis = f"1.0.99.{logger_id}.0.255"
             out("")
             out(f"=== LOAD PROFILE logger {logger_id} ({obis}) ===")
             columns, entries = _profile_shape(driver, obis)
+            lp_shapes[logger_id] = columns
             out(f"    entries_in_use: {entries}   live capture columns: {len(columns)}")
             for column_obis, attr in columns:
                 out(f"      {column_obis:<20} attr={attr}")
@@ -247,6 +477,8 @@ def probe(conn: ConnectionParams, model: str, out: Report) -> list[dict[str, Any
         out(f"    entries_in_use: {entries}   live capture columns: {len(columns)}")
         for column_obis, attr in columns:
             out(f"      {column_obis:<20} attr={attr}")
+
+        _report_conformance(driver, lp_shapes, columns, survey, out)
 
         billing = driver.read_billing()
         out(f"    read_billing() -> {len(billing)} row(s)")
