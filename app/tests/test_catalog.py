@@ -7,6 +7,8 @@ future edit from quietly disagreeing with what the operator sees on site.
 
 from __future__ import annotations
 
+import pytest
+
 from arichds.acquisition.catalog import (
     CATALOG,
     CEWE_FIXED_PASSWORD,
@@ -15,6 +17,7 @@ from arichds.acquisition.catalog import (
     Brand,
     get_model_spec,
 )
+from arichds.acquisition.connection_params import ConnectionParams
 
 # Imported directly (not through `factory.supported_models()`) so this module
 # sees the REAL driver registry rather than the fake one the suite's autouse
@@ -165,15 +168,30 @@ class TestLabelsAndCapabilities:
     def test_every_model_reports_battery(self) -> None:
         assert all(spec.supports_battery for spec in CATALOG.values())
 
-    def test_cewe_models_have_no_energy_summary_or_special_days(self) -> None:
-        for model in ("prometer100", "saral305", "premier550"):
-            assert CATALOG[model].supports_energy_summary is False
-            assert CATALOG[model].supports_special_days is False
 
-    def test_the_new_brands_have_both(self) -> None:
-        for model in ("st3c", "st3cl", "st33tl", "st3tl", "st3dh", "smw110"):
-            assert CATALOG[model].supports_energy_summary is True
-            assert CATALOG[model].supports_special_days is True
+@pytest.mark.parametrize("model", sorted(_registry()))
+class TestEnergySummaryAndSpecialDaysFlagsMatchTheDriver:
+    """M7-1, issue #28 — replaces the two hardcoded-list tests
+    (``test_cewe_models_have_no_energy_summary_or_special_days`` /
+    ``test_the_new_brands_have_both``) with one correspondence test: the
+    catalog's ``supports_energy_summary``/``supports_special_days`` flags
+    gate the *page*, the driver's ``supports_energy_registers()``/
+    ``supports_special_days()`` methods name the *read* (decision 3) — this
+    is what proves the two can never drift apart, the way a hardcoded list
+    cannot (ADR 0011: "a flag turned on with no driver behind it").
+    """
+
+    def test_supports_energy_summary_matches_the_drivers_energy_registers_capability(self, model: str) -> None:
+        driver_cls = _registry()[model]
+        driver = driver_cls(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+
+        assert CATALOG[model].supports_energy_summary == driver.supports_energy_registers()
+
+    def test_supports_special_days_matches_the_drivers_capability(self, model: str) -> None:
+        driver_cls = _registry()[model]
+        driver = driver_cls(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+
+        assert CATALOG[model].supports_special_days == driver.supports_special_days()
 
 
 class TestLookup:

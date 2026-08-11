@@ -1,5 +1,6 @@
 import {
   AreaChartOutlined,
+  CalendarOutlined,
   DatabaseOutlined,
   FileTextOutlined,
   KeyOutlined,
@@ -49,7 +50,16 @@ const { Header, Sider, Content } = Layout;
  *
  * M6a lights up **Billing** — the read-only view of the Billing Readings the
  * meter itself froze when it closed a period, for every role, same reason as
- * Load Profile and Records. Energy stays disabled until M7 owns it.
+ * Load Profile and Records.
+ *
+ * M7-1 lights up **Energy Summary**, **Holidays** and **Special Days** — the
+ * TOU report + Energy Registers page, the calendar that feeds its Holiday
+ * bucket, and the read-through view of a meter's own Special Days Table —
+ * for every role, same reason as the rest of this group: every one of them
+ * reads what is already on disk or reads a meter through the same Manual
+ * Read path Devices already uses; none is admin-only to *view* (only
+ * Holiday mutations and both imports are, decision 19). Battery / Export
+ * Format / App Log stay out of the menu — they belong to #29/#30/#31.
  *
  * A later CR (display-unit setting, kW/kWh vs W/Wh) lights up **Settings**
  * for every role too — the one control on it is disabled for a `user`
@@ -93,9 +103,10 @@ export function AppShell({
     { key: "load-profile", icon: <AreaChartOutlined />, label: "Load Profile" },
     { key: "records", icon: <TableOutlined />, label: "Records" },
     { key: "billing", icon: <FileTextOutlined />, label: "Billing" },
-    // Owned by later milestones — visible so the shape is honest, disabled so
-    // nothing pretends to work yet.
-    { key: "energy", icon: <ThunderboltOutlined />, label: "Energy", disabled: true },
+    // M7-1 (issue #28) — the calendar sits beside the thing it feeds.
+    { key: "energy-summary", icon: <ThunderboltOutlined />, label: "Energy Summary" },
+    { key: "holidays", icon: <CalendarOutlined />, label: "Holidays" },
+    { key: "special-days", icon: <CalendarOutlined />, label: "Special Days" },
     ...(role === "admin"
       ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]
       : []),

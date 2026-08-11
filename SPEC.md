@@ -885,8 +885,8 @@ parity) · ⚠️ **ผลลัพธ์ย้อนหลังไม่นิ
 | | แค็ตตาล็อกประกาศ | v1 implement จริง | M7 ทำ |
 |---|---|---|---|
 | `supports_battery` | 9 รุ่น | 3 (CEWE — `_cewe_battery.py`) | CEWE 3 |
-| `supports_energy_summary` | 6 รุ่น | **1** (`smw110`) | `smw110` + TCC ×5 *(รอ probe ยืนยัน `E=1..4`)* |
-| `supports_special_days` | 6 รุ่น | **1** (`smw110`) | `smw110` *(+TCC ถ้า probe เจอ `0.0.11.0.0.255`)* |
+| `supports_energy_summary` | 6 รุ่น | **1** (`smw110`) | `smw110` + TCC ×5 — ยืนยันแล้วด้วย probe ST-3CL จริง 2026-08-11: ทะเบียนสะสม `1.0.{1,2,3,4}.8.{0..4}.255` ตอบครบ 20/20 (`E=1..4` รวมอยู่ในนั้นด้วย) |
+| `supports_special_days` | 6 รุ่น | **1** (`smw110`) | `smw110` + TCC ×5 — probe ST-3CL เดียวกันอ่าน `0.0.11.0.0.255` ได้ 82 รายการ |
 
 `read_battery_status()` / `read_energy_registers()` / `read_special_days()` เป็น **capability method
 บน `MeterDriver`** default โยน `NotImplementedError` — generic code ถามไดรเวอร์ ไม่ถามแค็ตตาล็อก

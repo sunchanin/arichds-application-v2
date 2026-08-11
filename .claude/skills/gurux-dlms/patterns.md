@@ -20,6 +20,7 @@ Two provenances are marked throughout, and the difference matters:
 - [GXDateTime handling](#gxdatetime-handling) — *v1-proven*
 - [Meter-local time in selective access](#meter-local-time-in-selective-access) — *v1-proven*
 - [Ambiguous COSEM class retry](#ambiguous-cosem-class-retry) — *v1-proven*
+- [Special Days Table (class 11) and the wildcard year](#special-days-table-class-11-and-the-wildcard-year) — *in v2*
 - [Gotcha checklist](#gotcha-checklist)
 
 ## Connect / disconnect lifecycle
@@ -223,6 +224,66 @@ add an ambiguous-class retry to a path the probe uses, swallow the "inconsistent
 case *inside* the retry — otherwise a class mismatch surfaces to the operator as "the meter
 rejected the credentials", sending them to fix a password that was never wrong.
 
+## Special Days Table (class 11) and the wildcard year
+
+*In v2*: `app/src/arichds/acquisition/drivers/_dlms.py` — `SPECIAL_DAYS_OBIS`,
+`read_energy_registers_via()` / `read_special_days_via()`, and the pure classifier
+`_special_day_entry_from_gx()`. Driven from `smw110.py`/`smart_tcc.py`'s
+`read_special_days()`/`read_energy_registers()`, which just call through (M7-1, issue #28).
+Confirmed on real hardware 2026-08-11: the ST-3CL's Special Days Table answered 82 entries, and
+all 20 of the standalone energy registers (`1.0.{1,2,3,4}.8.{0..4}.255`) answered with correct
+units.
+
+A `GXDLMSSpecialDaysTable` is COSEM class 11 — `read_register()` cannot read it (it falls through
+to `GXDLMSData` and fails with "inconsistent Class or object"). Construct the object directly,
+append it, and read attribute 2; Gurux parses the wire array onto `obj.entries` (a list of
+`GXDLMSSpecialDay`), never onto the `read()` return value:
+
+```python
+obj = GXDLMSSpecialDaysTable("0.0.11.0.0.255")
+client.objects.append(obj)
+reader.read(obj, 2)
+for entry in obj.entries:            # entry.index, entry.date (a GXDate or None), entry.dayId
+    ...
+```
+
+**The wildcard-year trap.** An "annual" (recurs every year) entry's `date` is a `GXDate` whose
+wire year field was `0xFFFF`. `_GXCommon.getDate` (`gurux_dlms/internal/_GXCommon.py`) decodes
+that as: set `DateTimeSkips.YEAR` on `date.skip`, and substitute the placeholder **year 2000**
+into `date.value`. So:
+
+* **annual ⟺ `bool(entry.date.skip & DateTimeSkips.YEAR)`** — never inspect `.value.year` to
+  decide this; it is `2000` on the wire regardless of which real year, if any, the entry means.
+* **public ⟺ that bit is clear** — `.value.year` is then the real year.
+* `.value.month` / `.value.day` are real in both cases.
+
+A `str(GXDate)`-based implementation (v1's own `_parse_special_days`) is unreliable in two
+different ways, not one — verified against the installed `gurux_dlms 1.0.201`:
+
+```python
+str(wildcard_year_gx_date)   # '04/13'     — no year segment at all, the skip is invisible
+str(real_gx_date)            # '03/03/26'  — MM/DD/YY, but nothing in the string says so
+```
+
+* **Wildcard entries lose the year segment entirely** — `str()` renders `'04/13'`, not
+  `'04/13/2000'`, so a string-based caller cannot even see that a placeholder year exists, let
+  alone that it must be discarded.
+* **Dated entries are field-order-ambiguous** — `'02/12/25'` is MM/DD/YY only by inference
+  (it happens to match Makha Bucha 2025), and `'12/05'` vs `'05/12'` are both real Thai
+  holidays with nothing in the string to say which field is which. A parser has no way to tell
+  the two apart from the text alone.
+
+`_special_day_entry_from_gx()` never calls `str()` on the date at all — it reads `.skip` and
+`.value.{year,month,day}` directly, so neither failure mode can reach it. The placeholder `2000`
+`.value.year` carries when the skip bit is set must never reach a stored `Holiday.month`/`.day`
+pair.
+
+`entry.date` can be `None` (a malformed/uninitialised row) — treat that as "cannot classify",
+never as the string `"None"`.
+
+**Never call `GXDLMSSpecialDaysTable.insert()`/`.delete()`** — both issue `client.method(...)`
+calls that write to the meter (CLAUDE.md: this product only ever reads).
+
 ## Gotcha checklist
 
 - **`client.objects.append(obj)` before `reader.read(obj, …)`** — the client must know the
@@ -250,3 +311,6 @@ rejected the credentials", sending them to fix a password that was never wrong.
   attribute (`CLAUDE.md` invariant; `METER_SERIAL_OBIS` is the worked example).
 - **Reads run under the Transport Endpoint lock** and Manual Reads outrank background ticks
   (ADR 0006) — do not open a second connection to an endpoint you already hold.
+- **A Special Days Table wildcard year decodes as the placeholder `2000`** on `.value.year` —
+  check `date.skip & DateTimeSkips.YEAR` to tell "annual" from "public", never `.value.year`
+  directly.

@@ -193,6 +193,17 @@ LOG_FILE_BACKUP_COUNT: Final[int] = 5
 ERROR_LICENSE_INVALID: Final[str] = "LICENSE_INVALID"
 ERROR_FEATURE_DISABLED: Final[str] = "FEATURE_DISABLED"
 
+# ─── Energy Summary (SPEC/CONTEXT.md, ADR 0012, M7-1 issue #28) ───────────────
+# The Time-of-Use peak window, pre-shifted to UTC for ICT (local 09:00-22:00,
+# METER_LOCAL_UTC_OFFSET_HOURS = +7) — carried over from v1
+# `constants.py:299-300` (`TOU_PEAK_START_UTC` / `TOU_PEAK_END_UTC`). A
+# product constant, never a request parameter or a `settings` key (ADR 0012:
+# a second retroactive knob would move the numbers with nothing in the world
+# to justify the move — unlike the Holiday table, which is the one knob that
+# moves the summary toward the truth).
+TOU_PEAK_START_UTC: Final[int] = 2
+TOU_PEAK_END_UTC: Final[int] = 15
+
 # ─── Feature entitlement (SPEC §3.9, M6b issue #22) ───────────────────────────
 # Enabled = `.env FEATURES ∩ license features`. Eight sellable keys — the same
 # set v1 sold — plus one ops-only key that `.env` alone controls and the

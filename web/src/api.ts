@@ -340,6 +340,146 @@ export interface RecordsGrid {
 }
 
 /**
+ * One local calendar day's Time-of-Use buckets, from `GET /api/energy/summary`
+ * (M7-1, issue #28; CONTEXT.md — Energy Summary). Only active energy —
+ * import and export, never reactive (decision 8). **Derived, never stored**
+ * (ADR 0012): a day absent from the response simply has no stored Interval
+ * Reading in range, mirroring `api/records.py`'s own live-count rule.
+ */
+export interface EnergySummaryDay {
+  /** The local calendar day, `YYYY-MM-DD`. */
+  date: string;
+  peak_import_kwh: number;
+  offpeak_import_kwh: number;
+  holiday_import_kwh: number;
+  total_import_kwh: number;
+  peak_export_kwh: number;
+  offpeak_export_kwh: number;
+  holiday_export_kwh: number;
+  total_export_kwh: number;
+}
+
+export interface EnergySummaryReport {
+  days: EnergySummaryDay[];
+}
+
+/**
+ * One stored `energy_register_readings` row, from `GET`/`POST /api/energy/registers*`
+ * (M7-1, issue #28; CONTEXT.md — Energy Registers). Twenty measurement
+ * columns, all `number | null` — `null` means the meter's address refused,
+ * never `0` (mirrors `BillingRow`'s own rule).
+ */
+export interface EnergyRegisterRow {
+  id: number;
+  device_id: number;
+  /** UTC, ISO-8601 — **our** clock, truncated to whole seconds, not the meter's. */
+  read_at: string;
+  meter_serial: string | null;
+
+  import_active_kwh_total: number | null;
+  import_active_kwh_rate_a: number | null;
+  import_active_kwh_rate_b: number | null;
+  import_active_kwh_rate_c: number | null;
+  import_active_kwh_rate_d: number | null;
+
+  export_active_kwh_total: number | null;
+  export_active_kwh_rate_a: number | null;
+  export_active_kwh_rate_b: number | null;
+  export_active_kwh_rate_c: number | null;
+  export_active_kwh_rate_d: number | null;
+
+  import_reactive_kvarh_total: number | null;
+  import_reactive_kvarh_rate_a: number | null;
+  import_reactive_kvarh_rate_b: number | null;
+  import_reactive_kvarh_rate_c: number | null;
+  import_reactive_kvarh_rate_d: number | null;
+
+  export_reactive_kvarh_total: number | null;
+  export_reactive_kvarh_rate_a: number | null;
+  export_reactive_kvarh_rate_b: number | null;
+  export_reactive_kvarh_rate_c: number | null;
+  export_reactive_kvarh_rate_d: number | null;
+}
+
+/**
+ * What `POST /api/energy/registers/read` did. A live-read failure (a
+ * connection error, a busy endpoint) is a verdict on `error`, never an
+ * HTTP error status — mirrors `TestConnectionResult` ("always arrives on a
+ * 200 — the verdict is in here").
+ */
+export interface EnergyRegisterReadResult {
+  row: EnergyRegisterRow | null;
+  error: string | null;
+}
+
+/** Which of the two Holiday kinds a row is (CONTEXT.md — Holiday). */
+export type HolidayKind = "annual" | "public";
+
+/** One stored Holiday row, from `GET /api/holidays`. Machine-wide — no `device_id`. */
+export interface Holiday {
+  id: number;
+  kind: HolidayKind;
+  name: string;
+  /** `YYYY-MM-DD`, `public` only — `null` for `annual`. */
+  date: string | null;
+  /** 1-12, `annual` only — `null` for `public`. */
+  month: number | null;
+  /** 1-31, `annual` only — `null` for `public`. */
+  day: number | null;
+}
+
+/** The body `POST`/`PATCH /api/holidays` and each entry of a JSON import
+ * document take. Exactly one of `date` or `month`+`day` is set, matching
+ * `kind` — the API 422s on any other shape, including 29 February as `annual`. */
+export interface HolidayInput {
+  kind: HolidayKind;
+  name: string;
+  date?: string | null;
+  month?: number | null;
+  day?: number | null;
+}
+
+/** The JSON export/import document shape (decision 14) — the whole calendar,
+ * as one file that travels between machines. */
+export interface HolidayDocument {
+  version: number;
+  holidays: HolidayInput[];
+}
+
+/** What `POST /api/holidays/import-from-meter` did. */
+export interface HolidayImportFromMeterResult {
+  imported: Holiday[];
+  /** How many of the meter's own entries collided with another of the
+   * meter's entries and were dropped, keeping the first (decision 15). */
+  skipped: number;
+}
+
+/**
+ * One entry off a meter's own Special Days Table, from `GET /api/special-days`
+ * (M7-1, issue #28) — read-through, never stored. The annual/public split
+ * is already resolved by the driver (CONTEXT.md — Holiday): `year` is
+ * `null` for an `annual` entry, never the wire's `2000` placeholder.
+ */
+export interface SpecialDay {
+  index: number;
+  day_id: number;
+  kind: HolidayKind;
+  year: number | null;
+  month: number;
+  day: number;
+}
+
+/**
+ * What `GET /api/special-days` returned. A live-read failure is a verdict
+ * on `error`, never an HTTP error status — `entries` is `[]` both when the
+ * meter genuinely holds nothing and when `error` is set.
+ */
+export interface SpecialDaysReadResult {
+  entries: SpecialDay[];
+  error: string | null;
+}
+
+/**
  * The machine-wide display-unit setting — `"kilo"` (kW/kWh/kvar/kvarh,
  * today's behaviour) or `"base"` (W/Wh/var/varh), from
  * `GET`/`PUT /api/settings/display`. One value for the whole machine, not
@@ -801,4 +941,59 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ display_unit_scale: scale }),
     }),
+
+  /**
+   * The Time-of-Use daily totals for one device (M7-1, issue #28). Both
+   * dates are local, inclusive, `YYYY-MM-DD` — the server refuses a range
+   * over 31 days with 422, the same bound `records()` uses.
+   */
+  energySummary: (deviceId: number, startDate: string, endDate: string) =>
+    request<EnergySummaryReport>(
+      `/api/energy/summary?device_id=${deviceId}&start_date=${startDate}&end_date=${endDate}`,
+    ),
+
+  /** Every stored Energy Registers snapshot for one device, newest first. */
+  energyRegisters: (deviceId: number) => request<EnergyRegisterRow[]>(`/api/energy/registers?device_id=${deviceId}`),
+
+  /**
+   * Read the meter's Energy Registers now, through the Manual Read lock.
+   * A live-read failure comes back as `{row: null, error: "…"}`, not a
+   * thrown error — the caller renders `result.error` the way Test
+   * Connection's `message` is rendered.
+   */
+  readEnergyRegisters: (deviceId: number) =>
+    request<EnergyRegisterReadResult>(`/api/energy/registers/read?device_id=${deviceId}`, { method: "POST" }),
+
+  /** Every stored Holiday, machine-wide. Any authenticated role. */
+  listHolidays: () => request<Holiday[]>("/api/holidays"),
+
+  /** Add one Holiday — admin-only. */
+  createHoliday: (input: HolidayInput) =>
+    request<Holiday>("/api/holidays", { method: "POST", body: JSON.stringify(input) }),
+
+  /** Replace one Holiday's fields in place — admin-only. */
+  updateHoliday: (id: number, input: HolidayInput) =>
+    request<Holiday>(`/api/holidays/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+
+  /** Remove one Holiday — admin-only. */
+  deleteHoliday: (id: number) => request<boolean>(`/api/holidays/${id}`, { method: "DELETE" }),
+
+  /** The whole calendar as the JSON document (decision 14) — the caller
+   * saves this as a Blob download. */
+  exportHolidays: () => request<HolidayDocument>("/api/holidays/export"),
+
+  /** Replace the whole calendar with *document* — admin-only. Refuses (422)
+   * a document with a duplicate key or a 29-February annual entry. */
+  importHolidays: (document: HolidayDocument) =>
+    request<Holiday[]>("/api/holidays/import", { method: "POST", body: JSON.stringify(document) }),
+
+  /** Replace the whole calendar with one device's Special Days Table —
+   * admin-only. */
+  importHolidaysFromMeter: (deviceId: number) =>
+    request<HolidayImportFromMeterResult>(`/api/holidays/import-from-meter?device_id=${deviceId}`, {
+      method: "POST",
+    }),
+
+  /** Read one device's Special Days Table now, read-through — nothing is stored. */
+  specialDays: (deviceId: number) => request<SpecialDaysReadResult>(`/api/special-days?device_id=${deviceId}`),
 };

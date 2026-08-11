@@ -169,6 +169,20 @@ JSON file. 29 February is refused as annual, because in a non-leap year it would
 and say nothing about why.
 _Avoid_: day off, non-working day, weekend flag (a weekend is a Holiday, not a separate kind)
 
+**Special Day**:
+A row in a **meter's own** COSEM class-11 Special Days Table (`0.0.11.0.0.255`) — the calendar
+the meter uses to switch its internal tariff, carrying an index, a date and a `dayId`. It is
+**read and displayed, never written**, and never stored: the Special Days page shows what the
+meter holds right now.
+
+It is not a Holiday, and the difference is who owns it. A Holiday is ours and decides our TOU
+buckets; a Special Day is the meter's and decides the meter's. They meet at exactly one place:
+an operator may **import** a meter's Special Days as the starting set of Holidays, because a
+meter in service already carries the local calendar (an ST-3CL served 82 entries to 2041). That
+import is one-way and it is a convenience, not a sync — nothing afterwards keeps the two in
+step, and a `dayId` is the meter's tariff code, not our word for "holiday".
+_Avoid_: meter holiday, special date, holiday table (that's ours)
+
 **Retention**:
 The daily job that deletes rows past 90 days — Interval Readings by `read_at`, Device Events by
 `created_at`. **Device Events go uniformly**: a status transition the machine wrote and an

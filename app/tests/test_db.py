@@ -38,7 +38,7 @@ class TestMigration:
 
     def test_only_the_shipped_modules_tables_exist(self, migrated_db: Settings) -> None:
         """M1 landed two tables, M2-1 two more and M3-2 one; M6a and M6b add
-        one each; the rest arrive with their own modules.
+        one each; M7-1 adds two more; the rest arrive with their own modules.
 
         ``device_events`` is the only table M3 adds. There is deliberately no
         ``device_status`` and no ``device_heartbeats`` beside it (ADR 0004):
@@ -47,7 +47,10 @@ class TestMigration:
         is SPEC §4's eleven-table list — a plain key/value table with
         ``capture_dir`` as its first key (ADR 0010), never a
         ``billing_captures`` table (a capture's path is derived from
-        convention, never stored).
+        convention, never stored). ``holidays`` and ``energy_register_readings``
+        (M7-1, issue #28) are the last two — there is deliberately no
+        ``energy_summary`` table beside them (ADR 0012): the Summary Report is
+        aggregated live, never stored.
         """
         tables = set(inspect(get_engine()).get_table_names()) - {"alembic_version"}
         assert tables == {
@@ -58,6 +61,8 @@ class TestMigration:
             "device_events",
             "billing_readings",
             "settings",
+            "holidays",
+            "energy_register_readings",
         }
 
     def test_wal_is_enabled(self, migrated_db: Settings) -> None:

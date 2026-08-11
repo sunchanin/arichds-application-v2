@@ -24,7 +24,13 @@ from datetime import datetime
 from typing import Any
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers.base import BillingReading, IntervalReading, MeterDriver
+from arichds.acquisition.drivers.base import (
+    BillingReading,
+    EnergyRegisterReading,
+    IntervalReading,
+    MeterDriver,
+    SpecialDayEntry,
+)
 from arichds.constants import SOURCE_DLMS
 
 #: The serial the fake meter reports unless a test says otherwise.
@@ -79,6 +85,18 @@ class FakeMeterState:
             therefore the open/closed discriminator) by list order.
         billing_reads: How many times ``read_billing()`` was called.
         billing_error: What a failing billing read raises.
+        energy_registers_reading: What :meth:`FakeSmw110Driver.read_energy_registers`
+            replays (M7-1, issue #28) — a single snapshot, not a list, unlike
+            :attr:`billing_rows`.
+        energy_registers_reads: How many times ``read_energy_registers()``
+            was called.
+        energy_registers_error: What a failing Energy Registers read raises.
+        special_days_entries: The whole table
+            :meth:`FakeSmw110Driver.read_special_days` replays (M7-1, issue
+            #28).
+        special_days_reads: How many times ``read_special_days()`` was
+            called.
+        special_days_error: What a failing Special Days read raises.
     """
 
     meter_serial: str | None = DEFAULT_FAKE_SERIAL
@@ -99,6 +117,12 @@ class FakeMeterState:
     billing_rows: list[BillingReading] = field(default_factory=list)
     billing_reads: int = 0
     billing_error: Exception | None = None
+    energy_registers_reading: EnergyRegisterReading | None = None
+    energy_registers_reads: int = 0
+    energy_registers_error: Exception | None = None
+    special_days_entries: list[SpecialDayEntry] = field(default_factory=list)
+    special_days_reads: int = 0
+    special_days_error: Exception | None = None
 
 
 _STATE = FakeMeterState()
@@ -271,3 +295,39 @@ class FakeSmw110Driver(FakeMeterDriver):
             raise error
 
         return rows
+
+    def supports_energy_registers(self) -> bool:
+        """Yes — like the real ``Smw110Driver``/``SmartTccDriver`` (M7-1,
+        issue #28)."""
+        return True
+
+    def read_energy_registers(self) -> EnergyRegisterReading:
+        """Record the call, honour the failure knob, replay the seeded
+        snapshot — or a bare default when the test set none."""
+        with _GUARD:
+            _STATE.energy_registers_reads += 1
+            error = _STATE.energy_registers_error
+            reading = _STATE.energy_registers_reading
+
+        if error is not None:
+            raise error
+
+        return reading if reading is not None else EnergyRegisterReading(source=self.source, meter_serial=None)
+
+    def supports_special_days(self) -> bool:
+        """Yes — like the real ``Smw110Driver``/``SmartTccDriver`` (M7-1,
+        issue #28)."""
+        return True
+
+    def read_special_days(self) -> list[SpecialDayEntry]:
+        """Record the call, honour the failure knob, replay the seeded
+        table whole — an empty list is a valid, unremarkable answer."""
+        with _GUARD:
+            _STATE.special_days_reads += 1
+            error = _STATE.special_days_error
+            entries = list(_STATE.special_days_entries)
+
+        if error is not None:
+            raise error
+
+        return entries

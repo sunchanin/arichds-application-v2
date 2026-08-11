@@ -54,13 +54,19 @@ MySQL, and ~30 tables.
   0011 (a model's capabilities come from its **driver**, not the catalog — **reverses** the
   "catalog copied from v1 verbatim, locked" rule for the three capability booleans only, because
   v1's flags claimed 9/6/6 models against drivers that implement 3/1/1; keys, brands, order and
-  fixed passwords stay locked; a flag turns on from a meter, never a datasheet; *not yet
-  implemented — lands with M7*) ·
+  fixed passwords stay locked; a flag turns on from a meter, never a datasheet; **partially
+  implemented** with issue #28/M7-1: `supports_energy_registers()`/`read_energy_registers()` and
+  `supports_special_days()`/`read_special_days()` landed on `MeterDriver`, and `test_catalog.py`
+  now asserts the driver-catalog correspondence instead of a hardcoded list; the
+  `supports_energy_summary`/`supports_special_days` *values* already matched what this ADR
+  proposes, confirmed on real ST-3CL hardware 2026-08-11 — no flag flip was needed; `supports_battery`
+  and `read_battery_status()` are still outstanding, for issue #29) ·
   0012 (the Energy Summary is **derived on every request and deliberately not reproducible** —
   adding a Holiday today changes what last January reports tomorrow, and that is the point,
   because holidays are rules a human enters late; no summary table, no cache; the peak window
   stays a constant so there is only ever **one** retroactive knob and it tracks reality;
-  *not yet implemented — lands with M7*) ·
+  **fully implemented** with issue #28/M7-1: `GET /api/energy/summary` aggregates
+  `load_profile_readings` live, bounded to 31 local days) ·
   0013 (display units are a **view**, an appended file is a **contract** — the machine-wide
   kW/W setting reaches anything rendered per request, and never the Load Profile CSV, which
   appends for months under a header written once; **reverses** v1's `divide_by_1000`, which

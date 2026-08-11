@@ -51,14 +51,14 @@ from gurux_dlms.enums import Unit
 from gurux_dlms.objects import GXDLMSExtendedRegister, GXDLMSProfileGeneric, GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers._dlms import DlmsDriver
+from arichds.acquisition.drivers._dlms import DlmsDriver, read_energy_registers_via, read_special_days_via
 from arichds.acquisition.drivers._profile import (
     build_fields,
     coerce_clock_cell,
     meter_local_to_utc,
     positions_by_obis_attr,
 )
-from arichds.acquisition.drivers.base import BillingReading, IntervalReading
+from arichds.acquisition.drivers.base import BillingReading, EnergyRegisterReading, IntervalReading, SpecialDayEntry
 from arichds.acquisition.obis import logger_id_for_profile
 from arichds.constants import TCP_READ_TIMEOUT_SEC, WH_TO_KWH_DIVISOR
 
@@ -662,3 +662,26 @@ class Smw110Driver(DlmsDriver):
                 )
             )
         return readings
+
+    def supports_energy_registers(self) -> bool:
+        """Yes — the twenty standalone ``D=8`` energy registers (M7-1, issue
+        #28)."""
+        return True
+
+    def read_energy_registers(self) -> EnergyRegisterReading:
+        """Read the twenty standalone energy registers — the shared
+        :func:`~arichds.acquisition.drivers._dlms.read_energy_registers_via`
+        mechanism; this model needs no override of the read itself, only of
+        the capability flag."""
+        return read_energy_registers_via(self)
+
+    def supports_special_days(self) -> bool:
+        """Yes — the COSEM class-11 Special Days Table (``0.0.11.0.0.255``,
+        M7-1, issue #28)."""
+        return True
+
+    def read_special_days(self) -> list[SpecialDayEntry]:
+        """Read the Special Days Table — the shared
+        :func:`~arichds.acquisition.drivers._dlms.read_special_days_via`
+        mechanism."""
+        return read_special_days_via(self)

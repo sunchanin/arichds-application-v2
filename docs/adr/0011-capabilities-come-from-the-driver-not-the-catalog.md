@@ -1,7 +1,14 @@
 # A model's capabilities come from its driver, not from the catalog
 
-Status: accepted (2026-08-11, owner decision during M7 grilling). **Not yet implemented** — the
-flag corrections and the three new capability methods land with M7.
+Status: accepted (2026-08-11, owner decision during M7 grilling). **Partially implemented**, M7-1
+(issue #28): `supports_energy_registers()`/`read_energy_registers()` and
+`supports_special_days()`/`read_special_days()` landed on `MeterDriver`, implemented on `smw110.py`
+and `smart_tcc.py`, and `test_catalog.py` now asserts the driver-catalog correspondence this ADR
+calls for (`TestEnergySummaryAndSpecialDaysFlagsMatchTheDriver`) in place of the two hardcoded-list
+tests it names below. The `supports_energy_summary`/`supports_special_days` *values* already
+matched what this ADR proposes — the 2026-08-11 ST-3CL probe (`docs/meter-notes/`) confirmed both
+on real hardware, so no flag flip was needed this round. `read_battery_status()` and the
+`supports_battery` correction are still outstanding — that is issue #29's slice, not this one.
 
 Reverses a rule this repo states about itself. `CLAUDE.md` lists among the invariants:
 

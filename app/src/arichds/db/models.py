@@ -453,6 +453,120 @@ class Setting(Base):
     )
 
 
+class Holiday(Base):
+    """One machine-wide Holiday row — the calendar the Energy Summary's
+    Holiday bucket is judged against (M7-1, issue #28; CONTEXT.md — Holiday).
+
+    **No ``device_id``** — holidays are machine-wide, not per-meter (decision
+    12). Two kinds, mutually exclusive by which pair of columns is populated:
+
+    * ``kind="annual"``: ``month`` + ``day`` set, ``date`` NULL — recurs every
+      year (29 February is refused at the API layer, never stored).
+    * ``kind="public"``: ``date`` set, ``month``/``day`` NULL — one exact day.
+
+    Both partial unique indexes below exist so a JSON import's duplicate
+    collision is a database-enforced 422, never a silent double-count in the
+    Energy Summary's Holiday predicate.
+
+    Attributes:
+        id: Surrogate primary key.
+        kind: ``"annual"`` or ``"public"``.
+        name: Operator-facing label. For a meter-imported row this is
+            ``f"Meter day ID {day_id}"`` (decision 17) — the meter carries no
+            name field, only a tariff-table code.
+        date: The exact date, ``public`` only.
+        month: The recurring month, ``annual`` only.
+        day: The recurring day-of-month, ``annual`` only.
+    """
+
+    __tablename__ = "holidays"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str] = mapped_column(String(128))
+    date: Mapped[date | None] = mapped_column(Date, default=None)
+    month: Mapped[int | None] = mapped_column(default=None)
+    day: Mapped[int | None] = mapped_column(default=None)
+
+    __table_args__ = (
+        Index("uq_holidays_public_date", "date", unique=True, sqlite_where=text("kind = 'public'")),
+        Index("uq_holidays_annual_month_day", "month", "day", unique=True, sqlite_where=text("kind = 'annual'")),
+    )
+
+
+class EnergyRegisterReading(Base):
+    """One dated snapshot of a meter's cumulative Energy Registers (M7-1,
+    issue #28; CONTEXT.md — Energy Registers).
+
+    Twenty flat columns, all nullable, mirroring the naming
+    :class:`BillingReading` already uses — a total plus four tariffs
+    (``rate_a``..``rate_d``) for each of the four quantities (import/export x
+    active/reactive). Unlike a Billing Reading this is not on any cadence at
+    all: it exists only when a person presses Read now on the Meter Registers
+    tab (decision 6 — manual only, no scheduler job).
+
+    Attributes:
+        id: Surrogate primary key.
+        device_id: Owning device.
+        read_at: **Our** clock, truncated to whole seconds (decision 10) — not
+            read from the meter. This is what makes ``(device_id, read_at)``
+            mean "two clicks in one second are the same reading."
+        source: Which acquisition path produced it (``dlms``).
+        meter_serial: Snapshot per row, or None.
+        created_at: When this row was first written (UTC).
+        updated_at: When this row last changed (UTC) — the row is upserted in
+            place on a same-second re-read.
+        import_active_kwh_total/rate_a/rate_b/rate_c/rate_d: OBIS
+            ``1.0.1.8.{0..4}.255``.
+        export_active_kwh_total/rate_a/rate_b/rate_c/rate_d: OBIS
+            ``1.0.2.8.{0..4}.255``.
+        import_reactive_kvarh_total/rate_a/rate_b/rate_c/rate_d: OBIS
+            ``1.0.3.8.{0..4}.255``.
+        export_reactive_kvarh_total/rate_a/rate_b/rate_c/rate_d: OBIS
+            ``1.0.4.8.{0..4}.255``.
+    """
+
+    __tablename__ = "energy_register_readings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str] = mapped_column(String(16))
+    meter_serial: Mapped[str | None] = mapped_column(String(64), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    import_active_kwh_total: Mapped[float | None] = mapped_column(default=None)
+    import_active_kwh_rate_a: Mapped[float | None] = mapped_column(default=None)
+    import_active_kwh_rate_b: Mapped[float | None] = mapped_column(default=None)
+    import_active_kwh_rate_c: Mapped[float | None] = mapped_column(default=None)
+    import_active_kwh_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    export_active_kwh_total: Mapped[float | None] = mapped_column(default=None)
+    export_active_kwh_rate_a: Mapped[float | None] = mapped_column(default=None)
+    export_active_kwh_rate_b: Mapped[float | None] = mapped_column(default=None)
+    export_active_kwh_rate_c: Mapped[float | None] = mapped_column(default=None)
+    export_active_kwh_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    import_reactive_kvarh_total: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvarh_rate_a: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvarh_rate_b: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvarh_rate_c: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvarh_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    export_reactive_kvarh_total: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvarh_rate_a: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvarh_rate_b: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvarh_rate_c: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvarh_rate_d: Mapped[float | None] = mapped_column(default=None)
+
+    device: Mapped[Device] = relationship()
+
+    __table_args__ = (UniqueConstraint("device_id", "read_at", name="uq_energy_register_readings_device_read_at"),)
+
+
 class DeviceEvent(Base):
     """One row recorded when something about a device *changes* (M3-2).
 
