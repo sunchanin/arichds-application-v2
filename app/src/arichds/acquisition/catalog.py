@@ -24,7 +24,13 @@ stops them from lying about each other.
 Fixed credentials per brand (server-side, from the customer answers):
 
 * CEWE — all models use password ``ABCD0001``.
-* Mitsubishi ``smw110`` — Low auth, password ``00000000000000000003``.
+* Mitsubishi ``smw110`` — Low auth. The value is :data:`MITSU_SMW110_FIXED_PASSWORD`
+  below and is deliberately not repeated in prose: it was wrong once already
+  (until 2026-08-10 the constant carried the password of the **retired** unit
+  ``1252008102``, so an operator adding either in-service unit got the wrong
+  password prefilled and the create-time probe failed ``AUTH_FAILED``), and a
+  second copy in a docstring is a second thing to miss. Both units in service
+  share one password — confirmed by the owner, 2026-08-10.
 * SMART TCC — does NOT use a simple password. It authenticates with HighGMAC +
   Security Suite 0 keys, which belong to the TCC driver (M4), so
   ``fixed_password`` is ``None`` here. No real TCC keys are stored in this
@@ -49,7 +55,7 @@ DLMS_DEFAULT_TCP_PORT: Final[int] = 4059
 
 # Fixed passwords per brand (server-side). See the module docstring.
 CEWE_FIXED_PASSWORD: Final[str] = "ABCD0001"
-MITSU_SMW110_FIXED_PASSWORD: Final[str] = "00000000000000000003"  # Low auth
+MITSU_SMW110_FIXED_PASSWORD: Final[str] = "47895612345896471324"  # Low auth
 
 
 class Brand(StrEnum):

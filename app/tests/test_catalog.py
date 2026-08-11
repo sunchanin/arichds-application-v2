@@ -128,7 +128,7 @@ class TestFixedPasswords:
             assert CATALOG[model].fixed_password == CEWE_FIXED_PASSWORD
 
     def test_smw110_has_its_own(self) -> None:
-        assert MITSU_SMW110_FIXED_PASSWORD == "00000000000000000003"
+        assert MITSU_SMW110_FIXED_PASSWORD == "47895612345896471324"
         assert CATALOG["smw110"].fixed_password == MITSU_SMW110_FIXED_PASSWORD
 
     def test_smart_tcc_has_none(self) -> None:

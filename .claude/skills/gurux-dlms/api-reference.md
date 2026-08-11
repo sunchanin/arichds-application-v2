@@ -146,9 +146,12 @@ Anything here can also be set directly on `settings.client` (e.g. `client.authen
 
 > Mitsubishi SMW110W4 (issue #9, TCP or serial) is documented in
 > `docs/meter-notes/smw110w4-scan.md` as **HDLC, LN referencing, 19200 8N1 on serial,
-> auth Low, password `00000000000000000003`, client 6** (not v1's hardcoded 5 — neither
-> live unit answers on it) **, physical server 1 and logical server 0** — the last part
-> meaning `-l 0` must be passed, which is easy to miss.
+> auth Low, client 6** (not v1's hardcoded 5 — neither live unit answers on it)
+> **, physical server 1 and logical server 0** — the last part meaning `-l 0` must be
+> passed, which is easy to miss. The password is `MITSU_SMW110_FIXED_PASSWORD` in
+> `app/src/arichds/acquisition/catalog.py` — read it there rather than from a copy
+> here, because the copy that used to sit on this line went stale when the customer
+> retired the meter it belonged to.
 
 ## Client / media objects
 

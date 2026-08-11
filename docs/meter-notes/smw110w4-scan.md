@@ -352,23 +352,63 @@ Two corollaries worth keeping:
 - **The `1.0.x.128.y` load-profile columns**: units known (percentage and phase
   angle), meaning not confirmed. Deliberately left unmapped until the customer
   says what they are — do not guess one into a product column.
-- **The CT ratio is not established.** The nameplate reads `CT /5A`, so this is a
-  transformer-operated meter and the registers carry secondary values. Nothing in
-  this scan resolves what the primary side is, and no parity claim about absolute
-  energy can be made until it does.
+- ~~**The CT ratio is not established.**~~ ✅ **Resolved 2026-08-11 — and the worry
+  was misplaced.** The site's CT/VT ratio is **40**, declared by the meter at
+  `0.0.96.51.1.255` ("Multiply Factor of energy and Demand") and visible in the
+  Mitsubishi tool's own export. But the meter **applies it internally**: the values
+  its DLMS interface serves are already primary. Verified by
+  `scripts/probe_lp_compare.py` against that export on unit `1232002892` — energy,
+  all three voltages and all three currents matched at **ratio 1.0000 across 142
+  intervals**. A register that *declares* a ratio is not the same as one that still
+  owes you the multiplication, and the nameplate alone cannot tell you which.
 - **Maximum-demand cells read `0`** across every billing row. Inside the accepted
   prefix, so it is what the meter reports; whether that is real is unknown.
 - **The older unit v1 read** (`1252008102`) is **retired — the customer no longer
   uses it**. [`mitsu-obis-scan.md`](mitsu-obis-scan.md) stays as the historical
   record of that meter; this document describes the units in service.
-- **`catalog.py`'s fixed password for this model belongs to the retired meter.**
-  `MITSU_SMW110_FIXED_PASSWORD` (`app/src/arichds/acquisition/catalog.py:52`) still
-  carries the password `mitsu-obis-scan.md` recorded for `1252008102`. The units in
-  service use a different one — confirmed today, because the read-path probe
-  authenticated against both with a password the operator supplied, not that
-  constant. **An operator adding either unit through the Devices page today would get
-  the wrong password prefilled and the create-time probe would fail `AUTH_FAILED`.**
-  Two decisions are owed before this is fixed: whether both units share one password,
-  and whether a customer credential should keep living as a literal in source at all
-  now that eight more models are coming at M4c. The value is deliberately not written
-  here — this file is committed.
+- ~~**`catalog.py`'s fixed password for this model belongs to the retired meter.**~~
+  ✅ **Fixed 2026-08-10.** `MITSU_SMW110_FIXED_PASSWORD`
+  (`app/src/arichds/acquisition/catalog.py`) used to carry the password
+  `mitsu-obis-scan.md` records for the retired unit `1252008102`, so **an operator
+  adding either in-service unit through the Devices page got the wrong password
+  prefilled and the create-time probe failed `AUTH_FAILED`.** Both owed decisions were
+  taken by the owner on the same day: **both units in service share one password**, and
+  **the credential keeps living as a literal in source** (same treatment as
+  `CEWE_FIXED_PASSWORD`; revisit for all nine models together, not for this one alone).
+  The value is deliberately not written here — this file is committed. `mitsu-obis-scan.md`
+  keeps the retired meter's password because that is what it is: a historical record.
+
+## Verified against the manufacturer's own export (2026-08-11)
+
+Until this date every check on this model compared our numbers against **the meter's
+own registers**, which cannot detect an error we and the meter share. The customer's
+Mitsubishi tool export (`reading_01232002892_*.csv`) is the first outside reference the
+project has had. Both read paths were checked against it on unit `1232002892`
+(`192.168.1.31:4059`) and both match exactly.
+
+**Load profile** — `scripts/probe_lp_compare.py`, 142 matched 15-minute intervals:
+
+| Our field | Vendor column | Ratio |
+|---|---|---|
+| `import_active_kwh` | `Energy Wh(imp)` | 1.0000 (85 non-zero pairs) |
+| `volt_l1` / `l2` / `l3` | `Voltage A` / `B` / `C` | 1.0000 (142 pairs) |
+| `current_l1` / `l2` / `l3` | `Current A` / `B` / `C` | 1.0000 (85 non-zero pairs) |
+
+**Billing** — `scripts/probe_billing_scalers.py --all-rows` against the export's
+`---- Previous 1..12 ----` sections: **48 of 48 values identical, 0 different**, across
+all twelve closed periods (bill dates 01/09/2025 → 01/08/2026) for import active
+total / T1 / T2 / T3. Byte-exact in raw Wh, e.g. `198685030` on both sides for the
+period closing 01/08/2026. The driver's newest-first row order maps onto `Previous
+1..12` with no offset, which also confirms the bill-date handling and the
+`T1→rate_a / T2→rate_b / T3→rate_c` tariff mapping.
+
+**Export columns stay NULL, and that is correct.** Three independent facts agree:
+the meter refuses `scaler_unit` on every `C=2`/`C=4` address even when asked through
+the object it declares itself; **the manufacturer's own tool reports `N/A` for the same
+columns**; and the paths that do resolve are now proven exact. Storing an inferred
+value would show more than the vendor dares to.
+
+*Caveat worth knowing:* the vendor's `Previous` sections also report `N/A` for
+`1.0.3.8.0.255` (import reactive total) even though that register reads fine live and
+our buffer carries it. That is a limitation of their export, not evidence about the
+data.
