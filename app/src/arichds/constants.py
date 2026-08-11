@@ -84,6 +84,19 @@ LOAD_PROFILE_INTERVAL_SEC: Final[int] = 900
 # the SPEC-mandated cadence, not a tuned value.
 BILLING_INTERVAL_SEC: Final[int] = 86400
 
+# ─── Battery (SPEC §3.7, M7-2, issue #29) ──────────────────────────────────────
+# How often the Scheduler runs the battery cycle over every device. D1: the
+# interval is one hour, not one day, because of `locks.py::try_acquire_background`
+# — a background tick that cannot have the Transport Endpoint is *skipped, never
+# queued* (ADR 0006), so a daily job that collides once with the load-profile
+# cycle or a Manual Read on a shared line loses the whole day with no second
+# attempt. Hourly, combined with the day-guard in `battery_cycle()` (a device
+# already read today is skipped), gives 24 chances at exactly the same number
+# of meter reads as a daily job, with no retry logic and no scheduler state.
+# Do not "simplify" this back to daily — it would quietly delete the retry.
+BATTERY_INTERVAL_SEC: Final[int] = 3600
+JOB_BATTERY: Final[str] = "battery"
+
 # ─── Scheduler (SPEC §4, M5a-2) ───────────────────────────────────────────────
 # How long `Scheduler.stop()` waits for the one job thread to finish the job it
 # is inside. Deliberately shorter than a worst-case load-profile cycle (which is

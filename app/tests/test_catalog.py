@@ -165,21 +165,26 @@ class TestLabelsAndCapabilities:
     def test_every_model_has_a_label(self) -> None:
         assert all(spec.ui_label for spec in CATALOG.values())
 
-    def test_every_model_reports_battery(self) -> None:
-        assert all(spec.supports_battery for spec in CATALOG.values())
-
 
 @pytest.mark.parametrize("model", sorted(_registry()))
-class TestEnergySummaryAndSpecialDaysFlagsMatchTheDriver:
-    """M7-1, issue #28 — replaces the two hardcoded-list tests
+class TestCapabilityFlagsMatchTheDriver:
+    """M7-1/M7-2, issues #28/#29 — replaces the hardcoded-list tests
     (``test_cewe_models_have_no_energy_summary_or_special_days`` /
-    ``test_the_new_brands_have_both``) with one correspondence test: the
-    catalog's ``supports_energy_summary``/``supports_special_days`` flags
-    gate the *page*, the driver's ``supports_energy_registers()``/
-    ``supports_special_days()`` methods name the *read* (decision 3) — this
-    is what proves the two can never drift apart, the way a hardcoded list
-    cannot (ADR 0011: "a flag turned on with no driver behind it").
+    ``test_the_new_brands_have_both`` / ``test_every_model_reports_battery``,
+    all gone now) with one correspondence test per flag: the catalog's
+    ``supports_battery``/``supports_energy_summary``/``supports_special_days``
+    flags gate the *page*, the driver's ``supports_battery()``/
+    ``supports_energy_registers()``/``supports_special_days()`` methods name
+    the *read* (decision 3) — this is what proves the two can never drift
+    apart, the way a hardcoded list cannot (ADR 0011: "a flag turned on with
+    no driver behind it").
     """
+
+    def test_supports_battery_matches_the_drivers_capability(self, model: str) -> None:
+        driver_cls = _registry()[model]
+        driver = driver_cls(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+
+        assert CATALOG[model].supports_battery == driver.supports_battery()
 
     def test_supports_energy_summary_matches_the_drivers_energy_registers_capability(self, model: str) -> None:
         driver_cls = _registry()[model]

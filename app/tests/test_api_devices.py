@@ -533,6 +533,14 @@ class TestCatalog:
         assert entry["supports_energy_summary"] is False
         assert entry["supports_special_days"] is False
 
+    def test_smw110_does_not_support_battery(self, admin_client: TestClient) -> None:
+        """M7-2, issue #29 — pins the flag in the direction that changed:
+        `smw110` has no `read_battery_status()` driver behind it, unlike the
+        three CEWE models above."""
+        data = admin_client.get("/api/devices/catalog").json()["data"]
+        entry = next(e for e in data if e["model"] == "smw110")
+        assert entry["supports_battery"] is False
+
     def test_the_old_models_endpoint_is_gone(self, admin_client: TestClient) -> None:
         """405, not 404: the path still matches ``/{device_id}``, which has no GET.
 

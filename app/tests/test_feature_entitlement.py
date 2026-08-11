@@ -18,11 +18,13 @@ from arichds.constants import FEATURE_KEYS, SELLABLE_FEATURE_KEYS
 from arichds.licensing.features import effective_features, feature_enabled
 from arichds.licensing.service import LicenseState
 
-#: The routers M6b/M7-1 gate (decision 6, issue #22; decision 18, issue #28)
-#: and the feature key each one requires. `/api/devices` is deliberately
-#: absent (decision 7). `/api/energy` and `/api/holidays` share
-#: `energy_summary` (decision 18 — both tabs and the calendar);
-#: `/api/special-days` gates on its own `special_days` key.
+#: The routers M6b/M7-1/M7-2 gate (decision 6, issue #22; decision 18, issue
+#: #28; D6, issue #29) and the feature key each one requires. `/api/devices`
+#: is deliberately absent (decision 7). `/api/energy` and `/api/holidays`
+#: share `energy_summary` (decision 18 — both tabs and the calendar);
+#: `/api/special-days` gates on its own `special_days` key; `/api/battery`
+#: gates on its own `battery` key too — the job that fills it is not
+#: feature-gated (D6), only the read-back API is.
 GATED_PREFIXES: dict[str, str] = {
     "/api/billing": "billing",
     "/api/load-profile": "load_profile",
@@ -30,6 +32,7 @@ GATED_PREFIXES: dict[str, str] = {
     "/api/energy": "energy_summary",
     "/api/holidays": "energy_summary",
     "/api/special-days": "special_days",
+    "/api/battery": "battery",
 }
 
 

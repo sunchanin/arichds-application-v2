@@ -480,6 +480,33 @@ export interface SpecialDaysReadResult {
 }
 
 /**
+ * One stored `battery_readings` row, from `GET /api/battery` (M7-2, issue
+ * #29; CONTEXT.md — Battery Reading). `status` is the raw charge/status
+ * value the meter reported at `0.0.96.6.1.255` — **stored verbatim, never
+ * interpreted**: no scaling, no threshold, no colour classification. `null`
+ * means the meter answered with nothing on that read, not that the read
+ * failed (a failed read stores no row at all). Written only by the hourly
+ * background job — there is no Read-now endpoint for battery.
+ */
+export interface BatteryRow {
+  id: number;
+  device_id: number;
+  device_name: string;
+  meter_serial: string | null;
+  /** UTC, ISO-8601 — **our** clock, not the meter's. */
+  read_at: string;
+  status: string | null;
+}
+
+/** One page of Battery Readings. `total` is the unpaged count the pager needs. */
+export interface BatteryPage {
+  items: BatteryRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
  * The machine-wide display-unit setting — `"kilo"` (kW/kWh/kvar/kvarh,
  * today's behaviour) or `"base"` (W/Wh/var/varh), from
  * `GET`/`PUT /api/settings/display`. One value for the whole machine, not
@@ -996,4 +1023,25 @@ export const api = {
 
   /** Read one device's Special Days Table now, read-through — nothing is stored. */
   specialDays: (deviceId: number) => request<SpecialDaysReadResult>(`/api/special-days?device_id=${deviceId}`),
+
+  /**
+   * One page of stored Battery Readings (M7-2, issue #29), newest
+   * `read_at` first. `deviceId` and the range are optional — mirrors
+   * `billing()`'s own optional filters, half-open on `read_at`: `startIso`
+   * included, `endIso` excluded. There is no Read-now variant — battery is
+   * background-only (D5).
+   */
+  battery: (
+    deviceId: number | undefined,
+    startIso: string | undefined,
+    endIso: string | undefined,
+    limit: number,
+    offset: number,
+  ) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (deviceId !== undefined) params.set("device_id", String(deviceId));
+    if (startIso !== undefined) params.set("start", startIso);
+    if (endIso !== undefined) params.set("end", endIso);
+    return request<BatteryPage>(`/api/battery?${params.toString()}`);
+  },
 };

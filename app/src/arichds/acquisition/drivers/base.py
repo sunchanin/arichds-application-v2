@@ -731,6 +731,45 @@ class MeterDriver(ABC):
             f"{type(self).__name__} has no Special Days Table — check supports_special_days() first"
         )
 
+    def supports_battery(self) -> bool:
+        """Whether this driver can read a battery status (M7-2, issue #29;
+        ADR 0011 — the driver is the authority, the catalog's
+        ``supports_battery`` flag only mirrors what a real driver
+        implements).
+
+        Non-abstract and ``False`` by default, the same pairing as
+        :meth:`supports_billing`. A model that can read the CEWE
+        battery-status register overrides this to ``True`` **and**
+        implements :meth:`read_battery_status`.
+
+        Returns:
+            False, unless a concrete driver says otherwise.
+        """
+        return False
+
+    def read_battery_status(self) -> str | None:
+        """Read the meter's battery status, verbatim and uninterpreted (M7-2,
+        issue #29).
+
+        Callable only when :meth:`supports_battery` returns ``True``.
+        Assumes :meth:`connect` succeeded.
+
+        Non-abstract and raising, rather than absent, so the caller never has
+        to ask ``hasattr`` — the same pairing and the same reason as
+        :meth:`read_billing`.
+
+        Returns:
+            The raw value as a string, or ``None`` when the meter answered
+            with nothing. **Never scaled, never thresholded, never
+            colour-classified** — the wire type is unconfirmed until a
+            real-meter read (D8), so the value is stored exactly as read.
+
+        Raises:
+            NotImplementedError: Always, on a driver that has no battery
+                status register.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no battery status — check supports_battery() first")
+
 
 class MeterConnectionError(RuntimeError):
     """Raised when a meter connection cannot be established or is lost."""

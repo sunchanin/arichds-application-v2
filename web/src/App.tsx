@@ -5,6 +5,7 @@ import { api, type LicenseStatus } from "./api";
 import { type Session, clearSession, getSession, onSessionChange, setSession } from "./auth";
 import { AppShell } from "./components/AppShell";
 import { Activation } from "./pages/Activation";
+import { Battery } from "./pages/Battery";
 import { Billing } from "./pages/Billing";
 import { Devices } from "./pages/Devices";
 import { EnergySummary } from "./pages/EnergySummary";
@@ -27,6 +28,7 @@ type Page =
   | "energy-summary"
   | "holidays"
   | "special-days"
+  | "battery"
   | "users"
   | "settings";
 
@@ -38,6 +40,7 @@ const PAGES: readonly Page[] = [
   "energy-summary",
   "holidays",
   "special-days",
+  "battery",
   "users",
   "settings",
 ];
@@ -227,6 +230,8 @@ export default function App() {
         <Holidays role={session.role} />
       ) : active === "special-days" ? (
         <SpecialDays />
+      ) : active === "battery" ? (
+        <Battery />
       ) : active === "settings" ? (
         <Settings role={session.role} />
       ) : (

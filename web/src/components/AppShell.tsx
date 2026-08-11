@@ -7,6 +7,7 @@ import {
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  PoweroffOutlined,
   SettingOutlined,
   TableOutlined,
   TeamOutlined,
@@ -58,8 +59,13 @@ const { Header, Sider, Content } = Layout;
  * for every role, same reason as the rest of this group: every one of them
  * reads what is already on disk or reads a meter through the same Manual
  * Read path Devices already uses; none is admin-only to *view* (only
- * Holiday mutations and both imports are, decision 19). Battery / Export
- * Format / App Log stay out of the menu — they belong to #29/#30/#31.
+ * Holiday mutations and both imports are, decision 19).
+ *
+ * M7-2 lights up **Battery** — the read-only view of the stored Battery
+ * Readings an hourly background job writes, for every role, same reason as
+ * the rest of this group (SPEC §3.7). It carries no Read-now control: the
+ * job is background-only (D5). Export Format / App Log stay out of the menu
+ * — they belong to #30/#31.
  *
  * A later CR (display-unit setting, kW/kWh vs W/Wh) lights up **Settings**
  * for every role too — the one control on it is disabled for a `user`
@@ -107,6 +113,8 @@ export function AppShell({
     { key: "energy-summary", icon: <ThunderboltOutlined />, label: "Energy Summary" },
     { key: "holidays", icon: <CalendarOutlined />, label: "Holidays" },
     { key: "special-days", icon: <CalendarOutlined />, label: "Special Days" },
+    // M7-2 (issue #29) — after Special Days, SPEC §3.7's page order.
+    { key: "battery", icon: <PoweroffOutlined />, label: "Battery" },
     ...(role === "admin"
       ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]
       : []),

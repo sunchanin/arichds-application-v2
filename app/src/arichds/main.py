@@ -30,6 +30,7 @@ from arichds import __version__
 from arichds.acquisition.poller import Poller
 from arichds.api import (
     auth,
+    battery,
     billing,
     devices,
     energy,
@@ -124,6 +125,7 @@ def create_app() -> FastAPI:
     app.include_router(energy.router)
     app.include_router(holidays.router)
     app.include_router(special_days.router)
+    app.include_router(battery.router)
     app.include_router(users.router)
     app.include_router(settings_router.router)
 

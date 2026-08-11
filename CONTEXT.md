@@ -160,6 +160,18 @@ Cumulative counters are not instantaneous values, which is why displaying them d
 reopen ADR 0007 — a running total since the meter was commissioned says nothing about *now*.
 _Avoid_: energy summary (that's the buckets), live energy, instantaneous energy
 
+**Battery Reading**:
+One row of `battery_readings` — the raw charge/status value a CEWE meter reports at
+`0.0.96.6.1.255`, **stored verbatim and never interpreted**: no scaling, no threshold, no
+colour classification. Written by an hourly background job that skips a device already read
+today (UTC calendar day); a failed read stores no row at all — that is what makes the hourly
+cadence a retry rather than a duplicate. It is a trend, not an instantaneous value, so
+displaying it does not reopen ADR 0007 the way a live measurement would. `supports_battery`
+is `True` for exactly the three CEWE models — the drivers that implement the read — never a
+per-brand guess.
+_Avoid_: remaining time, battery percentage, battery health (nothing in this build computes
+any of them — the register is a display code, not a duration)
+
 **Holiday**:
 A day the Energy Summary counts into the Holiday bucket. Three things make a day one and they
 are equal in force: it is a Saturday or Sunday, or it matches an **annual** Holiday (month and

@@ -101,10 +101,12 @@ class ModelSpec:
 # Capability-flag rationale (ADR 0011 — the driver is the authority, this
 # catalog only mirrors what a real driver implements; `test_catalog.py`'s
 # correspondence test fails if the two ever drift):
-#   - supports_battery: True for Mitsu & TCC (battery register) AND for the three
-#     CEWE models, whose drivers read the CEWE Battery-status register
-#     0.0.96.6.1.255. Still an aspirational value pending issue #29's
-#     `read_battery_status()` capability method — out of scope for M7-1.
+#   - supports_battery: True for exactly the three CEWE models, whose drivers
+#     implement `read_battery_status()` against the CEWE battery-status
+#     register 0.0.96.6.1.255 (M7-2, issue #29). False for `smw110` and the
+#     five SMART TCC models — no driver in this build implements the read for
+#     them; the earlier all-nine value was aspirational (ADR 0011's own "What
+#     this costs") and issue #29 is what corrects it.
 #   - supports_energy_summary / supports_special_days: True for `smw110` and the
 #     five SMART TCC models — confirmed on real hardware (the 2026-08-11 ST-3CL
 #     probe: 20 of 20 standalone energy registers answered, and the Special Days
@@ -121,7 +123,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3c": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3C",
-        supports_battery=True,
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
@@ -129,7 +131,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3cl": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3CL",
-        supports_battery=True,
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
@@ -137,7 +139,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st33tl": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-33TL",
-        supports_battery=True,
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
@@ -145,7 +147,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3tl": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3TL",
-        supports_battery=True,
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
@@ -153,7 +155,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3dh": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3DH",
-        supports_battery=True,
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
@@ -162,7 +164,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "smw110": ModelSpec(
         brand=Brand.MITSU,
         ui_label="Mitsubishi SMW110",
-        supports_battery=True,  # battery = voltage 0.0.96.6.3.255
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,  # energy 1.0.{1,2,3,4}.8.x
         supports_special_days=True,  # 0.0.11.0.0.255
         fixed_password=MITSU_SMW110_FIXED_PASSWORD,

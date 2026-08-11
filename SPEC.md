@@ -884,7 +884,7 @@ parity) · ⚠️ **ผลลัพธ์ย้อนหลังไม่นิ
 
 | | แค็ตตาล็อกประกาศ | v1 implement จริง | M7 ทำ |
 |---|---|---|---|
-| `supports_battery` | 9 รุ่น | 3 (CEWE — `_cewe_battery.py`) | CEWE 3 |
+| `supports_battery` | 9 รุ่น | 3 (CEWE — `_cewe_battery.py`) | CEWE 3 — ✅ **landed with issue #29 (M7-2)**: `read_battery_status()` on `MeterDriver`, implemented on the three CEWE models via the shared `_dlms.py` free function `read_battery_status_via()` |
 | `supports_energy_summary` | 6 รุ่น | **1** (`smw110`) | `smw110` + TCC ×5 — ยืนยันแล้วด้วย probe ST-3CL จริง 2026-08-11: ทะเบียนสะสม `1.0.{1,2,3,4}.8.{0..4}.255` ตอบครบ 20/20 (`E=1..4` รวมอยู่ในนั้นด้วย) |
 | `supports_special_days` | 6 รุ่น | **1** (`smw110`) | `smw110` + TCC ×5 — probe ST-3CL เดียวกันอ่าน `0.0.11.0.0.255` ได้ 82 รายการ |
 
@@ -895,8 +895,14 @@ parity) · ⚠️ **ผลลัพธ์ย้อนหลังไม่นิ
 `energy_register_readings` **กว้าง 20 คอลัมน์** (4 ชนิด × total + rate_a..d) ตั้งชื่อล้อ
 `billing_readings` — **ไม่ใช่ EAV แบบ v1** ที่เก็บ `obis`/`label`/`value`/`unit` เป็นแถว: `label` คือ
 ข้อความบนจอ ห้ามฝังลงข้อมูล และ M8 ต้องการสัญญา field ที่นิ่ง ·
-`battery_readings` = `remaining_seconds` + `status` (v1 เก็บ `remaining_minutes` ด้วย ซึ่งคำนวณได้
-จากช่องแรก) · `holidays` ตาม ADR 0016 (`kind` ∈ {annual, public}, ไม่มี `device_id`)
+`battery_readings` = `status` เท่านั้น (`id`/`device_id`/`read_at`/`created_at` ข้างเคียง) — **ไม่มี
+`remaining_seconds`** ✅ **ตัดออก — landed with issue #29 (M7-2)**: ไดรเวอร์ v2 ไม่มีตัวไหนผลิตค่า
+remaining-time ได้เลย — v1's เส้นทาง CEWE ปล่อย `remaining_minutes`/`remaining_seconds` เป็น `NULL`
+โดยตั้งใจอยู่แล้ว (`storage_service.py:266-269`), รีจิสเตอร์ที่อ่าน (`0.0.96.6.1.255`) เป็นจอ
+charge/status ไม่ใช่ duration (ไม่ใช่ `0.0.96.6.0.255` ซึ่งเป็น "battery use time counter" ตัวจริง),
+และ `smw110` มีแต่แบต *voltage* ไม่ใช่แบตนี้อยู่แล้ว — ใส่คอลัมน์ที่ไม่มีไดรเวอร์ไหนเติมได้ ผิดกฎ
+เดียวกับ ADR 0011 เอง (ธงที่ไม่มีไดรเวอร์หนุนหลัง) เพียงแค่คนละไฟล์ · `holidays` ตาม ADR 0016
+(`kind` ∈ {annual, public}, ไม่มี `device_id`)
 · **Special Days ไม่มีตาราง** — อ่านสดแสดงผลอย่างเดียวเหมือน v1 (`special_days/service.py:2`)
   แต่ **v2 ต่อท่อเพิ่มทางเดียว: มิเตอร์กลายเป็น "แหล่งนำเข้า" ของตาราง `holidays`** (พบตอน
   scrutinize แผน M7 จากผล probe 2026-08-11) — ST-3CL คืน **82 รายการ** เป็นปฏิทินวันหยุดไทย

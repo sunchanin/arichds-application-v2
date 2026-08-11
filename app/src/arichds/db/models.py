@@ -567,6 +567,48 @@ class EnergyRegisterReading(Base):
     __table_args__ = (UniqueConstraint("device_id", "read_at", name="uq_energy_register_readings_device_read_at"),)
 
 
+class BatteryReading(Base):
+    """One dated snapshot of a meter's battery status (M7-2, issue #29;
+    CONTEXT.md — Battery Reading).
+
+    ``status`` is the raw charge/status value the meter reports at
+    ``0.0.96.6.1.255`` — **stored verbatim, never interpreted** (D8): no
+    scaling, no threshold, no colour classification. Written by an hourly
+    scheduler job (D1) that skips a device already read today (D2/D3); a
+    failed read stores no row at all so the next hour retries it (D4).
+
+    **No ``remaining_seconds`` column** (D7) — this narrows what earlier
+    drafts of this feature described, because nothing in v2 can produce a
+    remaining-time value: v1's CEWE path leaves it ``NULL`` by design, the
+    register read here is a charge/status display, not a duration, and no
+    other v2 driver is battery-capable at all.
+
+    Attributes:
+        id: Surrogate primary key.
+        device_id: Owning device.
+        read_at: **Our** clock, UTC — like ``energy_register_readings.read_at``,
+            not the meter's. The day-guard (D2) is judged against this column's
+            UTC calendar day.
+        status: The raw value, ``str(raw).strip()``, truncated to the column
+            width by the writer (D8) — never truncated silently by SQLite.
+            ``NULL`` when the meter answered with nothing, which still counts
+            as today's row (D4).
+        created_at: When this row was first written (UTC).
+    """
+
+    __tablename__ = "battery_readings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str | None] = mapped_column(String(20), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    device: Mapped[Device] = relationship()
+
+    __table_args__ = (UniqueConstraint("device_id", "read_at", name="uq_battery_readings_device_read_at"),)
+
+
 class DeviceEvent(Base):
     """One row recorded when something about a device *changes* (M3-2).
 

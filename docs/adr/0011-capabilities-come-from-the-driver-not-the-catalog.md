@@ -1,14 +1,18 @@
 # A model's capabilities come from its driver, not from the catalog
 
-Status: accepted (2026-08-11, owner decision during M7 grilling). **Partially implemented**, M7-1
-(issue #28): `supports_energy_registers()`/`read_energy_registers()` and
-`supports_special_days()`/`read_special_days()` landed on `MeterDriver`, implemented on `smw110.py`
-and `smart_tcc.py`, and `test_catalog.py` now asserts the driver-catalog correspondence this ADR
-calls for (`TestEnergySummaryAndSpecialDaysFlagsMatchTheDriver`) in place of the two hardcoded-list
-tests it names below. The `supports_energy_summary`/`supports_special_days` *values* already
-matched what this ADR proposes — the 2026-08-11 ST-3CL probe (`docs/meter-notes/`) confirmed both
-on real hardware, so no flag flip was needed this round. `read_battery_status()` and the
-`supports_battery` correction are still outstanding — that is issue #29's slice, not this one.
+Status: accepted (2026-08-11, owner decision during M7 grilling). **Fully implemented.** M7-1
+(issue #28) landed `supports_energy_registers()`/`read_energy_registers()` and
+`supports_special_days()`/`read_special_days()` on `MeterDriver`, implemented on `smw110.py`
+and `smart_tcc.py`. M7-2 (issue #29) landed the third flag: `supports_battery()`/
+`read_battery_status()` on `MeterDriver`, implemented on the three CEWE models
+(`prometer100.py`, `saral305.py`, `premier550.py`) via the shared `_dlms.py` free function
+`read_battery_status_via()`, and the catalog's `supports_battery` corrected from all nine
+models to exactly those three. `test_catalog.py` now asserts the driver-catalog correspondence
+this ADR calls for (`TestCapabilityFlagsMatchTheDriver`, covering all three flags) in place of
+the three hardcoded-list tests it names below. The `supports_energy_summary`/
+`supports_special_days` *values* already matched what this ADR proposes — the 2026-08-11 ST-3CL
+probe (`docs/meter-notes/`) confirmed both on real hardware, so no flag flip was needed for
+those two.
 
 Reverses a rule this repo states about itself. `CLAUDE.md` lists among the invariants:
 
@@ -101,11 +105,13 @@ SMART TCC does have a backup battery will see no Battery page, because we have n
 read. That is a real loss of information, and the honest version of it: the flag now means *"we
 can"*, not *"the meter can"*.
 
-`test_catalog.py` currently asserts the aspirational values —
-`test_every_model_reports_battery`, `test_the_new_brands_have_both`. Those tests were written
-to lock the catalog against drift, and they will now fail. They should be rewritten to assert
-the *correspondence* — every model flagged `True` resolves to a driver that implements the
-method — which is a test that cannot go stale the way a hardcoded list can.
+`test_catalog.py` asserted the aspirational values — `test_every_model_reports_battery`,
+`test_the_new_brands_have_both`. Those tests were written to lock the catalog against drift, and
+both are now gone: `test_the_new_brands_have_both` was removed with issue #28 (the
+energy-summary/special-days correspondence test replaced it), and `test_every_model_reports_battery`
+was removed with issue #29, folded into the same `TestCapabilityFlagsMatchTheDriver` correspondence
+class the other two flags already use — every model flagged `True` resolves to a driver that
+implements the method, a test that cannot go stale the way a hardcoded list can.
 
 ## What was rejected
 

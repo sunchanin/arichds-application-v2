@@ -106,6 +106,13 @@ def _cosem_class(obis_code: str) -> Any:
 #: gurux-dlms skill "Special Days Table").
 SPECIAL_DAYS_OBIS = "0.0.11.0.0.255"
 
+#: The CEWE battery-status register — "Battery charge display", not a
+#: remaining-time counter (M7-2, issue #29, Finding 1). Shared by the three
+#: CEWE models (``prometer100``, ``saral305``, ``premier550``); ``smw110``
+#: and the SMART TCC family are not battery-capable in v2 (D7/D10). Ported
+#: unchanged from v1 ``cewe-worker/src/constants.py:84-90``.
+CEWE_BATTERY_STATUS_OBIS = "0.0.96.6.1.255"
+
 #: `C` -> the :class:`~arichds.acquisition.drivers.base.EnergyRegisterReading`
 #: field prefix, for the twenty standalone cumulative energy registers
 #: (COSEM ``D=8``, class 3 Register) — M7-1, issue #28. Shared by every
@@ -253,6 +260,44 @@ def read_special_days_via(driver: DlmsDriver) -> list[SpecialDayEntry]:
         if mapped is not None:
             classified.append(mapped)
     return classified
+
+
+def read_battery_status_via(driver: DlmsDriver) -> str | None:
+    """Read *driver*'s CEWE battery-status register
+    (:data:`CEWE_BATTERY_STATUS_OBIS`, attribute 2) — M7-2, issue #29.
+
+    A free function, not a :class:`DlmsDriver` method, for the identical
+    reason :func:`read_energy_registers_via` gives, inverted: this base class
+    is shared by every CEWE model *and* :class:`~arichds.acquisition.drivers.smart_tcc.SmartTccDriver`
+    (through :class:`~arichds.acquisition.drivers._dlms_profile.DlmsProfileDriver`),
+    and only the three CEWE models are battery-capable (D9). Putting the
+    mechanism on the base class would have made it silently callable — and
+    working — on ``SmartTccDriver`` too, exactly the ``hasattr`` hazard
+    ``base.py``'s module docstring exists to prevent.
+
+    **The value is stored verbatim, never interpreted** (D8): no scaling, no
+    threshold, no colour classification — the register is a charge/status
+    display (Findings 1-2), and the wire type is unconfirmed until a
+    real-meter read. ``None`` in, ``None`` out; any other value becomes
+    ``str(raw).strip()``.
+
+    **Does not catch exceptions.** A refused read propagates to the caller —
+    unlike :func:`read_energy_registers_via`'s per-address isolation, there is
+    only one address here, and the job (not this function) is what turns a
+    failed read into "no row, retry next hour" (D4).
+
+    Returns:
+        The raw value as a string, or ``None`` when the meter answered with
+        nothing, or when *driver* is disconnected.
+    """
+    if driver._reader is None or driver._client is None:  # noqa: SLF001 — same module, DlmsDriver's own internals.
+        logger.warning("read_battery_status() called on a disconnected driver %s", driver)
+        return None
+
+    raw = driver.read_register(CEWE_BATTERY_STATUS_OBIS, 2)
+    if raw is None:
+        return None
+    return str(raw).strip()
 
 
 class DlmsDriver(MeterDriver):

@@ -22,12 +22,15 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from arichds.acquisition.battery import battery_cycle
 from arichds.acquisition.billing import billing_cycle
 from arichds.acquisition.load_profile import load_profile_cycle
 from arichds.constants import (
     BACKUP_INTERVAL_SEC,
+    BATTERY_INTERVAL_SEC,
     BILLING_INTERVAL_SEC,
     JOB_BACKUP,
+    JOB_BATTERY,
     JOB_BILLING,
     JOB_LOAD_PROFILE,
     JOB_RETENTION,
@@ -270,6 +273,12 @@ def default_jobs() -> list[Job]:
         # Billing sits with the other read job, before backup/retention — a
         # read job belongs with the read job (M6a, issue #21).
         Job(name=JOB_BILLING, interval_sec=BILLING_INTERVAL_SEC, fn=billing_cycle),
+        # Battery sits with the other read jobs too, before backup/retention
+        # (M7-2, issue #29) — hourly, not daily: the day-guard inside
+        # battery_cycle() is what keeps this at one meter read per device per
+        # day in the common case; the hourly cadence exists only to survive a
+        # skipped background tick (see battery.py's module docstring, D1).
+        Job(name=JOB_BATTERY, interval_sec=BATTERY_INTERVAL_SEC, fn=battery_cycle),
         # Backup runs BEFORE retention, deliberately (M5c, issue #19): the
         # backup then still contains the rows retention is about to delete, so a
         # retention bug stays recoverable for the seven days of backups that are

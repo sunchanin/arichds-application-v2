@@ -54,13 +54,15 @@ MySQL, and ~30 tables.
   0011 (a model's capabilities come from its **driver**, not the catalog — **reverses** the
   "catalog copied from v1 verbatim, locked" rule for the three capability booleans only, because
   v1's flags claimed 9/6/6 models against drivers that implement 3/1/1; keys, brands, order and
-  fixed passwords stay locked; a flag turns on from a meter, never a datasheet; **partially
-  implemented** with issue #28/M7-1: `supports_energy_registers()`/`read_energy_registers()` and
-  `supports_special_days()`/`read_special_days()` landed on `MeterDriver`, and `test_catalog.py`
-  now asserts the driver-catalog correspondence instead of a hardcoded list; the
+  fixed passwords stay locked; a flag turns on from a meter, never a datasheet; **fully
+  implemented**: issue #28/M7-1 landed `supports_energy_registers()`/`read_energy_registers()`
+  and `supports_special_days()`/`read_special_days()` on `MeterDriver` — the
   `supports_energy_summary`/`supports_special_days` *values* already matched what this ADR
-  proposes, confirmed on real ST-3CL hardware 2026-08-11 — no flag flip was needed; `supports_battery`
-  and `read_battery_status()` are still outstanding, for issue #29) ·
+  proposes, confirmed on real ST-3CL hardware 2026-08-11, so no flag flip was needed for those
+  two — and issue #29/M7-2 landed the third: `supports_battery()`/`read_battery_status()` on
+  `MeterDriver`, implemented on the three CEWE models, with `supports_battery` corrected from
+  all nine models to exactly those three; `test_catalog.py` now asserts the driver-catalog
+  correspondence for all three flags instead of a hardcoded list) ·
   0012 (the Energy Summary is **derived on every request and deliberately not reproducible** —
   adding a Holiday today changes what last January reports tomorrow, and that is the point,
   because holidays are rules a human enters late; no summary table, no cache; the peak window

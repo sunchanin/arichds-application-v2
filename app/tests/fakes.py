@@ -97,6 +97,13 @@ class FakeMeterState:
         special_days_reads: How many times ``read_special_days()`` was
             called.
         special_days_error: What a failing Special Days read raises.
+        battery_status: What :meth:`FakeMeterDriver.read_battery_status`
+            replays (M7-2, issue #29) — the raw status string, or ``None``
+            for "the meter answered with nothing" (D4).
+        battery_reads: How many times ``read_battery_status()`` was called —
+            what the job's "one meter call regardless of how many times the
+            cycle runs today" test counts against.
+        battery_error: What a failing battery read raises.
     """
 
     meter_serial: str | None = DEFAULT_FAKE_SERIAL
@@ -123,6 +130,9 @@ class FakeMeterState:
     special_days_entries: list[SpecialDayEntry] = field(default_factory=list)
     special_days_reads: int = 0
     special_days_error: Exception | None = None
+    battery_status: str | None = None
+    battery_reads: int = 0
+    battery_error: Exception | None = None
 
 
 _STATE = FakeMeterState()
@@ -214,6 +224,24 @@ class FakeMeterDriver(MeterDriver):
         if _STATE.serial_error is not None:
             raise _STATE.serial_error
         return _STATE.meter_serial
+
+    def supports_battery(self) -> bool:
+        """Yes — ``prometer100`` is the CEWE, battery-capable registration
+        (M7-2, issue #29; D10). This is the **inverse** of every other
+        capability in this file: the base fake is the capable one here,
+        while :class:`FakeSmw110Driver` explicitly turns it back off below,
+        because the real ``smw110`` has no battery register."""
+        return True
+
+    def read_battery_status(self) -> str | None:
+        """Record the call, honour the failure knob, replay the seeded status."""
+        with _GUARD:
+            _STATE.battery_reads += 1
+            error = _STATE.battery_error
+            status = _STATE.battery_status
+        if error is not None:
+            raise error
+        return status
 
 
 class FakeSmw110Driver(FakeMeterDriver):
@@ -331,3 +359,11 @@ class FakeSmw110Driver(FakeMeterDriver):
             raise error
 
         return entries
+
+    def supports_battery(self) -> bool:
+        """No — explicitly overridden back to ``False`` (M7-2, issue #29;
+        D10). Without this override ``FakeSmw110Driver`` would inherit
+        :class:`FakeMeterDriver`'s ``True`` and the job's unsupported-model
+        path would become untestable: the real ``smw110`` has no battery
+        register, only the three CEWE models do."""
+        return False
