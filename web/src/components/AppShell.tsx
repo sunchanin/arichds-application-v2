@@ -2,6 +2,7 @@ import {
   AreaChartOutlined,
   CalendarOutlined,
   DatabaseOutlined,
+  ExportOutlined,
   FileTextOutlined,
   KeyOutlined,
   LogoutOutlined,
@@ -64,8 +65,14 @@ const { Header, Sider, Content } = Layout;
  * M7-2 lights up **Battery** — the read-only view of the stored Battery
  * Readings an hourly background job writes, for every role, same reason as
  * the rest of this group (SPEC §3.7). It carries no Read-now control: the
- * job is background-only (D5). Export Format / App Log stay out of the menu
- * — they belong to #30/#31.
+ * job is background-only (D5).
+ *
+ * M7 slice 3 (issue #30) lights up **Export Format** — the page that owns
+ * the Load Profile CSV's date/time and filename settings, for every role
+ * too: reading the current format is not admin-only, only saving it is
+ * (the same split Settings.tsx's display-unit control already uses). The
+ * auto-save switch and output folder live on the Load Profile page itself,
+ * not here (D-16). App Log stays out of the menu — it belongs to #31.
  *
  * A later CR (display-unit setting, kW/kWh vs W/Wh) lights up **Settings**
  * for every role too — the one control on it is disabled for a `user`
@@ -115,6 +122,8 @@ export function AppShell({
     { key: "special-days", icon: <CalendarOutlined />, label: "Special Days" },
     // M7-2 (issue #29) — after Special Days, SPEC §3.7's page order.
     { key: "battery", icon: <PoweroffOutlined />, label: "Battery" },
+    // M7 slice 3 (issue #30) — after Battery, SPEC §3.7's page order.
+    { key: "export-format", icon: <ExportOutlined />, label: "Export Format" },
     ...(role === "admin"
       ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]
       : []),

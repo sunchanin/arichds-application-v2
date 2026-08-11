@@ -2,8 +2,9 @@
 
 Status: accepted (2026-08-11). The machine-wide kW/W setting **is implemented** (Billing, Load
 Profile, Records, and the two capture renderers — commit `bbdd6b7`); the boundary this ADR
-draws is applied to the Load Profile CSV at M7, and one shipped gap is recorded below as
-outstanding.
+draws **landed on the Load Profile CSV with issue #30 (M7 slice 3)** — `arichds.export` never
+imports the render-time scale machinery, enforced by a source-level guard in the test suite —
+and one shipped gap is recorded below as outstanding.
 
 Reverses a v1 feature: `format_settings.divide_by_1000`, which v1 shipped **on by default**, is
 not ported. A customer who knows that switch will ask where it went.

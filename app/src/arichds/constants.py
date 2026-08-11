@@ -97,6 +97,15 @@ BILLING_INTERVAL_SEC: Final[int] = 86400
 BATTERY_INTERVAL_SEC: Final[int] = 3600
 JOB_BATTERY: Final[str] = "battery"
 
+# ─── CSV export (SPEC §3.5/§3.7, M7 slice 3, issue #30, D-10) ─────────────────
+# The Load Profile CSV auto-export job. Same cadence as `load_profile` on
+# purpose (D-10): registered immediately behind it in `default_jobs()`, and
+# the scheduler runs jobs in registry order within one pass, so this always
+# runs right after that cycle without a second, independent interval to keep
+# in sync.
+CSV_EXPORT_INTERVAL_SEC: Final[int] = LOAD_PROFILE_INTERVAL_SEC
+JOB_CSV_EXPORT: Final[str] = "csv_export"
+
 # ─── Scheduler (SPEC §4, M5a-2) ───────────────────────────────────────────────
 # How long `Scheduler.stop()` waits for the one job thread to finish the job it
 # is inside. Deliberately shorter than a worst-case load-profile cycle (which is

@@ -520,6 +520,38 @@ export interface DisplaySettings {
   display_unit_scale: DisplayUnitScale;
 }
 
+/**
+ * The Export Format settings, from `GET`/`PUT /api/settings/export-format`
+ * (M7 slice 3, issue #30). Machine-wide, not per-meter (SPEC §3.7, grill
+ * 2026-08-11) — one customer's site runs meters set up identically, so a
+ * per-device column would solve a problem nobody has hit.
+ *
+ * **The CSV these govern is always kWh/kvarh** — it never follows
+ * `display_unit_scale` (ADR 0013). `export_date_format` and
+ * `export_csv_filename_tmpl` are owned by the ExportFormat page;
+ * `export_auto_save_enabled` and `export_output_dir` are owned by the
+ * matching controls on the Load Profile page (D-16) — one `PUT` replaces
+ * all four, so either page's save must carry the other pair's current
+ * values through unchanged.
+ */
+export interface ExportFormatSettings {
+  /** An Excel-style token string, e.g. `"yyyy-mm-dd HH:MM:SS"` — `yyyy`/`mm`/`dd`/`HH`/`MM`/`SS`. */
+  export_date_format: string;
+  /** `[meter]`/`[serial]`/`[date]` filename tokens, e.g. `"[meter].csv"`. */
+  export_csv_filename_tmpl: string;
+  /** The scheduler job's own switch — "Save CSV now" ignores it. */
+  export_auto_save_enabled: boolean;
+  /** `""` means "not configured" — same convention as `capture_dir`. */
+  export_output_dir: string;
+}
+
+/** What `POST /api/load-profile/export` ("Save CSV now") did. */
+export interface LoadProfileExportResult {
+  rows_written: number;
+  /** The resolved target CSV file path, or `null` when nothing was written. */
+  path: string | null;
+}
+
 /** How many meters this machine has and may have, from `GET /api/devices/quota`. */
 export interface Quota {
   used: number;
@@ -968,6 +1000,29 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ display_unit_scale: scale }),
     }),
+
+  /** The current Export Format settings — any authenticated caller. */
+  exportFormatSettings: () => request<ExportFormatSettings>("/api/settings/export-format"),
+
+  /**
+   * Save all four Export Format settings — admin-only, a full replace. The
+   * caller must pass every field, not just the one it owns (D-16) — build
+   * the body from the last-fetched `ExportFormatSettings`, overriding only
+   * what changed.
+   */
+  updateExportFormatSettings: (settings: ExportFormatSettings) =>
+    request<ExportFormatSettings>("/api/settings/export-format", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
+
+  /**
+   * "Save CSV now" — export one device's pending Interval Readings at once,
+   * ignoring `export_auto_save_enabled`. Any authenticated role. `422` when
+   * `export_output_dir` is not configured.
+   */
+  exportLoadProfileNow: (deviceId: number) =>
+    request<LoadProfileExportResult>(`/api/load-profile/export?device_id=${deviceId}`, { method: "POST" }),
 
   /**
    * The Time-of-Use daily totals for one device (M7-1, issue #28). Both

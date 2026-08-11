@@ -52,32 +52,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session
 
 from arichds.api.deps import SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
+from arichds.db.app_settings import EXPORT_OUTPUT_DIR_DEFAULT, EXPORT_OUTPUT_DIR_KEY, get_setting
+from arichds.db.load_profile_query import merged_rows_select
 from arichds.db.models import Device, LoadProfileReading
-
-#: Logger 2, joined against the Logger 1 spine — never queried on its own here.
-_Logger2 = aliased(LoadProfileReading)
-
-#: The twelve measurement columns the page renders, in COALESCE(logger1, logger2)
-#: order — Logger 1 wins (see the module docstring for why that is not always
-#: "the more complete value").
-_MEASUREMENT_COLUMNS = (
-    "import_active_kwh",
-    "import_reactive_kvarh",
-    "export_active_kwh",
-    "export_reactive_kvarh",
-    "avg_geo_pf",
-    "volt_l1",
-    "volt_l2",
-    "volt_l3",
-    "current_l1",
-    "current_l2",
-    "current_l3",
-    "freq",
-)
+from arichds.export.csv_export import export_device
 
 router = APIRouter(
     prefix="/api/load-profile",
@@ -208,37 +190,19 @@ def list_interval_readings(
             detail="`end` must be later than `start` — the range is half-open, [start, end).",
         )
 
-    # Written once and used by both queries on purpose: ``total`` is only
+    # Built once and used by both queries on purpose: ``total`` is only
     # meaningful as the unpaged count of *the same* filter, and two hand-copied
     # WHERE clauses are free to drift into a page whose rows and whose total
-    # disagree. Deliberately ``logger_id == 1`` only — Logger 1 is the spine
-    # this whole merge is keyed on (module docstring), so a device with only a
-    # Logger 2 (none exist today) would correctly show nothing here.
-    matching = (
-        LoadProfileReading.device_id == device_id,
-        LoadProfileReading.logger_id == 1,
+    # disagree. ``merged_rows_select`` already carries the ``logger_id == 1``
+    # spine filter (D-2, issue #30) — Logger 1 is the spine this whole merge
+    # is keyed on (module docstring), so a device with only a Logger 2 (none
+    # exist today) would correctly show nothing here.
+    base = merged_rows_select(device_id).where(
         LoadProfileReading.read_at >= lower,
         LoadProfileReading.read_at < upper,
     )
-
-    merged_columns = [
-        func.coalesce(getattr(LoadProfileReading, name), getattr(_Logger2, name)).label(name)
-        for name in _MEASUREMENT_COLUMNS
-    ]
-    rows = session.execute(
-        select(LoadProfileReading.read_at, *merged_columns)
-        .outerjoin(
-            _Logger2,
-            (_Logger2.device_id == LoadProfileReading.device_id)
-            & (_Logger2.read_at == LoadProfileReading.read_at)
-            & (_Logger2.logger_id == 2),
-        )
-        .where(*matching)
-        .order_by(LoadProfileReading.read_at.desc())
-        .limit(limit)
-        .offset(offset)
-    ).all()
-    total = session.scalar(select(func.count()).select_from(LoadProfileReading).where(*matching)) or 0
+    rows = session.execute(base.order_by(LoadProfileReading.read_at.desc()).limit(limit).offset(offset)).all()
+    total = session.scalar(select(func.count()).select_from(base.subquery())) or 0
 
     return ApiResponse.ok(
         LoadProfilePage(
@@ -247,4 +211,55 @@ def list_interval_readings(
             limit=limit,
             offset=offset,
         )
+    )
+
+
+class LoadProfileExportResult(BaseModel):
+    """What ``POST /api/load-profile/export`` did.
+
+    Attributes:
+        rows_written: How many rows were appended this call.
+        path: The resolved target CSV file path, or ``None`` when nothing
+            was written (an undiscovered Meter Serial, an unbuildable
+            driver, no pending rows, or a write failure — see
+            :func:`arichds.export.csv_export.export_device`).
+    """
+
+    rows_written: int
+    path: str | None
+
+
+@router.post("/export")
+def export_load_profile_now(
+    session: SessionDep, device_id: Annotated[int, Query(ge=1)]
+) -> ApiResponse[LoadProfileExportResult]:
+    """ "Save CSV now" — export *device_id*'s pending Interval Readings at once.
+
+    Any authenticated role, mirroring ``list_interval_readings`` above
+    (D-17) — reading and exporting stored device data are both open to every
+    role, the same as the rest of this router.
+
+    **Ignores ``export_auto_save_enabled``** (D-11): an operator pressing
+    this button has already expressed intent, and making them flip a
+    *background* switch first would be a trap. It runs the same function
+    under the same per-device lock and advances the same watermark as the
+    scheduler job — two writers to one file that did not share a watermark
+    would duplicate rows.
+
+    **``export_output_dir`` is still required** — unlike the scheduler job,
+    which no-ops silently when it is empty (v1 parity), this is a person
+    pressing a button, so an unconfigured destination is a 422 with an
+    actionable sentence rather than a silent "0 rows written" 200.
+    """
+    _require_device_exists(session, device_id)
+    output_dir = get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT).strip()
+    if not output_dir:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="export_output_dir is not configured — nothing to export to. Set it on the Export Format page.",
+        )
+
+    result = export_device(device_id, require_auto_save=False)
+    return ApiResponse.ok(
+        LoadProfileExportResult(rows_written=result.rows_written, path=str(result.path) if result.path else None)
     )

@@ -838,6 +838,14 @@ M6 เติม job `billing` เข้า list เดิม (§3.3) โดย *
   เพื่อแก้ปัญหาที่ยังไม่มีใครเจอ — เพิ่มทีหลังง่ายกว่าถอด
   · ช่องเลือกโฟลเดอร์ปลายทาง — ทั้งสามอย่างอยู่บนหน้า Load Profile
   ที่ M5b สร้างไว้แล้ว · รายละเอียดที่เคาะแล้ว (watermark, BOM, fsync, lock ต่อ device) อยู่ใน §3.5
+  · ✅ **landed with issue #30 (M7 slice 3)**: `db/load_profile_query.py` (the shared
+  Logger 1/2 merge, D-2) · `export/format.py` (row/filename formatting, corrected headers,
+  D-3/D-4) · `export/csv_export.py` (the skew cap, the per-device lock, the watermark column,
+  the hardened write) · `devices.csv_exported_through` (migration 0012) ·
+  `GET`/`PUT /api/settings/export-format` and `POST /api/load-profile/export` ·
+  `pages/ExportFormat.tsx` and the auto-save/output-folder/Save-CSV-now controls on
+  `pages/LoadProfile.tsx`. `output_csv` was dropped from the ported set at implementation
+  time (D-5, see the not-ported list below).
 - หน้า: EnergySummary · Holidays · SpecialDays · Battery · ExportFormat · AppLog
 
 #### เคาะที่ grill M7 (2026-08-11)
@@ -944,8 +952,14 @@ while the endpoint is held or while any Manual Read [is waiting]"* ⇒ tick ท�
   > **เส้นแบ่ง**: ไฟล์ที่**เขียนต่อท้ายข้ามเวลา**เป็น *สัญญา* — หน่วยคงที่ · หน้าจอและเอกสารที่
   > **สร้างใหม่ทุกครั้ง**เป็น *มุมมอง* — ตามสวิตช์ได้ · ใช้เส้นนี้ตัดสินทุกครั้งที่มีปลายทางใหม่
 - ❌ `output_txt` / `txt_filename_tmpl` — ค่าเริ่มต้นปิดใน v1 ⇒ **เจ้าของต้องถามลูกค้าก่อนตัดถาวร**
+- ❌ **`output_csv` — ย้ายมาไว้ในกลุ่มไม่พอร์ต ตอน implement issue #30 (เจ้าของตัดสิน 2026-08-11,
+  overrule รายการพอร์ตเดิมด้านล่างที่เคยระบุไว้ผิด)**: grep ทั้ง v1 พบผู้ใช้ค่านี้จุดเดียวคือ
+  `use_txt = output_txt and not output_csv` — ตัวเลือก CSV-vs-TXT — และ `output_txt` ไม่ได้พอร์ต
+  ⇒ flag ที่ไม่มีใครอ่านอีกต่อไป ทางเดียวที่จะทำให้มันมีความหมายคือ "ปิดแล้วหยุด export" ซึ่งกลายเป็น
+  **สวิตช์ตัวที่สองบนแกนเดียวกับ `auto_save_enabled`** — บั๊กแบบเดียวกับที่ ADR 0013 มีไว้กันพอดี
+  (คนละไฟล์กับที่ #29 ตัดออกก็ด้วยเหตุผลเดียวกัน — flag ที่ไม่มี driver รองรับ)
 - ✅ พอร์ต: `date_format` (พร้อมระบบแปลง token) · `csv_filename_tmpl` (`[meter].csv`) ·
-  `output_csv` · `auto_save_enabled` · `output_dir`
+  `auto_save_enabled` · `output_dir`
 
 **หัวคอลัมน์ CSV — แก้ให้ถูก ไม่ลอกที่ผิด** (เจ้าของตัดสิน 2026-08-11) · **ลำดับคอลัมน์เหมือน v1
 เป๊ะ** เพื่อให้แถวใหม่ยังลงตรงช่องถ้าชี้ไปที่ไฟล์เดิม:
@@ -962,7 +976,9 @@ while the endpoint is held or while any Manual Read [is waiting]"* ⇒ tick ท�
 scrutinize แผน M7) — commit `eb9bfee` เพิ่งเปลี่ยน logic รวมของหน้านั้นเป็น `outerjoin` + `coalesce`
 บน `read_at` ที่ตรงกันเป๊ะ · ถ้า exporter เขียนของตัวเอง วันหนึ่งจะมีคนแก้ที่เดียวแล้วเลขบนจอกับ
 ในไฟล์ต่างกัน โดยไม่มีเทสจับเพราะแต่ละฝั่งเทสของตัวเอง ⇒ **เกณฑ์รับงาน: มีเทสที่ยืนยันว่าไฟล์กับ
-endpoint ให้แถวเท่ากันบนข้อมูลชุดเดียวกัน**
+endpoint ให้แถวเท่ากันบนข้อมูลชุดเดียวกัน** — ✅ **landed with issue #30**: `db/load_profile_query.py`
+เป็นฟังก์ชันเดียวที่ทั้งสองฝั่งเรียก และ `test_api_load_profile_export.py::TestEndpointAndFileAgree`
+เป็นเทสที่เกณฑ์นี้ต้องการ
 
 **หน้า Holidays**: export/import เป็น **ดาวน์โหลด/อัปโหลดไฟล์ธรรมดา ไม่ใช่ folder picker** —
 ADR 0016 วางไว้ว่าใช้ `showDirectoryPicker` โดยอ้างว่าลูกค้าเข้าผ่าน localhost แต่ **v2 เปิดพอร์ต

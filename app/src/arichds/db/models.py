@@ -86,6 +86,15 @@ class Device(Base):
         consecutive_failures: How many failed reads in a row (ADR 0004's
             3-strikes rule).
         created_at: Row creation time (UTC).
+        csv_exported_through: The newest ``read_at`` already appended to this
+            device's Load Profile CSV (M7 slice 3, issue #30, D-8) — the
+            watermark the CSV export job and "Save CSV now" both advance.
+            ``None`` means nothing has been exported: export everything
+            stored, up to the skew cap (D-9) — there is no separate
+            first-enable/backfill mechanism the way v1 needed two for.
+            A column, not a table (SPEC §3.5/§3.7): it may drift without
+            losing data, because the rows themselves stay in
+            ``load_profile_readings`` regardless of what this says.
         events: Every Device Event recorded for this device.
     """
 
@@ -136,6 +145,7 @@ class Device(Base):
     # produced. It also survives a Windows service restart.
     consecutive_failures: Mapped[int] = mapped_column(default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    csv_exported_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     readings: Mapped[list[LoadProfileReading]] = relationship(
         back_populates="device",

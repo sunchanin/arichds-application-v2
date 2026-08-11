@@ -29,9 +29,11 @@ from arichds.constants import (
     BACKUP_INTERVAL_SEC,
     BATTERY_INTERVAL_SEC,
     BILLING_INTERVAL_SEC,
+    CSV_EXPORT_INTERVAL_SEC,
     JOB_BACKUP,
     JOB_BATTERY,
     JOB_BILLING,
+    JOB_CSV_EXPORT,
     JOB_LOAD_PROFILE,
     JOB_RETENTION,
     LOAD_PROFILE_INTERVAL_SEC,
@@ -41,6 +43,7 @@ from arichds.constants import (
 )
 from arichds.db.backup import backup_database
 from arichds.db.retention import purge_expired
+from arichds.export.csv_export import csv_export_cycle
 from arichds.licensing.service import LicenseState
 
 logger = logging.getLogger(__name__)
@@ -270,6 +273,13 @@ def default_jobs() -> list[Job]:
     """
     return [
         Job(name=JOB_LOAD_PROFILE, interval_sec=LOAD_PROFILE_INTERVAL_SEC, fn=load_profile_cycle),
+        # Registered immediately behind load_profile, at the same interval
+        # (D-10, M7 slice 3, issue #30) — a pure disk job with no meter and
+        # no Transport Endpoint lock, so it does not belong inside
+        # load_profile_cycle's own error handling. The registry runs jobs in
+        # order within one pass, which gives v1's "export right after the
+        # cycle" ordering for free.
+        Job(name=JOB_CSV_EXPORT, interval_sec=CSV_EXPORT_INTERVAL_SEC, fn=csv_export_cycle),
         # Billing sits with the other read job, before backup/retention — a
         # read job belongs with the read job (M6a, issue #21).
         Job(name=JOB_BILLING, interval_sec=BILLING_INTERVAL_SEC, fn=billing_cycle),

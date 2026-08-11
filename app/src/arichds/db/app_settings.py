@@ -32,6 +32,26 @@ CAPTURE_DIR_DEFAULT = ""
 DISPLAY_UNIT_SCALE_KEY = "display_unit_scale"
 DISPLAY_UNIT_SCALE_DEFAULT = "kilo"
 
+#: The four Export Format keys (M7 slice 3, issue #30, D-7) — machine-wide,
+#: same as every key above. Defaults are v1's own (`cewe/.../core/models.py`
+#: `FormatSetting`), except `export_auto_save_enabled`, which v1 also
+#: defaults off.
+EXPORT_DATE_FORMAT_KEY = "export_date_format"
+EXPORT_DATE_FORMAT_DEFAULT = "yyyy-mm-dd HH:MM:SS"
+
+EXPORT_CSV_FILENAME_TMPL_KEY = "export_csv_filename_tmpl"
+EXPORT_CSV_FILENAME_TMPL_DEFAULT = "[meter].csv"
+
+#: Stored as the literal lowercase string `"true"`/`"false"` — anything else
+#: (including an absent key, via EXPORT_AUTO_SAVE_ENABLED_DEFAULT) reads as
+#: False. Compared with `== "true"` at every read site, never truthy-tested.
+EXPORT_AUTO_SAVE_ENABLED_KEY = "export_auto_save_enabled"
+EXPORT_AUTO_SAVE_ENABLED_DEFAULT = "false"
+
+#: `""` means "not configured" — same convention as CAPTURE_DIR_DEFAULT.
+EXPORT_OUTPUT_DIR_KEY = "export_output_dir"
+EXPORT_OUTPUT_DIR_DEFAULT = ""
+
 
 def get_setting(session: Session, key: str, default: str) -> str:
     """Return *key*'s stored value, or *default* if the row is absent."""

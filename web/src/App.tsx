@@ -9,6 +9,7 @@ import { Battery } from "./pages/Battery";
 import { Billing } from "./pages/Billing";
 import { Devices } from "./pages/Devices";
 import { EnergySummary } from "./pages/EnergySummary";
+import { ExportFormat } from "./pages/ExportFormat";
 import { Holidays } from "./pages/Holidays";
 import { LoadProfile } from "./pages/LoadProfile";
 import { Login } from "./pages/Login";
@@ -29,6 +30,7 @@ type Page =
   | "holidays"
   | "special-days"
   | "battery"
+  | "export-format"
   | "users"
   | "settings";
 
@@ -41,6 +43,7 @@ const PAGES: readonly Page[] = [
   "holidays",
   "special-days",
   "battery",
+  "export-format",
   "users",
   "settings",
 ];
@@ -219,7 +222,7 @@ export default function App() {
       {active === "users" ? (
         <Users currentUserId={session.id} />
       ) : active === "load-profile" ? (
-        <LoadProfile />
+        <LoadProfile role={session.role} />
       ) : active === "records" ? (
         <Records />
       ) : active === "billing" ? (
@@ -232,6 +235,8 @@ export default function App() {
         <SpecialDays />
       ) : active === "battery" ? (
         <Battery />
+      ) : active === "export-format" ? (
+        <ExportFormat role={session.role} />
       ) : active === "settings" ? (
         <Settings role={session.role} />
       ) : (

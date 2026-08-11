@@ -1,4 +1,4 @@
-import { App, Card, DatePicker, Empty, Flex, Select, Space, Table, Typography } from "antd";
+import { App, Button, Card, DatePicker, Empty, Flex, Form, Input, Select, Space, Switch, Table, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -9,6 +9,7 @@ import {
   isLicenseLapsed,
   type CatalogEntry,
   type Device,
+  type ExportFormatSettings,
   type LoadProfilePage,
   type LoadProfileRow,
 } from "../api";
@@ -121,6 +122,127 @@ function buildColumns(scale: DisplayUnitScale): ColumnsType<LoadProfileRow> {
   ];
 }
 
+interface ExportSettingsFormValues {
+  export_auto_save_enabled: boolean;
+  export_output_dir: string;
+}
+
+/**
+ * The CSV auto-export controls (M7 slice 3, issue #30, D-16) — the
+ * auto-save switch, the output folder, and "Save CSV now" for whichever
+ * device is currently selected above.
+ *
+ * **Two admin-only fields plus one any-role action, one card.** The switch
+ * and the folder both save through the same `PUT /api/settings/export-format`
+ * the ExportFormat page uses (D-17: one full replace of all four settings),
+ * so this card's save carries `export_date_format`/`export_csv_filename_tmpl`
+ * through unchanged from the last fetch — the same pattern ExportFormat.tsx
+ * uses in the other direction. "Save CSV now" is a separate action, open to
+ * every role (D-17) and deliberately not gated on the switch (D-11): an
+ * operator pressing the button has already expressed intent.
+ */
+function ExportControlsCard({
+  role,
+  deviceId,
+  surface,
+}: {
+  role: "admin" | "user";
+  deviceId: number | undefined;
+  surface: (err: unknown, fallback: string) => void;
+}) {
+  const { message } = App.useApp();
+  const [form] = Form.useForm<ExportSettingsFormValues>();
+  const [settings, setSettings] = useState<ExportFormatSettings | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    api
+      .exportFormatSettings()
+      .then((data) => {
+        setSettings(data);
+        form.setFieldsValue({
+          export_auto_save_enabled: data.export_auto_save_enabled,
+          export_output_dir: data.export_output_dir,
+        });
+      })
+      .catch((err: unknown) => surface(err, "Could not load the CSV export settings."));
+    // Loaded once on mount — the form owns edits from then on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onFinish = (values: ExportSettingsFormValues) => {
+    if (!settings) return;
+    setSaving(true);
+    api
+      .updateExportFormatSettings({ ...settings, ...values })
+      .then((data) => {
+        setSettings(data);
+        form.setFieldsValue({
+          export_auto_save_enabled: data.export_auto_save_enabled,
+          export_output_dir: data.export_output_dir,
+        });
+        message.success("CSV export settings saved.");
+      })
+      .catch((err: unknown) => surface(err, "Could not save the CSV export settings."))
+      .finally(() => setSaving(false));
+  };
+
+  const saveCsvNow = () => {
+    if (deviceId === undefined) return;
+    setExporting(true);
+    api
+      .exportLoadProfileNow(deviceId)
+      .then((result) => {
+        if (result.rows_written === 0) {
+          message.info("No new rows to export.");
+        } else {
+          message.success(`Exported ${result.rows_written} row(s) to ${result.path ?? "the CSV file"}.`);
+        }
+      })
+      .catch((err: unknown) => surface(err, "Could not export the CSV now."))
+      .finally(() => setExporting(false));
+  };
+
+  return (
+    <Card size="small" title="CSV export">
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={onFinish}
+        disabled={role !== "admin" || settings === null || saving}
+      >
+        <Flex gap="middle" wrap align="flex-end">
+          <Form.Item name="export_auto_save_enabled" label="Auto-save" valuePropName="checked" style={{ marginBottom: 0 }}>
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            name="export_output_dir"
+            label="Output folder"
+            style={{ marginBottom: 0, minWidth: 320, flex: 1 }}
+            extra="Where the per-meter CSV files are written. Required while Auto-save is on — turn Auto-save off first if you want to clear it."
+          >
+            <Input placeholder="e.g. C:\LoadProfileExports" allowClear />
+          </Form.Item>
+          <Form.Item style={{ marginBottom: 0 }}>
+            <Button type="primary" htmlType="submit" loading={saving}>
+              Save
+            </Button>
+          </Form.Item>
+        </Flex>
+      </Form>
+      <Button
+        style={{ marginTop: 12 }}
+        onClick={saveCsvNow}
+        loading={exporting}
+        disabled={deviceId === undefined}
+      >
+        Save CSV now
+      </Button>
+    </Card>
+  );
+}
+
 /**
  * Load Profile (M5b-1) — read a device's stored Interval Readings over a date
  * range.
@@ -146,7 +268,7 @@ function buildColumns(scale: DisplayUnitScale): ColumnsType<LoadProfileRow> {
  * days, the API speaks in UTC, and the exclusive upper bound is "the start of
  * the day after the one you picked".
  */
-export function LoadProfile() {
+export function LoadProfile({ role }: { role: "admin" | "user" }) {
   const { message } = App.useApp();
   const scale = useDisplayUnitScale();
 
@@ -343,6 +465,7 @@ export function LoadProfile() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <ExportControlsCard role={role} deviceId={deviceId} surface={surface} />
       <Card size="small">
         <Flex gap="small" wrap align="center">
           <Select

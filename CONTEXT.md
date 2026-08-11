@@ -225,6 +225,22 @@ moment a closed period is inserted; a missing one is rendered again on download 
 tracked as a failure. The Open Period never has one.
 _Avoid_: report, export (that's a different feature), snapshot
 
+**Export Format**:
+The four machine-wide settings that govern the Load Profile CSV auto-export (M7 slice 3, issue
+#30) — the timestamp token format, the filename template, the auto-save switch, and the output
+folder. **Machine-wide, not per-meter**: one customer's site runs meters set up identically, so
+a per-device value would solve a problem nobody has hit (grill M7, 2026-08-11). The timestamp
+format and the filename template live on their own ExportFormat page; the auto-save switch and
+the output folder sit on the Load Profile page instead, next to "Save CSV now" and the table
+they export.
+
+**The CSV they govern is always kWh/kvarh — it never follows the Display unit setting**
+(ADR 0013). The file is a contract an operator's downstream tooling appends to for months; the
+Display unit setting is a view, re-rendered on every request. A destination with a past on disk
+cannot retroactively agree with a switch flipped today.
+_Avoid_: divide by 1000 (v1's setting; not ported — write-time normalization already made it
+vacuous), per-meter format (rejected — see above)
+
 **Output Parity**:
 The acceptance rule for domain modules: numbers shown by v2 must equal v1's output at v1's
 default settings (`divide_by_1000=on` → kWh) on the same meter. Internals may differ freely.

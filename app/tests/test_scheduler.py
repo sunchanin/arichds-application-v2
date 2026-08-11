@@ -41,6 +41,7 @@ from arichds.constants import (
     BACKUP_INTERVAL_SEC,
     BATTERY_INTERVAL_SEC,
     BILLING_INTERVAL_SEC,
+    CSV_EXPORT_INTERVAL_SEC,
     LOAD_PROFILE_INTERVAL_SEC,
     MANUAL_READ_LOCK_TIMEOUT_SEC,
     RETENTION_INTERVAL_SEC,
@@ -50,6 +51,7 @@ from arichds.db.backup import backup_database
 from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 from arichds.db.retention import purge_expired
 from arichds.db.session import session_scope
+from arichds.export.csv_export import csv_export_cycle
 from arichds.jobs.scheduler import Job, Scheduler, default_jobs
 from arichds.licensing.service import STATE_ACTIVE, STATE_LIMITED, LicenseState
 
@@ -382,18 +384,26 @@ class TestSchedulerMasterSwitch:
 
 
 class TestTheDefaultRegistry:
-    """D12 — five jobs at M7-2 (battery, issue #29, added a fifth). M8 adds
-    sync one line at a time."""
+    """D12 — six jobs at M7 slice 3 (csv_export, issue #30, added a sixth,
+    right behind load_profile). M8 adds sync one line at a time."""
 
-    def test_it_holds_the_load_profile_billing_battery_backup_and_retention_jobs(self) -> None:
+    def test_it_holds_the_load_profile_csv_export_billing_battery_backup_and_retention_jobs(self) -> None:
         jobs = default_jobs()
 
         # Asserted deliberately so that whoever adds M8's sync has to come
         # here and update the count on purpose.
-        assert len(jobs) == 5
-        assert [job.name for job in jobs] == ["load_profile", "billing", "battery", "backup", "retention"]
+        assert len(jobs) == 6
+        assert [job.name for job in jobs] == [
+            "load_profile",
+            "csv_export",
+            "billing",
+            "battery",
+            "backup",
+            "retention",
+        ]
         assert [job.interval_sec for job in jobs] == [
             LOAD_PROFILE_INTERVAL_SEC,
+            CSV_EXPORT_INTERVAL_SEC,
             BILLING_INTERVAL_SEC,
             BATTERY_INTERVAL_SEC,
             BACKUP_INTERVAL_SEC,
@@ -401,11 +411,19 @@ class TestTheDefaultRegistry:
         ]
         assert [job.fn for job in jobs] == [
             load_profile_cycle,
+            csv_export_cycle,
             billing_cycle,
             battery_cycle,
             backup_database,
             purge_expired,
         ]
+
+    def test_csv_export_is_registered_immediately_behind_load_profile(self) -> None:
+        """D-10 — the index gap is what makes "runs after the LP cycle in the
+        same pass" real, not merely hoped for."""
+        names = [job.name for job in default_jobs()]
+
+        assert names.index("csv_export") == names.index("load_profile") + 1
 
     def test_backup_runs_before_retention(self) -> None:
         """Deliberate order (issue #19): the backup still holds the rows retention

@@ -72,9 +72,10 @@ MySQL, and ~30 tables.
   0013 (display units are a **view**, an appended file is a **contract** — the machine-wide
   kW/W setting reaches anything rendered per request, and never the Load Profile CSV, which
   appends for months under a header written once; **reverses** v1's `divide_by_1000`, which
-  write-time normalization already made vacuous; the setting itself shipped in `bbdd6b7`, the
-  boundary lands at M7, and the mixed-unit capture folder is a **recorded shipped gap** needing
-  its own issue).
+  write-time normalization already made vacuous; the setting itself shipped in `bbdd6b7`;
+  **fully implemented** with issue #30/M7 slice 3: the boundary landed on the Load Profile CSV
+  — `export/` never imports the render-time scale machinery, and the mixed-unit capture folder
+  stays a **recorded shipped gap** needing its own issue, unchanged by this issue).
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
 - `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,
@@ -94,8 +95,9 @@ MySQL, and ~30 tables.
   (`src/arichds/`): FastAPI (API + serves the built SPA, one origin, no CORS) ·
   **SQLAlchemy 2** ORM + SQLite WAL + one Alembic setup (`render_as_batch=True`) · poller ·
   job-registry scheduler · licensing · `auth/` (bcrypt + PyJWT, Role enum, token service —
-  HTTP-free; the guard dependencies live in `api/deps.py`). Venv at `app/.venv`,
-  `pyproject.toml` + pip.
+  HTTP-free; the guard dependencies live in `api/deps.py`) · `export/` (the Load Profile CSV
+  auto-export — row/filename formatting and the exporter itself, issue #30). Venv at
+  `app/.venv`, `pyproject.toml` + pip.
 - `web/` — Vite + React + TS + **AntD v6 re-themed** (deep teal `#0f766e`, compact, light,
   English-only UI). No Tailwind — AntD tokens + its layout primitives cover the UI. pnpm.
 - `installer/` — Inno Setup script + NSSM service wrapper (`installer/vendor/nssm.exe` is a
