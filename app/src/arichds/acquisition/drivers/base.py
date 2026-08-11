@@ -332,6 +332,123 @@ class BillingReading:
         }
 
 
+@dataclass(frozen=True)
+class EnergyRegisterReading:
+    """One snapshot of a meter's cumulative Energy Registers (M7-1, issue #28;
+    CONTEXT.md — Energy Registers).
+
+    Field names match ``energy_register_readings`` columns exactly, mirroring
+    :class:`BillingReading`'s naming convention — a total plus four tariffs
+    for each of the four quantities. Unlike a Billing Reading there is no
+    ``bill_date``/``is_open``: this is a plain dated snapshot, never a period.
+
+    Attributes:
+        source: Which acquisition path produced it (``dlms``).
+        meter_serial: Snapshot per row, or None if the driver could not read
+            one.
+        import_active_kwh_total/rate_a/rate_b/rate_c/rate_d: OBIS
+            ``1.0.1.8.{0..4}.255``.
+        export_active_kwh_total/rate_a/rate_b/rate_c/rate_d: OBIS
+            ``1.0.2.8.{0..4}.255``.
+        import_reactive_kvarh_total/rate_a/rate_b/rate_c/rate_d: OBIS
+            ``1.0.3.8.{0..4}.255``.
+        export_reactive_kvarh_total/rate_a/rate_b/rate_c/rate_d: OBIS
+            ``1.0.4.8.{0..4}.255``.
+    """
+
+    source: str
+    meter_serial: str | None = None
+
+    import_active_kwh_total: float | None = None
+    import_active_kwh_rate_a: float | None = None
+    import_active_kwh_rate_b: float | None = None
+    import_active_kwh_rate_c: float | None = None
+    import_active_kwh_rate_d: float | None = None
+
+    export_active_kwh_total: float | None = None
+    export_active_kwh_rate_a: float | None = None
+    export_active_kwh_rate_b: float | None = None
+    export_active_kwh_rate_c: float | None = None
+    export_active_kwh_rate_d: float | None = None
+
+    import_reactive_kvarh_total: float | None = None
+    import_reactive_kvarh_rate_a: float | None = None
+    import_reactive_kvarh_rate_b: float | None = None
+    import_reactive_kvarh_rate_c: float | None = None
+    import_reactive_kvarh_rate_d: float | None = None
+
+    export_reactive_kvarh_total: float | None = None
+    export_reactive_kvarh_rate_a: float | None = None
+    export_reactive_kvarh_rate_b: float | None = None
+    export_reactive_kvarh_rate_c: float | None = None
+    export_reactive_kvarh_rate_d: float | None = None
+
+    def as_columns(self) -> dict[str, Any]:
+        """Return the **twenty measurement** fields as ``energy_register_readings``
+        column values. ``source``/``meter_serial`` are the row's identity, not
+        values it measured — mirrors :meth:`BillingReading.as_columns`."""
+        return {
+            "import_active_kwh_total": self.import_active_kwh_total,
+            "import_active_kwh_rate_a": self.import_active_kwh_rate_a,
+            "import_active_kwh_rate_b": self.import_active_kwh_rate_b,
+            "import_active_kwh_rate_c": self.import_active_kwh_rate_c,
+            "import_active_kwh_rate_d": self.import_active_kwh_rate_d,
+            "export_active_kwh_total": self.export_active_kwh_total,
+            "export_active_kwh_rate_a": self.export_active_kwh_rate_a,
+            "export_active_kwh_rate_b": self.export_active_kwh_rate_b,
+            "export_active_kwh_rate_c": self.export_active_kwh_rate_c,
+            "export_active_kwh_rate_d": self.export_active_kwh_rate_d,
+            "import_reactive_kvarh_total": self.import_reactive_kvarh_total,
+            "import_reactive_kvarh_rate_a": self.import_reactive_kvarh_rate_a,
+            "import_reactive_kvarh_rate_b": self.import_reactive_kvarh_rate_b,
+            "import_reactive_kvarh_rate_c": self.import_reactive_kvarh_rate_c,
+            "import_reactive_kvarh_rate_d": self.import_reactive_kvarh_rate_d,
+            "export_reactive_kvarh_total": self.export_reactive_kvarh_total,
+            "export_reactive_kvarh_rate_a": self.export_reactive_kvarh_rate_a,
+            "export_reactive_kvarh_rate_b": self.export_reactive_kvarh_rate_b,
+            "export_reactive_kvarh_rate_c": self.export_reactive_kvarh_rate_c,
+            "export_reactive_kvarh_rate_d": self.export_reactive_kvarh_rate_d,
+        }
+
+
+@dataclass(frozen=True)
+class SpecialDayEntry:
+    """One row of a meter's COSEM class-11 Special Days Table (M7-1, issue
+    #28; CONTEXT.md — Holiday), already classified — the wire's wildcard-year
+    detail (a bare ``GXDate`` whose year field was skipped, decoded by Gurux
+    as a ``2000`` placeholder) is a wire fact and must not leak past the
+    driver, the same write-time-normalization invariant applied to a
+    calendar instead of a unit.
+
+    **One representation, mapping 1:1 onto the ``holidays`` columns** — a
+    driver never returns a raw ``GXDate``, only this.
+
+    Attributes:
+        index: The entry's own index on the meter's table.
+        day_id: The meter's own tariff-table code for this day — the only
+            distinguishing datum the meter carries (decision 17; there is no
+            name field on the wire).
+        year: The entry's year, or ``None`` when the wire's year field was a
+            wildcard (annual, recurring every year). **Never the ``2000``
+            placeholder Gurux substitutes for a skipped year** — that value
+            must never reach this field.
+        month: The month, always present.
+        day: The day of month, always present.
+    """
+
+    index: int
+    day_id: int
+    year: int | None
+    month: int
+    day: int
+
+    @property
+    def kind(self) -> str:
+        """``"annual"`` when :attr:`year` is ``None``, else ``"public"`` —
+        the same two kinds :class:`~arichds.db.models.Holiday` stores."""
+        return "annual" if self.year is None else "public"
+
+
 class MeterDriver(ABC):
     """Abstract base for every meter protocol driver.
 
@@ -538,6 +655,81 @@ class MeterDriver(ABC):
             NotImplementedError: Always, on a driver that has no billing profile.
         """
         raise NotImplementedError(f"{type(self).__name__} has no billing profile — check supports_billing() first")
+
+    def supports_energy_registers(self) -> bool:
+        """Whether this driver can read the standalone Energy Registers
+        (M7-1, issue #28; ADR 0011 — the driver is the authority, the
+        catalog's ``supports_energy_summary`` flag only gates the *page*).
+
+        Non-abstract and ``False`` by default, the same pairing as
+        :meth:`supports_billing`. A model that can read the twenty
+        cumulative-energy registers overrides this to ``True`` **and**
+        implements :meth:`read_energy_registers`.
+
+        Returns:
+            False, unless a concrete driver says otherwise.
+        """
+        return False
+
+    def read_energy_registers(self) -> EnergyRegisterReading:
+        """Read the meter's twenty standalone cumulative energy registers
+        (COSEM ``D=8``) — one dated snapshot, not a period (M7-1, issue #28).
+
+        Callable only when :meth:`supports_energy_registers` returns
+        ``True``. Assumes :meth:`connect` succeeded.
+
+        Non-abstract and raising, rather than absent, so the caller never has
+        to ask ``hasattr`` — the same pairing and the same reason as
+        :meth:`read_billing`.
+
+        Returns:
+            The snapshot, already normalized to kWh/kvarh. An address that
+            refuses leaves its field ``None``; it must not abort the other
+            nineteen.
+
+        Raises:
+            NotImplementedError: Always, on a driver that has no Energy
+                Registers.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no Energy Registers — check supports_energy_registers() first"
+        )
+
+    def supports_special_days(self) -> bool:
+        """Whether this driver can read the COSEM class-11 Special Days
+        Table (M7-1, issue #28; ADR 0011).
+
+        Non-abstract and ``False`` by default, the same pairing as
+        :meth:`supports_billing`. A model that exposes the table overrides
+        this to ``True`` **and** implements :meth:`read_special_days`.
+
+        Returns:
+            False, unless a concrete driver says otherwise.
+        """
+        return False
+
+    def read_special_days(self) -> list[SpecialDayEntry]:
+        """Read the meter's whole Special Days Table, read-through — nothing
+        is stored from this call (CONTEXT.md — the Special Days page shows
+        what the meter holds, and it alone; the Holiday table it can seed is
+        a **separate**, explicit import action, never automatic).
+
+        Callable only when :meth:`supports_special_days` returns ``True``.
+        Assumes :meth:`connect` succeeded. **Never calls the table's own
+        ``insert()``/``delete()`` methods** — the product only ever reads a
+        meter (CLAUDE.md).
+
+        Returns:
+            Every entry the meter holds, in whatever order the meter returns
+            them — an empty table is a valid answer, not a failure.
+
+        Raises:
+            NotImplementedError: Always, on a driver that has no Special Days
+                Table.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no Special Days Table — check supports_special_days() first"
+        )
 
 
 class MeterConnectionError(RuntimeError):

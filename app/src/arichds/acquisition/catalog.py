@@ -98,13 +98,21 @@ class ModelSpec:
 
 # ── The catalog ───────────────────────────────────────────────────────────────
 #
-# Capability-flag rationale, carried over from v1 verbatim:
+# Capability-flag rationale (ADR 0011 — the driver is the authority, this
+# catalog only mirrors what a real driver implements; `test_catalog.py`'s
+# correspondence test fails if the two ever drift):
 #   - supports_battery: True for Mitsu & TCC (battery register) AND for the three
 #     CEWE models, whose drivers read the CEWE Battery-status register
-#     0.0.96.6.1.255.
-#   - supports_energy_summary / supports_special_days: True for the new brands
-#     (energy 1.0.x.8.x, special days 0.0.11.0.0.255). Still False for the three
-#     CEWE models: those two hooks are unimplemented on CEWE.
+#     0.0.96.6.1.255. Still an aspirational value pending issue #29's
+#     `read_battery_status()` capability method — out of scope for M7-1.
+#   - supports_energy_summary / supports_special_days: True for `smw110` and the
+#     five SMART TCC models — confirmed on real hardware (the 2026-08-11 ST-3CL
+#     probe: 20 of 20 standalone energy registers answered, and the Special Days
+#     Table returned 82 entries). Both hooks — `MeterDriver.read_energy_registers()`
+#     / `read_special_days()` (M7-1, issue #28) — are implemented on `smw110.py`
+#     and `smart_tcc.py`. Still False for the three CEWE models: those two hooks
+#     are unimplemented on CEWE, and no CEWE meter is known to expose either
+#     register set.
 
 CATALOG: Final[dict[str, ModelSpec]] = {
     # ── SMART TCC (TCP, key-based auth) ──────────────────────────────────────

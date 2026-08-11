@@ -51,12 +51,13 @@ from abc import abstractmethod
 from decimal import Decimal
 from typing import Any
 
-from gurux_dlms.objects import GXDLMSData, GXDLMSExtendedRegister, GXDLMSRegister
+from gurux_dlms.enums import DateTimeSkips
+from gurux_dlms.objects import GXDLMSData, GXDLMSExtendedRegister, GXDLMSRegister, GXDLMSSpecialDaysTable
 
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers import _gurux_net_patch  # noqa: F401 — import applies the patch
 from arichds.acquisition.drivers._gurux_trace import silence_frame_trace
-from arichds.acquisition.drivers.base import MeterConnectionError, MeterDriver
+from arichds.acquisition.drivers.base import EnergyRegisterReading, MeterConnectionError, MeterDriver, SpecialDayEntry
 from arichds.acquisition.obis import ENERGY_COLUMNS_WH
 from arichds.constants import (
     CONNECT_ASSOC_RETRY_ATTEMPTS,
@@ -98,6 +99,160 @@ def _cosem_class(obis_code: str) -> Any:
             # carry a scaler_unit and are plain Registers.
             return GXDLMSRegister(obis_code)
     return GXDLMSData(obis_code)
+
+
+#: The COSEM class-11 Special Days Table — one address, shared by every model
+#: that exposes it (``smw110``, the SMART TCC family — M7-1, issue #28;
+#: gurux-dlms skill "Special Days Table").
+SPECIAL_DAYS_OBIS = "0.0.11.0.0.255"
+
+#: `C` -> the :class:`~arichds.acquisition.drivers.base.EnergyRegisterReading`
+#: field prefix, for the twenty standalone cumulative energy registers
+#: (COSEM ``D=8``, class 3 Register) — M7-1, issue #28. Shared by every
+#: driver that opts in via :meth:`DlmsDriver.supports_energy_registers`.
+_ENERGY_REGISTER_PREFIX_BY_C: dict[int, str] = {
+    1: "import_active_kwh",
+    2: "export_active_kwh",
+    3: "import_reactive_kvarh",
+    4: "export_reactive_kvarh",
+}
+_ENERGY_REGISTER_RATE_SUFFIX: dict[int, str] = {0: "total", 1: "rate_a", 2: "rate_b", 3: "rate_c", 4: "rate_d"}
+
+
+def _special_day_entry_from_gx(entry: Any) -> SpecialDayEntry | None:
+    """Classify one wire ``GXDLMSSpecialDay`` into a :class:`SpecialDayEntry`
+    (M7-1, issue #28, finding 1) — a pure function, callable and testable
+    with no meter and no driver instance.
+
+    **annual ⟺ the wire year field was a wildcard** —
+    ``entry.date.skip & DateTimeSkips.YEAR`` is non-zero, which is how Gurux
+    (``_GXCommon.getDate``) marks a wire year of ``0xFFFF``. Gurux then
+    substitutes the placeholder year ``2000`` into ``entry.date.value`` — a
+    wire artefact, and it is never read out of this function; only
+    ``.month``/``.day`` are taken from ``.value`` in that case.
+
+    **public ⟺ that bit is clear** — the real ``.value.year`` is taken as-is.
+
+    Args:
+        entry: One ``GXDLMSSpecialDay`` off ``obj.entries`` after reading
+            attribute 2 — ``.date`` is a ``GXDate`` or ``None``.
+
+    Returns:
+        The classified entry, or ``None`` when the entry carries no usable
+        date — dropped structurally, the same way every other read path in
+        this codebase drops a row it cannot classify rather than storing
+        something invented.
+    """
+    gx_date = entry.date
+    if gx_date is None or gx_date.value is None:
+        return None
+
+    is_annual = bool(gx_date.skip & DateTimeSkips.YEAR)
+    return SpecialDayEntry(
+        index=int(entry.index),
+        day_id=int(entry.dayId),
+        year=None if is_annual else gx_date.value.year,
+        month=gx_date.value.month,
+        day=gx_date.value.day,
+    )
+
+
+def read_energy_registers_via(driver: DlmsDriver) -> EnergyRegisterReading:
+    """Read the twenty standalone cumulative energy registers
+    (``1.0.{1,2,3,4}.8.{0..4}.255``, COSEM ``D=8``) off *driver* — M7-1,
+    issue #28.
+
+    A free function, not a :class:`DlmsDriver` method, on purpose: the read
+    shape (loop :meth:`DlmsDriver.read_register`, which already applies the
+    scaler per ADR 0002) is identical for every model that exposes these
+    registers (``smw110``, the SMART TCC family), but the capability pairing
+    this codebase uses everywhere (``base.py``'s module docstring) requires
+    ``read_energy_registers()`` to *raise* on a driver whose
+    ``supports_energy_registers()`` is ``False`` — and every CEWE model
+    shares this same ``DlmsDriver`` base. Putting the mechanism on the base
+    class would have made it silently callable (and working) on a CEWE
+    driver too, which is exactly the "``hasattr`` is never the question"
+    contract ``base.py`` exists to prevent. Each opting-in leaf driver
+    (``smw110.py``, ``smart_tcc.py``) calls this from its own
+    ``read_energy_registers()`` override instead.
+
+    Each address is read independently — one that refuses leaves its field
+    ``None`` and never aborts the other nineteen. Values divide by
+    :data:`~arichds.constants.WH_TO_KWH_DIVISOR` **unconditionally** after
+    :meth:`DlmsDriver.read_register` (decision 11) — v1's proven behaviour,
+    confirmed by the 2026-08-11 TCC probe where all 20 of 20 addresses
+    answered with correct units.
+
+    Returns:
+        The snapshot, or an all-``None`` one when *driver* is disconnected.
+    """
+    if driver._reader is None or driver._client is None:  # noqa: SLF001 — same module, DlmsDriver's own internals.
+        logger.warning("read_energy_registers() called on a disconnected driver %s", driver)
+        return EnergyRegisterReading(source=driver.source, meter_serial=None)
+
+    fields: dict[str, float | None] = {}
+    for c, prefix in _ENERGY_REGISTER_PREFIX_BY_C.items():
+        for e, suffix in _ENERGY_REGISTER_RATE_SUFFIX.items():
+            obis = f"1.0.{c}.8.{e}.255"
+            field = f"{prefix}_{suffix}"
+            try:
+                raw = driver.read_register(obis, 2)
+            except Exception:  # noqa: BLE001 — a refused address must not abort the other nineteen.
+                logger.warning("%s: could not read energy register %s (%s) — left None", driver.model_name, obis, field)
+                fields[field] = None
+                continue
+            if raw is None or not isinstance(raw, (Decimal, int, float)):
+                fields[field] = None
+            else:
+                fields[field] = float(raw) / WH_TO_KWH_DIVISOR
+
+    try:
+        meter_serial = driver.read_meter_serial()
+    except Exception:  # noqa: BLE001 — an annotation field must not cost the whole read.
+        logger.warning(
+            "%s: meter serial read failed after the energy registers were already read — "
+            "row stored with meter_serial=None",
+            driver.model_name,
+        )
+        meter_serial = None
+
+    return EnergyRegisterReading(source=driver.source, meter_serial=meter_serial, **fields)
+
+
+def read_special_days_via(driver: DlmsDriver) -> list[SpecialDayEntry]:
+    """Read *driver*'s whole COSEM class-11 Special Days Table
+    (``0.0.11.0.0.255``) — M7-1, issue #28.
+
+    A free function for the same reason as :func:`read_energy_registers_via`
+    above — shared mechanism, per-model capability flag.
+    :meth:`DlmsDriver.read_register` cannot read a class-11 object (it would
+    fall through to ``GXDLMSData`` and fail with "inconsistent Class or
+    object"); a ``GXDLMSSpecialDaysTable`` is constructed directly, appended
+    to the client's object list, and read at attribute 2. Gurux parses the
+    wire array onto ``obj.entries`` — never the ``read()`` return value.
+
+    **Never calls ``insert()``/``delete()``** — the product only ever reads
+    a meter (CLAUDE.md).
+
+    Returns:
+        Every entry the meter holds, classified through
+        :func:`_special_day_entry_from_gx` — an entry with no usable date is
+        dropped, and an empty table is a valid answer, not a failure.
+    """
+    if driver._reader is None or driver._client is None:  # noqa: SLF001 — same module, DlmsDriver's own internals.
+        logger.warning("read_special_days() called on a disconnected driver %s", driver)
+        return []
+
+    obj = GXDLMSSpecialDaysTable(SPECIAL_DAYS_OBIS)
+    driver._client.objects.append(obj)  # noqa: SLF001
+    driver._reader.read(obj, 2)  # noqa: SLF001
+
+    classified: list[SpecialDayEntry] = []
+    for entry in obj.entries or []:
+        mapped = _special_day_entry_from_gx(entry)
+        if mapped is not None:
+            classified.append(mapped)
+    return classified
 
 
 class DlmsDriver(MeterDriver):

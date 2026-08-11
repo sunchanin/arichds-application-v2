@@ -18,12 +18,18 @@ from arichds.constants import FEATURE_KEYS, SELLABLE_FEATURE_KEYS
 from arichds.licensing.features import effective_features, feature_enabled
 from arichds.licensing.service import LicenseState
 
-#: The three routers M6b gates (decision 6, issue #22) and the feature key
-#: each one requires. `/api/devices` is deliberately absent (decision 7).
+#: The routers M6b/M7-1 gate (decision 6, issue #22; decision 18, issue #28)
+#: and the feature key each one requires. `/api/devices` is deliberately
+#: absent (decision 7). `/api/energy` and `/api/holidays` share
+#: `energy_summary` (decision 18 — both tabs and the calendar);
+#: `/api/special-days` gates on its own `special_days` key.
 GATED_PREFIXES: dict[str, str] = {
     "/api/billing": "billing",
     "/api/load-profile": "load_profile",
     "/api/records": "records",
+    "/api/energy": "energy_summary",
+    "/api/holidays": "energy_summary",
+    "/api/special-days": "special_days",
 }
 
 
@@ -197,16 +203,29 @@ class TestRouteSweepWithNoSellableFeatures:
         wired to the wrong key (`records` gated by `load_profile`, say)
         would still 403 FEATURE_DISABLED and pass a test that only checked
         `billing`. `GATED_PREFIXES.items()` is the same table
-        `TestTheGatedPrefixTableIsNotStale` already proves isn't stale."""
+        `TestTheGatedPrefixTableIsNotStale` already proves isn't stale.
+
+        Hits the first live GET route under each prefix rather than the bare
+        prefix path itself — `/api/energy` (issue #28) has no route at the
+        bare prefix (only `/api/energy/summary` etc.), unlike
+        `/api/billing`/`/api/load-profile`/`/api/records`/`/api/holidays`/
+        `/api/special-days`, which all declare `@router.get("")`. Missing
+        query parameters on the picked route are never reached: the
+        router-level `require_feature` dependency fires before FastAPI's own
+        parameter validation, exactly as it already does for `/api/billing`'s
+        `status`-requiring bare route.
+        """
         relicense(admin_client, features=[])
+        routes = api_routes(admin_client)
 
         for prefix, key in GATED_PREFIXES.items():
-            response = admin_client.get(prefix)
+            method, path = next((m, p) for m, p in routes if m == "GET" and (p == prefix or p.startswith(f"{prefix}/")))
+            response = admin_client.get(concrete_path(path))
 
-            assert response.status_code == 403, (prefix, response.text)
+            assert response.status_code == 403, (prefix, path, response.text)
             body = response.json()
-            assert body["error"]["code"] == "FEATURE_DISABLED", (prefix, body)
-            assert body["error"]["reason"] == key, (prefix, body)
+            assert body["error"]["code"] == "FEATURE_DISABLED", (prefix, path, body)
+            assert body["error"]["reason"] == key, (prefix, path, body)
 
     def test_devices_is_not_gated_by_any_feature(self, admin_client: TestClient, relicense) -> None:
         """Decision 7 — `/api/devices` is a device operation, never feature-gated."""

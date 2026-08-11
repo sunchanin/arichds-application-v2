@@ -27,7 +27,7 @@ The package nests its modules oddly — copy these paths rather than guessing:
 from gurux_dlms import GXDLMSClient, GXDLMSException
 from gurux_dlms.GXByteBuffer import GXByteBuffer
 from gurux_dlms.GXDateTime import GXDateTime
-from gurux_dlms.enums import Authentication, InterfaceType, Security, Standard
+from gurux_dlms.enums import Authentication, DateTimeSkips, InterfaceType, Security, Standard
 from gurux_dlms.enums.DataType import DataType
 from gurux_dlms.enums import ObjectType            # also: from gurux_dlms.enums.ObjectType import ObjectType
 from gurux_dlms.objects.enums import SecuritySuite
@@ -36,10 +36,12 @@ from gurux_dlms.objects import (
     GXDLMSData,                 # class 1  — generic value
     GXDLMSRegister,             # class 3  — value + scaler_unit
     GXDLMSExtendedRegister,     # class 4  — register + capture_time
-    GXDLMSClock,                # class 8  — clock
     GXDLMSProfileGeneric,       # class 7  — buffered series (LP / billing)
+    GXDLMSClock,                # class 8  — clock
+    GXDLMSSpecialDaysTable,     # class 11 — Special Days Table (M7-1, issue #28)
     GXDLMSCaptureObject,        # capture-object descriptor for ProfileGeneric
 )
+from gurux_dlms.GXDate import GXDate                # a date-only GXDateTime subclass; entry.date's type
 
 # Networking / common (separate packages)
 from gurux_net import GXNet
@@ -88,6 +90,7 @@ Construct with the OBIS code string; `read(obj, attr)` fills the matching Python
 | `GXDLMSExtendedRegister` | 4 | `value` (2), `scaler`/`unit` (3), `captureTime` (5) | Demand registers (D=6 max, D=2 cumulative) carry a capture time. |
 | `GXDLMSClock` | 8 | `time` (2) | The clock object `0.0.1.0.0.255` — also the timestamp column of every load profile. |
 | `GXDLMSProfileGeneric` | 7 | `buffer` (2), `captureObjects` (3), `capturePeriod` (4), `entriesInUse` (7), `profileEntries` (8) | Read attr 3 first for the column layout. |
+| `GXDLMSSpecialDaysTable` | 11 | `entries` (2) | Read attr 2; Gurux parses onto `obj.entries` (a list of `GXDLMSSpecialDay`), never onto `read()`'s return value. `insert()`/`delete()` exist but **must never be called** (write methods, CLAUDE.md). See patterns.md → "Special Days Table (class 11) and the wildcard year". |
 | `GXDLMSCaptureObject` | — | `attributeIndex`, `dataIndex` | Each `captureObjects` entry is a `(GXDLMSObject, GXDLMSCaptureObject)` pair. |
 
 v1 selected the class by OBIS D-field (D=8 → Register, D=6/2 → ExtendedRegister, clock

@@ -85,7 +85,9 @@ from gurux_dlms.enums import Unit
 from gurux_dlms.objects import GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
+from arichds.acquisition.drivers._dlms import read_energy_registers_via, read_special_days_via
 from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver
+from arichds.acquisition.drivers.base import EnergyRegisterReading, SpecialDayEntry
 from arichds.acquisition.obis import INSTANTANEOUS_OBIS
 
 #: SMART TCC key material — driver-owned, customer-confirmed identical
@@ -251,3 +253,26 @@ class SmartTccDriver(DlmsProfileDriver):
         than the CEWE default (200 ms), to pace requests over the slow GPRS
         link."""
         return _INTER_FRAME_DELAY_MS
+
+    def supports_energy_registers(self) -> bool:
+        """Yes — the twenty standalone ``D=8`` energy registers (M7-1, issue
+        #28), confirmed on real hardware (finding 4: 20 of 20 addresses
+        answered on the 2026-08-11 ST-3CL probe)."""
+        return True
+
+    def read_energy_registers(self) -> EnergyRegisterReading:
+        """Read the twenty standalone energy registers — the shared
+        :func:`~arichds.acquisition.drivers._dlms.read_energy_registers_via`
+        mechanism."""
+        return read_energy_registers_via(self)
+
+    def supports_special_days(self) -> bool:
+        """Yes — the COSEM class-11 Special Days Table, confirmed on real
+        hardware (finding 4: 82 entries read off the ST-3CL)."""
+        return True
+
+    def read_special_days(self) -> list[SpecialDayEntry]:
+        """Read the Special Days Table — the shared
+        :func:`~arichds.acquisition.drivers._dlms.read_special_days_via`
+        mechanism."""
+        return read_special_days_via(self)
