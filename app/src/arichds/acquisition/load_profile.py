@@ -201,10 +201,13 @@ def read_and_store_load_profile(
     # Every logger's own start, computed once up front (D3) — each backfills
     # its own 90 days if it has never been read, rather than inheriting a
     # sibling logger's watermark.
+    # DB only — the meter is not touched here. A logger with no watermark maps
+    # to None ("backfill"), and where that backfill starts is decided under the
+    # Transport Endpoint lock in `_walk_every_logger`, because deciding it costs
+    # a read.
     with session_scope() as session:
         per_logger_start = {
-            logger_id: _watermark(session, device_id, logger_id) or now_utc - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
-            for logger_id in driver.load_profile_loggers()
+            logger_id: _watermark(session, device_id, logger_id) for logger_id in driver.load_profile_loggers()
         }
 
     endpoint = driver.endpoint
@@ -262,7 +265,7 @@ def _read_while_holding(
     device_id: int,
     device_name: str,
     endpoint: str,
-    per_logger_start: dict[int, datetime],
+    per_logger_start: dict[int, datetime | None],
     now_utc: datetime,
     budget_sec: float,
 ) -> tuple[int, bool, str | None]:
@@ -296,7 +299,7 @@ def _walk_every_logger(
     device_id: int,
     device_name: str,
     endpoint: str,
-    per_logger_start: dict[int, datetime],
+    per_logger_start: dict[int, datetime | None],
     now_utc: datetime,
     budget_sec: float,
 ) -> tuple[int, bool, str | None]:
@@ -321,7 +324,8 @@ def _walk_every_logger(
     error: str | None = None
 
     for logger_id in driver.load_profile_loggers():
-        start = per_logger_start[logger_id]
+        watermark = per_logger_start[logger_id]
+        start = watermark if watermark is not None else _backfill_start(driver, logger_id, device_name, now_utc)
         stored, exhausted, logger_error = _walk(
             driver, device_id, device_name, endpoint, logger_id, start, now_utc, deadline
         )
@@ -387,6 +391,55 @@ def load_profile_cycle() -> None:
             # and anything unforeseen, which on a site nobody can log into must
             # cost one device rather than the whole cycle.
             logger.exception("Load profile cycle failed for device id %s", device_id)
+
+
+def _backfill_start(driver: MeterDriver, logger_id: int, device_name: str, now_utc: datetime) -> datetime:
+    """Where a logger with no watermark should start — never earlier than the
+    meter's own buffer.
+
+    **Called with the Transport Endpoint held and the driver connected**, because
+    it asks the meter a question (`_walk_every_logger`, not
+    `read_and_store_load_profile`).
+
+    The bug this closes: `_walk` steps `LOAD_PROFILE_CHUNK_HOURS` at a time from
+    `now - LOAD_PROFILE_BACKFILL_DAYS`, stops on `LOAD_PROFILE_READ_BUDGET_SEC`,
+    and **keeps no memory of where it stopped** — by design, because the
+    watermark is the data (ADR 0008). That is self-healing only while the walk
+    reaches a row before the budget runs out. A SMART TCC on serial 9600 holding
+    ~22 h of buffer needs 90 chunks to reach its first row and gets through
+    fewer, so nothing is stored, so the watermark stays None, so the next cycle
+    re-walks the same empty ninety days. It sat at zero rows for three hours
+    that way, one identical re-walk per cycle, and Read now reported `0 rows`
+    for the same reason.
+
+    Clamping to the meter's oldest entry turns that into a single chunk. A meter
+    that really holds the whole window answers with a time about 90 days old and
+    nothing changes. A driver that cannot answer returns None (the base default)
+    and keeps today's behaviour exactly.
+
+    Never returns a time in the future or beyond the full window — a meter
+    reporting a nonsense clock must not be able to *narrow* the walk to nothing.
+    """
+    floor = now_utc - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
+    try:
+        oldest = driver.load_profile_oldest_reading(logger_id)
+    except Exception:  # noqa: BLE001 — an optional hint must never break the read it optimises.
+        logger.exception(
+            "Could not read %s logger %d's oldest entry — backfilling the full window", device_name, logger_id
+        )
+        return floor
+
+    if oldest is None or not (floor < oldest < now_utc):
+        return floor
+
+    logger.info(
+        "Backfill of %s logger %d starts at %s, not %s — the meter's buffer begins there",
+        device_name,
+        logger_id,
+        oldest.isoformat(),
+        floor.isoformat(),
+    )
+    return oldest
 
 
 def _walk(

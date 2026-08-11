@@ -469,6 +469,40 @@ class MeterDriver(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} has no load profile — check supports_load_profile() first")
 
+    def load_profile_oldest_reading(self, logger_id: int) -> datetime | None:
+        """When this logger's buffer actually starts, or ``None`` if unknown.
+
+        The backfill walk begins at ``now - LOAD_PROFILE_BACKFILL_DAYS`` on a
+        device with no stored rows, and steps forward one chunk at a time. Every
+        chunk older than the meter's own buffer is a round trip whose answer is
+        already known to be empty — and on a slow link that is not merely
+        wasteful, it is fatal: the walk is bounded by
+        ``LOAD_PROFILE_READ_BUDGET_SEC`` and keeps no memory of where it
+        stopped, so if the budget runs out before the first row is stored, the
+        watermark stays ``None`` and the next cycle repeats the same empty walk
+        forever. A SMART TCC on serial 9600 with ~22 hours of buffer sat at zero
+        rows for three hours that way, one re-walk per cycle.
+
+        Answering it moves the start to the first chunk that can contain data.
+        A meter that genuinely holds the whole window answers with a time ~90
+        days old and nothing about the walk changes.
+
+        Non-abstract and returning ``None`` rather than raising: a driver that
+        cannot cheaply answer must degrade to today's behaviour, not fail. The
+        caller only asks during backfill (no watermark), so a driver paying a
+        read for it pays once per device, not once per cycle.
+
+        Args:
+            logger_id: Which load profile to ask about — one of
+                :meth:`load_profile_loggers`.
+
+        Returns:
+            The timestamp of the oldest row the meter still holds for that
+            logger, timezone-aware UTC, or ``None`` when it cannot be
+            established.
+        """
+        return None
+
     def supports_billing(self) -> bool:
         """Whether this driver can read a billing profile (M6a, issue #21).
 

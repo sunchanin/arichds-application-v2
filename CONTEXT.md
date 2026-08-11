@@ -136,6 +136,39 @@ provisional by definition, and it is the one place billing shows a number that i
 bill.
 _Avoid_: current billing, running row, latest reading (that's whichever period is newest)
 
+**Energy Summary**:
+Interval Readings added up into **Time-of-Use buckets** — Peak, Off-Peak and Holiday — per
+device and local calendar day. It is **derived, never stored and never read from a meter**:
+the numbers are aggregated out of `load_profile_readings` on every request, exactly as the
+Records page counts its cells live. Peak is a local clock window on days that are not Holiday;
+Holiday is one bucket that swallows weekends and both kinds of Holiday alike, so a Saturday
+inside the peak window is Holiday energy, not Peak energy (ADR 0016). Only **active** energy is
+counted, import and export; the reactive columns exist on the row and are deliberately ignored.
+Because nothing is stored, **an Energy Summary is not reproducible over time**: adding a Holiday
+today changes what last January reports tomorrow. That is a property of the design, not a
+fault — the Holiday table is the one knob that moves it, and it moves it toward the truth. The
+peak window is a constant for the same reason: a second retroactive knob would move the
+numbers with nothing in the world to justify the move.
+_Avoid_: TOU report, energy report, meter energy (that's Energy Registers)
+
+**Energy Registers**:
+A meter's **cumulative** energy counters (COSEM `D=8` — import/export, active/reactive) read
+straight off the meter and kept as a dated snapshot in `energy_register_readings`. It is the
+other half of the Energy Summary page and shares its licence key, but it shares no data with
+it: one is arithmetic over rows we already hold, the other is a fresh association to a meter.
+Cumulative counters are not instantaneous values, which is why displaying them does not
+reopen ADR 0007 — a running total since the meter was commissioned says nothing about *now*.
+_Avoid_: energy summary (that's the buckets), live energy, instantaneous energy
+
+**Holiday**:
+A day the Energy Summary counts into the Holiday bucket. Three things make a day one and they
+are equal in force: it is a Saturday or Sunday, or it matches an **annual** Holiday (month and
+day, recurring every year), or it matches a **public** Holiday (one exact date). Holidays are
+machine-wide — there is no per-device set — and the whole set travels between machines as one
+JSON file. 29 February is refused as annual, because in a non-leap year it would match nothing
+and say nothing about why.
+_Avoid_: day off, non-working day, weekend flag (a weekend is a Holiday, not a separate kind)
+
 **Retention**:
 The daily job that deletes rows past 90 days — Interval Readings by `read_at`, Device Events by
 `created_at`. **Device Events go uniformly**: a status transition the machine wrote and an
