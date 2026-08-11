@@ -27,12 +27,24 @@ logger = logging.getLogger(__name__)
 
 def _registry() -> dict[str, type[MeterDriver]]:
     """Lazily import and return the model → driver-class registry."""
+    from arichds.acquisition.drivers.premier550 import Premier550Driver
     from arichds.acquisition.drivers.prometer100 import Prometer100Driver
+    from arichds.acquisition.drivers.saral305 import Saral305Driver
+    from arichds.acquisition.drivers.smart_tcc import SmartTccDriver
     from arichds.acquisition.drivers.smw110 import Smw110Driver
 
     return {
         "prometer100": Prometer100Driver,
+        "saral305": Saral305Driver,
+        "premier550": Premier550Driver,
         "smw110": Smw110Driver,
+        # ── SMART TCC (M4c, issue #25) — five catalog keys, one driver class
+        # (D2): the family shares one connection profile and one OBIS set.
+        "st3c": SmartTccDriver,
+        "st3cl": SmartTccDriver,
+        "st33tl": SmartTccDriver,
+        "st3tl": SmartTccDriver,
+        "st3dh": SmartTccDriver,
     }
 
 

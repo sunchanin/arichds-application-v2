@@ -246,7 +246,11 @@ class DeviceCreate(BaseModel):
         transport: The Transport Endpoint — ``net`` or ``serial`` (issue #9).
             A discriminated union, so the API requires only the fields the
             chosen transport actually needs.
-        password: DLMS authentication password. Stored, never returned.
+        password: DLMS authentication password. Stored, and — owner ruling,
+            2026-08-11 — **returned in the clear**: meter passwords are not a
+            security boundary, so convenience (the edit form prefills it and
+            Test Connection needs no retyping) wins over secrecy. The two
+            cipher keys below are unaffected — they are never returned.
         site_code: Record-only.
         customer: Record-only.
         meter_number: Record-only operator label — not the Meter Serial.
@@ -293,8 +297,11 @@ class DeviceUpdate(DeviceCreate):
 class DeviceOut(BaseModel):
     """A device as the API exposes it.
 
-    The password and the two cipher keys are absent by construction: they are
-    not fields of this model, so no handler can leak them by accident.
+    The two cipher keys are absent by construction: they are not fields of
+    this model, so no handler can leak them by accident. ``password`` is the
+    deliberate exception — owner ruling, 2026-08-11: meter passwords are not
+    a security boundary, so this field returns the stored value in the
+    clear, in favor of convenience over secrecy.
 
     Attributes:
         id: Surrogate key.
@@ -308,6 +315,8 @@ class DeviceOut(BaseModel):
         customer: Record-only.
         meter_number: Record-only.
         group_name: Free-text group.
+        password: DLMS authentication password, in the clear (owner ruling,
+            2026-08-11 — see the class docstring).
         transport: The Transport Endpoint — ``net`` or ``serial`` (issue #9).
             Unlike the request-side :data:`Transport`, this carries no
             min-length/ge bounds (:class:`NetTransportOut`/
@@ -341,6 +350,7 @@ class DeviceOut(BaseModel):
     customer: str | None
     meter_number: str | None
     group_name: str | None
+    password: str
     transport: TransportOut
     endpoint: str
     enabled: bool
@@ -577,6 +587,7 @@ def _to_out(device: Device) -> DeviceOut:
         customer=device.customer,
         meter_number=device.meter_number,
         group_name=device.group_name,
+        password=device.password,
         transport=_transport_out(device.transport or {}),
         endpoint=device.transport_endpoint,
         enabled=device.enabled,

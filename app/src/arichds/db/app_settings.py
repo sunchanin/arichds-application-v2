@@ -22,6 +22,16 @@ from arichds.db.models import Setting
 CAPTURE_DIR_KEY = "capture_dir"
 CAPTURE_DIR_DEFAULT = ""
 
+#: The machine-wide display-unit setting (a CR, not part of any milestone's
+#: original shape) — `"kilo"` (kW/kWh/kvar/kvarh, today's behaviour) or
+#: `"base"` (W/Wh/var/varh). A missing key means `"kilo"`, so an existing
+#: install is unchanged. Applied at render time only, in the web UI and the
+#: capture renderers (:mod:`arichds.capture._render_shared`) — the database
+#: and the API payloads never change (CLAUDE.md's write-time normalization
+#: invariant).
+DISPLAY_UNIT_SCALE_KEY = "display_unit_scale"
+DISPLAY_UNIT_SCALE_DEFAULT = "kilo"
+
 
 def get_setting(session: Session, key: str, default: str) -> str:
     """Return *key*'s stored value, or *default* if the row is absent."""

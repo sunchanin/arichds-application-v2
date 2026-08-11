@@ -70,6 +70,21 @@ class TestCaptureReading:
 
         assert list(tmp_path.iterdir()) == []
 
+    def test_the_scale_argument_reaches_the_xlsx_render(self, tmp_path: Path) -> None:
+        """`capture_reading`'s `scale` must reach the renderer, not just be
+        accepted and dropped — proven by reading the label back off the
+        written file rather than by inspecting the call."""
+        from openpyxl import load_workbook
+
+        row = make_row(import_active_kwh_total=42.5)
+
+        capture_reading(row, "Main Incomer", tmp_path, write_excel=True, scale="base")
+
+        _pdf_path, xlsx_path = capture_target_paths(tmp_path, "1232002893", BILL_DATE)
+        values = [cell.value for sheet_row in load_workbook(xlsx_path).active.iter_rows() for cell in sheet_row]
+        assert "Import Active Wh Total" in values
+        assert 42500.0 in values or "42500.0" in values
+
     def test_an_xlsx_write_failure_does_not_undo_the_pdf(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import arichds.capture.service as service_module
 

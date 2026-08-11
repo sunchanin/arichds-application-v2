@@ -67,11 +67,12 @@ class IntervalReading:
         current_l1/current_l2/current_l3: Line current (A).
         freq: Frequency (Hz).
         import_active_kwh: Active energy import for the interval (**kWh**).
-
-    The four measurement columns ``load_profile_readings`` gained at M5a-1
-    (``import_reactive_kvarh``, ``export_active_kwh``, ``export_reactive_kvarh``,
-    ``avg_geo_pf``) are deliberately **not** fields here: no driver produces one
-    until M4c, and a field nothing sets is speculative.
+        import_reactive_kvarh/export_active_kwh/export_reactive_kvarh/avg_geo_pf:
+            The rest of the twelve-column set the v1 Load Profile page shows
+            (SPEC §3.5). The columns existed on ``load_profile_readings``
+            since M5a-1 (migration 0006) but stayed off this dataclass until
+            M4c, issue #24 — a field nothing sets is speculative, and the
+            three CEWE drivers are the first to produce them (F7).
     """
 
     read_at: datetime
@@ -86,6 +87,13 @@ class IntervalReading:
     current_l3: float | None = None
     freq: float | None = None
     import_active_kwh: float | None = None
+    # ── M4c, issue #24 — produced by all three CEWE drivers (F7); the columns
+    # already existed on `load_profile_readings` since migration 0006, but a
+    # field nothing set was speculative until a driver actually produces one.
+    import_reactive_kvarh: float | None = None
+    export_active_kwh: float | None = None
+    export_reactive_kvarh: float | None = None
+    avg_geo_pf: float | None = None
 
     def as_columns(self) -> dict[str, Any]:
         """Return the **measurement** fields as ``load_profile_readings`` column values.
@@ -103,6 +111,10 @@ class IntervalReading:
             "current_l3": self.current_l3,
             "freq": self.freq,
             "import_active_kwh": self.import_active_kwh,
+            "import_reactive_kvarh": self.import_reactive_kvarh,
+            "export_active_kwh": self.export_active_kwh,
+            "export_reactive_kvarh": self.export_reactive_kvarh,
+            "avg_geo_pf": self.avg_geo_pf,
         }
 
 
@@ -144,9 +156,25 @@ class BillingReading:
         max_demand_export_reactive_kvar_total/rate_a/rate_b/rate_c/rate_d:
             Maximum demand, exported reactive power, from OBIS
             ``1.0.4.6.{0..4}.255``.
+        max_demand_import_active_time_total/rate_a/rate_b/rate_c/rate_d: When
+            the corresponding import active max-demand value was captured —
+            **timezone-aware UTC, never scaled** (D11) — from OBIS
+            ``1.0.1.6.{0..4}.255`` attribute 5 (M4c, issue #24).
+        max_demand_import_reactive_time_total/rate_a/rate_b/rate_c/rate_d: When
+            the corresponding import reactive max-demand value was captured,
+            from OBIS ``1.0.3.6.{0..4}.255`` attribute 5.
+        cumul_demand_import_active_kw_total/rate_a/rate_b/rate_c/rate_d:
+            Cumulative demand, imported active power, from OBIS
+            ``1.0.1.2.{0..4}.255``. Scales like every other billing number
+            (D12) — resolved ``scaler_unit``, then divided to kW.
+        cumul_demand_import_reactive_kvar_total/rate_a/rate_b/rate_c/rate_d:
+            Cumulative demand, imported reactive power, from OBIS
+            ``1.0.3.2.{0..4}.255``.
 
     ``C=5`` (reactive Q1) has no fields here — no screen has ever shown it
-    (SPEC §3.6), and a field nothing sets is speculative.
+    (SPEC §3.6), and a field nothing sets is speculative. The **export** side
+    of Demand Time and Cumulative Demand is deliberately absent too (D10,
+    F2) — no screen shows it and no meter known to this build carries it.
     """
 
     bill_date: datetime
@@ -202,8 +230,38 @@ class BillingReading:
     max_demand_export_reactive_kvar_rate_c: float | None = None
     max_demand_export_reactive_kvar_rate_d: float | None = None
 
+    # ── M4c, issue #24 — the twenty columns v1's screen has always shown ──────
+    # Demand Time: WHEN the max-demand value was captured (Extended Register
+    # attr 5, D11) — a timestamp, never scaled, never divided. Cumulative
+    # Demand: a running total (D=2, class 4 ExtendedRegister) that scales like
+    # every other billing number (D12). Import side only — no screen shows the
+    # export side (D10/F2).
+    max_demand_import_active_time_total: datetime | None = None
+    max_demand_import_active_time_rate_a: datetime | None = None
+    max_demand_import_active_time_rate_b: datetime | None = None
+    max_demand_import_active_time_rate_c: datetime | None = None
+    max_demand_import_active_time_rate_d: datetime | None = None
+
+    max_demand_import_reactive_time_total: datetime | None = None
+    max_demand_import_reactive_time_rate_a: datetime | None = None
+    max_demand_import_reactive_time_rate_b: datetime | None = None
+    max_demand_import_reactive_time_rate_c: datetime | None = None
+    max_demand_import_reactive_time_rate_d: datetime | None = None
+
+    cumul_demand_import_active_kw_total: float | None = None
+    cumul_demand_import_active_kw_rate_a: float | None = None
+    cumul_demand_import_active_kw_rate_b: float | None = None
+    cumul_demand_import_active_kw_rate_c: float | None = None
+    cumul_demand_import_active_kw_rate_d: float | None = None
+
+    cumul_demand_import_reactive_kvar_total: float | None = None
+    cumul_demand_import_reactive_kvar_rate_a: float | None = None
+    cumul_demand_import_reactive_kvar_rate_b: float | None = None
+    cumul_demand_import_reactive_kvar_rate_c: float | None = None
+    cumul_demand_import_reactive_kvar_rate_d: float | None = None
+
     def as_columns(self) -> dict[str, Any]:
-        """Return the **forty measurement** fields as ``billing_readings`` column values.
+        """Return the **sixty measurement** fields as ``billing_readings`` column values.
 
         Measurements only — ``bill_date``, ``source``, ``is_open`` and
         ``meter_serial`` are the row's identity, not values it measured, and
@@ -251,6 +309,26 @@ class BillingReading:
             "max_demand_export_reactive_kvar_rate_b": self.max_demand_export_reactive_kvar_rate_b,
             "max_demand_export_reactive_kvar_rate_c": self.max_demand_export_reactive_kvar_rate_c,
             "max_demand_export_reactive_kvar_rate_d": self.max_demand_export_reactive_kvar_rate_d,
+            "max_demand_import_active_time_total": self.max_demand_import_active_time_total,
+            "max_demand_import_active_time_rate_a": self.max_demand_import_active_time_rate_a,
+            "max_demand_import_active_time_rate_b": self.max_demand_import_active_time_rate_b,
+            "max_demand_import_active_time_rate_c": self.max_demand_import_active_time_rate_c,
+            "max_demand_import_active_time_rate_d": self.max_demand_import_active_time_rate_d,
+            "max_demand_import_reactive_time_total": self.max_demand_import_reactive_time_total,
+            "max_demand_import_reactive_time_rate_a": self.max_demand_import_reactive_time_rate_a,
+            "max_demand_import_reactive_time_rate_b": self.max_demand_import_reactive_time_rate_b,
+            "max_demand_import_reactive_time_rate_c": self.max_demand_import_reactive_time_rate_c,
+            "max_demand_import_reactive_time_rate_d": self.max_demand_import_reactive_time_rate_d,
+            "cumul_demand_import_active_kw_total": self.cumul_demand_import_active_kw_total,
+            "cumul_demand_import_active_kw_rate_a": self.cumul_demand_import_active_kw_rate_a,
+            "cumul_demand_import_active_kw_rate_b": self.cumul_demand_import_active_kw_rate_b,
+            "cumul_demand_import_active_kw_rate_c": self.cumul_demand_import_active_kw_rate_c,
+            "cumul_demand_import_active_kw_rate_d": self.cumul_demand_import_active_kw_rate_d,
+            "cumul_demand_import_reactive_kvar_total": self.cumul_demand_import_reactive_kvar_total,
+            "cumul_demand_import_reactive_kvar_rate_a": self.cumul_demand_import_reactive_kvar_rate_a,
+            "cumul_demand_import_reactive_kvar_rate_b": self.cumul_demand_import_reactive_kvar_rate_b,
+            "cumul_demand_import_reactive_kvar_rate_c": self.cumul_demand_import_reactive_kvar_rate_c,
+            "cumul_demand_import_reactive_kvar_rate_d": self.cumul_demand_import_reactive_kvar_rate_d,
         }
 
 
@@ -265,6 +343,15 @@ class MeterDriver(ABC):
     #: than a branch at the write site (CONTEXT.md — Source is a property of the
     #: reading, never a branch in read-path code).
     source: str = "dlms"
+
+    #: The widest column span a billing ``readRowsByEntry`` may ask for in one
+    #: request, or ``None`` when the model has no such ceiling and reads full
+    #: width (D7, M4c issue #24). SMW110W4 is the one model that needs a span
+    #: today — its billing profile answers "Data Block Unavailable" past 43
+    #: columns; the three CEWE models read whole-buffer, full-width, no span
+    #: (F4). A class attribute, not a module constant, because M4c is the
+    #: first slice with a model that does not need one.
+    BILLING_COLUMN_SPAN: int | None = None
 
     @property
     @abstractmethod
@@ -327,18 +414,49 @@ class MeterDriver(ABC):
         """
         return False
 
-    def read_load_profile(self, start_utc: datetime, end_utc: datetime) -> list[IntervalReading]:
-        """Read the meter's load profile over ``[start_utc, end_utc]``, inclusive.
+    def load_profile_loggers(self) -> tuple[int, ...]:
+        """Which ``logger_id``\\ s this driver can read, ascending (D2, M4c issue #24).
 
-        Callable only when :meth:`supports_load_profile` returns ``True``.
-        Assumes :meth:`connect` succeeded.
+        Non-abstract and empty by default, mirroring :meth:`supports_load_profile`:
+        most models have no scanned capture list yet. A model that can read a
+        load profile overrides this with the logger ids it actually captures —
+        derived from its own profile OBIS declarations through
+        :func:`~arichds.acquisition.obis.logger_id_for_profile`, never from
+        discovery order or arithmetic (ADR 0005's principle). The load-profile
+        job walks these ascending so Logger 1 — which carries the energy
+        columns on every model — is never starved by Logger 2.
+
+        A driver-contract test asserts this is non-empty exactly when
+        :meth:`supports_load_profile` is ``True``, so the two capability
+        signals cannot drift apart.
+
+        Returns:
+            The logger ids this driver reads, ascending. Empty unless a
+            concrete driver says otherwise.
+        """
+        return ()
+
+    def read_load_profile(self, logger_id: int, start_utc: datetime, end_utc: datetime) -> list[IntervalReading]:
+        """Read one logger's profile over ``[start_utc, end_utc]``, inclusive.
+
+        Callable only when :meth:`supports_load_profile` returns ``True`` and
+        *logger_id* is one of :meth:`load_profile_loggers`. Assumes
+        :meth:`connect` succeeded.
 
         Non-abstract and raising, rather than absent, so the job never has to ask
         ``hasattr``: a driver that *forgot* this method must not look like one
         that deliberately lacks it. Not abstract either — that would force every
         model M4 adds to write a stub for a profile nobody has scanned.
 
+        The logger id comes first, before the window, because it selects
+        **which profile** — a property of *what* is being read — before *when*
+        (D2, M4c issue #24). A per-logger read interface replaces the earlier
+        one-profile-per-driver assumption, which is what let a stalled logger
+        hold another logger's watermark open forever (ADR 0008, load_profile.py).
+
         Args:
+            logger_id: Which load profile to read — one of
+                :meth:`load_profile_loggers`.
             start_utc: Inclusive lower bound, timezone-aware UTC.
             end_utc: Inclusive upper bound, timezone-aware UTC.
 

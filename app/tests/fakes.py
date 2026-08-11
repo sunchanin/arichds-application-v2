@@ -48,12 +48,17 @@ class FakeMeterState:
             it. Lets a test hold the endpoint and observe the priority rule.
         connects: How many times ``connect()`` was called.
         disconnects: How many times ``disconnect()`` was called.
+        load_profile_loggers: Which logger ids :meth:`FakeSmw110Driver.load_profile_loggers`
+            reports (D2, issue #24). Defaults to Logger 1 only, matching the
+            real ``Smw110Driver``; a test exercising the per-logger watermark
+            sets this to ``(1, 2)`` or similar.
         load_profile_rows: The whole buffer :class:`FakeSmw110Driver` replays
             from — a read returns the subset falling inside the asked-for
-            window, inclusive on both bounds, like the real driver's filter.
-        load_profile_windows: Every window asked for, in call order. The walk's
-            *direction* is only observable here; row counts alone would pass
-            just as happily with the chunks reversed.
+            window **and** matching the asked-for logger, inclusive on both
+            time bounds, like the real driver's filter.
+        load_profile_windows: Every ``(logger_id, start, end)`` asked for, in
+            call order. The walk's *direction* is only observable here; row
+            counts alone would pass just as happily with the chunks reversed.
         load_profile_error: What a failing load-profile read raises.
         load_profile_fail_after: Succeed for this many reads, then raise. The
             mid-walk failure a chunked backfill has to survive.
@@ -73,8 +78,9 @@ class FakeMeterState:
     hold_read: threading.Event | None = None
     connects: int = 0
     disconnects: int = 0
+    load_profile_loggers: tuple[int, ...] = (1,)
     load_profile_rows: list[IntervalReading] = field(default_factory=list)
-    load_profile_windows: list[tuple[datetime, datetime]] = field(default_factory=list)
+    load_profile_windows: list[tuple[int, datetime, datetime]] = field(default_factory=list)
     load_profile_error: Exception | None = None
     load_profile_fail_after: int | None = None
     billing_rows: list[BillingReading] = field(default_factory=list)
@@ -187,15 +193,24 @@ class FakeSmw110Driver(FakeMeterDriver):
         """Yes — like the real ``Smw110Driver``."""
         return True
 
-    def read_load_profile(self, start_utc: datetime, end_utc: datetime) -> list[IntervalReading]:
-        """Record the window, honour the failure knobs, replay the seeded rows.
+    def load_profile_loggers(self) -> tuple[int, ...]:
+        """Logger 1 by default — a test that needs a second logger sets
+        :attr:`FakeMeterState.load_profile_loggers` explicitly (D2, issue #24)."""
+        return _STATE.load_profile_loggers
+
+    def read_load_profile(self, logger_id: int, start_utc: datetime, end_utc: datetime) -> list[IntervalReading]:
+        """Record the window, honour the failure knobs, replay the seeded rows
+        for *logger_id*.
 
         Filtering inclusively on both bounds is the real driver's behaviour
         (``smw110.py``), and it is what makes the job's deliberate re-read of the
-        watermark row come back rather than vanish.
+        watermark row come back rather than vanish. Rows are filtered to
+        *logger_id* too (D2/D3, issue #24) — the seeded buffer can hold more
+        than one logger's rows, exactly like a real per-logger read would only
+        ever answer for the profile it was asked about.
         """
         with _GUARD:
-            _STATE.load_profile_windows.append((start_utc, end_utc))
+            _STATE.load_profile_windows.append((logger_id, start_utc, end_utc))
             reads = len(_STATE.load_profile_windows)
             error = _STATE.load_profile_error
             fail_after = _STATE.load_profile_fail_after
@@ -207,7 +222,7 @@ class FakeSmw110Driver(FakeMeterDriver):
         elif error is not None:
             raise error
 
-        return [row for row in rows if start_utc <= row.read_at <= end_utc]
+        return [row for row in rows if row.logger_id == logger_id and start_utc <= row.read_at <= end_utc]
 
     def supports_billing(self) -> bool:
         """Yes — like the real ``Smw110Driver`` (M6a, issue #21)."""

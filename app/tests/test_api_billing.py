@@ -178,8 +178,31 @@ class TestRange:
         assert response.status_code == 422, response.text
 
 
+#: All sixty measurement column names (D19, M4c issue #24) — the API now
+#: returns every ``BillingReading`` measurement, not just the eight totals.
+_MEASUREMENT_PREFIXES_FLOAT = [
+    "import_active_kwh",
+    "export_active_kwh",
+    "import_reactive_kvarh",
+    "export_reactive_kvarh",
+    "max_demand_import_active_kw",
+    "max_demand_export_active_kw",
+    "max_demand_import_reactive_kvar",
+    "max_demand_export_reactive_kvar",
+    "cumul_demand_import_active_kw",
+    "cumul_demand_import_reactive_kvar",
+]
+_MEASUREMENT_PREFIXES_DATETIME = ["max_demand_import_active_time", "max_demand_import_reactive_time"]
+_RATE_SUFFIXES = ["total", "rate_a", "rate_b", "rate_c", "rate_d"]
+_ALL_MEASUREMENT_FIELDS = {
+    f"{prefix}_{suffix}"
+    for prefix in (*_MEASUREMENT_PREFIXES_FLOAT, *_MEASUREMENT_PREFIXES_DATETIME)
+    for suffix in _RATE_SUFFIXES
+}
+
+
 class TestRowShape:
-    def test_the_eight_totals_are_present_and_the_thirty_two_tariffs_are_not(
+    def test_all_sixty_measurement_fields_are_present(
         self, admin_client: TestClient, fake_meter: FakeMeterState
     ) -> None:
         device_id = add_device(admin_client, fake_meter)
@@ -187,29 +210,23 @@ class TestRowShape:
             device_id,
             BASE,
             import_active_kwh_total=200464.501,
-            import_active_kwh_rate_a=1.0,  # a tariff column — must not be returned
+            import_active_kwh_rate_a=1.0,  # a tariff column — now returned too (D19)
         )
 
         response = fetch(admin_client, "closed", device_id=device_id)
 
         row = response.json()["data"]["items"][0]
-        assert set(row) == {
+        assert set(row) >= _ALL_MEASUREMENT_FIELDS
+        assert set(row) == _ALL_MEASUREMENT_FIELDS | {
             "id",  # M6b, issue #22 — the download-capture link needs the row's own id
             "device_id",
             "device_name",
             "bill_date",
             "read_at",
             "meter_serial",
-            "import_active_kwh_total",
-            "export_active_kwh_total",
-            "import_reactive_kvarh_total",
-            "export_reactive_kvarh_total",
-            "max_demand_import_active_kw_total",
-            "max_demand_export_active_kw_total",
-            "max_demand_import_reactive_kvar_total",
-            "max_demand_export_reactive_kvar_total",
         }
         assert row["import_active_kwh_total"] == pytest.approx(200464.501)
+        assert row["import_active_kwh_rate_a"] == pytest.approx(1.0)
         assert row["device_name"] == "Main Incomer"
         assert row["meter_serial"] == "1232002893"
 
@@ -221,6 +238,26 @@ class TestRowShape:
 
         row = response.json()["data"]["items"][0]
         assert row["max_demand_import_active_kw_total"] is None
+        assert row["max_demand_import_active_time_total"] is None
+        assert row["cumul_demand_import_active_kw_total"] is None
+
+    def test_a_demand_time_column_is_returned_as_utc(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """D19 — the ten Demand Time fields are datetimes and must get the
+        same UTC re-attachment ``bill_date``/``read_at`` already get, since
+        SQLite hands every timestamp back naive."""
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        device_id = add_device(admin_client, fake_meter)
+        moment = _datetime(2026, 8, 5, 9, 12, 0, tzinfo=_UTC)
+        seed_closed(device_id, BASE, max_demand_import_active_time_total=moment)
+
+        response = fetch(admin_client, "closed", device_id=device_id)
+
+        row = response.json()["data"]["items"][0]
+        assert row["max_demand_import_active_time_total"] == "2026-08-05T09:12:00Z"
 
 
 class TestOrdering:

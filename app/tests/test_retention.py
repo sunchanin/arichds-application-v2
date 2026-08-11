@@ -254,7 +254,8 @@ class TestRetentionCannotMoveTheWatermark:
         fake_meter_state().load_profile_windows.clear()
         read_and_store_load_profile(device_id, now=NOW)
 
-        first_window_start = fake_meter_state().load_profile_windows[0][0]
+        # (logger_id, start, end) — see fakes.py (D2/D3, issue #24).
+        _logger_id, first_window_start, _end = fake_meter_state().load_profile_windows[0]
         assert first_window_start == NOW - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS), (
             f"the walk restarted from {first_window_start.isoformat()} — a device purged empty must backfill "
             f"from {LOAD_PROFILE_BACKFILL_DAYS} days back, which is what a NULL watermark means"

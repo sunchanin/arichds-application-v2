@@ -187,9 +187,9 @@ class TestTheWalkIsOldestFirst:
         read_and_store_load_profile(device_id, now=NOW)
 
         assert fake_meter.load_profile_windows == [
-            (watermark, watermark + timedelta(hours=24)),
-            (watermark + timedelta(hours=24), watermark + timedelta(hours=48)),
-            (watermark + timedelta(hours=48), NOW),
+            (1, watermark, watermark + timedelta(hours=24)),
+            (1, watermark + timedelta(hours=24), watermark + timedelta(hours=48)),
+            (1, watermark + timedelta(hours=48), NOW),
         ]
 
     def test_each_chunk_is_stored_before_the_next_is_fetched(self, device_id: int, fake_meter: FakeMeterState) -> None:
@@ -218,7 +218,7 @@ class TestTheWalkIsOldestFirst:
         result = read_and_store_load_profile(device_id, now=NOW)
 
         # The first chunk ASKED for [watermark, watermark + 24h].
-        assert fake_meter.load_profile_windows[0][1] == watermark + timedelta(hours=24)
+        assert fake_meter.load_profile_windows[0][2] == watermark + timedelta(hours=24)
         assert result.through == NOW - timedelta(hours=50)
 
 
@@ -226,7 +226,7 @@ class TestWhereTheWalkStarts:
     def test_a_device_with_no_rows_starts_ninety_days_back(self, device_id: int, fake_meter: FakeMeterState) -> None:
         read_and_store_load_profile(device_id, now=NOW)
 
-        first_start, _first_end = fake_meter.load_profile_windows[0]
+        _logger_id, first_start, _first_end = fake_meter.load_profile_windows[0]
         assert first_start == NOW - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
 
     def test_a_device_with_rows_starts_at_its_watermark(self, device_id: int, fake_meter: FakeMeterState) -> None:
@@ -234,20 +234,95 @@ class TestWhereTheWalkStarts:
 
         read_and_store_load_profile(device_id, now=NOW)
 
-        assert fake_meter.load_profile_windows[0][0] == NOW - timedelta(hours=10)
+        assert fake_meter.load_profile_windows[0][1] == NOW - timedelta(hours=10)
 
-    def test_two_loggers_start_at_the_lagging_one(self, device_id: int, fake_meter: FakeMeterState) -> None:
-        """D6 — the driver's read is not per-logger, so a device-wide ``MAX``
-        would start after the *leading* logger and skip the lagging one forever.
-        That is the permanent gap ADR 0008 exists to prevent, reached from a
-        third direction. Over-fetching for the leading logger is free: the write
-        is an upsert."""
-        store(device_id, synthesized_rows(NOW - timedelta(hours=10), logger_id=1))
-        store(device_id, synthesized_rows(NOW - timedelta(hours=30), logger_id=2))
+
+class TestPerLoggerWatermarkAndWalk:
+    """D2/D3/D4, M4c issue #24 — the per-logger read interface. Each logger's
+    watermark, and therefore its own start, is independent of every other
+    logger's. This is the fix for the gap load_profile.py's own docstring
+    used to warn about: a device-wide/minimum watermark starves whichever
+    logger is behind, or denies a fresh logger its own 90-day backfill."""
+
+    def test_a_stalled_logger_does_not_hold_the_other_loggers_window_open(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """Logger 1 is far behind (a stall); Logger 2 is nearly caught up. Each
+        must walk from its own watermark, not the minimum of the two."""
+        fake_meter.load_profile_loggers = (1, 2)
+        store(device_id, synthesized_rows(NOW - timedelta(hours=200), logger_id=1))
+        store(device_id, synthesized_rows(NOW - timedelta(hours=2), logger_id=2))
 
         read_and_store_load_profile(device_id, now=NOW)
 
-        assert fake_meter.load_profile_windows[0][0] == NOW - timedelta(hours=30)
+        logger_1_starts = [start for logger_id, start, _end in fake_meter.load_profile_windows if logger_id == 1]
+        logger_2_starts = [start for logger_id, start, _end in fake_meter.load_profile_windows if logger_id == 2]
+        assert logger_1_starts[0] == NOW - timedelta(hours=200)
+        assert logger_2_starts[0] == NOW - timedelta(hours=2)
+        # Mutation-tested: if the walk used min() across loggers (the old
+        # device-wide rule), Logger 2 would start at Logger 1's watermark
+        # (NOW - 200h) instead of its own (NOW - 2h) - this assertion would
+        # then compare NOW - timedelta(hours=200) == NOW - timedelta(hours=2)
+        # and fail, proving the assertion discriminates.
+
+    def test_a_logger_with_no_rows_backfills_ninety_days_while_its_sibling_resumes(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """The fix for load_profile.py's own former warning: a logger seen
+        for the first time after its sibling has been read for a while must
+        still get its own full 90-day backfill, not be starved by the
+        sibling's watermark."""
+        fake_meter.load_profile_loggers = (1, 2)
+        store(device_id, synthesized_rows(NOW - timedelta(hours=5), logger_id=1))
+        # Logger 2 has never been read - no rows stored for it at all.
+
+        read_and_store_load_profile(device_id, now=NOW)
+
+        logger_1_starts = [start for logger_id, start, _end in fake_meter.load_profile_windows if logger_id == 1]
+        logger_2_starts = [start for logger_id, start, _end in fake_meter.load_profile_windows if logger_id == 2]
+        assert logger_1_starts[0] == NOW - timedelta(hours=5)
+        assert logger_2_starts[0] == NOW - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
+
+    def test_through_reports_the_minimum_across_loggers(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        """D4 - a device-wide MAX would say "up to <leader's time>" while a
+        stalled logger sat far behind; that over-reports coverage, which is
+        exactly what ADR 0008 exists to prevent."""
+        fake_meter.load_profile_loggers = (1, 2)
+        fake_meter.load_profile_rows = [
+            *synthesized_rows(NOW - timedelta(hours=48), NOW - timedelta(hours=24), logger_id=1),
+            *synthesized_rows(NOW - timedelta(hours=6), logger_id=2),
+        ]
+
+        result = read_and_store_load_profile(device_id, now=NOW)
+
+        assert result.through == NOW - timedelta(hours=24)
+
+    def test_both_loggers_are_read_within_one_connect_disconnect_pair(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.load_profile_loggers = (1, 2)
+
+        read_and_store_load_profile(device_id, now=NOW)
+
+        assert fake_meter.connects == 1
+        assert fake_meter.disconnects == 1
+        logger_ids_seen = {logger_id for logger_id, _start, _end in fake_meter.load_profile_windows}
+        assert logger_ids_seen == {1, 2}
+
+    def test_the_first_chunk_of_every_logger_gets_through_even_with_no_budget(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """D3 - one shared budget for the whole call, not one per logger, but
+        the first chunk of each logger is let through regardless, so a
+        logger can always make progress against its own watermark."""
+        fake_meter.load_profile_loggers = (1, 2)
+        store(device_id, synthesized_rows(NOW - timedelta(hours=10), logger_id=1))
+        store(device_id, synthesized_rows(NOW - timedelta(hours=10), logger_id=2))
+
+        read_and_store_load_profile(device_id, now=NOW, budget_sec=0.0)
+
+        logger_ids_seen = [logger_id for logger_id, _start, _end in fake_meter.load_profile_windows]
+        assert logger_ids_seen == [1, 2]
 
 
 class TestTheBudget:
@@ -278,7 +353,7 @@ class TestTheBudget:
         fake_meter.load_profile_windows.clear()
         second = read_and_store_load_profile(device_id, now=NOW)
 
-        assert fake_meter.load_profile_windows[0][0] == NOW - timedelta(hours=50)
+        assert fake_meter.load_profile_windows[0][1] == NOW - timedelta(hours=50)
         assert second.budget_exhausted is False
         assert max_read_at(device_id) == NOW - timedelta(hours=20)
 

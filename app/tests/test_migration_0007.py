@@ -76,7 +76,30 @@ class TestTheTableExists:
         tables = {row["name"] for row in rows(db_url, "SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert "billing_readings" in tables
 
-    def test_the_forty_measurement_columns_plus_keys_exist(self, upgraded: tuple[str, int]) -> None:
+    def test_the_forty_measurement_columns_plus_keys_exist_at_0007_itself(self, db_at_0006: str) -> None:
+        """Pinned at revision 0007 exactly, not at head — migration 0009
+        (issue #24) adds twenty more columns, and this test's whole point is
+        what 0007 itself shipped, so it must not silently start meaning "at
+        head" as later migrations land."""
+        command.upgrade(build_alembic_config(db_at_0006), "0007")
+        columns = {row["name"] for row in rows(db_at_0006, "PRAGMA table_info(billing_readings)")}
+        expected_keys = {
+            "id",
+            "device_id",
+            "bill_date",
+            "read_at",
+            "record_status",
+            "source",
+            "meter_serial",
+            "created_at",
+            "updated_at",
+        }
+        assert expected_keys <= columns
+        assert len(columns) == len(expected_keys) + 40
+
+    def test_the_table_now_has_sixty_measurement_columns_at_head(self, upgraded: tuple[str, int]) -> None:
+        """M4c, issue #24 added twenty more (Demand Time + Cumulative
+        Demand) — the same table, read at head rather than pinned to 0007."""
         db_url, _device_id = upgraded
         columns = {row["name"] for row in rows(db_url, "PRAGMA table_info(billing_readings)")}
         expected_keys = {
@@ -91,7 +114,7 @@ class TestTheTableExists:
             "updated_at",
         }
         assert expected_keys <= columns
-        assert len(columns) == len(expected_keys) + 40
+        assert len(columns) == len(expected_keys) + 60
 
 
 class TestThePartialUniqueIndexes:

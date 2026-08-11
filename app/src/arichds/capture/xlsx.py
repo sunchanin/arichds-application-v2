@@ -18,10 +18,10 @@ from typing import Any
 
 from openpyxl import Workbook
 
-from arichds.capture._render_shared import ALL_SECTIONS, format_cell
+from arichds.capture._render_shared import ALL_SECTIONS, DisplayUnitScale, format_cell, scale_label, scale_value
 
 
-def render_billing_xlsx(row: Any, device_name: str) -> bytes:
+def render_billing_xlsx(row: Any, device_name: str, scale: DisplayUnitScale = "kilo") -> bytes:
     """Render one closed Billing Reading as an .xlsx workbook.
 
     Never touches the filesystem — ``save()`` writes into an in-memory
@@ -32,6 +32,8 @@ def render_billing_xlsx(row: Any, device_name: str) -> bytes:
         row: Same shape :func:`arichds.capture.pdf.render_billing_pdf` takes.
         device_name: Raw device name for the header block — preserved
             verbatim (UTF-8).
+        scale: The machine-wide display-unit setting — see
+            :func:`arichds.capture.pdf.render_billing_pdf`.
 
     Returns:
         Complete .xlsx bytes.
@@ -48,9 +50,9 @@ def render_billing_xlsx(row: Any, device_name: str) -> bytes:
     sheet.append([])
 
     for section_title, fields in ALL_SECTIONS:
-        sheet.append([section_title])
+        sheet.append([scale_label(section_title, scale)])
         for label, attr in fields:
-            sheet.append([label, format_cell(getattr(row, attr, None))])
+            sheet.append([scale_label(label, scale), format_cell(scale_value(getattr(row, attr, None), attr, scale))])
         sheet.append([])
 
     buffer = io.BytesIO()

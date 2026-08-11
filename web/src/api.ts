@@ -94,6 +94,13 @@ export interface Device {
   meter_number: string | null;
   group_name: string | null;
   transport: Transport;
+  /**
+   * The stored DLMS password, in the clear. Owner ruling (2026-08-11): meter
+   * passwords are not a security boundary, so convenience wins over secrecy —
+   * this is what lets the edit form prefill it and Test Connection run
+   * without retyping.
+   */
+  password: string;
   endpoint: string;
   enabled: boolean;
   status: DeviceStatus;
@@ -136,10 +143,12 @@ export interface DeviceEventPage {
  * which is why nothing here may be read with `??` or `||` (see `LoadProfile.tsx`).
  */
 export interface LoadProfileRow {
-  /** UTC, ISO-8601. Rendered in the browser's local clock. */
+  /**
+   * UTC, ISO-8601. Rendered in the browser's local clock. Always a Logger 1
+   * timestamp — Logger 1 is the spine of the read-side merge (owner ruling,
+   * 2026-08-11; see `app/src/arichds/api/load_profile.py`'s module docstring).
+   */
   read_at: string;
-  /** Which of the meter's load profiles the row came from. Never a merge key. */
-  logger_id: number;
   import_active_kwh: number | null;
   import_reactive_kvarh: number | null;
   export_active_kwh: number | null;
@@ -167,10 +176,15 @@ export interface LoadProfilePage {
 export type BillingStatus = "closed" | "open";
 
 /**
- * One Billing Reading as `GET /api/billing` returns it — the eight `*_total`
- * columns only. The 32 tariff columns are stored but not returned (a later
- * slice's job); `null` here means the meter never captured that quantity,
+ * One Billing Reading as `GET /api/billing` returns it — **all sixty**
+ * measurement columns (D19, M4c issue #24; grew from the original eight
+ * `*_total`-only shape so the grouped-header Billing page, D20, can show
+ * every tariff). `null` here means the meter never captured that quantity,
  * never `0`, so it must render as an em dash (see `Billing.tsx`).
+ *
+ * Ten of the sixty (the Demand Time columns) are ISO-8601 UTC timestamp
+ * strings, not numbers — when a maximum demand actually occurred
+ * (CONTEXT.md — Demand Time), never scaled.
  */
 export interface BillingRow {
   /** The row's own id — used by the History tab's download-capture link (M6b, issue #22). */
@@ -182,14 +196,80 @@ export interface BillingRow {
   /** When *we* read it — UTC, ISO-8601. */
   read_at: string;
   meter_serial: string | null;
+
   import_active_kwh_total: number | null;
+  import_active_kwh_rate_a: number | null;
+  import_active_kwh_rate_b: number | null;
+  import_active_kwh_rate_c: number | null;
+  import_active_kwh_rate_d: number | null;
+
   export_active_kwh_total: number | null;
+  export_active_kwh_rate_a: number | null;
+  export_active_kwh_rate_b: number | null;
+  export_active_kwh_rate_c: number | null;
+  export_active_kwh_rate_d: number | null;
+
   import_reactive_kvarh_total: number | null;
+  import_reactive_kvarh_rate_a: number | null;
+  import_reactive_kvarh_rate_b: number | null;
+  import_reactive_kvarh_rate_c: number | null;
+  import_reactive_kvarh_rate_d: number | null;
+
   export_reactive_kvarh_total: number | null;
+  export_reactive_kvarh_rate_a: number | null;
+  export_reactive_kvarh_rate_b: number | null;
+  export_reactive_kvarh_rate_c: number | null;
+  export_reactive_kvarh_rate_d: number | null;
+
   max_demand_import_active_kw_total: number | null;
+  max_demand_import_active_kw_rate_a: number | null;
+  max_demand_import_active_kw_rate_b: number | null;
+  max_demand_import_active_kw_rate_c: number | null;
+  max_demand_import_active_kw_rate_d: number | null;
+
   max_demand_export_active_kw_total: number | null;
+  max_demand_export_active_kw_rate_a: number | null;
+  max_demand_export_active_kw_rate_b: number | null;
+  max_demand_export_active_kw_rate_c: number | null;
+  max_demand_export_active_kw_rate_d: number | null;
+
   max_demand_import_reactive_kvar_total: number | null;
+  max_demand_import_reactive_kvar_rate_a: number | null;
+  max_demand_import_reactive_kvar_rate_b: number | null;
+  max_demand_import_reactive_kvar_rate_c: number | null;
+  max_demand_import_reactive_kvar_rate_d: number | null;
+
   max_demand_export_reactive_kvar_total: number | null;
+  max_demand_export_reactive_kvar_rate_a: number | null;
+  max_demand_export_reactive_kvar_rate_b: number | null;
+  max_demand_export_reactive_kvar_rate_c: number | null;
+  max_demand_export_reactive_kvar_rate_d: number | null;
+
+  /** ISO-8601 UTC, or null — when the corresponding max demand occurred
+   * (CONTEXT.md — Demand Time). M4c, issue #24. */
+  max_demand_import_active_time_total: string | null;
+  max_demand_import_active_time_rate_a: string | null;
+  max_demand_import_active_time_rate_b: string | null;
+  max_demand_import_active_time_rate_c: string | null;
+  max_demand_import_active_time_rate_d: string | null;
+
+  max_demand_import_reactive_time_total: string | null;
+  max_demand_import_reactive_time_rate_a: string | null;
+  max_demand_import_reactive_time_rate_b: string | null;
+  max_demand_import_reactive_time_rate_c: string | null;
+  max_demand_import_reactive_time_rate_d: string | null;
+
+  cumul_demand_import_active_kw_total: number | null;
+  cumul_demand_import_active_kw_rate_a: number | null;
+  cumul_demand_import_active_kw_rate_b: number | null;
+  cumul_demand_import_active_kw_rate_c: number | null;
+  cumul_demand_import_active_kw_rate_d: number | null;
+
+  cumul_demand_import_reactive_kvar_total: number | null;
+  cumul_demand_import_reactive_kvar_rate_a: number | null;
+  cumul_demand_import_reactive_kvar_rate_b: number | null;
+  cumul_demand_import_reactive_kvar_rate_c: number | null;
+  cumul_demand_import_reactive_kvar_rate_d: number | null;
 }
 
 /** One page of Billing Readings. `total` is the unpaged count the pager needs. */
@@ -257,6 +337,20 @@ export interface RecordsGrid {
   /** Every date in the requested range, ascending, `YYYY-MM-DD`. */
   dates: string[];
   rows: RecordsRow[];
+}
+
+/**
+ * The machine-wide display-unit setting — `"kilo"` (kW/kWh/kvar/kvarh,
+ * today's behaviour) or `"base"` (W/Wh/var/varh), from
+ * `GET`/`PUT /api/settings/display`. One value for the whole machine, not
+ * per user (owner ruling). Applied at render time only — every readings
+ * endpoint keeps returning kWh/kvarh/kW/kvar regardless of this setting; see
+ * `units.ts`, which is where the conversion actually happens.
+ */
+export type DisplayUnitScale = "kilo" | "base";
+
+export interface DisplaySettings {
+  display_unit_scale: DisplayUnitScale;
 }
 
 /** How many meters this machine has and may have, from `GET /api/devices/quota`. */
@@ -697,4 +791,14 @@ export const api = {
     }),
 
   deleteUser: (id: number) => request<boolean>(`/api/users/${id}`, { method: "DELETE" }),
+
+  /** The current `display_unit_scale` — any authenticated caller. */
+  displaySettings: () => request<DisplaySettings>("/api/settings/display"),
+
+  /** Save `display_unit_scale` — admin-only. */
+  updateDisplaySettings: (scale: DisplayUnitScale) =>
+    request<DisplaySettings>("/api/settings/display", {
+      method: "PUT",
+      body: JSON.stringify({ display_unit_scale: scale }),
+    }),
 };

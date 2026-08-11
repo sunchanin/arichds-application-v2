@@ -44,7 +44,13 @@ from arichds.acquisition.status import DeviceStatus
 from arichds.capture.service import capture_reading
 from arichds.config import get_settings
 from arichds.constants import MANUAL_READ_LOCK_TIMEOUT_SEC
-from arichds.db.app_settings import CAPTURE_DIR_DEFAULT, CAPTURE_DIR_KEY, get_setting
+from arichds.db.app_settings import (
+    CAPTURE_DIR_DEFAULT,
+    CAPTURE_DIR_KEY,
+    DISPLAY_UNIT_SCALE_DEFAULT,
+    DISPLAY_UNIT_SCALE_KEY,
+    get_setting,
+)
 from arichds.db.models import BillingReading as BillingReadingRow
 from arichds.db.models import Device
 from arichds.db.session import session_scope
@@ -241,6 +247,7 @@ def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> Non
 
     with session_scope() as session:
         capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
+        display_unit_scale = get_setting(session, DISPLAY_UNIT_SCALE_KEY, DISPLAY_UNIT_SCALE_DEFAULT)
     if not capture_dir_str.strip():
         logger.debug("Capture skipped for %s — capture_dir is not configured", device_name)
         return
@@ -254,7 +261,7 @@ def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> Non
                 row = session.get(BillingReadingRow, reading_id)
                 if row is None:
                     continue
-                capture_reading(row, device_name, capture_dir, write_excel=write_excel)
+                capture_reading(row, device_name, capture_dir, write_excel=write_excel, scale=display_unit_scale)
         except Exception:  # noqa: BLE001 — capture must never fail the read that produced the row.
             logger.exception("Capture failed for %s reading id %s", device_name, reading_id)
 

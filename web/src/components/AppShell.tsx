@@ -4,6 +4,8 @@ import {
   FileTextOutlined,
   KeyOutlined,
   LogoutOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   SettingOutlined,
   TableOutlined,
   TeamOutlined,
@@ -38,8 +40,7 @@ const { Header, Sider, Content } = Layout;
  *
  * M5b-1 lights up **Load Profile** — the read-only view of the Interval
  * Readings the meter recorded — for **every** role, so it carries no gate the
- * way User Management does. Energy and Settings stay disabled until M7 owns
- * them.
+ * way User Management does. Energy stays disabled until M7 owns it.
  *
  * M5b-2 lights up **Records** — whether those stored Readings are *complete*,
  * counted per meter and logger against the meter's own capture period — for
@@ -48,8 +49,13 @@ const { Header, Sider, Content } = Layout;
  *
  * M6a lights up **Billing** — the read-only view of the Billing Readings the
  * meter itself froze when it closed a period, for every role, same reason as
- * Load Profile and Records. Energy and Settings stay disabled until M7 owns
- * them.
+ * Load Profile and Records. Energy stays disabled until M7 owns it.
+ *
+ * A later CR (display-unit setting, kW/kWh vs W/Wh) lights up **Settings**
+ * for every role too — the one control on it is disabled for a `user`
+ * rather than the entry being absent, because reading the current setting
+ * is not admin-only, only changing it is (mirrors the Billing page's own
+ * `capture_dir` form).
  *
  * The header carries who is signed in, the way to change your own password
  * (every role — the modal is owned here, so no page has to pass a prop for it),
@@ -73,6 +79,10 @@ export function AppShell({
   onSignOut: () => void;
 }) {
   const [changingPassword, setChangingPassword] = useState(false);
+  // Shared by the responsive `lg` breakpoint and the manual header toggle
+  // below, so they act on one state instead of fighting each other — the
+  // `Sider`'s own `onCollapse` fires for both, and the button just flips it.
+  const [collapsed, setCollapsed] = useState(false);
   // The shell wraps every page M2–M7 will add, so its colours must come from
   // the theme rather than literals — otherwise a later re-theme silently
   // strands the header text at whatever white looked right in M1.
@@ -89,7 +99,7 @@ export function AppShell({
     ...(role === "admin"
       ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]
       : []),
-    { key: "settings", icon: <SettingOutlined />, label: "Settings", disabled: true },
+    { key: "settings", icon: <SettingOutlined />, label: "Settings" },
   ];
 
   return (
@@ -104,12 +114,25 @@ export function AppShell({
           justifyContent: "space-between",
         }}
       >
-        <Typography.Text
-          strong
-          style={{ color: token.colorTextLightSolid, fontSize: 16, letterSpacing: 0.5 }}
-        >
-          ARICHDS
-        </Typography.Text>
+        <Space size="small" align="center">
+          <Button
+            type="text"
+            size="small"
+            // Stays visible while collapsed — otherwise the sidebar, once
+            // hidden, would have no way back (collapsedWidth={0} hides it
+            // completely, so there is no icon rail to click through).
+            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+            onClick={() => setCollapsed((current) => !current)}
+            style={{ color: token.colorTextLightSolid }}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          />
+          <Typography.Text
+            strong
+            style={{ color: token.colorTextLightSolid, fontSize: 16, letterSpacing: 0.5 }}
+          >
+            ARICHDS
+          </Typography.Text>
+        </Space>
         <Space size="middle" align="center">
           {licensedTo ? (
             <Tag color="green" style={{ marginInlineEnd: 0 }}>
@@ -141,7 +164,19 @@ export function AppShell({
       </Header>
       <ChangePasswordModal open={changingPassword} onClose={() => setChangingPassword(false)} />
       <Layout>
-        <Sider width={200} theme="light" breakpoint="lg" collapsedWidth={0}>
+        <Sider
+          width={200}
+          theme="light"
+          breakpoint="xl"
+          collapsedWidth={0}
+          collapsible
+          collapsed={collapsed}
+          // AntD shows its own floating trigger once `collapsedWidth` is 0;
+          // suppressed because the header button above is the one control
+          // (it must stay visible collapsed, which the header button does).
+          trigger={null}
+          onCollapse={setCollapsed}
+        >
           <Menu
             mode="inline"
             selectedKeys={[activeKey]}

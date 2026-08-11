@@ -16,11 +16,28 @@ bound forces every caller to decide whether the last millisecond of the day is
 in or out; a half-open one lets "the whole of the 3rd" be written as
 ``[3rd 00:00, 4th 00:00)`` with nothing to round.
 
-**Nothing is merged.** v1 folded Logger 2 into Logger 1 with a ``LEFT JOIN`` and
-``COALESCE``; SPEC §3.5 records why that is wrong — on a Premier 550 the two
-loggers map different registers onto the same column, so the merge silently
-overwrites values. Both loggers come back as their own rows, each carrying its
-``logger_id``, exactly as CONTEXT.md defines an Interval Reading.
+**Logger 1 and Logger 2 merge into one row here — read side only** (owner
+ruling, 2026-08-11, reversing the "never merged" decision this module shipped
+with). v1's own rule is reproduced exactly
+(``cewe-worker/src/load_profile/repository.py:275-291``): Logger 1 is the
+spine (``WHERE logger_id = 1``), Logger 2 is ``LEFT JOIN``ed on the same
+``device_id`` and an **exact** ``read_at`` match, and every measurement column
+becomes ``COALESCE(logger1_col, logger2_col)`` — Logger 1 wins.
+
+**Storage is untouched.** Rows still land one per
+``(device_id, logger_id, read_at)`` in ``load_profile_readings`` (ADR 0008) —
+this module only changes how the list endpoint *projects* what is already
+there, never what a read writes. Two consequences follow directly from
+``docs/meter-notes/load-profile-capture-objects.md:35-53``:
+
+1. On **Prometer 100** Logger 2 captures every 300 s against Logger 1's 900 s,
+   so only the one-in-three Logger 2 rows whose timestamp lands exactly on a
+   Logger 1 boundary contribute anything here — the other two thirds stay in
+   the database and still reach CSV export.
+2. On **Premier 550** Logger 1's ``1.0.1.29.0.255`` (interval) and Logger 2's
+   ``1.0.1.8.0.255`` (cumulative) map to the same column — same collision at
+   C=2, 3 and 4 — so ``COALESCE`` makes Logger 1 win deterministically and
+   Logger 2's value is not displayed, though it is still on disk.
 
 **Access is any authenticated role.** Changing a device is admin-only; *reading*
 a device's data is not (``devices.py`` — ``list_device_events`` carries no
@@ -35,11 +52,32 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from arichds.api.deps import SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
 from arichds.db.models import Device, LoadProfileReading
+
+#: Logger 2, joined against the Logger 1 spine — never queried on its own here.
+_Logger2 = aliased(LoadProfileReading)
+
+#: The twelve measurement columns the page renders, in COALESCE(logger1, logger2)
+#: order — Logger 1 wins (see the module docstring for why that is not always
+#: "the more complete value").
+_MEASUREMENT_COLUMNS = (
+    "import_active_kwh",
+    "import_reactive_kvarh",
+    "export_active_kwh",
+    "export_reactive_kvarh",
+    "avg_geo_pf",
+    "volt_l1",
+    "volt_l2",
+    "volt_l3",
+    "current_l1",
+    "current_l2",
+    "current_l3",
+    "freq",
+)
 
 router = APIRouter(
     prefix="/api/load-profile",
@@ -58,18 +96,19 @@ class LoadProfileRowOut(BaseModel):
     that an absent column renders as an em dash, never as ``0``.
 
     ``source``, ``interval_sec`` and ``id`` are deliberately absent — no column
-    on the page reads them.
+    on the page reads them. ``logger_id`` is absent too, as of the read-side
+    Logger 1/2 merge (owner ruling, 2026-08-11, module docstring): a row here
+    is no longer one logger's own data, so labelling it with either logger's
+    id would be misleading.
 
     Attributes:
         read_at: When the meter recorded the interval — **UTC, timezone-aware**.
-        logger_id: Which of the meter's load profiles the row came from. Part of
-            the row's identity, never a merge key.
+            Always a Logger 1 timestamp — Logger 1 is the merge's spine.
     """
 
     model_config = ConfigDict(from_attributes=True)
 
     read_at: datetime
-    logger_id: int
 
     import_active_kwh: float | None
     import_reactive_kvarh: float | None
@@ -148,11 +187,14 @@ def list_interval_readings(
     limit: Annotated[int, Query(ge=1, le=500, description="Page size")] = 100,
     offset: Annotated[int, Query(ge=0, description="Rows to skip")] = 0,
 ) -> ApiResponse[LoadProfilePage]:
-    """Return one page of a device's Interval Readings, newest first.
+    """Return one page of a device's merged Interval Readings, newest first.
 
-    Any authenticated role. The ordering is ``read_at DESC, logger_id ASC``, and
-    it is *total*: ``(device_id, logger_id, read_at)`` is unique, so no two rows
-    of one device tie on both keys and paging cannot repeat or skip a row.
+    Any authenticated role. Logger 1 is the spine and the sole driver of
+    paging and ``total`` — see the module docstring for the merge rule and its
+    two known consequences. The ordering is ``read_at DESC``, and it is
+    *total*: for a fixed ``logger_id = 1``, ``(device_id, read_at)`` is unique
+    (ADR 0008's ``(device_id, logger_id, read_at)`` key), so no two rows tie
+    and paging cannot repeat or skip a row.
     """
     _require_device_exists(session, device_id)
     lower, upper = _as_utc(start), _as_utc(end)
@@ -169,17 +211,30 @@ def list_interval_readings(
     # Written once and used by both queries on purpose: ``total`` is only
     # meaningful as the unpaged count of *the same* filter, and two hand-copied
     # WHERE clauses are free to drift into a page whose rows and whose total
-    # disagree.
+    # disagree. Deliberately ``logger_id == 1`` only — Logger 1 is the spine
+    # this whole merge is keyed on (module docstring), so a device with only a
+    # Logger 2 (none exist today) would correctly show nothing here.
     matching = (
         LoadProfileReading.device_id == device_id,
+        LoadProfileReading.logger_id == 1,
         LoadProfileReading.read_at >= lower,
         LoadProfileReading.read_at < upper,
     )
 
-    rows = session.scalars(
-        select(LoadProfileReading)
+    merged_columns = [
+        func.coalesce(getattr(LoadProfileReading, name), getattr(_Logger2, name)).label(name)
+        for name in _MEASUREMENT_COLUMNS
+    ]
+    rows = session.execute(
+        select(LoadProfileReading.read_at, *merged_columns)
+        .outerjoin(
+            _Logger2,
+            (_Logger2.device_id == LoadProfileReading.device_id)
+            & (_Logger2.read_at == LoadProfileReading.read_at)
+            & (_Logger2.logger_id == 2),
+        )
         .where(*matching)
-        .order_by(LoadProfileReading.read_at.desc(), LoadProfileReading.logger_id.asc())
+        .order_by(LoadProfileReading.read_at.desc())
         .limit(limit)
         .offset(offset)
     ).all()
@@ -187,7 +242,7 @@ def list_interval_readings(
 
     return ApiResponse.ok(
         LoadProfilePage(
-            items=[LoadProfileRowOut.model_validate(row) for row in rows],
+            items=[LoadProfileRowOut.model_validate(row, from_attributes=True) for row in rows],
             total=total,
             limit=limit,
             offset=offset,

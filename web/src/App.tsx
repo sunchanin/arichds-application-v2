@@ -10,14 +10,15 @@ import { Devices } from "./pages/Devices";
 import { LoadProfile } from "./pages/LoadProfile";
 import { Login } from "./pages/Login";
 import { Records } from "./pages/Records";
+import { Settings } from "./pages/Settings";
 import { Setup } from "./pages/Setup";
 import { Users } from "./pages/Users";
 import { LICENSE_POLL_MS } from "./theme";
 
 /** The in-shell pages. Every other menu key belongs to a milestone that has not shipped. */
-type Page = "devices" | "load-profile" | "records" | "billing" | "users";
+type Page = "devices" | "load-profile" | "records" | "billing" | "users" | "settings";
 
-const PAGES: readonly Page[] = ["devices", "load-profile", "records", "billing", "users"];
+const PAGES: readonly Page[] = ["devices", "load-profile", "records", "billing", "users", "settings"];
 
 /** Read a menu key as a page, falling back to Devices for anything unrecognised. */
 function toPage(key: string): Page {
@@ -198,6 +199,8 @@ export default function App() {
         <Records />
       ) : active === "billing" ? (
         <Billing role={session.role} />
+      ) : active === "settings" ? (
+        <Settings role={session.role} />
       ) : (
         <Devices role={session.role} />
       )}

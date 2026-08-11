@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from arichds import __version__
 from arichds.acquisition.poller import Poller
 from arichds.api import auth, billing, devices, health, license, load_profile, records, users
+from arichds.api import settings as settings_router
 from arichds.api.deps import FeatureDisabledError
 from arichds.api.envelope import ApiResponse
 from arichds.config import Settings, get_settings
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(billing.router)
     app.include_router(records.router)
     app.include_router(users.router)
+    app.include_router(settings_router.router)
 
     @app.exception_handler(FeatureDisabledError)
     async def handle_feature_disabled(_request: Request, exc: FeatureDisabledError) -> JSONResponse:

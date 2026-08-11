@@ -15,6 +15,7 @@ import {
   type BillingStatus,
   type Device,
 } from "../api";
+import { type DisplayUnitScale, type UnitKind, scaleValue, unitLabel, useDisplayUnitScale } from "../units";
 
 const { RangePicker } = DatePicker;
 
@@ -43,80 +44,119 @@ const num =
 
 const num3 = num(3);
 
-const BASE_COLUMNS: ColumnsType<BillingRow> = [
-  {
-    title: "Bill Date",
-    dataIndex: "bill_date",
-    key: "bill_date",
-    width: 170,
-    fixed: "left",
-    render: (billDate: string) => dayjs(billDate).format("YYYY-MM-DD HH:mm"),
-  },
-  { title: "Device", dataIndex: "device_name", key: "device_name", width: 180 },
-  {
-    title: "Meter Serial",
-    dataIndex: "meter_serial",
-    key: "meter_serial",
-    width: 150,
-    render: (serial: string | null) => serial ?? NOTHING,
-  },
-  {
-    title: "Import kWh Active",
-    dataIndex: "import_active_kwh_total",
-    key: "import_active_kwh_total",
-    width: 160,
-    render: num3,
-  },
-  {
-    title: "Export kWh Active",
-    dataIndex: "export_active_kwh_total",
-    key: "export_active_kwh_total",
-    width: 160,
-    render: num3,
-  },
-  {
-    title: "Import kvarh Reactive",
-    dataIndex: "import_reactive_kvarh_total",
-    key: "import_reactive_kvarh_total",
-    width: 180,
-    render: num3,
-  },
-  {
-    title: "Export kvarh Reactive",
-    dataIndex: "export_reactive_kvarh_total",
-    key: "export_reactive_kvarh_total",
-    width: 180,
-    render: num3,
-  },
-  {
-    title: "Max Demand Import (kW)",
-    dataIndex: "max_demand_import_active_kw_total",
-    key: "max_demand_import_active_kw_total",
-    width: 190,
-    render: num3,
-  },
-  {
-    title: "Max Demand Export (kW)",
-    dataIndex: "max_demand_export_active_kw_total",
-    key: "max_demand_export_active_kw_total",
-    width: 190,
-    render: num3,
-  },
-  {
-    title: "Max Demand Import (kvar)",
-    dataIndex: "max_demand_import_reactive_kvar_total",
-    key: "max_demand_import_reactive_kvar_total",
-    width: 200,
-    render: num3,
-  },
-  {
-    title: "Max Demand Export (kvar)",
-    dataIndex: "max_demand_export_reactive_kvar_total",
-    key: "max_demand_export_reactive_kvar_total",
-    width: 200,
-    render: num3,
-  },
-];
+/** Format a Demand Time cell — a timestamp, not a number (D20, M4c issue #24). */
+const time = (value: string | null): string => (value == null ? NOTHING : dayjs(value).format("YYYY-MM-DD HH:mm:ss"));
+
+/** The four tariffs plus the total — every measurement group has exactly
+ * these five children (D20), mirroring `capture/_render_shared.py`'s
+ * `_measurement_section`. */
+const RATE_SUFFIXES = ["total", "rate_a", "rate_b", "rate_c", "rate_d"] as const;
+const RATE_LABELS: Record<(typeof RATE_SUFFIXES)[number], string> = {
+  total: "Total",
+  rate_a: "Rate A",
+  rate_b: "Rate B",
+  rate_c: "Rate C",
+  rate_d: "Rate D",
+};
+
+const MEASUREMENT_COLUMN_WIDTH = 110;
+const TIME_COLUMN_WIDTH = 170;
+
+/** One grouped-header column: a title spanning five children (Total,
+ * Rate A..D) reading `${prefix}_${suffix}` off the row (D20).
+ *
+ * `unit`/`scale` decide the group's title suffix (e.g. `(kWh)` vs `(Wh)`)
+ * and scale every child's value together — the display-unit setting's one
+ * hard requirement is that a value and its label never move independently. */
+function measurementGroup(
+  title: string,
+  prefix: string,
+  unit: UnitKind,
+  scale: DisplayUnitScale,
+): ColumnsType<BillingRow>[number] {
+  return {
+    title: `${title} (${unitLabel(unit, scale)})`,
+    children: RATE_SUFFIXES.map((suffix) => ({
+      title: RATE_LABELS[suffix],
+      dataIndex: `${prefix}_${suffix}`,
+      key: `${prefix}_${suffix}`,
+      width: MEASUREMENT_COLUMN_WIDTH,
+      render: (value: number | null) => num3(scaleValue(value, scale) ?? null),
+    })),
+  };
+}
+
+/** Same shape as `measurementGroup`, but for a Demand Time group — its five
+ * children are timestamps, never `toFixed(3)` and never scaled (D20/D11):
+ * a Demand Time cell carries no unit token, kilo or base. */
+function demandTimeGroup(title: string, prefix: string): ColumnsType<BillingRow>[number] {
+  return {
+    title,
+    children: RATE_SUFFIXES.map((suffix) => ({
+      title: RATE_LABELS[suffix],
+      dataIndex: `${prefix}_${suffix}`,
+      key: `${prefix}_${suffix}`,
+      width: TIME_COLUMN_WIDTH,
+      render: time,
+    })),
+  };
+}
+
+/** The identity/Demand-Time columns plus every scale-aware measurement
+ * group, built fresh per `scale`, in the page's original column order.
+ *
+ * `showIdentityColumns` drops `Device` and `Meter Serial` when a specific
+ * device is already selected — both would print the same value on every row
+ * at that point. The serial does not become unreachable: the device filter's
+ * own dropdown option already reads `name (serial)` (see `deviceOptions`),
+ * so it stays visible there regardless of this flag. */
+function buildColumns(scale: DisplayUnitScale, showIdentityColumns: boolean): ColumnsType<BillingRow> {
+  const group = (title: string, prefix: string, unit: UnitKind) => measurementGroup(title, prefix, unit, scale);
+  return [
+    {
+      title: "Bill Date",
+      dataIndex: "bill_date",
+      key: "bill_date",
+      width: 170,
+      fixed: "left",
+      render: (billDate: string) => dayjs(billDate).format("YYYY-MM-DD HH:mm"),
+    },
+    ...(showIdentityColumns
+      ? ([
+          { title: "Device", dataIndex: "device_name", key: "device_name", width: 180 },
+          {
+            title: "Meter Serial",
+            dataIndex: "meter_serial",
+            key: "meter_serial",
+            width: 150,
+            render: (serial: string | null) => serial ?? NOTHING,
+          },
+        ] as ColumnsType<BillingRow>)
+      : []),
+    group("Import Active", "import_active_kwh", "energy"),
+    group("Export Active", "export_active_kwh", "energy"),
+    group("Import Reactive", "import_reactive_kvarh", "reactiveEnergy"),
+    group("Export Reactive", "export_reactive_kvarh", "reactiveEnergy"),
+    group("Max Demand Import Active", "max_demand_import_active_kw", "power"),
+    group("Max Demand Export Active", "max_demand_export_active_kw", "power"),
+    group("Max Demand Import Reactive", "max_demand_import_reactive_kvar", "reactivePower"),
+    group("Max Demand Export Reactive", "max_demand_export_reactive_kvar", "reactivePower"),
+    demandTimeGroup("Demand Time Import Active", "max_demand_import_active_time"),
+    demandTimeGroup("Demand Time Import Reactive", "max_demand_import_reactive_time"),
+    group("Cumulative Demand Import Active", "cumul_demand_import_active_kw", "power"),
+    group("Cumulative Demand Import Reactive", "cumul_demand_import_reactive_kvar", "reactivePower"),
+  ];
+}
+
+/** Sum every **leaf** column's width — a grouped header column has no width
+ * of its own, only its `children` do (D20's `scroll={{ x: tableWidth }}`
+ * still needs the true total so the page body never scrolls sideways). */
+function totalLeafWidth(columns: ColumnsType<BillingRow>): number {
+  return columns.reduce((sum, column) => {
+    if ("children" in column && column.children) return sum + totalLeafWidth(column.children as ColumnsType<BillingRow>);
+    return sum + (Number(column.width) || 0);
+  }, 0);
+}
 
 /** Width of the History-only "Capture" column appended in `Billing`'s `columns`. */
 const CAPTURE_COLUMN_WIDTH = 130;
@@ -261,6 +301,7 @@ function CaptureSettingsCard({ surface }: { surface: (err: unknown, fallback: st
  */
 export function Billing({ role }: { role: "admin" | "user" }) {
   const { message } = App.useApp();
+  const scale = useDisplayUnitScale();
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [tab, setTab] = useState<BillingStatus>("closed");
@@ -308,9 +349,10 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   // (SPEC §3.6), so appending it unconditionally would offer a download that
   // always fails on the Current tab.
   const columns: ColumnsType<BillingRow> = useMemo(() => {
-    if (tab !== "closed") return BASE_COLUMNS;
+    const base = buildColumns(scale, deviceId === undefined);
+    if (tab !== "closed") return base;
     return [
-      ...BASE_COLUMNS,
+      ...base,
       {
         title: "Capture",
         key: "capture",
@@ -319,9 +361,9 @@ export function Billing({ role }: { role: "admin" | "user" }) {
         render: (_: unknown, row: BillingRow) => <CaptureDownload readingId={row.id} surface={surface} />,
       },
     ];
-  }, [tab, surface]);
+  }, [tab, scale, surface, deviceId]);
 
-  const tableWidth = columns.reduce((sum, column) => sum + (Number(column.width) || 0), 0);
+  const tableWidth = totalLeafWidth(columns);
 
   const onTabChange = (key: string) => {
     setTab(key as BillingStatus);

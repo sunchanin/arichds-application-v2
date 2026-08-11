@@ -12,6 +12,7 @@ import {
   type LoadProfilePage,
   type LoadProfileRow,
 } from "../api";
+import { type DisplayUnitScale, type UnitKind, scaleValue, unitLabel, useDisplayUnitScale } from "../units";
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
@@ -50,73 +51,75 @@ const num =
 const ENERGY_DIGITS = 9;
 const MEASUREMENT_DIGITS = 3;
 
-const COLUMNS: ColumnsType<LoadProfileRow> = [
-  {
-    // Named for the clock it is in. The rows are stored UTC and rendered in the
-    // browser's own zone — on the customer's machine that is ICT, which is what
-    // v1 showed — and a bare "Timestamp" next to a meter reading is ambiguous.
-    title: "Timestamp (local time)",
-    dataIndex: "read_at",
-    key: "read_at",
-    width: 180,
-    fixed: "left",
-    render: (readAt: string) => dayjs(readAt).format("YYYY-MM-DD HH:mm:ss"),
-  },
-  {
-    // Two loggers on one meter record separate rows at the same instant and are
-    // never merged (CONTEXT.md — Interval Reading). Without this column those
-    // rows would be indistinguishable on screen.
-    title: "Logger",
-    dataIndex: "logger_id",
-    key: "logger_id",
-    width: 80,
-  },
-  {
-    title: "Import kWh Active",
-    dataIndex: "import_active_kwh",
-    key: "import_active_kwh",
-    width: 180,
-    render: num(ENERGY_DIGITS),
-  },
-  {
-    title: "Import kvarh Reactive",
-    dataIndex: "import_reactive_kvarh",
-    key: "import_reactive_kvarh",
-    width: 190,
-    render: num(ENERGY_DIGITS),
-  },
-  {
-    title: "Export kWh Active",
-    dataIndex: "export_active_kwh",
-    key: "export_active_kwh",
-    width: 180,
-    render: num(ENERGY_DIGITS),
-  },
-  {
-    title: "Export kvarh Reactive",
-    dataIndex: "export_reactive_kvarh",
-    key: "export_reactive_kvarh",
-    width: 190,
-    render: num(ENERGY_DIGITS),
-  },
-  {
-    title: "Avg Geo PF",
-    dataIndex: "avg_geo_pf",
-    key: "avg_geo_pf",
-    width: 120,
-    render: num(MEASUREMENT_DIGITS),
-  },
-  { title: "Voltage L1 (V)", dataIndex: "volt_l1", key: "volt_l1", width: 130, render: num(MEASUREMENT_DIGITS) },
-  { title: "Voltage L2 (V)", dataIndex: "volt_l2", key: "volt_l2", width: 130, render: num(MEASUREMENT_DIGITS) },
-  { title: "Voltage L3 (V)", dataIndex: "volt_l3", key: "volt_l3", width: 130, render: num(MEASUREMENT_DIGITS) },
-  { title: "Current L1 (A)", dataIndex: "current_l1", key: "current_l1", width: 130, render: num(MEASUREMENT_DIGITS) },
-  { title: "Current L2 (A)", dataIndex: "current_l2", key: "current_l2", width: 130, render: num(MEASUREMENT_DIGITS) },
-  { title: "Current L3 (A)", dataIndex: "current_l3", key: "current_l3", width: 130, render: num(MEASUREMENT_DIGITS) },
-  { title: "Frequency (Hz)", dataIndex: "freq", key: "freq", width: 130, render: num(MEASUREMENT_DIGITS) },
+/** The four energy columns' identity, independent of scale — display-unit
+ * conversion applies to these and nothing else on this page: voltage,
+ * current, power factor and frequency are untouched in both value and
+ * label. */
+const ENERGY_COLUMNS: { titlePrefix: string; titleSuffix: string; dataIndex: keyof LoadProfileRow; unit: UnitKind; width: number }[] = [
+  { titlePrefix: "Import", titleSuffix: "Active", dataIndex: "import_active_kwh", unit: "energy", width: 180 },
+  { titlePrefix: "Import", titleSuffix: "Reactive", dataIndex: "import_reactive_kvarh", unit: "reactiveEnergy", width: 190 },
+  { titlePrefix: "Export", titleSuffix: "Active", dataIndex: "export_active_kwh", unit: "energy", width: 180 },
+  { titlePrefix: "Export", titleSuffix: "Reactive", dataIndex: "export_reactive_kvarh", unit: "reactiveEnergy", width: 190 },
 ];
 
-/** The total of every column width, so the horizontal scroll has something to scroll to. */
-const TABLE_WIDTH = COLUMNS.reduce((sum, column) => sum + (Number(column.width) || 0), 0);
+/** The identity/measurement columns plus every scale-aware energy column,
+ * built fresh per `scale`, in the page's original column order. */
+function buildColumns(scale: DisplayUnitScale): ColumnsType<LoadProfileRow> {
+  const energyColumns: ColumnsType<LoadProfileRow> = ENERGY_COLUMNS.map((column) => ({
+    title: `${column.titlePrefix} ${unitLabel(column.unit, scale)} ${column.titleSuffix}`,
+    dataIndex: column.dataIndex,
+    key: column.dataIndex,
+    width: column.width,
+    render: (value: number | null) => num(ENERGY_DIGITS)(scaleValue(value, scale) ?? null),
+  }));
+
+  return [
+    {
+      // Named for the clock it is in. The rows are stored UTC and rendered in the
+      // browser's own zone — on the customer's machine that is ICT, which is what
+      // v1 showed — and a bare "Timestamp" next to a meter reading is ambiguous.
+      title: "Timestamp (local time)",
+      dataIndex: "read_at",
+      key: "read_at",
+      width: 180,
+      fixed: "left",
+      render: (readAt: string) => dayjs(readAt).format("YYYY-MM-DD HH:mm:ss"),
+    },
+    ...energyColumns,
+    {
+      title: "Avg Geo PF",
+      dataIndex: "avg_geo_pf",
+      key: "avg_geo_pf",
+      width: 120,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    { title: "Voltage L1 (V)", dataIndex: "volt_l1", key: "volt_l1", width: 130, render: num(MEASUREMENT_DIGITS) },
+    { title: "Voltage L2 (V)", dataIndex: "volt_l2", key: "volt_l2", width: 130, render: num(MEASUREMENT_DIGITS) },
+    { title: "Voltage L3 (V)", dataIndex: "volt_l3", key: "volt_l3", width: 130, render: num(MEASUREMENT_DIGITS) },
+    {
+      title: "Current L1 (A)",
+      dataIndex: "current_l1",
+      key: "current_l1",
+      width: 130,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    {
+      title: "Current L2 (A)",
+      dataIndex: "current_l2",
+      key: "current_l2",
+      width: 130,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    {
+      title: "Current L3 (A)",
+      dataIndex: "current_l3",
+      key: "current_l3",
+      width: 130,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    { title: "Frequency (Hz)", dataIndex: "freq", key: "freq", width: 130, render: num(MEASUREMENT_DIGITS) },
+  ];
+}
 
 /**
  * Load Profile (M5b-1) — read a device's stored Interval Readings over a date
@@ -145,6 +148,7 @@ const TABLE_WIDTH = COLUMNS.reduce((sum, column) => sum + (Number(column.width) 
  */
 export function LoadProfile() {
   const { message } = App.useApp();
+  const scale = useDisplayUnitScale();
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
@@ -330,6 +334,13 @@ export function LoadProfile() {
     };
   }, [deviceId, startIso, endIso, page, pageSize, surface]);
 
+  const columns = useMemo(() => buildColumns(scale), [scale]);
+  /** The total of every column width, so the horizontal scroll has something to scroll to. */
+  const tableWidth = useMemo(
+    () => columns.reduce((sum, column) => sum + (Number(column.width) || 0), 0),
+    [columns],
+  );
+
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Card size="small">
@@ -392,11 +403,13 @@ export function LoadProfile() {
         >
           <Table<LoadProfileRow>
             size="small"
-            rowKey={(row) => `${row.logger_id}-${row.read_at}`}
+            // Unique per device: this is the Logger 1 spine of the read-side
+            // merge, and `(device_id, logger_id, read_at)` is unique (ADR 0008).
+            rowKey="read_at"
             loading={loading}
             dataSource={shown?.items ?? []}
-            columns={COLUMNS}
-            scroll={{ x: TABLE_WIDTH }}
+            columns={columns}
+            scroll={{ x: tableWidth }}
             pagination={{
               current: page,
               pageSize,

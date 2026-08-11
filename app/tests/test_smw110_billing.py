@@ -26,7 +26,11 @@ from gurux_dlms.enums import Unit
 from gurux_dlms.objects import GXDLMSProfileGeneric
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers.smw110 import BILLING_COLUMN_SPAN, Smw110Driver
+from arichds.acquisition.drivers.smw110 import Smw110Driver
+
+#: Moved off the module scope onto the driver at M4c (D7) — see
+#: ``Smw110Driver.BILLING_COLUMN_SPAN``.
+BILLING_COLUMN_SPAN = Smw110Driver.BILLING_COLUMN_SPAN
 
 CLOCK_OBIS = "0.0.1.0.0.255"
 COUNTER_OBIS = "1.0.0.1.1.255"

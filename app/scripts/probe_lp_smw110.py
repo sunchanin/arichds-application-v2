@@ -221,7 +221,8 @@ def fetch(
     """Call the shipped read path for one window and print what came back."""
     report(f"    {label}")
     report(f"      window : {start.isoformat()}  ->  {end.isoformat()}")
-    rows = driver.read_load_profile(start, end)
+    # This model has one logger (D2, issue #24) — [0] is always Logger 1.
+    rows = driver.read_load_profile(driver.load_profile_loggers()[0], start, end)
     report(f"      rows   : {len(rows)}")
     for reading in rows[:show]:
         report(row_line(reading))
@@ -270,9 +271,10 @@ def check_windows(report: Report, driver: Smw110Driver) -> list[IntervalReading]
     report()
 
     report("[7] WINDOWS OUTSIDE THE BUFFER  (must be empty, not an error)")
-    future = driver.read_load_profile(now + timedelta(days=1), now + timedelta(days=2))
+    logger_id = driver.load_profile_loggers()[0]
+    future = driver.read_load_profile(logger_id, now + timedelta(days=1), now + timedelta(days=2))
     report(f"      one day in the future : {len(future)} rows   (expected 0)")
-    ancient = driver.read_load_profile(datetime(2020, 1, 1, tzinfo=UTC), datetime(2020, 1, 2, tzinfo=UTC))
+    ancient = driver.read_load_profile(logger_id, datetime(2020, 1, 1, tzinfo=UTC), datetime(2020, 1, 2, tzinfo=UTC))
     report(f"      January 2020          : {len(ancient)} rows   (expected 0)")
     if future or ancient:
         report("      !! Rows returned for a window the buffer cannot cover.")

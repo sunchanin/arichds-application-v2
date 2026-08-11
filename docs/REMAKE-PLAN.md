@@ -69,7 +69,7 @@ flowchart TD
     M2["<b>M2 · Auth & Login</b><br/>JWT · หน้า Login + User Mgmt"]
     M3["<b>M3 · Device Manager</b><br/>CRUD + probe-first · events · สถานะจาก poller<br/>pause/resume · priority lock · หน้า Devices"]
     M4["<b>M4 · Acquisition</b><br/>a: SMW110W4 รุ่นเดียว (≤ วันที่ 5)<br/>b: Modbus + billing cut (วันที่ 6–14)<br/>ปิดเรื่อง scaler ×10 ที่ M4a"]
-    M4C["<b>M4c · รุ่นที่เหลือ</b><br/>Prometer100 · Saral305 · Premier550<br/>SMART TCC ×5<br/><i>exit: parity บนเคส 2 logger</i>"]
+    M4C["<b>M4c · รุ่นที่เหลือ</b><br/>c1: CEWE ×3 (#24) — โค้ดลงแล้ว อ่านมิเตอร์จริงแล้ว<br/>c2: SMART TCC ×5 (#25) — โค้ดลงแล้ว ลิงก์ยังตาย<br/><i>exit: เทียบสด v1 vs v2 ที่ระดับแถว — ยังไม่ทำ</i>"]
     M5["<b>M5 · Load Profile</b><br/>a: job+สคีมา · b: หน้าจอ · c: งานบ้าน<br/><i>exit: replay + probe มิเตอร์จริง</i>"]
     M6["<b>M6 · Billing</b><br/>open period · backfill · capture<br/><i>exit: parity กับ v1</i>"]
     M7["<b>M7 · โมดูลเบาที่เหลือ</b><br/>Energy · Holidays · SpecialDays<br/>Battery · ExportFormat · AppLog<br/><i>exit: parity กับ v1 + นับหน้าครบ</i>"]
@@ -464,6 +464,12 @@ Read now / Test connection ได้คิวก่อน poller + เทสผ�
 > และ Premier 550 (คาบเท่ากันแต่คอลัมน์ชนกัน) — ทั้งคู่บันทึกไว้ใน
 > [`meter-notes/load-profile-capture-objects.md`](meter-notes/load-profile-capture-objects.md)
 > ⇒ **M4c ต้องถือว่า parity ยังไม่ผ่านจนกว่าสองเคสนี้จะเดินจริง**
+>
+> ✅ **ทั้งสองเคสเดินจริงแล้วที่ issue #24 (2026-08-09)** — Prometer 100 คืน Logger 1 ที่ 900 วิ
+> และ Logger 2 ที่ 300 วิ จากเครื่องเดียวกัน · Premier 550 คืนสอง logger ที่ 900 วิ ทั้งคู่ ·
+> unique key `(device_id, logger_id, read_at)` และ watermark ต่อ logger จึงถูกทดสอบด้วยข้อมูลจริง
+> เป็นครั้งแรก · **แต่ "parity" ในความหมายเทียบกับ v1 ยังไม่ถูกวัด** — นั่นเป็นการรัน v1 คู่กัน
+> ซึ่งเป็นงานของเจ้าของ ไม่ใช่สิ่งที่ #24 ทำ
 
 **M4a (ภายในวันที่ 5) — SMW110W4 รุ่นเดียว ทั้ง DLMS serial และ TCP**:
 driver + serial transport (`ConnectionParams.serial()`) ·
@@ -531,10 +537,12 @@ manual-priority gate (ADR 0020) · ปิดเรื่อง scaler (§5)
 
 > ✅ **แก้ข้อเท็จจริงที่ผิด (2026-08-09)** — ย่อหน้าเดิมเขียนว่า TCC เสี่ยงเพราะ
 > *"`tcc-obis-scan-partial.md` ไม่เคยเห็นกลุ่ม ProfileGeneric เลย"* · **ไม่จริง**: ไฟล์นั้นจบด้วย
-> `## Result: SCAN COMPLETE` (บรรทัด 858) และบรรทัด 618-624 คือผลสแกนรอบ 4 (18 ก.ค. 2026)
-> ที่อ่าน captureObjects ได้ทั้ง LP (`1.0.99.1.0.255`, 900 วิ, 35 คอลัมน์) และ billing
-> (`0.0.98.1.0.255`, ~130 คอลัมน์ พร้อมเวลาของ max demand ที่ attr 5) · หัวข้อ "สถานะ/ข้อจำกัด"
-> ที่บรรทัด 11-13 กับคำว่า `-partial` ในชื่อไฟล์เป็นของเก่าที่ไม่ถูกแก้ตามตอนสแกนสำเร็จ
+> `## Result: SCAN COMPLETE` (บรรทัด 876 ในไฟล์ปัจจุบัน `tcc-obis-scan.md`) และบรรทัด 636-642 คือ
+> ผลสแกนรอบ 4 (18 ก.ค. 2026) ที่อ่าน captureObjects ได้ทั้ง LP (`1.0.99.1.0.255`, 900 วิ, 35 คอลัมน์)
+> และ billing (`0.0.98.1.0.255`, ~130 คอลัมน์ พร้อมเวลาของ max demand ที่ attr 5) · หัวข้อ
+> "สถานะ/ข้อจำกัด" **ในฉบับก่อน #25** กับคำว่า `-partial` ในชื่อไฟล์ตอนนั้นเป็นของเก่าที่ไม่ถูกแก้ตาม
+> ตอนสแกนสำเร็จ — **ทั้งสองแก้แล้วที่ issue #25/D13**: ไฟล์เปลี่ยนชื่อเป็น `tcc-obis-scan.md` และหัวข้อ
+> "สถานะ/ข้อจำกัด" (ปัจจุบันอยู่ที่บรรทัด 24) เขียนใหม่ให้ตรงกับเนื้อหาจริง
 
 > 🔴 **ความเสี่ยงจริงของ TCC คือลิงก์ ไม่ใช่ข้อมูล** — `203.170.148.103` **timeout ทั้ง 4059
 > และ 50001** (ทดสอบซ้ำ 2026-08-09 ที่ 15 วิ / 8 วิ · ครั้งแรก 2026-08-07) · เป็น **timeout

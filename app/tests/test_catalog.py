@@ -16,6 +16,56 @@ from arichds.acquisition.catalog import (
     get_model_spec,
 )
 
+# Imported directly (not through `factory.supported_models()`) so this module
+# sees the REAL driver registry rather than the fake one the suite's autouse
+# `fake_meter` fixture installs for every other test (conftest.py) — that
+# fixture patches the `factory` module's own `_registry` attribute, which a
+# direct `from ... import _registry` here does not go through (M4c, issue #24,
+# D22b: "the catalog endpoint marks all three CEWE models drivable").
+from arichds.acquisition.drivers.factory import _registry
+
+
+class TestTheThreeCeweModelsAreDrivable:
+    """D22b — narrows the "created, probed and read from the UI" acceptance
+    criterion to what an agent can verify without a live device: the driver
+    registry (which `GET /api/devices/catalog` filters `CATALOG` against,
+    `api/devices.py:760`) actually carries all three new models."""
+
+    def test_all_three_cewe_models_are_registered(self) -> None:
+        assert {"prometer100", "saral305", "premier550"} <= set(_registry())
+
+    def test_smw110_is_still_registered(self) -> None:
+        """The registry grew — it must not have lost anything on the way."""
+        assert "smw110" in _registry()
+
+    def test_every_registered_model_is_in_the_catalog(self) -> None:
+        """The registry and the catalog must agree on the product's
+        vocabulary — a driver for a model the catalog does not know would be
+        undrivable from the UI regardless."""
+        assert set(_registry()) <= set(CATALOG)
+
+
+class TestTheFiveSmartTccModelsAreDrivable:
+    """D2/D5, M4c issue #25 — one driver class, five catalog keys, all
+    resolving to the same :class:`SmartTccDriver`."""
+
+    def test_all_five_tcc_keys_are_registered(self) -> None:
+        assert {"st3c", "st3cl", "st33tl", "st3tl", "st3dh"} <= set(_registry())
+
+    def test_all_five_resolve_to_the_same_driver_class(self) -> None:
+        from arichds.acquisition.drivers.smart_tcc import SmartTccDriver
+
+        registry = _registry()
+        for key in ("st3c", "st3cl", "st33tl", "st3tl", "st3dh"):
+            assert registry[key] is SmartTccDriver
+
+    def test_the_earlier_four_models_are_still_registered(self) -> None:
+        """The registry grew again — it must not have lost anything on the way."""
+        assert {"prometer100", "saral305", "premier550", "smw110"} <= set(_registry())
+
+    def test_every_registered_model_is_still_in_the_catalog(self) -> None:
+        assert set(_registry()) <= set(CATALOG)
+
 
 class TestCatalogShape:
     def test_nine_models(self) -> None:
@@ -78,7 +128,7 @@ class TestFixedPasswords:
             assert CATALOG[model].fixed_password == CEWE_FIXED_PASSWORD
 
     def test_smw110_has_its_own(self) -> None:
-        assert MITSU_SMW110_FIXED_PASSWORD == "00000000000000000003"
+        assert MITSU_SMW110_FIXED_PASSWORD == "47895612345896471324"
         assert CATALOG["smw110"].fixed_password == MITSU_SMW110_FIXED_PASSWORD
 
     def test_smart_tcc_has_none(self) -> None:

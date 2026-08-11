@@ -44,10 +44,15 @@ INSTANTANEOUS_OBIS: Final[dict[str, tuple[str, int]]] = {
     "import_active_kwh": ("1.0.1.8.0.255", 2),
 }
 
-#: Columns whose meter value is raw Wh and must be divided to kWh before it
-#: reaches ``load_profile_readings``. Everything else is already in its stored
-#: unit.
-ENERGY_COLUMNS_WH: Final[frozenset[str]] = frozenset({"import_active_kwh"})
+#: Columns whose meter value is raw Wh/varh and must be divided to kWh/kvarh
+#: before it reaches ``load_profile_readings``. Everything else is already in
+#: its stored unit. Grew from one column to all four energy columns at M4c
+#: (issue #24, D13): the SMW110W4 only ever populated ``import_active_kwh``,
+#: but all three CEWE models populate all four (F7), and all four are raw
+#: Wh/varh on the wire — adding the other three changes no SMW110W4 behaviour.
+ENERGY_COLUMNS_WH: Final[frozenset[str]] = frozenset(
+    {"import_active_kwh", "export_active_kwh", "import_reactive_kvarh", "export_reactive_kvarh"}
+)
 
 #: Which ``logger_id`` a load-profile row gets, keyed by the ProfileGeneric OBIS
 #: it was read from (SPEC §3.5). Two entries, scanned off real meters on
