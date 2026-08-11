@@ -339,6 +339,20 @@ export interface RecordsGrid {
   rows: RecordsRow[];
 }
 
+/**
+ * The machine-wide display-unit setting — `"kilo"` (kW/kWh/kvar/kvarh,
+ * today's behaviour) or `"base"` (W/Wh/var/varh), from
+ * `GET`/`PUT /api/settings/display`. One value for the whole machine, not
+ * per user (owner ruling). Applied at render time only — every readings
+ * endpoint keeps returning kWh/kvarh/kW/kvar regardless of this setting; see
+ * `units.ts`, which is where the conversion actually happens.
+ */
+export type DisplayUnitScale = "kilo" | "base";
+
+export interface DisplaySettings {
+  display_unit_scale: DisplayUnitScale;
+}
+
 /** How many meters this machine has and may have, from `GET /api/devices/quota`. */
 export interface Quota {
   used: number;
@@ -777,4 +791,14 @@ export const api = {
     }),
 
   deleteUser: (id: number) => request<boolean>(`/api/users/${id}`, { method: "DELETE" }),
+
+  /** The current `display_unit_scale` — any authenticated caller. */
+  displaySettings: () => request<DisplaySettings>("/api/settings/display"),
+
+  /** Save `display_unit_scale` — admin-only. */
+  updateDisplaySettings: (scale: DisplayUnitScale) =>
+    request<DisplaySettings>("/api/settings/display", {
+      method: "PUT",
+      body: JSON.stringify({ display_unit_scale: scale }),
+    }),
 };

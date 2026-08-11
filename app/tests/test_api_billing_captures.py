@@ -10,6 +10,7 @@ own `billing` gate: `format=pdf` needs `auto_capture`, `format=xlsx` needs
 
 from __future__ import annotations
 
+import io
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -118,6 +119,30 @@ class TestRenderOnMiss:
 
         assert response.status_code == 200, response.text
         assert response.content.startswith(b"%PDF")
+
+
+class TestDisplayUnitScaleReachesTheDownload:
+    def test_base_scale_is_applied_to_a_render_on_miss_xlsx(self, admin_client: TestClient, tmp_path: Path) -> None:
+        from openpyxl import load_workbook
+
+        capture_dir = tmp_path / "captures"
+        capture_dir.mkdir()
+        set_capture_dir(admin_client, capture_dir)
+        put_response = admin_client.put("/api/settings/display", json={"display_unit_scale": "base"})
+        assert put_response.status_code == 200, put_response.text
+        device_id = make_device(admin_client)
+        reading_id = seed_closed(device_id)
+
+        response = admin_client.get(f"/api/billing/captures/{reading_id}", params={"format": "xlsx"})
+
+        assert response.status_code == 200, response.text
+        values = [
+            cell.value
+            for row_cells in load_workbook(io.BytesIO(response.content)).active.iter_rows()
+            for cell in row_cells
+        ]
+        assert "Import Active Wh Total" in values
+        assert "Import Active kWh Total" not in values
 
 
 class TestExistingFileIsServedWithoutRerendering:

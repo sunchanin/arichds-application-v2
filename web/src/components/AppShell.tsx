@@ -40,8 +40,7 @@ const { Header, Sider, Content } = Layout;
  *
  * M5b-1 lights up **Load Profile** — the read-only view of the Interval
  * Readings the meter recorded — for **every** role, so it carries no gate the
- * way User Management does. Energy and Settings stay disabled until M7 owns
- * them.
+ * way User Management does. Energy stays disabled until M7 owns it.
  *
  * M5b-2 lights up **Records** — whether those stored Readings are *complete*,
  * counted per meter and logger against the meter's own capture period — for
@@ -50,8 +49,13 @@ const { Header, Sider, Content } = Layout;
  *
  * M6a lights up **Billing** — the read-only view of the Billing Readings the
  * meter itself froze when it closed a period, for every role, same reason as
- * Load Profile and Records. Energy and Settings stay disabled until M7 owns
- * them.
+ * Load Profile and Records. Energy stays disabled until M7 owns it.
+ *
+ * A later CR (display-unit setting, kW/kWh vs W/Wh) lights up **Settings**
+ * for every role too — the one control on it is disabled for a `user`
+ * rather than the entry being absent, because reading the current setting
+ * is not admin-only, only changing it is (mirrors the Billing page's own
+ * `capture_dir` form).
  *
  * The header carries who is signed in, the way to change your own password
  * (every role — the modal is owned here, so no page has to pass a prop for it),
@@ -95,7 +99,7 @@ export function AppShell({
     ...(role === "admin"
       ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]
       : []),
-    { key: "settings", icon: <SettingOutlined />, label: "Settings", disabled: true },
+    { key: "settings", icon: <SettingOutlined />, label: "Settings" },
   ];
 
   return (
@@ -163,7 +167,7 @@ export function AppShell({
         <Sider
           width={200}
           theme="light"
-          breakpoint="lg"
+          breakpoint="xl"
           collapsedWidth={0}
           collapsible
           collapsed={collapsed}

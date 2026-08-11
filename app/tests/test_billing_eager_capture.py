@@ -21,7 +21,7 @@ from arichds.acquisition.drivers.base import BillingReading
 from arichds.acquisition.locks import EndpointLocks
 from arichds.config import Settings
 from arichds.constants import SOURCE_DLMS
-from arichds.db.app_settings import CAPTURE_DIR_KEY, set_setting
+from arichds.db.app_settings import CAPTURE_DIR_KEY, DISPLAY_UNIT_SCALE_KEY, set_setting
 from arichds.db.session import session_scope
 from arichds.licensing.current import set_current_license_service
 from arichds.licensing.service import LicenseState
@@ -124,6 +124,28 @@ class TestBothFeaturesOn:
         files = captured_files(capture_dir)
         assert any(f.suffix == ".pdf" for f in files)
         assert any(f.suffix == ".xlsx" for f in files)
+
+
+class TestDisplayUnitScaleReachesTheEagerCapture:
+    def test_base_scale_is_applied_to_the_written_xlsx(
+        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features
+    ) -> None:
+        """The setting is read fresh on every capture, not cached — proven end
+        to end through the real write path, not by inspecting the call."""
+        from openpyxl import load_workbook
+
+        license_features(["billing", "auto_capture", "billing_excel_export"])
+        set_capture_dir(capture_dir)
+        with session_scope() as session:
+            set_setting(session, DISPLAY_UNIT_SCALE_KEY, "base")
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+
+        read_and_store_billing(device_id, now=NOW)
+
+        xlsx_path = next(f for f in captured_files(capture_dir) if f.suffix == ".xlsx")
+        values = [cell.value for row_cells in load_workbook(xlsx_path).active.iter_rows() for cell in row_cells]
+        assert "Import Active Wh Total" in values
+        assert "Import Active kWh Total" not in values
 
 
 class TestOnlyAutoCaptureOn:
@@ -266,7 +288,7 @@ class TestCaptureRunsOutsideTheEndpointLock:
         locks = EndpointLocks()
         acquired_during_capture: list[bool] = []
 
-        def spy_capture_reading(row, device_name, capture_dir_arg, *, write_excel):  # noqa: ANN001
+        def spy_capture_reading(row, device_name, capture_dir_arg, *, write_excel, scale="kilo"):  # noqa: ANN001
             with locks.get(ENDPOINT).background() as ok:
                 acquired_during_capture.append(ok)
 

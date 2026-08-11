@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from arichds.capture._render_shared import DisplayUnitScale
 from arichds.capture.paths import sanitize_meter_serial
 from arichds.capture.pdf import render_billing_pdf
 from arichds.capture.write import write_capture
@@ -47,19 +48,25 @@ def capture_target_paths(capture_dir: Path, meter_serial: str, bill_date: dateti
     return base.with_suffix(".pdf"), base.with_suffix(".xlsx")
 
 
-def write_pdf_capture(row: Any, device_name: str, target: Path, capture_dir: Path) -> None:
+def write_pdf_capture(
+    row: Any, device_name: str, target: Path, capture_dir: Path, scale: DisplayUnitScale = "kilo"
+) -> None:
     """Render and hardened-write the PDF capture for *row* at *target*."""
     allowlist = [capture_dir.resolve()]
-    write_capture(target, lambda: render_billing_pdf(row, device_name), allowlist)
+    write_capture(target, lambda: render_billing_pdf(row, device_name, scale=scale), allowlist)
 
 
-def write_xlsx_capture(row: Any, device_name: str, target: Path, capture_dir: Path) -> None:
+def write_xlsx_capture(
+    row: Any, device_name: str, target: Path, capture_dir: Path, scale: DisplayUnitScale = "kilo"
+) -> None:
     """Render and hardened-write the xlsx capture for *row* at *target*."""
     allowlist = [capture_dir.resolve()]
-    write_capture(target, lambda: render_billing_xlsx(row, device_name), allowlist)
+    write_capture(target, lambda: render_billing_xlsx(row, device_name, scale=scale), allowlist)
 
 
-def capture_reading(row: Any, device_name: str, capture_dir: Path, *, write_excel: bool) -> None:
+def capture_reading(
+    row: Any, device_name: str, capture_dir: Path, *, write_excel: bool, scale: DisplayUnitScale = "kilo"
+) -> None:
     """Write the PDF (and, when *write_excel*, the xlsx) capture for one
     closed Billing Reading.
 
@@ -80,6 +87,8 @@ def capture_reading(row: Any, device_name: str, capture_dir: Path, *, write_exce
         device_name: Raw device name for the document header.
         capture_dir: The current ``capture_dir`` setting value.
         write_excel: Whether ``billing_excel_export`` is enabled.
+        scale: The current ``display_unit_scale`` setting value — see
+            :func:`~arichds.capture.pdf.render_billing_pdf`.
     """
     if getattr(row, "meter_serial", None) is None:
         logger.warning("Capture skipped for %s bill_date %s — no meter_serial stored", device_name, row.bill_date)
@@ -91,10 +100,10 @@ def capture_reading(row: Any, device_name: str, capture_dir: Path, *, write_exce
         logger.warning("Capture skipped for %s bill_date %s — %s", device_name, row.bill_date, exc)
         return
 
-    write_pdf_capture(row, device_name, pdf_target, capture_dir)
+    write_pdf_capture(row, device_name, pdf_target, capture_dir, scale)
 
     if write_excel:
         try:
-            write_xlsx_capture(row, device_name, xlsx_target, capture_dir)
+            write_xlsx_capture(row, device_name, xlsx_target, capture_dir, scale)
         except Exception:  # noqa: BLE001 — a side effect; the PDF result must survive (v1 parity).
             logger.exception("xlsx capture failed for %s bill_date %s (PDF unaffected)", device_name, row.bill_date)

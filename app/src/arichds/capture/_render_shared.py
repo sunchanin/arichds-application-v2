@@ -16,9 +16,76 @@ tariffs, SPEC §3.6).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-__all__ = ["ALL_SECTIONS", "ascii_cell", "format_cell"]
+__all__ = ["ALL_SECTIONS", "DisplayUnitScale", "ascii_cell", "format_cell", "scale_label", "scale_value"]
+
+#: The machine-wide display-unit setting (a CR, not part of the original M6b
+#: shape) — `"kilo"` is today's behaviour (kW/kWh/kvar/kvarh), `"base"` is
+#: W/Wh/var/varh. Applied at render time only, on top of `format_cell`/
+#: `ascii_cell` — the stored value and the API payload never change (
+#: CLAUDE.md's write-time normalization invariant).
+DisplayUnitScale = Literal["kilo", "base"]
+
+#: The rate-column suffixes every measurement field carries (mirrors
+#: `_measurement_section` below) — stripped off before looking at the unit
+#: token so `scale_value`/`scale_value`'s caller can work off the raw
+#: `BillingReading` attribute name.
+_RATE_SUFFIXES = ("_total", "_rate_a", "_rate_b", "_rate_c", "_rate_d")
+
+#: The unit token a field's prefix ends with, for the fields that ARE a
+#: magnitude in kWh/kvarh/kW/kvar. Demand Time fields end in `_time` and
+#: Metadata fields carry no such token at all — both fall through as
+#: non-convertible, which is exactly right: one is a timestamp, the other is
+#: an id/status/date string, and D20/the owner's kilo<->base ruling covers
+#: energy and power only.
+_CONVERTIBLE_UNIT_TOKENS = frozenset({"kwh", "kvarh", "kw", "kvar"})
+
+
+def _is_convertible_field(attr: str) -> bool:
+    """Whether *attr* (a `BillingReading` column name) is an energy/power
+    magnitude the kilo<->base setting may scale."""
+    for suffix in _RATE_SUFFIXES:
+        if attr.endswith(suffix):
+            token = attr[: -len(suffix)].rsplit("_", 1)[-1]
+            return token in _CONVERTIBLE_UNIT_TOKENS
+    return False
+
+
+def scale_value(value: float | None, attr: str, scale: DisplayUnitScale) -> float | None:
+    """Convert *value* for display under *scale*.
+
+    `"kilo"` and a non-convertible *attr* (a Demand Time timestamp or a
+    Metadata field) are both no-ops. `None` — "the meter never captured
+    this" — passes through unchanged rather than raising; a genuine `0` is
+    scaled like any other number (`value is None`, never `not value`).
+    """
+    if scale != "base" or value is None or not _is_convertible_field(attr):
+        return value
+    return value * 1000
+
+
+#: Applied in order to a label/title string under `scale == "base"`. `"kWh"`
+#: needs no entry of its own: replacing the `"kW"` substring inside it already
+#: leaves the correct `"Wh"` (same reasoning for `"kvarh"` -> `"kvar"`).
+_LABEL_REPLACEMENTS: tuple[tuple[str, str], ...] = (("kvar", "var"), ("kW", "W"))
+
+
+def scale_label(label: str, scale: DisplayUnitScale) -> str:
+    """Swap a label/title's kilo unit tokens (`kWh`, `kvarh`, `kW`, `kvar`)
+    for their base equivalents (`Wh`, `varh`, `W`, `var`) under `"base"`.
+
+    A no-op under `"kilo"`, and a no-op on a label with no unit token at all
+    (Demand Time / Metadata section and field titles) — the value and the
+    label must always move together (this feature's one hard requirement),
+    so this is the single place either renderer touches a unit word.
+    """
+    if scale != "base":
+        return label
+    result = label
+    for kilo, base in _LABEL_REPLACEMENTS:
+        result = result.replace(kilo, base)
+    return result
 
 
 def format_cell(value: Any) -> str:

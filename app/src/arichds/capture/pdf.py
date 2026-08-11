@@ -14,7 +14,7 @@ from typing import Any
 
 from fpdf import FPDF
 
-from arichds.capture._render_shared import ALL_SECTIONS, ascii_cell
+from arichds.capture._render_shared import ALL_SECTIONS, DisplayUnitScale, ascii_cell, scale_label, scale_value
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def _warn_non_ascii_once(original: str, replaced: str) -> None:
     logger.warning("render_billing_pdf: non-ASCII device name %r replaced with %r", original, replaced)
 
 
-def render_billing_pdf(row: Any, device_name: str) -> bytes:
+def render_billing_pdf(row: Any, device_name: str, scale: DisplayUnitScale = "kilo") -> bytes:
     """Render one closed Billing Reading as a landscape A4 PDF.
 
     Never touches the filesystem — the caller is responsible for the hardened
@@ -44,6 +44,12 @@ def render_billing_pdf(row: Any, device_name: str) -> bytes:
         device_name: Raw device name for the header. Non-ASCII is replaced
             with ``?`` and warned once — the document is English by owner
             decision (issue #22); no embedded font.
+        scale: The machine-wide display-unit setting — ``"kilo"`` (default,
+            today's behaviour) or ``"base"`` (W/Wh/var/varh). Applied here
+            only, on the rendered value and label together
+            (:func:`~arichds.capture._render_shared.scale_value` /
+            :func:`~arichds.capture._render_shared.scale_label`) — the row
+            itself is never touched.
 
     Returns:
         Complete PDF bytes.
@@ -76,14 +82,16 @@ def render_billing_pdf(row: Any, device_name: str) -> bytes:
     for section_title, fields in ALL_SECTIONS:
         pdf.set_fill_color(210, 220, 240)
         pdf.set_font("Helvetica", "B", 9)
-        pdf.cell(0, _ROW_H, text=f"  {section_title}", fill=True, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, _ROW_H, text=f"  {scale_label(section_title, scale)}", fill=True, new_x="LMARGIN", new_y="NEXT")
 
         pdf.set_font("Helvetica", "", 8)
         fill = False
         for label, attr in fields:
-            value_str = ascii_cell(getattr(row, attr, None))
+            value_str = ascii_cell(scale_value(getattr(row, attr, None), attr, scale))
             pdf.set_fill_color(248, 249, 252)
-            pdf.cell(label_w, _ROW_H, text=f"  {label}", border=1, fill=fill, new_x="RIGHT", new_y="TOP")
+            pdf.cell(
+                label_w, _ROW_H, text=f"  {scale_label(label, scale)}", border=1, fill=fill, new_x="RIGHT", new_y="TOP"
+            )
             pdf.cell(value_w, _ROW_H, text=f"  {value_str}", border=1, fill=False, new_x="LMARGIN", new_y="NEXT")
             fill = not fill
 

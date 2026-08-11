@@ -48,7 +48,14 @@ from arichds.capture.paths import validate_capture_dir_setting
 from arichds.capture.service import capture_target_paths, write_pdf_capture, write_xlsx_capture
 from arichds.config import get_settings
 from arichds.constants import O_BINARY, O_NOFOLLOW
-from arichds.db.app_settings import CAPTURE_DIR_DEFAULT, CAPTURE_DIR_KEY, get_setting, set_setting
+from arichds.db.app_settings import (
+    CAPTURE_DIR_DEFAULT,
+    CAPTURE_DIR_KEY,
+    DISPLAY_UNIT_SCALE_DEFAULT,
+    DISPLAY_UNIT_SCALE_KEY,
+    get_setting,
+    set_setting,
+)
 from arichds.db.models import BillingReading, Device
 from arichds.licensing.features import feature_enabled
 
@@ -490,6 +497,7 @@ def download_billing_capture(
             status_code=status.HTTP_404_NOT_FOUND, detail="capture_dir is not configured — nothing to download."
         )
     capture_dir = Path(capture_dir_str)
+    display_unit_scale = get_setting(session, DISPLAY_UNIT_SCALE_KEY, DISPLAY_UNIT_SCALE_DEFAULT)
 
     device = session.get(Device, row.device_id)
     device_name = device.name if device is not None else str(row.device_id)
@@ -503,9 +511,9 @@ def download_billing_capture(
     if not _is_regular_file(target):
         try:
             if document_format == "pdf":
-                write_pdf_capture(row, device_name, target, capture_dir)
+                write_pdf_capture(row, device_name, target, capture_dir, display_unit_scale)
             else:
-                write_xlsx_capture(row, device_name, target, capture_dir)
+                write_xlsx_capture(row, device_name, target, capture_dir, display_unit_scale)
         except FileExistsError:
             pass  # a concurrent request just wrote it — fall through and serve it
         except ValueError as exc:
