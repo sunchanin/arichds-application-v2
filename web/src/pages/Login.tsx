@@ -1,4 +1,4 @@
-import { LoginOutlined } from "@ant-design/icons";
+import { LockOutlined, LoginOutlined, UserOutlined } from "@ant-design/icons";
 import { Alert, App, Button, Card, Flex, Form, Input, Space, theme, Typography } from "antd";
 import { useState } from "react";
 
@@ -16,6 +16,10 @@ const { Text, Title } = Typography;
  *
  * Every credential failure comes back as the same message from the server; the
  * page does not try to guess whether it was the username or the password.
+ *
+ * Layout (full-bleed background, centred card, gradient divider) is ported
+ * from v1's Login page; the theme, feedback wiring and session handling stay
+ * v2's own (no dark/gold ConfigProvider, no zod, no react-router-dom).
  */
 export function Login({ notice }: { notice?: string | null }) {
   const { message } = App.useApp();
@@ -47,48 +51,87 @@ export function Login({ notice }: { notice?: string | null }) {
   };
 
   return (
-    <Flex
-      justify="center"
-      align="center"
-      style={{ minHeight: "100vh", padding: 24, background: token.colorBgLayout }}
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        backgroundImage: "url(/images/arichds.jpg)",
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+      }}
     >
-      <Card style={{ width: "100%", maxWidth: 420 }}>
-        <Space direction="vertical" size="large" style={{ width: "100%" }}>
-          <div>
-            <Title level={3} style={{ marginBottom: 4 }}>
-              <LoginOutlined /> Sign in to ARICHDS
-            </Title>
-            <Text type="secondary">Use the account created when this machine was set up.</Text>
-          </div>
+      {/* Veil so the card reads over the photo, from a theme token rather than a hardcoded color. */}
+      <div style={{ position: "absolute", inset: 0, background: token.colorBgMask }} />
 
-          {notice ? <Alert type="success" showIcon message={notice} /> : null}
-          {error ? <Alert type="error" showIcon message={error} /> : null}
+      <Flex
+        justify="center"
+        align="center"
+        style={{ position: "relative", minHeight: "100vh", padding: 24 }}
+      >
+        <Card style={{ width: "100%", maxWidth: 400, boxShadow: token.boxShadowSecondary }}>
+          <Space direction="vertical" size="large" style={{ width: "100%" }}>
+            <div style={{ textAlign: "center" }}>
+              <Title level={3} style={{ marginBottom: 4 }}>
+                <LoginOutlined /> Sign in to ARICHDS
+              </Title>
+              <Text type="secondary">Use the account created when this machine was set up.</Text>
+              {/* Thin gradient divider, ported from v1's layout. */}
+              <div
+                style={{
+                  height: 1,
+                  margin: "16px 0 0",
+                  background: `linear-gradient(90deg, transparent, ${token.colorPrimary}, transparent)`,
+                }}
+              />
+            </div>
 
-          <Form form={form} layout="vertical" onFinish={(values) => void submit(values)} disabled={submitting}>
-            <Form.Item
-              name="username"
-              label="Username"
-              rules={[{ required: true, message: "Enter your username." }]}
-            >
-              <Input autoFocus autoComplete="username" />
-            </Form.Item>
+            {notice ? <Alert type="success" showIcon message={notice} /> : null}
+            {error ? <Alert type="error" showIcon message={error} /> : null}
 
-            <Form.Item
-              name="password"
-              label="Password"
-              rules={[{ required: true, message: "Enter your password." }]}
-            >
-              <Input.Password autoComplete="current-password" />
-            </Form.Item>
+            <Form form={form} layout="vertical" onFinish={(values) => void submit(values)} disabled={submitting}>
+              <Form.Item
+                name="username"
+                label="Username"
+                rules={[{ required: true, message: "Enter your username." }]}
+              >
+                <Input
+                  prefix={<UserOutlined />}
+                  placeholder="Enter your username"
+                  size="large"
+                  autoFocus
+                  autoComplete="username"
+                />
+              </Form.Item>
 
-            <Form.Item style={{ marginBottom: 0 }}>
-              <Button type="primary" size="large" block htmlType="submit" loading={submitting}>
-                Sign in
-              </Button>
-            </Form.Item>
-          </Form>
-        </Space>
-      </Card>
-    </Flex>
+              <Form.Item
+                name="password"
+                label="Password"
+                rules={[{ required: true, message: "Enter your password." }]}
+              >
+                <Input.Password
+                  prefix={<LockOutlined />}
+                  placeholder="Enter your password"
+                  size="large"
+                  autoComplete="current-password"
+                />
+              </Form.Item>
+
+              <Form.Item style={{ marginBottom: 0 }}>
+                <Button
+                  type="primary"
+                  size="large"
+                  block
+                  htmlType="submit"
+                  loading={submitting}
+                  style={{ fontWeight: 600, letterSpacing: "0.05em" }}
+                >
+                  SIGN IN
+                </Button>
+              </Form.Item>
+            </Form>
+          </Space>
+        </Card>
+      </Flex>
+    </div>
   );
 }

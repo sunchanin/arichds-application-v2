@@ -4,6 +4,8 @@ import {
   FileTextOutlined,
   KeyOutlined,
   LogoutOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   SettingOutlined,
   TableOutlined,
   TeamOutlined,
@@ -73,6 +75,10 @@ export function AppShell({
   onSignOut: () => void;
 }) {
   const [changingPassword, setChangingPassword] = useState(false);
+  // Shared by the responsive `lg` breakpoint and the manual header toggle
+  // below, so they act on one state instead of fighting each other — the
+  // `Sider`'s own `onCollapse` fires for both, and the button just flips it.
+  const [collapsed, setCollapsed] = useState(false);
   // The shell wraps every page M2–M7 will add, so its colours must come from
   // the theme rather than literals — otherwise a later re-theme silently
   // strands the header text at whatever white looked right in M1.
@@ -104,12 +110,25 @@ export function AppShell({
           justifyContent: "space-between",
         }}
       >
-        <Typography.Text
-          strong
-          style={{ color: token.colorTextLightSolid, fontSize: 16, letterSpacing: 0.5 }}
-        >
-          ARICHDS
-        </Typography.Text>
+        <Space size="small" align="center">
+          <Button
+            type="text"
+            size="small"
+            // Stays visible while collapsed — otherwise the sidebar, once
+            // hidden, would have no way back (collapsedWidth={0} hides it
+            // completely, so there is no icon rail to click through).
+            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+            onClick={() => setCollapsed((current) => !current)}
+            style={{ color: token.colorTextLightSolid }}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          />
+          <Typography.Text
+            strong
+            style={{ color: token.colorTextLightSolid, fontSize: 16, letterSpacing: 0.5 }}
+          >
+            ARICHDS
+          </Typography.Text>
+        </Space>
         <Space size="middle" align="center">
           {licensedTo ? (
             <Tag color="green" style={{ marginInlineEnd: 0 }}>
@@ -141,7 +160,19 @@ export function AppShell({
       </Header>
       <ChangePasswordModal open={changingPassword} onClose={() => setChangingPassword(false)} />
       <Layout>
-        <Sider width={200} theme="light" breakpoint="lg" collapsedWidth={0}>
+        <Sider
+          width={200}
+          theme="light"
+          breakpoint="lg"
+          collapsedWidth={0}
+          collapsible
+          collapsed={collapsed}
+          // AntD shows its own floating trigger once `collapsedWidth` is 0;
+          // suppressed because the header button above is the one control
+          // (it must stay visible collapsed, which the header button does).
+          trigger={null}
+          onCollapse={setCollapsed}
+        >
           <Menu
             mode="inline"
             selectedKeys={[activeKey]}

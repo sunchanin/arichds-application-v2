@@ -94,6 +94,13 @@ export interface Device {
   meter_number: string | null;
   group_name: string | null;
   transport: Transport;
+  /**
+   * The stored DLMS password, in the clear. Owner ruling (2026-08-11): meter
+   * passwords are not a security boundary, so convenience wins over secrecy —
+   * this is what lets the edit form prefill it and Test Connection run
+   * without retyping.
+   */
+  password: string;
   endpoint: string;
   enabled: boolean;
   status: DeviceStatus;
@@ -136,10 +143,12 @@ export interface DeviceEventPage {
  * which is why nothing here may be read with `??` or `||` (see `LoadProfile.tsx`).
  */
 export interface LoadProfileRow {
-  /** UTC, ISO-8601. Rendered in the browser's local clock. */
+  /**
+   * UTC, ISO-8601. Rendered in the browser's local clock. Always a Logger 1
+   * timestamp — Logger 1 is the spine of the read-side merge (owner ruling,
+   * 2026-08-11; see `app/src/arichds/api/load_profile.py`'s module docstring).
+   */
   read_at: string;
-  /** Which of the meter's load profiles the row came from. Never a merge key. */
-  logger_id: number;
   import_active_kwh: number | null;
   import_reactive_kvarh: number | null;
   export_active_kwh: number | null;

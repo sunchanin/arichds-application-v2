@@ -63,15 +63,6 @@ const COLUMNS: ColumnsType<LoadProfileRow> = [
     render: (readAt: string) => dayjs(readAt).format("YYYY-MM-DD HH:mm:ss"),
   },
   {
-    // Two loggers on one meter record separate rows at the same instant and are
-    // never merged (CONTEXT.md — Interval Reading). Without this column those
-    // rows would be indistinguishable on screen.
-    title: "Logger",
-    dataIndex: "logger_id",
-    key: "logger_id",
-    width: 80,
-  },
-  {
     title: "Import kWh Active",
     dataIndex: "import_active_kwh",
     key: "import_active_kwh",
@@ -392,7 +383,9 @@ export function LoadProfile() {
         >
           <Table<LoadProfileRow>
             size="small"
-            rowKey={(row) => `${row.logger_id}-${row.read_at}`}
+            // Unique per device: this is the Logger 1 spine of the read-side
+            // merge, and `(device_id, logger_id, read_at)` is unique (ADR 0008).
+            rowKey="read_at"
             loading={loading}
             dataSource={shown?.items ?? []}
             columns={COLUMNS}

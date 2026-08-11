@@ -99,10 +99,10 @@ class TestCreateDevice:
         assert fake_meter.connects == 1
         assert fake_meter.disconnects == 1
 
-    def test_never_returns_the_password(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+    def test_returns_the_password(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """Owner ruling, 2026-08-11 — passwords are not a security boundary."""
         response = add_device(admin_client, fake_meter)
-        assert "password" not in response.json()["data"]
-        assert "hunter2" not in response.text
+        assert response.json()["data"]["password"] == "hunter2"
 
     def test_never_returns_the_cipher_keys(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
         response = add_device(
@@ -1560,10 +1560,12 @@ class TestSecretsNeverLeak:
         for secret in ("hunter2", "CIPHER-1", "AUTH-1", "another-secret", "diag-secret"):
             assert secret not in caplog.text
 
-    def test_the_list_never_carries_them(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+    def test_the_list_never_carries_the_cipher_keys(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """The password is the deliberate exception (owner ruling, 2026-08-11) —
+        see ``test_returns_the_password``. The two cipher keys are not."""
         add_device(admin_client, fake_meter, block_cipher_key="CIPHER-1", authentication_key="AUTH-1")
         response = admin_client.get("/api/devices")
-        for secret in ("hunter2", "CIPHER-1", "AUTH-1"):
+        for secret in ("CIPHER-1", "AUTH-1"):
             assert secret not in response.text
 
 
@@ -1626,8 +1628,12 @@ class TestRoleBoundary:
 
 # ─── Helpers that reach into the database ─────────────────────────────────────
 #
-# Passwords and cipher keys are never returned by any endpoint, so the only
-# honest way to assert "the stored value is unchanged" is to read the column.
+# The cipher keys are never returned by any endpoint, so the only honest way to
+# assert "the stored value is unchanged" is to read the column. The password is
+# returned by `GET /api/devices` (owner ruling, 2026-08-11) but these helpers
+# still read the column directly — most callers here assert against a device
+# fetched *before* the change under test, and going straight to the database
+# avoids re-fetching just to check one field.
 
 
 def stored_password(device_id: int) -> str:

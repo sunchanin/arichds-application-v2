@@ -64,8 +64,10 @@ class Device(Base):
             Serial (CONTEXT.md).
         group_name: Free-text group; a distinct query feeds the form's dropdown.
         transport: Transport Endpoint description (JSON).
-        password: DLMS authentication password. Never logged, never returned by
-            the API.
+        password: DLMS authentication password. Never logged. Returned by the
+            API in the clear (owner ruling, 2026-08-11): meter passwords are
+            not a security boundary, so convenience wins over secrecy — the
+            two cipher keys below are unaffected and stay never-returned.
         block_cipher_key: DLMS global unicast encryption key. Unused in M3, used
             by the HLS models in M4. Never logged, never returned by the API.
         authentication_key: DLMS authentication key. Same handling.

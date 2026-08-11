@@ -60,7 +60,11 @@ The rows live in the `load_profile_readings` table, mapped by the `LoadProfileRe
 the term names the row and its contract, the table names what is in it — every interval the
 meter itself recorded, since ADR 0007 stopped anything else being written there. A row is
 identified by `(device, logger, read_at)` and carries the meter's own capture period in
-`interval_sec` — two loggers on one meter are separate rows, never merged.
+`interval_sec` — two loggers on one meter are separate rows, never merged **in storage**. The
+Load Profile page's list endpoint is the one deliberate exception (owner ruling, 2026-08-11,
+`app/src/arichds/api/load_profile.py`): it projects Logger 1 and Logger 2 onto one row per
+`read_at` for display, Logger 1 winning on a column both capture — the stored rows themselves
+are untouched.
 _Avoid_: load profile row (that's the feature, not the row), sample, logger reading
 
 **Source**:

@@ -226,7 +226,11 @@ function checkedAt(value: string | null): string {
   return value === null ? "Never checked" : `Checked ${dayjs(value).format("YYYY-MM-DD HH:mm:ss")}`;
 }
 
-/** Project a device row onto the form's shape. Password is never prefilled on edit (D10). */
+/**
+ * Project a device row onto the form's shape. Password is prefilled from the
+ * stored value (owner ruling, 2026-08-11 — meter passwords are not a
+ * security boundary, so convenience wins over secrecy).
+ */
 function toFormValues(device: Device): DeviceFormValues {
   const transport = device.transport;
   return {
@@ -246,9 +250,11 @@ function toFormValues(device: Device): DeviceFormValues {
     dataBits: transport.kind === "serial" ? transport.data_bits : EMPTY_FORM.dataBits,
     parity: transport.kind === "serial" ? transport.parity : EMPTY_FORM.parity,
     stopBits: transport.kind === "serial" ? transport.stop_bits : EMPTY_FORM.stopBits,
-    // The API never returns the stored password, so the field starts empty and
-    // blank means "keep it" — see the Password field's own hint.
-    password: "",
+    // The API now returns the stored password in the clear (owner ruling,
+    // 2026-08-11), so it is visible on open and Test Connection works
+    // without retyping. Blank still means "keep it" (D10) — see the Password
+    // field's own hint.
+    password: device.password,
     first_bill_date: device.first_bill_date ? dayjs(device.first_bill_date) : null,
     bill_day_feb28: device.bill_day_feb28,
     bill_day_feb29: device.bill_day_feb29,

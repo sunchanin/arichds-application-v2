@@ -12,9 +12,12 @@ Three rules decide almost every assertion here:
 * **D7** (``api/devices.py``) — a *client* fault gets an HTTP status. An unknown
   device is a 404 and an inverted range is a 422; a device that simply has no
   rows in the window is **not** an error, it is an empty page.
-* **CONTEXT.md — Interval Reading** — two loggers on one meter are separate
-  rows, *never merged*. The endpoint returns both and labels each with its
-  ``logger_id``.
+* **Owner ruling, 2026-08-11** — Logger 1 and Logger 2 merge into one row on
+  this endpoint (read side only; storage keeps both as separate rows, ADR
+  0008). Logger 1 is the spine, Logger 2 is left-joined on an exact
+  ``read_at`` match, and every measurement column is
+  ``COALESCE(logger1, logger2)`` — Logger 1 wins. ``logger_id`` is gone from
+  the response.
 
 ``fake_meter`` swaps the driver registry for every test in this module, so
 nothing here touches a real meter: devices are created through the real
@@ -297,7 +300,7 @@ class TestColumns:
         response = fetch(admin_client, device_id, BASE, BASE + timedelta(days=1))
 
         row = response.json()["data"]["items"][0]
-        assert set(row) == {"read_at", "logger_id", *UNSOURCED_ON_SMW110} | {
+        assert set(row) == {"read_at", *UNSOURCED_ON_SMW110} | {
             "import_active_kwh",
             "volt_l1",
             "volt_l2",
@@ -323,13 +326,37 @@ class TestIsolation:
         assert times_of(response.json()) == list(reversed(my_times))
         assert response.json()["data"]["total"] == 2
 
-    def test_both_loggers_come_back_as_their_own_rows(
+
+class TestLoggerMerge:
+    """Owner ruling, 2026-08-11 — Logger 1 and Logger 2 merge on this endpoint,
+    read side only. v1's own rule, reproduced exactly: Logger 1 is the spine,
+    Logger 2 is left-joined on an *exact* ``read_at`` match, and every column
+    is ``COALESCE(logger1, logger2)`` — Logger 1 wins.
+    """
+
+    def test_logger_2_fills_a_column_logger_1_left_null(
         self, admin_client: TestClient, fake_meter: FakeMeterState
     ) -> None:
-        """Never merged (CONTEXT.md — Interval Reading; SPEC §3.5 on v1's bad merge).
+        device_id = add_device(admin_client, fake_meter)
+        seed(device_id, BASE, logger_id=1, import_active_kwh=11.0)
+        seed(device_id, BASE, logger_id=2, volt_l1=230.5)
 
-        Both loggers record at the same instant, and each keeps its own value —
-        a merge would collapse them to one row and silently drop a measurement.
+        response = fetch(admin_client, device_id, BASE, BASE + timedelta(days=1))
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["total"] == 1
+        row = data["items"][0]
+        assert row["import_active_kwh"] == 11.0
+        assert row["volt_l1"] == 230.5
+
+    def test_logger_1_wins_when_both_loggers_fill_the_same_column(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """Premier 550's own collision
+        (``docs/meter-notes/load-profile-capture-objects.md:35-53``) — two
+        different OBIS map onto one column; ``COALESCE`` must resolve it to
+        Logger 1's value deterministically, never Logger 2's.
         """
         device_id = add_device(admin_client, fake_meter)
         seed(device_id, BASE, logger_id=1, import_active_kwh=11.0)
@@ -339,8 +366,39 @@ class TestIsolation:
 
         assert response.status_code == 200, response.text
         data = response.json()["data"]
-        assert data["total"] == 2
-        assert [(row["logger_id"], row["import_active_kwh"]) for row in data["items"]] == [(1, 11.0), (2, 22.0)]
+        assert data["total"] == 1
+        assert data["items"][0]["import_active_kwh"] == 11.0
+
+    def test_a_logger_2_row_with_no_exact_read_at_match_is_dropped(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """Prometer 100's own case — Logger 2 at 300s lands on a Logger 1
+        (900s) boundary only one time in three.
+        """
+        device_id = add_device(admin_client, fake_meter)
+        seed(device_id, BASE, logger_id=1, import_active_kwh=11.0)
+        seed(device_id, BASE + timedelta(minutes=5), logger_id=2, import_active_kwh=99.0)
+
+        response = fetch(admin_client, device_id, BASE, BASE + timedelta(days=1))
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["total"] == 1
+        assert data["items"][0]["import_active_kwh"] == 11.0
+
+    def test_a_logger_2_only_instant_shows_nothing(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """Logger 1 is the spine — an instant with no Logger 1 row shows
+        nothing at all, even though Logger 2 recorded one.
+        """
+        device_id = add_device(admin_client, fake_meter)
+        seed(device_id, BASE, logger_id=2, import_active_kwh=99.0)
+
+        response = fetch(admin_client, device_id, BASE, BASE + timedelta(days=1))
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["total"] == 0
+        assert data["items"] == []
 
 
 class TestAccess:
