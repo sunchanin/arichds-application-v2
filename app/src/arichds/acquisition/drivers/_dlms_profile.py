@@ -564,6 +564,45 @@ class DlmsProfileDriver(DlmsDriver):
             )
         return readings
 
+    def load_profile_oldest_reading(self, logger_id: int) -> datetime | None:
+        """Read entry 1's timestamp — one small entry-access call.
+
+        Entry 1 is the oldest row on a load profile (``smw110w4-scan.md:74``;
+        ordering is a property of the profile, not the model, and the ST-3CL
+        agrees — ``tcc-3cl-serial-scan.md``). Reading it costs one round trip
+        even on a 9600 serial line, against the up-to-90 empty range queries it
+        saves, and :func:`~arichds.acquisition.load_profile.read_and_store_load_profile`
+        only asks during backfill.
+
+        Every failure path returns ``None`` — an unreadable buffer must leave
+        the walk exactly as it was rather than break a read that works today.
+        """
+        if self._reader is None or self._client is None:
+            return None
+        if logger_id not in self.LOAD_PROFILE_COLUMN_MAP:
+            return None
+
+        pg = GXDLMSProfileGeneric(f"1.0.99.{logger_id}.0.255")
+        self._client.objects.append(pg)
+        try:
+            self._reader.read(pg, 3)  # capture objects — needed to locate the Clock column
+            if int(self._reader.read(pg, 7)) <= 0:
+                return None  # empty buffer: nothing to clamp to, and nothing to read either
+            rows = self._reader.readRowsByEntry(pg, 1, 1) or []
+        except Exception:  # noqa: BLE001 — a refusal degrades to "unknown", never to a failed read.
+            logger.info(
+                "%s: could not read logger %d's oldest entry — the walk keeps its full window",
+                self.model_name,
+                logger_id,
+            )
+            return None
+
+        clock_pos = positions_by_obis_attr(pg.captureObjects).get(("0.0.1.0.0.255", 2))
+        if clock_pos is None or not rows or clock_pos >= len(rows[0]):
+            return None
+        local_dt = coerce_clock_cell(rows[0][clock_pos])
+        return meter_local_to_utc(local_dt) if local_dt is not None else None
+
     # ── Billing ───────────────────────────────────────────────────────────────
 
     def supports_billing(self) -> bool:

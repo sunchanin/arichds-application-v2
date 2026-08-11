@@ -62,6 +62,16 @@ class FakeMeterState:
         load_profile_error: What a failing load-profile read raises.
         load_profile_fail_after: Succeed for this many reads, then raise. The
             mid-walk failure a chunked backfill has to survive.
+        load_profile_oldest: What :meth:`FakeSmw110Driver.load_profile_oldest_reading`
+            answers — a single datetime for every logger, a dict for per-logger
+            answers, or ``None`` for "this driver cannot say" (the base-class
+            default). A meter whose buffer is shallower than
+            ``LOAD_PROFILE_BACKFILL_DAYS`` is the case that used to make the
+            backfill un-completable.
+        load_profile_oldest_error: What that read raises when it fails — the
+            walk must fall back to the full window rather than break.
+        oldest_reads: How many times it was asked. Proves the read is paid for
+            on backfill only, not on every cycle.
         billing_rows: The whole billing buffer :class:`FakeSmw110Driver`
             replays from — one call returns all of it (ADR 0009: every billing
             read is a full-buffer read, unlike the load profile's windowed
@@ -83,6 +93,9 @@ class FakeMeterState:
     load_profile_windows: list[tuple[int, datetime, datetime]] = field(default_factory=list)
     load_profile_error: Exception | None = None
     load_profile_fail_after: int | None = None
+    load_profile_oldest: datetime | dict[int, datetime | None] | None = None
+    load_profile_oldest_error: Exception | None = None
+    oldest_reads: int = 0
     billing_rows: list[BillingReading] = field(default_factory=list)
     billing_reads: int = 0
     billing_error: Exception | None = None
@@ -223,6 +236,21 @@ class FakeSmw110Driver(FakeMeterDriver):
             raise error
 
         return [row for row in rows if row.logger_id == logger_id and start_utc <= row.read_at <= end_utc]
+
+    def load_profile_oldest_reading(self, logger_id: int) -> datetime | None:
+        """Answer from :attr:`FakeMeterState.load_profile_oldest`, counting the call.
+
+        ``None`` (the default) is the base-class behaviour — a driver that
+        cannot say. The counter is what lets a test assert the read happens on
+        backfill and **not** on a device that already has a watermark.
+        """
+        with _GUARD:
+            _STATE.oldest_reads += 1
+            oldest = _STATE.load_profile_oldest
+            error = _STATE.load_profile_oldest_error
+        if error is not None:
+            raise error
+        return oldest.get(logger_id) if isinstance(oldest, dict) else oldest
 
     def supports_billing(self) -> bool:
         """Yes — like the real ``Smw110Driver`` (M6a, issue #21)."""

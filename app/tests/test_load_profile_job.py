@@ -30,7 +30,7 @@ from arichds.acquisition.drivers.base import IntervalReading
 from arichds.acquisition.load_profile import read_and_store_load_profile
 from arichds.acquisition.locks import EndpointLocks
 from arichds.config import Settings
-from arichds.constants import LOAD_PROFILE_BACKFILL_DAYS, SOURCE_DLMS
+from arichds.constants import LOAD_PROFILE_BACKFILL_DAYS, LOAD_PROFILE_CHUNK_HOURS, SOURCE_DLMS
 from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 from arichds.db.session import session_scope
 
@@ -497,3 +497,92 @@ class TestAWatermarkAheadOfNow:
         assert result.stored == 0
         assert result.error is None
         assert result.budget_exhausted is False
+
+
+class TestAMeterWhoseBufferIsShallowerThanTheBackfillWindow:
+    """The customer-machine failure of 2026-08-11, and the reason
+    :func:`~arichds.acquisition.load_profile._backfill_start` exists.
+
+    A SMART TCC on serial 9600 held ~22 h of load profile. The walk starts at
+    ``now - LOAD_PROFILE_BACKFILL_DAYS`` and steps ``LOAD_PROFILE_CHUNK_HOURS``
+    at a time, and on that link an empty chunk cost ~3.3 s, so the 60 s budget
+    bought 18 of the 90 chunks needed to reach the first row. Nothing was
+    stored, so the watermark stayed ``None``, so the next cycle re-walked the
+    same empty ninety days — nine times in the log, every one of them stopping
+    within two days of the last:
+
+        14:06:47 stopped on the shared budget at 2026-05-31T07:05:44
+        15:43:02 stopped on the shared budget at 2026-05-31T08:42:00
+
+    The first test below is the regression: it fails on the code that shipped.
+    """
+
+    def test_a_second_cycle_makes_progress_where_the_first_ran_out_of_budget(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """Two budget-limited cycles must not be the same cycle twice.
+
+        The budget is set so a cycle cannot cross ninety days of empty window,
+        which is the shipped behaviour on the real link. Without the clamp both
+        cycles ask for the identical first chunk and store nothing forever.
+        """
+        oldest = NOW - timedelta(hours=22)
+        fake_meter.load_profile_oldest = oldest
+        fake_meter.load_profile_rows = synthesized_rows(NOW - timedelta(hours=2), NOW - timedelta(hours=1))
+
+        first = read_and_store_load_profile(device_id, now=NOW, budget_sec=0.0)
+
+        assert first.stored == 2, "the walk never reached the meter's data"
+        assert fake_meter.load_profile_windows[0][1] >= oldest - timedelta(hours=LOAD_PROFILE_CHUNK_HOURS)
+
+        second = read_and_store_load_profile(device_id, now=NOW, budget_sec=0.0)
+        assert second.stored >= 1  # the boundary row is deliberately re-read and upserted
+        assert fake_meter.load_profile_windows[-1][1] > oldest, "the second cycle restarted from the beginning"
+
+    def test_the_oldest_entry_is_asked_for_only_while_backfilling(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """It costs a meter read, so a device with a watermark must not pay it
+        every cycle."""
+        fake_meter.load_profile_oldest = NOW - timedelta(hours=22)
+        store(device_id, synthesized_rows(NOW - timedelta(hours=3)))
+        fake_meter.oldest_reads = 0
+
+        read_and_store_load_profile(device_id, now=NOW)
+
+        assert fake_meter.oldest_reads == 0
+
+    def test_a_driver_that_cannot_say_keeps_the_full_backfill_window(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """The base-class default is ``None``; every model that shipped before
+        this change must walk exactly as it did."""
+        fake_meter.load_profile_oldest = None
+
+        read_and_store_load_profile(device_id, now=NOW, budget_sec=0.0)
+
+        first_window_start = fake_meter.load_profile_windows[0][1]
+        assert first_window_start == NOW - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
+
+    def test_a_refusal_falls_back_to_the_full_window_rather_than_failing_the_read(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """An optional hint must never break the read it exists to speed up."""
+        fake_meter.load_profile_oldest_error = TimeoutError("the meter would not serve entry 1")
+
+        result = read_and_store_load_profile(device_id, now=NOW, budget_sec=0.0)
+
+        assert result.error is None
+        assert fake_meter.load_profile_windows[0][1] == NOW - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
+
+    def test_a_meter_clock_in_the_future_cannot_narrow_the_walk_to_nothing(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """A nonsense answer must be ignored, not trusted into skipping data."""
+        fake_meter.load_profile_oldest = NOW + timedelta(days=3)
+        fake_meter.load_profile_rows = synthesized_rows(NOW - timedelta(hours=1))
+
+        result = read_and_store_load_profile(device_id, now=NOW, budget_sec=0.0)
+
+        assert fake_meter.load_profile_windows[0][1] == NOW - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
+        assert result.stored == 0  # the full walk is budget-bound, exactly as before
