@@ -1,6 +1,8 @@
 import {
   AreaChartOutlined,
   CalendarOutlined,
+  CloudServerOutlined,
+  CloudUploadOutlined,
   DatabaseOutlined,
   ExportOutlined,
   FileSearchOutlined,
@@ -90,6 +92,15 @@ const { Header, Sider, Content } = Layout;
  * is not admin-only, only changing it is (mirrors the Billing page's own
  * `capture_dir` form).
  *
+ * Issue #37 adds the **Data-out Destination** group — Database and File
+ * Upload — after Settings. **Admin-only, for the same reason App Log is**:
+ * the fields are machine-internal credentials, not meter data, so the group
+ * and both entries are *absent* for a `user`, not disabled. Unlike every
+ * other entry in this list, neither page carries a transport yet — the
+ * Data-out module (SPEC §3.8) that would make them work is a later
+ * milestone; these two pages exist only to make the destination concept
+ * legible ahead of that, and are presentation-only until it lands.
+ *
  * The header carries who is signed in, the way to change your own password
  * (every role — the modal is owned here, so no page has to pass a prop for it),
  * and the way out.
@@ -143,6 +154,21 @@ export function AppShell({
       ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]
       : []),
     { key: "settings", icon: <SettingOutlined />, label: "Settings" },
+    // Issue #37 — admin-only, like App Log/User Management above: these two
+    // pages carry no transport yet (SPEC §3.8 is a later milestone), and
+    // their fields are machine-internal credentials, not meter data.
+    ...(role === "admin"
+      ? [
+          {
+            type: "group" as const,
+            label: "Data-out Destination",
+            children: [
+              { key: "database-destination", icon: <CloudServerOutlined />, label: "Database" },
+              { key: "file-upload-destination", icon: <CloudUploadOutlined />, label: "File Upload" },
+            ],
+          },
+        ]
+      : []),
   ];
 
   return (

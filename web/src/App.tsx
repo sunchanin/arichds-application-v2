@@ -8,9 +8,11 @@ import { Activation } from "./pages/Activation";
 import { AppLog } from "./pages/AppLog";
 import { Battery } from "./pages/Battery";
 import { Billing } from "./pages/Billing";
+import { DatabaseDestination } from "./pages/DatabaseDestination";
 import { Devices } from "./pages/Devices";
 import { EnergySummary } from "./pages/EnergySummary";
 import { ExportFormat } from "./pages/ExportFormat";
+import { FileUploadDestination } from "./pages/FileUploadDestination";
 import { Holidays } from "./pages/Holidays";
 import { LoadProfile } from "./pages/LoadProfile";
 import { Login } from "./pages/Login";
@@ -34,7 +36,9 @@ type Page =
   | "export-format"
   | "app-log"
   | "users"
-  | "settings";
+  | "settings"
+  | "database-destination"
+  | "file-upload-destination";
 
 const PAGES: readonly Page[] = [
   "devices",
@@ -49,6 +53,8 @@ const PAGES: readonly Page[] = [
   "app-log",
   "users",
   "settings",
+  "database-destination",
+  "file-upload-destination",
 ];
 
 /** Read a menu key as a page, falling back to Devices for anything unrecognised. */
@@ -207,12 +213,19 @@ export default function App() {
     return <Activation status={status} role={session.role} onActivated={() => void refreshStatus()} />;
   }
 
-  // A `user` never reaches the Users or App Log pages: both menu entries are
-  // absent for them, and this second check is what keeps a stale `page` from
-  // surviving a demotion that landed while the page was open. Load Profile and
-  // Records need no such gate — reading stored readings is open to both roles.
+  // A `user` never reaches the Users, App Log, or Data-out Destination
+  // pages: their menu entries are absent for them, and this second check is
+  // what keeps a stale `page` from surviving a demotion that landed while
+  // the page was open. Load Profile and Records need no such gate — reading
+  // stored readings is open to both roles.
   const active: Page =
-    (page === "users" || page === "app-log") && session.role !== "admin" ? "devices" : page;
+    (page === "users" ||
+      page === "app-log" ||
+      page === "database-destination" ||
+      page === "file-upload-destination") &&
+    session.role !== "admin"
+      ? "devices"
+      : page;
 
   return (
     <AppShell
@@ -245,6 +258,10 @@ export default function App() {
         <AppLog />
       ) : active === "settings" ? (
         <Settings role={session.role} />
+      ) : active === "database-destination" ? (
+        <DatabaseDestination />
+      ) : active === "file-upload-destination" ? (
+        <FileUploadDestination />
       ) : (
         <Devices role={session.role} />
       )}
