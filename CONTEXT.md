@@ -142,7 +142,8 @@ device and local calendar day. It is **derived, never stored and never read from
 the numbers are aggregated out of `load_profile_readings` on every request, exactly as the
 Records page counts its cells live. Peak is a local clock window on days that are not Holiday;
 Holiday is one bucket that swallows weekends and both kinds of Holiday alike, so a Saturday
-inside the peak window is Holiday energy, not Peak energy (ADR 0016). Only **active** energy is
+inside the peak window is Holiday energy, not Peak energy (**v1's** ADR 0016 — v2's own 0016 is
+an unrelated decision). Only **active** energy is
 counted, import and export; the reactive columns exist on the row and are deliberately ignored.
 Because nothing is stored, **an Energy Summary is not reproducible over time**: adding a Holiday
 today changes what last January reports tomorrow. That is a property of the design, not a
@@ -225,17 +226,22 @@ the disk failing. The destination is fixed, not a setting.
 _Avoid_: snapshot, dump, export (that's the CSV feature), replica
 
 **Capture**:
-A PDF (and, when sold, an xlsx) document for one closed Billing Reading, written to a folder an
-admin chooses (`capture_dir`, ADR 0010) — never a fixed path, because the folder **is** the
-handoff mechanism: the operator hands the file to a customer through whatever their own
-workflow already reaches (a network share, a synced folder, their mail client's watched
-directory). Its path is derived from convention every time —
-`<capture_dir>/<meter_serial>/<bill_date>.pdf` — and never stored in the database, so changing
-`capture_dir` orphans every existing capture by design: old files stay exactly where they are
-and simply stop being reachable from the Billing page. Created eagerly, synchronously, the
-moment a closed period is inserted; a missing one is rendered again on download rather than
-tracked as a failure. The Open Period never has one.
-_Avoid_: report, export (that's a different feature), snapshot
+A document written for a closed Billing Reading to a folder an admin chooses (`capture_dir`,
+ADR 0010) — never a fixed path, because the folder **is** the handoff mechanism: the operator
+hands the file to a customer through whatever their own workflow already reaches (a network
+share, a synced folder, their mail client's watched directory). Its path is derived from
+convention every time — `<capture_dir>/<meter_serial>/<bill_date>.<ext>` — and never stored in
+the database, so changing `capture_dir` orphans every existing capture by design: old files stay
+exactly where they are and simply stop being reachable from the Billing page. Created eagerly,
+synchronously, the moment a closed period is inserted; a missing one is rendered again on
+download rather than tracked as a failure. The Open Period never has one.
+
+Three formats share that one filename stem, and **they do not cover the same span** (ADR 0015):
+`.pdf` and `.xlsx` hold **that one period**, while `.png` holds **the ten most recent closed
+periods** rendered as the Billing History table. Sending the `.png` believing it carries a
+single month sends nine more. Nothing in the folder warns of this; saying so is the guard.
+_Avoid_: report, export (that's a different feature), snapshot, screenshot (the `.png` is drawn
+server-side, never photographed from a browser — ADR 0014)
 
 **Export Format**:
 The four machine-wide settings that govern the Load Profile CSV auto-export (M7 slice 3, issue
@@ -312,3 +318,15 @@ Stopping every background read of one device while leaving it fully visible — 
 column, persisted so it survives a service restart. Manual Reads still work on a paused
 device. Resume puts it back to Unknown until the next tick proves otherwise.
 _Avoid_: disconnect, disable, deactivate
+
+### Data-out
+
+**Data-out Destination**:
+Somewhere finished data is sent **outward** from the site — the team's central server, a
+customer's own MySQL, an upload target, or a folder a third-party tool replicates. One site may
+use several, and a site that refuses cloud upload for confidentiality has not opted out of the
+architecture: it has chosen a different Destination. A Destination **never becomes the store**
+— ARICHDS reads meters into its own SQLite whether or not any Destination is reachable, and an
+unreachable one costs a retry, never a reading (ADR 0016).
+_Avoid_: endpoint (that's the **Transport Endpoint** — the meter side, and the lock keys on it),
+sync target, backend, database connection
