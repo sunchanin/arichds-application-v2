@@ -1,4 +1,18 @@
-import { App, Button, Card, DatePicker, Descriptions, Empty, Flex, Select, Space, Table, Tabs } from "antd";
+import {
+  App,
+  Button,
+  Card,
+  DatePicker,
+  Descriptions,
+  Empty,
+  Flex,
+  Segmented,
+  Select,
+  Space,
+  Table,
+  Tabs,
+  Typography,
+} from "antd";
 import type { DescriptionsItemType } from "antd/es/descriptions";
 import type { ColumnsType } from "antd/es/table";
 import type { TabsProps } from "antd/es/tabs";
@@ -14,6 +28,7 @@ import {
   type EnergyRegisterRow,
   type EnergySummaryDay,
 } from "../api";
+import { ENERGY_COLUMNS, energyTotalCells } from "../energyTotals";
 import { type UnitKind, scaleValue, unitLabel, useDisplayUnitScale } from "../units";
 
 const { RangePicker } = DatePicker;
@@ -37,6 +52,17 @@ const TAB_ITEMS: TabsProps["items"] = [
   { key: "registers", label: "Meter Registers" },
 ];
 
+type SummaryMode = "single" | "range";
+
+const MODE_OPTIONS: { label: string; value: SummaryMode }[] = [
+  { label: "Single day", value: "single" },
+  { label: "Range", value: "range" },
+];
+
+/** Shared by both the single-day `DatePicker` and the `RangePicker` (issue
+ * #36, D4) so the two controls cannot drift apart on what "today" means. */
+const disabledDate = (current: Dayjs) => current.isAfter(dayjs().endOf("day"));
+
 function SummaryReportTab({
   devices,
   surface,
@@ -47,6 +73,7 @@ function SummaryReportTab({
   const { message } = App.useApp();
   const scale = useDisplayUnitScale();
   const [deviceId, setDeviceId] = useState<number | undefined>(undefined);
+  const [mode, setMode] = useState<SummaryMode>("range");
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, "day"), dayjs()]);
   const [days, setDays] = useState<EnergySummaryDay[]>([]);
   const [loading, setLoading] = useState(false);
@@ -92,26 +119,25 @@ function SummaryReportTab({
 
   const shownDays = deviceId === undefined ? [] : days;
 
-  const columns: ColumnsType<EnergySummaryDay> = useMemo(() => {
-    const kwh = (title: string, dataIndex: keyof EnergySummaryDay) => ({
-      title: `${title} (${unitLabel("energy", scale)})`,
-      dataIndex,
-      key: dataIndex,
-      width: 130,
-      render: (value: number) => num2(scaleValue(value, scale) ?? null),
-    });
-    return [
+  // Same function value feeds the day columns' `render` and the total row's
+  // formatter (issue #36, D13) — there is one place that can disagree with
+  // the display-unit setting, and it is wrong for both rows at once or
+  // neither.
+  const renderKwh = useMemo(() => (value: number) => num2(scaleValue(value, scale) ?? null), [scale]);
+
+  const columns: ColumnsType<EnergySummaryDay> = useMemo(
+    () => [
       { title: "Date", dataIndex: "date", key: "date", width: 110, fixed: "left" as const },
-      kwh("Peak Import", "peak_import_kwh"),
-      kwh("Off-Peak Import", "offpeak_import_kwh"),
-      kwh("Holiday Import", "holiday_import_kwh"),
-      kwh("Total Import", "total_import_kwh"),
-      kwh("Peak Export", "peak_export_kwh"),
-      kwh("Off-Peak Export", "offpeak_export_kwh"),
-      kwh("Holiday Export", "holiday_export_kwh"),
-      kwh("Total Export", "total_export_kwh"),
-    ];
-  }, [scale]);
+      ...ENERGY_COLUMNS.map(({ title, key }) => ({
+        title: `${title} (${unitLabel("energy", scale)})`,
+        dataIndex: key,
+        key,
+        width: 130,
+        render: renderKwh,
+      })),
+    ],
+    [scale, renderKwh],
+  );
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -125,26 +151,55 @@ function SummaryReportTab({
             style={{ minWidth: 260 }}
             aria-label="Device"
           />
-          <RangePicker
-            value={range}
-            allowClear={false}
-            disabledDate={(current) => current.isAfter(dayjs().endOf("day"))}
-            onChange={(dates) => {
-              const [from, to] = dates ?? [];
-              if (!from || !to) return;
-              // The server refuses a span over MAX_DAYS with 422 — clamped
-              // here too so the picker never sends a request the API will
-              // only reject. Named explicitly rather than silently snapping
-              // back to the previous range, which left no clue why the
-              // picker "didn't take" the selection.
-              if (to.diff(from, "day") + 1 > MAX_DAYS) {
-                message.info(`A Summary Report request may span at most ${MAX_DAYS} days.`);
-                return;
-              }
-              setRange([from, to]);
+          <Segmented<SummaryMode>
+            value={mode}
+            options={MODE_OPTIONS}
+            onChange={(next) => {
+              // Range -> Single day collapses to range[1], the range's end
+              // (issue #36, D5): always <= today (D4), and the day the
+              // operator was already looking at the edge of.
+              if (next === "single") setRange([range[1], range[1]]);
+              // Single day -> Range needs no state change: single-day mode
+              // already keeps range as [d, d] (see the DatePicker onChange
+              // below), so switching out of it never changes the numbers on
+              // screen — the operator widens from there.
+              setMode(next);
             }}
-            aria-label="Date range"
+            aria-label="Mode"
           />
+          {mode === "single" ? (
+            <DatePicker
+              value={range[0]}
+              allowClear={false}
+              disabledDate={disabledDate}
+              onChange={(d) => {
+                if (!d) return;
+                setRange([d, d]);
+              }}
+              aria-label="Date"
+            />
+          ) : (
+            <RangePicker
+              value={range}
+              allowClear={false}
+              disabledDate={disabledDate}
+              onChange={(dates) => {
+                const [from, to] = dates ?? [];
+                if (!from || !to) return;
+                // The server refuses a span over MAX_DAYS with 422 — clamped
+                // here too so the picker never sends a request the API will
+                // only reject. Named explicitly rather than silently snapping
+                // back to the previous range, which left no clue why the
+                // picker "didn't take" the selection.
+                if (to.diff(from, "day") + 1 > MAX_DAYS) {
+                  message.info(`A Summary Report request may span at most ${MAX_DAYS} days.`);
+                  return;
+                }
+                setRange([from, to]);
+              }}
+              aria-label="Date range"
+            />
+          )}
         </Flex>
       </Card>
       <Card size="small">
@@ -156,6 +211,22 @@ function SummaryReportTab({
           columns={columns}
           scroll={{ x: 110 + 130 * 8 }}
           pagination={false}
+          summary={() => {
+            const totals = energyTotalCells(shownDays, renderKwh);
+            if (!totals) return null;
+            return (
+              <Table.Summary.Row>
+                <Table.Summary.Cell index={0}>
+                  <Typography.Text strong>Total</Typography.Text>
+                </Table.Summary.Cell>
+                {totals.map((cell, i) => (
+                  <Table.Summary.Cell key={ENERGY_COLUMNS[i].key} index={i + 1}>
+                    <Typography.Text strong>{cell}</Typography.Text>
+                  </Table.Summary.Cell>
+                ))}
+              </Table.Summary.Row>
+            );
+          }}
           locale={{
             emptyText: (
               <Empty
