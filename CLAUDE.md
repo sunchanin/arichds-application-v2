@@ -76,10 +76,10 @@ MySQL, and ~30 tables.
   **fully implemented** with issue #30/M7 slice 3: the boundary landed on the Load Profile CSV
   — `export/` never imports the render-time scale machinery, and the mixed-unit capture folder
   stays a **recorded shipped gap** needing its own issue, unchanged by this issue) ·
-  0014 (the capture image is **drawn, never screenshotted** — there is no screen to photograph
-  when nobody is looking at the page, so the unattended requirement decides it; Pillow as a third
-  renderer over `_render_shared`, not a bundled browser, which `pyproject.toml`'s "pure Python,
-  no native ext" line forbids; **fully implemented** with issue #35) ·
+  0014 (the capture image is **drawn, never screenshotted** — Pillow as a third renderer over
+  `_render_shared`; shipped with issue #35 and **REVERSED by ADR 0017** — read 0017 first, and do
+  not cite 0014's "no screen to photograph" premise or its 250 MB browser costing, both of which
+  a working prototype disproved on 2026-08-22) ·
   0015 (**three capture formats share one filename stem while only the `.png` spans ten
   periods** — `<capture_dir>/<serial>/<bill_date>.{pdf,xlsx,png}`, where the pdf and xlsx hold
   that one period and the png holds the ten most recent; it looks like a bug and is a decision
@@ -89,7 +89,13 @@ MySQL, and ~30 tables.
   partial unique indexes ADR 0009's invariant rests on, and making their database the store
   would make their downtime our downtime; FTP upload, a customer MySQL and a replicated folder
   are all the same shape, a **Data-out Destination**, which is SPEC §3.8's surface; the
-  presentation-only pages landed with issue #37, the transport is M8 and unbuilt).
+  presentation-only pages landed with issue #37, the transport is M8 and unbuilt) ·
+  0017 (the capture image is a **headless screenshot of our own page** — **reverses 0014**:
+  Edge ships with Windows and `websockets` already arrives via `uvicorn[standard]`, so driving
+  the installed browser over CDP costs **0 MB** and makes fidelity an identity rather than an
+  approximation; the price is that the service **can no longer run as LocalSystem** (`msedge.exe`
+  exits 1002 under `nt authority\system`) and that the image is truncated exactly as the screen
+  is, which the owner chose; 0015 and 0010 are untouched; **not yet implemented**).
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
