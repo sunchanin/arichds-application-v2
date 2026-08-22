@@ -45,7 +45,7 @@ from arichds.api.deps import (
 )
 from arichds.api.envelope import ApiResponse
 from arichds.capture.paths import validate_capture_dir_setting
-from arichds.capture.service import capture_target_paths, write_pdf_capture, write_xlsx_capture
+from arichds.capture.service import capture_target_paths, write_pdf_capture, write_png_capture, write_xlsx_capture
 from arichds.config import get_settings
 from arichds.constants import O_BINARY, O_NOFOLLOW
 from arichds.db.app_settings import (
@@ -453,6 +453,91 @@ def _stream_file(path: Path) -> Iterator[bytes]:
         file_obj.close()
 
 
+@router.get("/captures/image")
+def download_billing_image(
+    session: SessionDep,
+    license_service: LicenseServiceDep,
+    device_id: Annotated[int, Query(ge=1, description="Which device's Billing History image to fetch")],
+) -> StreamingResponse:
+    """Download the Billing History image (up to ten most recent closed
+    periods) for one device — render-on-miss, device-keyed (D11, ADR
+    0014/0015, issue #35).
+
+    **Device-keyed, not reading-keyed** — after Step 6 the frontend has no
+    per-row reading id left, and the button must not depend on which page of
+    the table the operator happens to be looking at. "The latest closed
+    period for this device" is a server-resolved fact; "the first row
+    currently on screen" is pagination state. ADR 0015 requires that an
+    automatic render and a hand-pressed one always produce the same picture.
+
+    Registered *before* ``/captures/{reading_id}`` below — Starlette matches
+    routes in declaration order and ``reading_id`` is a plain string path
+    segment (the ``int`` typing is enforced by FastAPI's parameter
+    validation, not route matching), so ``/captures/image`` would otherwise
+    be swallowed by that route and 422 on ``int("image")``.
+
+    Gated on ``billing_image_export`` on top of the router's own ``billing``
+    gate, exactly as :func:`download_billing_capture` gates per format.
+
+    Raises:
+        HTTPException: 404 for a device with no closed billing period yet,
+            or an unconfigured ``capture_dir``. 422 for a ``meter_serial``
+            that fails path validation. 500 for a write failure.
+    """
+    if not feature_enabled("billing_image_export", license_service=license_service, settings=get_settings()):
+        raise FeatureDisabledError("billing_image_export")
+
+    anchor = session.scalars(
+        select(BillingReading)
+        .where(BillingReading.device_id == device_id, BillingReading.record_status.is_(None))
+        .order_by(BillingReading.bill_date.desc())
+        .limit(1)
+    ).first()
+    if anchor is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="This device has no closed billing period yet."
+        )
+
+    capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
+    if not capture_dir_str.strip():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="capture_dir is not configured — nothing to download."
+        )
+    capture_dir = Path(capture_dir_str)
+    display_unit_scale = get_setting(session, DISPLAY_UNIT_SCALE_KEY, DISPLAY_UNIT_SCALE_DEFAULT)
+
+    device = session.get(Device, anchor.device_id)
+    device_name = device.name if device is not None else str(anchor.device_id)
+
+    try:
+        _pdf_target, _xlsx_target, png_target = capture_target_paths(
+            capture_dir, anchor.meter_serial or "", anchor.bill_date
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    if not _is_regular_file(png_target):
+        try:
+            write_png_capture(anchor, device_name, png_target, capture_dir, display_unit_scale)
+        except FileExistsError:
+            pass  # a concurrent request just wrote it — fall through and serve it
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not write the capture: {exc}"
+            ) from exc
+
+    if not _is_regular_file(png_target):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The capture could not be created.")
+
+    return StreamingResponse(
+        _stream_file(png_target),
+        media_type="image/png",
+        headers={"Content-Disposition": f'attachment; filename="{png_target.name}"'},
+    )
+
+
 @router.get("/captures/{reading_id}")
 def download_billing_capture(
     reading_id: int,
@@ -503,7 +588,7 @@ def download_billing_capture(
     device_name = device.name if device is not None else str(row.device_id)
 
     try:
-        pdf_target, xlsx_target = capture_target_paths(capture_dir, row.meter_serial or "", row.bill_date)
+        pdf_target, xlsx_target, _png_target = capture_target_paths(capture_dir, row.meter_serial or "", row.bill_date)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     target = pdf_target if document_format == "pdf" else xlsx_target

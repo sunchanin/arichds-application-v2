@@ -227,10 +227,12 @@ TOU_PEAK_START_UTC: Final[int] = 2
 TOU_PEAK_END_UTC: Final[int] = 15
 
 # ─── Feature entitlement (SPEC §3.9, M6b issue #22) ───────────────────────────
-# Enabled = `.env FEATURES ∩ license features`. Eight sellable keys — the same
-# set v1 sold — plus one ops-only key that `.env` alone controls and the
-# license never governs. `records` (not `instantaneous`) is the key that gates
-# the Records page — owner decision 2026-08-09, SPEC §3.9.
+# Enabled = `.env FEATURES ∩ license features`. Nine sellable keys (M7 slice 4,
+# issue #35, added `billing_image_export` — D1) plus one ops-only key that
+# `.env` alone controls and the license never governs. `records` (not
+# `instantaneous`) is the key that gates the Records page — owner decision
+# 2026-08-09, SPEC §3.9. No licence has been issued yet (SPEC.md:1050-1053),
+# so this key set is still free to change.
 SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "billing",
@@ -241,6 +243,7 @@ SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
         "battery",
         "auto_capture",
         "billing_excel_export",
+        "billing_image_export",
     }
 )
 FEATURE_KEYS: Final[frozenset[str]] = SELLABLE_FEATURE_KEYS | frozenset({"app_log"})

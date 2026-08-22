@@ -166,6 +166,77 @@ class TestScaleValue:
         assert scale_value(0.0, "import_active_kwh_total", "base") == 0.0
 
 
+class TestAllSectionsExplicitLiteral:
+    """D8/T1 (issue #35): `ALL_SECTIONS` must equal an explicit literal of all
+    six sections and all 64 `(label, attr)` pairs, in order — not `len()`,
+    not a set of attrs. This is what pairs with "PDF/xlsx unchanged": if the
+    new `MEASUREMENT_SECTIONS` declaration that now builds `ALL_SECTIONS`
+    (issue #35, D8) drops or renames anything, this fails immediately."""
+
+    def test_all_sections_matches_the_literal_exactly(self) -> None:
+        def group(title: str, prefix: str) -> list[tuple[str, str]]:
+            return [
+                (f"{title} Total", f"{prefix}_total"),
+                (f"{title} Rate A", f"{prefix}_rate_a"),
+                (f"{title} Rate B", f"{prefix}_rate_b"),
+                (f"{title} Rate C", f"{prefix}_rate_c"),
+                (f"{title} Rate D", f"{prefix}_rate_d"),
+            ]
+
+        expected: list[tuple[str, list[tuple[str, str]]]] = [
+            (
+                "Energy (kWh)",
+                [
+                    *group("Import Active kWh", "import_active_kwh"),
+                    *group("Export Active kWh", "export_active_kwh"),
+                ],
+            ),
+            (
+                "Reactive Energy (kvarh)",
+                [
+                    *group("Import Reactive kvarh", "import_reactive_kvarh"),
+                    *group("Export Reactive kvarh", "export_reactive_kvarh"),
+                ],
+            ),
+            (
+                "Maximum Demand",
+                [
+                    *group("Max Demand Import Active kW", "max_demand_import_active_kw"),
+                    *group("Max Demand Export Active kW", "max_demand_export_active_kw"),
+                    *group("Max Demand Import Reactive kvar", "max_demand_import_reactive_kvar"),
+                    *group("Max Demand Export Reactive kvar", "max_demand_export_reactive_kvar"),
+                ],
+            ),
+            (
+                "Demand Time",
+                [
+                    *group("Demand Time Import Active", "max_demand_import_active_time"),
+                    *group("Demand Time Import Reactive", "max_demand_import_reactive_time"),
+                ],
+            ),
+            (
+                "Cumulative Demand",
+                [
+                    *group("Cumulative Demand Import Active kW", "cumul_demand_import_active_kw"),
+                    *group("Cumulative Demand Import Reactive kvar", "cumul_demand_import_reactive_kvar"),
+                ],
+            ),
+            (
+                "Metadata",
+                [
+                    ("Bill Date", "bill_date"),
+                    ("Meter Serial", "meter_serial"),
+                    ("Record Status", "record_status"),
+                    ("Read At", "read_at"),
+                ],
+            ),
+        ]
+
+        assert expected == ALL_SECTIONS
+        total_fields = sum(len(fields) for _title, fields in ALL_SECTIONS)
+        assert total_fields == 64
+
+
 class TestScaleLabel:
     def test_kilo_leaves_a_label_unchanged(self) -> None:
         assert scale_label("Energy (kWh)", "kilo") == "Energy (kWh)"

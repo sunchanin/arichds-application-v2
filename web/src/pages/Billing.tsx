@@ -1,4 +1,4 @@
-import { App, Button, Card, DatePicker, Dropdown, Empty, Flex, Form, Input, Select, Space, Table, Tabs } from "antd";
+import { App, Button, Card, DatePicker, Empty, Flex, Form, Input, Select, Space, Table, Tabs, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { TabsProps } from "antd/es/tabs";
 import dayjs, { type Dayjs } from "dayjs";
@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiRequestError,
   api,
-  downloadBillingCapture,
+  downloadBillingImage,
   isLicenseLapsed,
   type BillingPage as BillingPageData,
   type BillingRow,
@@ -158,44 +158,10 @@ function totalLeafWidth(columns: ColumnsType<BillingRow>): number {
   }, 0);
 }
 
-/** Width of the History-only "Capture" column appended in `Billing`'s `columns`. */
-const CAPTURE_COLUMN_WIDTH = 130;
-
 const TAB_ITEMS: TabsProps["items"] = [
   { key: "closed", label: "History" },
   { key: "open", label: "Current" },
 ];
-
-/**
- * Per-row PDF/xlsx download control (M6b, issue #22) — History tab only, the
- * Open Period has no capture (SPEC §3.6). Errors surface through the page's
- * `surface()` handler rather than a local toast, matching every other action
- * on this page.
- */
-function CaptureDownload({
-  readingId,
-  surface,
-}: {
-  readingId: number;
-  surface: (err: unknown, fallback: string) => void;
-}) {
-  const download = (format: "pdf" | "xlsx") => {
-    downloadBillingCapture(readingId, format).catch((err: unknown) => surface(err, "Could not download the capture."));
-  };
-
-  return (
-    <Dropdown
-      menu={{
-        items: [
-          { key: "pdf", label: "Download PDF", onClick: () => download("pdf") },
-          { key: "xlsx", label: "Download Excel", onClick: () => download("xlsx") },
-        ],
-      }}
-    >
-      <Button size="small">Capture</Button>
-    </Dropdown>
-  );
-}
 
 /**
  * Admin-only `capture_dir` form (M6b, issue #22).
@@ -345,25 +311,24 @@ export function Billing({ role }: { role: "admin" | "user" }) {
     [devices],
   );
 
-  // The Capture column is History-only — the Open Period has no capture
-  // (SPEC §3.6), so appending it unconditionally would offer a download that
-  // always fails on the Current tab.
-  const columns: ColumnsType<BillingRow> = useMemo(() => {
-    const base = buildColumns(scale, deviceId === undefined);
-    if (tab !== "closed") return base;
-    return [
-      ...base,
-      {
-        title: "Capture",
-        key: "capture",
-        width: CAPTURE_COLUMN_WIDTH,
-        fixed: "right",
-        render: (_: unknown, row: BillingRow) => <CaptureDownload readingId={row.id} surface={surface} />,
-      },
-    ];
-  }, [tab, scale, surface, deviceId]);
+  const columns: ColumnsType<BillingRow> = useMemo(
+    () => buildColumns(scale, deviceId === undefined),
+    [scale, deviceId],
+  );
 
   const tableWidth = totalLeafWidth(columns);
+
+  const [imageDownloading, setImageDownloading] = useState(false);
+
+  // Capture image (M7 slice 4, issue #35, D12) — device-keyed, so it needs a
+  // specific device selected; "All devices" has no anchor to render from.
+  const onDownloadImage = useCallback(() => {
+    if (deviceId === undefined) return;
+    setImageDownloading(true);
+    downloadBillingImage(deviceId)
+      .catch((err: unknown) => surface(err, "Could not download the capture image."))
+      .finally(() => setImageDownloading(false));
+  }, [deviceId, surface]);
 
   const onTabChange = (key: string) => {
     setTab(key as BillingStatus);
@@ -438,6 +403,11 @@ export function Billing({ role }: { role: "admin" | "user" }) {
             disabledDate={(current) => current.isAfter(dayjs().endOf("day"))}
             aria-label="Bill date range"
           />
+          <Tooltip title="Saves the ten most recent closed periods to the capture folder and downloads a copy.">
+            <Button onClick={onDownloadImage} disabled={deviceId === undefined} loading={imageDownloading}>
+              Capture image
+            </Button>
+          </Tooltip>
         </Flex>
       </Card>
       <Card size="small">

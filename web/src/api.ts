@@ -746,7 +746,8 @@ function formatDetail(detail: unknown): string {
 }
 
 /**
- * Download a billing capture and trigger a browser save (M6b, issue #22).
+ * Fetch a binary capture and trigger a browser save (M6b issue #22; shared
+ * by every capture download since M7 slice 4, issue #35).
  *
  * A separate helper from `request<T>()` because that one always parses the
  * response as JSON — a capture download is a binary body. Errors still come
@@ -754,9 +755,9 @@ function formatDetail(detail: unknown): string {
  * on a non-OK response the same way `request()` does, just without the
  * "always JSON" assumption on the success path.
  */
-export async function downloadBillingCapture(readingId: number, format: "pdf" | "xlsx"): Promise<void> {
+async function downloadBinary(url: string, fallbackFilename: string): Promise<void> {
   const session = getSession();
-  const response = await fetch(`/api/billing/captures/${readingId}?format=${format}`, {
+  const response = await fetch(url, {
     headers: session ? { Authorization: `Bearer ${session.token}` } : {},
   });
 
@@ -787,16 +788,40 @@ export async function downloadBillingCapture(readingId: number, format: "pdf" | 
   const blob = await response.blob();
   const disposition = response.headers.get("content-disposition") ?? "";
   const match = /filename="([^"]+)"/.exec(disposition);
-  const filename = match ? match[1] : `capture.${format}`;
+  const filename = match ? match[1] : fallbackFilename;
 
-  const url = URL.createObjectURL(blob);
+  const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
-  link.href = url;
+  link.href = objectUrl;
   link.download = filename;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  URL.revokeObjectURL(objectUrl);
+}
+
+/**
+ * Download the per-period PDF/xlsx capture (M6b, issue #22).
+ *
+ * Kept as its own exported function — even though the Billing page dropped
+ * its per-row Capture column in favour of the one Billing History image
+ * button (M7 slice 4, issue #35, D12) and nothing in `web/` calls this any
+ * more — because the backend endpoint it wraps
+ * (`GET /api/billing/captures/{reading_id}`) is unchanged and still a
+ * documented part of the API surface.
+ */
+export async function downloadBillingCapture(readingId: number, format: "pdf" | "xlsx"): Promise<void> {
+  return downloadBinary(`/api/billing/captures/${readingId}?format=${format}`, `capture.${format}`);
+}
+
+/**
+ * Download the Billing History image for one device — the ten most recent
+ * closed periods, rendered server-side (M7 slice 4, issue #35, ADR
+ * 0014/0015). Device-keyed, not reading-keyed: there is no per-row id to
+ * pass, only the device the operator has selected.
+ */
+export async function downloadBillingImage(deviceId: number): Promise<void> {
+  return downloadBinary(`/api/billing/captures/image?device_id=${deviceId}`, "capture.png");
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

@@ -18,7 +18,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-__all__ = ["ALL_SECTIONS", "DisplayUnitScale", "ascii_cell", "format_cell", "scale_label", "scale_value"]
+__all__ = [
+    "ALL_SECTIONS",
+    "MEASUREMENT_SECTIONS",
+    "DisplayUnitScale",
+    "ascii_cell",
+    "format_cell",
+    "scale_label",
+    "scale_value",
+]
 
 #: The machine-wide display-unit setting (a CR, not part of the original M6b
 #: shape) — `"kilo"` is today's behaviour (kW/kWh/kvar/kvarh), `"base"` is
@@ -129,37 +137,6 @@ def _measurement_section(title: str, prefix: str) -> list[tuple[str, str]]:
     ]
 
 
-_SECTION_ENERGY = [
-    *_measurement_section("Import Active kWh", "import_active_kwh"),
-    *_measurement_section("Export Active kWh", "export_active_kwh"),
-]
-
-_SECTION_REACTIVE = [
-    *_measurement_section("Import Reactive kvarh", "import_reactive_kvarh"),
-    *_measurement_section("Export Reactive kvarh", "export_reactive_kvarh"),
-]
-
-_SECTION_DEMAND = [
-    *_measurement_section("Max Demand Import Active kW", "max_demand_import_active_kw"),
-    *_measurement_section("Max Demand Export Active kW", "max_demand_export_active_kw"),
-    *_measurement_section("Max Demand Import Reactive kvar", "max_demand_import_reactive_kvar"),
-    *_measurement_section("Max Demand Export Reactive kvar", "max_demand_export_reactive_kvar"),
-]
-
-# ── M4c, issue #24 — the twenty columns v1's screen has always shown ────────
-# CONTEXT.md already carries the glossary entries for Demand Time and
-# Cumulative Demand — these labels use those exact words (D18). Import side
-# only (D10) — no screen shows the export side.
-_SECTION_DEMAND_TIME = [
-    *_measurement_section("Demand Time Import Active", "max_demand_import_active_time"),
-    *_measurement_section("Demand Time Import Reactive", "max_demand_import_reactive_time"),
-]
-
-_SECTION_CUMULATIVE_DEMAND = [
-    *_measurement_section("Cumulative Demand Import Active kW", "cumul_demand_import_active_kw"),
-    *_measurement_section("Cumulative Demand Import Reactive kvar", "cumul_demand_import_reactive_kvar"),
-]
-
 _SECTION_META = [
     ("Bill Date", "bill_date"),
     ("Meter Serial", "meter_serial"),
@@ -167,21 +144,70 @@ _SECTION_META = [
     ("Read At", "read_at"),
 ]
 
-#: ``(section title, [(field label, row attribute name), ...])`` — the whole
-#: capture content, in render order. Both renderers iterate this and nothing
-#: else, so a field added here appears in both formats automatically.
+#: ``(section title, [(group title, attribute prefix), ...])`` — the *source*
+#: of the five measurement sections (issue #35 / D8): each group expands to
+#: five ``(label, attr)`` pairs (Total, Rate A..D) via
+#: :func:`_measurement_section`. `ALL_SECTIONS` below is built from this, not
+#: declared a second time — the PNG renderer (:mod:`arichds.capture.png`)
+#: needs the grouping explicitly (its two-row header), and this file's own
+#: docstring exists to stop that grouping from being declared twice and
+#: drifting.
 #:
 #: **Two sections, not four, for the M4c additions** (D18) — SPEC §3.6:709
-#: said "เพิ่มอีก 4 หมวด" (four more sections), but ``_SECTION_DEMAND`` above
-#: already bundles four *groups* into one section, so four sections here
-#: would be inconsistent with the file's own established shape. "Demand Time"
-#: and "Cumulative Demand" each bundle their two groups (import active /
-#: import reactive) the same way.
-ALL_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
-    ("Energy (kWh)", _SECTION_ENERGY),
-    ("Reactive Energy (kvarh)", _SECTION_REACTIVE),
-    ("Maximum Demand", _SECTION_DEMAND),
-    ("Demand Time", _SECTION_DEMAND_TIME),
-    ("Cumulative Demand", _SECTION_CUMULATIVE_DEMAND),
-    ("Metadata", _SECTION_META),
+#: said "เพิ่มอีก 4 หมวด" (four more sections), but the demand section already
+#: bundles four *groups* into one section, so four sections here would be
+#: inconsistent with the file's own established shape. "Demand Time" and
+#: "Cumulative Demand" each bundle their two groups (import active / import
+#: reactive) the same way.
+MEASUREMENT_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
+    (
+        "Energy (kWh)",
+        [
+            ("Import Active kWh", "import_active_kwh"),
+            ("Export Active kWh", "export_active_kwh"),
+        ],
+    ),
+    (
+        "Reactive Energy (kvarh)",
+        [
+            ("Import Reactive kvarh", "import_reactive_kvarh"),
+            ("Export Reactive kvarh", "export_reactive_kvarh"),
+        ],
+    ),
+    (
+        "Maximum Demand",
+        [
+            ("Max Demand Import Active kW", "max_demand_import_active_kw"),
+            ("Max Demand Export Active kW", "max_demand_export_active_kw"),
+            ("Max Demand Import Reactive kvar", "max_demand_import_reactive_kvar"),
+            ("Max Demand Export Reactive kvar", "max_demand_export_reactive_kvar"),
+        ],
+    ),
+    (
+        "Demand Time",
+        # CONTEXT.md already carries the glossary entries for Demand Time —
+        # these labels use those exact words (D18). Import side only (D10) —
+        # no screen shows the export side.
+        [
+            ("Demand Time Import Active", "max_demand_import_active_time"),
+            ("Demand Time Import Reactive", "max_demand_import_reactive_time"),
+        ],
+    ),
+    (
+        "Cumulative Demand",
+        [
+            ("Cumulative Demand Import Active kW", "cumul_demand_import_active_kw"),
+            ("Cumulative Demand Import Reactive kvar", "cumul_demand_import_reactive_kvar"),
+        ],
+    ),
 ]
+
+#: ``(section title, [(field label, row attribute name), ...])`` — the whole
+#: capture content, in render order. Both renderers iterate this and nothing
+#: else, so a field added here appears in both formats automatically. The
+#: five measurement sections are built from :data:`MEASUREMENT_SECTIONS`;
+#: only ``Metadata`` is declared directly here (it has no group structure).
+ALL_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
+    (section_title, [pair for group_title, prefix in groups for pair in _measurement_section(group_title, prefix)])
+    for section_title, groups in MEASUREMENT_SECTIONS
+] + [("Metadata", _SECTION_META)]

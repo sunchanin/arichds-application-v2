@@ -231,10 +231,13 @@ def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> Non
 
     Called after the Transport Endpoint lock is released and after the rows
     committed — capture never holds the endpoint and never blocks a meter
-    read. Gated on ``auto_capture`` (PDF) / ``billing_excel_export`` (xlsx
-    alongside it), checked fresh through the process-wide LicenseService
-    holder (:mod:`arichds.licensing.current`) — this path has no
-    ``Request``, unlike :func:`~arichds.api.deps.require_feature`.
+    read. Gated on ``auto_capture`` (PDF) — the outer gate on the whole eager
+    path, so with it off nothing is written regardless of the other two
+    flags — with ``billing_excel_export`` (xlsx) and ``billing_image_export``
+    (PNG, M7 slice 4, issue #35, D3) checked alongside it, all fresh through
+    the process-wide LicenseService holder (:mod:`arichds.licensing.current`)
+    — this path has no ``Request``, unlike
+    :func:`~arichds.api.deps.require_feature`.
 
     A capture failure is logged and never propagates: a meter read that
     succeeded must not be reported as failed because a network share was
@@ -254,6 +257,7 @@ def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> Non
 
     capture_dir = Path(capture_dir_str)
     write_excel = feature_enabled("billing_excel_export", license_service=license_service, settings=settings)
+    write_image = feature_enabled("billing_image_export", license_service=license_service, settings=settings)
 
     for reading_id in reading_ids:
         try:
@@ -261,7 +265,14 @@ def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> Non
                 row = session.get(BillingReadingRow, reading_id)
                 if row is None:
                     continue
-                capture_reading(row, device_name, capture_dir, write_excel=write_excel, scale=display_unit_scale)
+                capture_reading(
+                    row,
+                    device_name,
+                    capture_dir,
+                    write_excel=write_excel,
+                    write_image=write_image,
+                    scale=display_unit_scale,
+                )
         except Exception:  # noqa: BLE001 — capture must never fail the read that produced the row.
             logger.exception("Capture failed for %s reading id %s", device_name, reading_id)
 

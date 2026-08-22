@@ -791,13 +791,16 @@ reset-reason `0.0.0.1.12.255` ไม่อยู่ใน 43 คอลัมน�
 อาการเดียวกับ LP ที่ `CONTEXT.md` เขียนกำกับไว้แล้ว — **ข้อความยืนยันบนปุ่มต้องบอกเรื่องนี้
 ไม่งั้นปุ่มโกหก**
 
-**Capture PDF/xlsx** — gate ด้วย `auto_capture` / `billing_excel_export` · เขียนลงโฟลเดอร์ที่ admin
+**Capture PDF/xlsx/PNG** — gate ด้วย `auto_capture` / `billing_excel_export` / **`billing_image_export`**
+(M7 slice 4, issue #35, ADR 0014/0015) · เขียนลงโฟลเดอร์ที่ admin
 ตั้งได้ (`capture_dir` ใน `settings`) แบบ v1 พร้อมงานตรวจ path/symlink/TOCTOU ทั้งชุด ·
 path มาจาก convention **ไม่มีตาราง `billing_captures`** (ดู §4) · สร้าง **eager ตอน insert รอบปิด**
 แบบ synchronous นอก endpoint lock — **รอบเปิดไม่สร้าง** · **ไม่มี regenerate endpoint**: endpoint
 ดาวน์โหลด render ให้ตรงนั้นถ้าไฟล์หาย ⇒ ตัดทั้งสถานะ "capture พลาดถาวร" และ retry 2 วินาทีของ v1 ·
 ข้อความในเอกสารเป็น**อังกฤษ** และค่าที่ operator พิมพ์ซึ่งไม่ใช่ ASCII แทนที่ด้วย `?` + WARN แบบ v1
-(ไม่ฝังฟอนต์ไทย)
+(ไม่ฝังฟอนต์ไทย) · **`.png` ไม่เหมือน `.pdf`/`.xlsx`**: สองแบบแรกครอบคลุมแค่รอบเดียว ส่วน `.png`
+วาดตาราง Billing History ครอบ **สิบรอบปิดล่าสุด** ของมิเตอร์นั้น (ชื่อไฟล์ stem เดียวกันทั้งสามแบบ —
+ต่างกันแค่ extension, ADR 0015) · วาดด้วย Pillow ฝั่งเซิร์ฟเวอร์ ไม่ใช่ screenshot จริง (ADR 0014)
 
 **Feature entitlement** — ✅ **ลงแล้วกับ issue #22 (M6b)** · ตอน grill M6 v2 ยังไม่มีกลไกนี้เลย
 (license มี `features` แต่ไม่มีใครอ่าน) ·
@@ -1044,9 +1047,10 @@ one header.
 - **Meter Key** (โมเดลเดิม v1 #145): 1 key = 1 device slot ผูก serial มิเตอร์ผ่าน probe-first redeem ·
   ลบ device แล้ว slot ไม่คืน · เกิน `max_meters` ต้องใช้ key — **ทั้งย่อหน้านี้เริ่มมีผลที่ M9**
   (redeem ต้องมี portal) · **M3 บังคับด้วยการนับจำนวนอย่างเดียว ไม่มีช่อง Meter Key ในฟอร์ม** (§3.3)
-- **Feature entitlement**: enabled = `.env FEATURES ∩ license features` · sellable 8 ตัว (เท่า v1):
+- **Feature entitlement**: enabled = `.env FEATURES ∩ license features` · sellable 9 ตัว (M7 slice 4,
+  issue #35 เพิ่ม `billing_image_export`; เดิม 8 ตัวเท่า v1):
   `billing` `load_profile` `energy_summary` `special_days` **`records`** `battery` `auto_capture`
-  `billing_excel_export` · ops-only (ใน .env เท่านั้น): `app_log`
+  `billing_excel_export` `billing_image_export` · ops-only (ใน .env เท่านั้น): `app_log`
   (`api_config` ของ v1 ตายไปกับหน้า ApiConfig)
   — ✅ **`instantaneous` → `records` (เจ้าของตัดสิน grill M6, 2026-08-09)**: หน้าที่คีย์นี้คุมชื่อ
   **Records** ตั้งแต่ grill M3 · คีย์ชื่อเดิมขัด `CONTEXT.md` (ซึ่ง `_Avoid_: instantaneous records`

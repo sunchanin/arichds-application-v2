@@ -10,7 +10,7 @@ Open Period. Gated on ``auto_capture`` (PDF) / ``billing_excel_export``
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -288,7 +288,7 @@ class TestCaptureRunsOutsideTheEndpointLock:
         locks = EndpointLocks()
         acquired_during_capture: list[bool] = []
 
-        def spy_capture_reading(row, device_name, capture_dir_arg, *, write_excel, scale="kilo"):  # noqa: ANN001
+        def spy_capture_reading(row, device_name, capture_dir_arg, *, write_excel, write_image=False, scale="kilo"):  # noqa: ANN001
             with locks.get(ENDPOINT).background() as ok:
                 acquired_during_capture.append(ok)
 
@@ -297,3 +297,317 @@ class TestCaptureRunsOutsideTheEndpointLock:
         read_and_store_billing(device_id, locks=locks, now=NOW)
 
         assert acquired_during_capture == [True]
+
+
+def _utc(moment: datetime) -> datetime:
+    """SQLite hands back a naive datetime for a `DateTime(timezone=True)`
+    column — re-attach UTC before comparing against an aware value, same
+    rule the API layer's own `_ensure_utc` field validators apply."""
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+
+
+def _spy_render_billing_png(monkeypatch: pytest.MonkeyPatch) -> list[list[object]]:
+    """Patch `capture.service`'s imported `render_billing_png` with a spy
+    that records the `rows` argument of every call and still delegates to
+    the real renderer, so the write path completes normally. Used to prove
+    the D4 row-selection query without inspecting the query directly."""
+    import arichds.capture.service as service_module
+
+    captured_rows: list[list[object]] = []
+    original = service_module.render_billing_png
+
+    def spy(rows, device_name, scale="kilo"):  # noqa: ANN001
+        captured_rows.append(list(rows))
+        return original(rows, device_name, scale=scale)
+
+    monkeypatch.setattr(service_module, "render_billing_png", spy)
+    return captured_rows
+
+
+class TestPngIsWrittenWhenImageExportIsOn:
+    def test_the_png_is_written_alongside_pdf_and_xlsx(
+        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features
+    ) -> None:
+        license_features(["billing", "auto_capture", "billing_excel_export", "billing_image_export"])
+        set_capture_dir(capture_dir)
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+
+        read_and_store_billing(device_id, now=NOW)
+
+        files = captured_files(capture_dir)
+        assert any(f.suffix == ".png" for f in files)
+
+
+class TestT10ImageExportOffWritesNoPng:
+    def test_pdf_exists_and_png_does_not(
+        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features
+    ) -> None:
+        """T10 (D1/D3) — with `auto_capture` on and `billing_image_export`
+        off, the `.pdf` exists and the `.png` does not. Both asserted
+        absolutely."""
+        license_features(["billing", "auto_capture"])  # no billing_image_export
+        set_capture_dir(capture_dir)
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+
+        read_and_store_billing(device_id, now=NOW)
+
+        files = captured_files(capture_dir)
+        assert any(f.suffix == ".pdf" for f in files)
+        assert not any(f.suffix == ".png" for f in files)
+
+
+class TestT11PngFailureNeverUndoesThePdf:
+    def test_a_png_render_failure_is_logged_and_the_pdf_and_read_still_succeed(
+        self,
+        device_id: int,
+        fake_meter: FakeMeterState,
+        capture_dir: Path,
+        license_features,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """T11 (D3) — a PNG render failure must not undo the PDF, must not
+        fail the read, and must be logged."""
+        import arichds.capture.service as service_module
+
+        license_features(["billing", "auto_capture", "billing_image_export"])
+        set_capture_dir(capture_dir)
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("png blew up")
+
+        monkeypatch.setattr(service_module, "render_billing_png", boom)
+
+        with caplog.at_level("ERROR"):
+            result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.error is None
+        files = captured_files(capture_dir)
+        assert any(f.suffix == ".pdf" for f in files)
+        assert not any(f.suffix == ".png" for f in files)
+        assert any("png" in record.message.lower() for record in caplog.records)
+
+
+class TestPngRowSelectionD4:
+    """T4-T9 (D4/D6, issue #35) — the ten-row window the eager PNG capture
+    builds, proven end to end through the real write path by spying on the
+    renderer's `rows` argument rather than inspecting the query directly."""
+
+    def test_t4_bounded_to_the_newest_ten_of_thirteen_closed_periods(
+        self,
+        device_id: int,
+        fake_meter: FakeMeterState,
+        capture_dir: Path,
+        license_features,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from arichds.db.models import BillingReading as BillingReadingRow
+
+        license_features(["billing", "auto_capture", "billing_image_export"])
+        set_capture_dir(capture_dir)
+        captured_rows = _spy_render_billing_png(monkeypatch)
+
+        pre_existing_dates = [ENTRY_CLOSED.bill_date - timedelta(days=31 * (i + 1)) for i in range(12)]
+        with session_scope() as session:
+            for bill_date in pre_existing_dates:
+                session.add(
+                    BillingReadingRow(
+                        device_id=device_id,
+                        bill_date=bill_date,
+                        read_at=NOW,
+                        record_status=None,
+                        source=SOURCE_DLMS,
+                        meter_serial="1232002893",
+                    )
+                )
+
+        fake_meter.billing_rows = [ENTRY_CLOSED]  # the 13th closed period, the newest of all 13
+        read_and_store_billing(device_id, now=NOW)
+
+        assert len(captured_rows) == 1
+        rows = captured_rows[0]
+        assert len(rows) == 10
+        expected_dates = sorted([ENTRY_CLOSED.bill_date, *pre_existing_dates], reverse=True)[:10]
+        assert [_utc(row.bill_date) for row in rows] == expected_dates
+
+    def test_t5_bill_date_lte_excludes_a_newer_period_committed_in_the_same_read(
+        self,
+        device_id: int,
+        fake_meter: FakeMeterState,
+        capture_dir: Path,
+        license_features,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The image anchored at the OLDER of two periods closed in one read
+        must show that older period as its own newest row, and must not
+        contain the newer one."""
+        license_features(["billing", "auto_capture", "billing_image_export"])
+        set_capture_dir(capture_dir)
+        captured_rows = _spy_render_billing_png(monkeypatch)
+
+        older = BillingReading(
+            bill_date=datetime(2026, 6, 30, 17, 0, 0, tzinfo=UTC),
+            source=SOURCE_DLMS,
+            is_open=False,
+            meter_serial="1232002893",
+            import_active_kwh_total=190000.0,
+        )
+        newer = ENTRY_CLOSED  # 2026-07-31
+        fake_meter.billing_rows = [older, newer]
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert len(captured_rows) == 2
+        older_rows, newer_rows = captured_rows
+        assert [_utc(row.bill_date) for row in older_rows] == [older.bill_date]
+        newer_dates = [_utc(row.bill_date) for row in newer_rows]
+        assert newer.bill_date in newer_dates
+        assert older.bill_date in newer_dates  # older period is still visible from the newer anchor
+
+    def test_t6_meter_serial_scopes_the_image_to_its_own_serial(
+        self,
+        device_id: int,
+        fake_meter: FakeMeterState,
+        capture_dir: Path,
+        license_features,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One `device_id`, two different `meter_serial` values (a meter
+        swap) — the image filed under serial A must contain only serial-A
+        rows."""
+        from arichds.db.models import BillingReading as BillingReadingRow
+
+        license_features(["billing", "auto_capture", "billing_image_export"])
+        set_capture_dir(capture_dir)
+        captured_rows = _spy_render_billing_png(monkeypatch)
+
+        with session_scope() as session:
+            session.add(
+                BillingReadingRow(
+                    device_id=device_id,
+                    bill_date=ENTRY_CLOSED.bill_date - timedelta(days=31),
+                    read_at=NOW,
+                    record_status=None,
+                    source=SOURCE_DLMS,
+                    meter_serial="OTHER_SERIAL",
+                )
+            )
+
+        fake_meter.billing_rows = [ENTRY_CLOSED]  # meter_serial="1232002893"
+        read_and_store_billing(device_id, now=NOW)
+
+        assert len(captured_rows) == 1
+        rows = captured_rows[0]
+        assert all(row.meter_serial == "1232002893" for row in rows)
+
+    def test_t7_the_open_period_never_appears_in_the_image(
+        self,
+        device_id: int,
+        fake_meter: FakeMeterState,
+        capture_dir: Path,
+        license_features,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        license_features(["billing", "auto_capture", "billing_image_export"])
+        set_capture_dir(capture_dir)
+        captured_rows = _spy_render_billing_png(monkeypatch)
+
+        fake_meter.billing_rows = [ENTRY_OPEN, ENTRY_CLOSED]
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert len(captured_rows) == 1  # only the closed period gets a capture at all
+        rows = captured_rows[0]
+        assert all(row.record_status is None for row in rows)
+        assert ENTRY_OPEN.bill_date not in [_utc(row.bill_date) for row in rows]
+
+    def test_t7_an_open_period_with_the_same_bill_date_as_the_anchor_is_still_excluded(
+        self,
+        device_id: int,
+        capture_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Review round, problem 1 — the case above (`ENTRY_OPEN.bill_date`
+        `2026-08-07` vs `ENTRY_CLOSED.bill_date` `2026-07-31`) is already
+        excluded by `bill_date <= anchor.bill_date` alone, so it never
+        exercises the `record_status IS NULL` clause — deleting that clause
+        from `_png_source_rows` left the full suite green. `<=` is
+        *inclusive*: an Open Period whose `bill_date` exactly equals the
+        closed anchor's is the case only `record_status` can catch. Seeded
+        directly through the session (not the read path, which does not
+        produce this pairing) and driven straight at `write_png_capture` —
+        the assertion under test is the query, not the read path."""
+        from arichds.capture.service import write_png_capture
+        from arichds.db.models import BillingReading as BillingReadingRow
+
+        set_capture_dir(capture_dir)
+        captured_rows = _spy_render_billing_png(monkeypatch)
+
+        with session_scope() as session:
+            closed = BillingReadingRow(
+                device_id=device_id,
+                bill_date=ENTRY_CLOSED.bill_date,
+                read_at=NOW,
+                record_status=None,
+                source=SOURCE_DLMS,
+                meter_serial="1232002893",
+            )
+            session.add(closed)
+            session.add(
+                BillingReadingRow(
+                    device_id=device_id,
+                    bill_date=ENTRY_CLOSED.bill_date,  # exactly equal — `<=` alone would admit it
+                    read_at=NOW,
+                    record_status="open",
+                    source=SOURCE_DLMS,
+                    meter_serial="1232002893",
+                )
+            )
+            session.flush()
+
+            png_target = capture_dir / "1232002893" / "equal-bill-date.png"
+            write_png_capture(closed, "Main Incomer", png_target, capture_dir)
+
+        assert len(captured_rows) == 1
+        rows = captured_rows[0]
+        assert len(rows) == 1  # only the closed row — the Open Period, despite the equal bill_date, is excluded
+        assert all(row.record_status is None for row in rows)
+
+    def test_t9_rows_are_ordered_newest_first(
+        self,
+        device_id: int,
+        fake_meter: FakeMeterState,
+        capture_dir: Path,
+        license_features,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from arichds.db.models import BillingReading as BillingReadingRow
+
+        license_features(["billing", "auto_capture", "billing_image_export"])
+        set_capture_dir(capture_dir)
+        captured_rows = _spy_render_billing_png(monkeypatch)
+
+        older_dates = [ENTRY_CLOSED.bill_date - timedelta(days=31), ENTRY_CLOSED.bill_date - timedelta(days=62)]
+        with session_scope() as session:
+            for bill_date in older_dates:
+                session.add(
+                    BillingReadingRow(
+                        device_id=device_id,
+                        bill_date=bill_date,
+                        read_at=NOW,
+                        record_status=None,
+                        source=SOURCE_DLMS,
+                        meter_serial="1232002893",
+                    )
+                )
+
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+        read_and_store_billing(device_id, now=NOW)
+
+        rows = captured_rows[0]
+        dates = [_utc(row.bill_date) for row in rows]
+        assert len(set(dates)) >= 3
+        assert dates == sorted(dates, reverse=True)
+        assert dates[0] == ENTRY_CLOSED.bill_date
+        assert dates[-1] == min(older_dates)
