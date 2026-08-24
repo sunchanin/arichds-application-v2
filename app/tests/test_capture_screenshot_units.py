@@ -1,14 +1,19 @@
 """``capture.screenshot`` — unit coverage for the pieces below
-``render_billing_png`` (ADR 0017, issue #38): the DevTools port reader, the
-by-PID kill, the row-wait loop over a fake CDP transport, and the full
-``_run_capture`` orchestration with every external dependency faked (no
-real Edge, no real websocket, no real subprocess beyond what is mocked).
+``render_billing_png`` (ADR 0017, issue #38; the browser launch mechanism
+reworked by issue #40): the DevTools port reader, the scheduled-task
+trigger, the browser-level `Browser.close`, the row-wait loop over a fake
+CDP transport, the capture serialisation lock, and the full ``_run_capture``
+orchestration with every external dependency faked (no real Edge, no real
+websocket, no real subprocess beyond what is mocked).
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
+import threading
 import time
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,12 +27,15 @@ from arichds.capture.screenshot import (
     MintedToken,
     _content_height,
     _drive_capture,
-    _kill_process_tree,
+    _end_capture_task,
     _run_capture,
     _run_capture_with_hard_deadline,
+    _trigger_capture_browser,
     _wait_for_devtools_port,
     _wait_for_rows,
+    render_billing_png,
 )
+from arichds.capture.task import CAPTURE_TASK_NAME, EDGE_TASK_ARGUMENTS
 
 # ── _wait_for_devtools_port ─────────────────────────────────────────────────
 
@@ -58,74 +66,190 @@ class TestWaitForDevtoolsPort:
             _wait_for_devtools_port(tmp_path, time.monotonic() - 1)  # already expired
 
 
-# ── _launch_edge ─────────────────────────────────────────────────────────
+# ── EDGE_TASK_ARGUMENTS (capture.task) ──────────────────────────────────────
 
 
-class TestLaunchEdgeArgs:
-    def test_includes_hide_scrollbars(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Code review round, nit 6 — the Billing table scrolls
+class TestEdgeTaskArguments:
+    def test_includes_hide_scrollbars(self) -> None:
+        """Code review round, nit 6 (issue #38) — the Billing table scrolls
         horizontally, so an unhidden OS/browser scrollbar could land in the
         image; hiding it is chrome, not the column truncation ADR 0017
-        decision 3 approved."""
-        captured_args: list[list[str]] = []
+        decision 3 approved. Now a fixed installer-time constant
+        (`capture/task.py`, issue #40) rather than a per-launch argument
+        list, but the same rule still applies to it."""
+        assert "--hide-scrollbars" in EDGE_TASK_ARGUMENTS
 
-        def fake_popen(args: list[str], **kwargs: object) -> SimpleNamespace:
-            captured_args.append(args)
-            return SimpleNamespace(pid=1)
-
-        monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
-        screenshot_module._launch_edge(tmp_path / "msedge.exe", tmp_path / "profile")
-
-        assert "--hide-scrollbars" in captured_args[0]
-
-    def test_never_includes_no_sandbox(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Deliberately not added (see `_launch_edge`'s own docstring) —
+    def test_never_includes_no_sandbox(self) -> None:
+        """Deliberately not added (see `capture/task.py`'s own docstring) —
         there is no evidence the sandbox needs disabling under
-        `NT AUTHORITY\\LocalService`, and weakening it speculatively is not
+        `NT AUTHORITY\\LOCAL SERVICE`, and weakening it speculatively is not
         this issue's call to make."""
-        captured_args: list[list[str]] = []
-
-        def fake_popen(args: list[str], **kwargs: object) -> SimpleNamespace:
-            captured_args.append(args)
-            return SimpleNamespace(pid=1)
-
-        monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
-        screenshot_module._launch_edge(tmp_path / "msedge.exe", tmp_path / "profile")
-
-        assert "--no-sandbox" not in captured_args[0]
+        assert "--no-sandbox" not in EDGE_TASK_ARGUMENTS
 
 
-# ── _kill_process_tree ──────────────────────────────────────────────────────
+# ── No subprocess call this module makes may target an image name ─────────
 
 
-class TestKillProcessTree:
-    def test_kills_by_pid_never_by_image_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestNoImageNameKill:
+    def test_no_subprocess_call_targets_taskkill_im_or_msedge(
+        self, settings: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stronger form of #38's `test_kills_by_pid_never_by_image_name`
+        (issue #40) — there is no PID any more to kill by, so the rule this
+        test now enforces is that **nothing** this module runs targets
+        `taskkill`, `/IM`, or `msedge` at all: every process stop goes
+        through the named scheduled task (`schtasks /end`), never a direct
+        process kill. The operator's own browser shares the `msedge.exe`
+        image name."""
+        settings.ensure_directories()
         calls: list[list[str]] = []
 
-        def fake_run(args: list[str], **kwargs: object) -> None:
-            calls.append(args)
+        def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+            calls.append(list(args))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _kill_process_tree(4242)
+        popen_calls: list[Any] = []
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popen_calls.append((a, k)))
+
+        _trigger_capture_browser()
+        _end_capture_task()
+
+        assert popen_calls == []  # nothing launches a raw process any more
+        assert len(calls) >= 2
+        for args in calls:
+            joined = " ".join(str(arg) for arg in args).lower()
+            assert "taskkill" not in joined
+            assert "/im" not in joined
+            assert "msedge" not in joined
+
+
+# ── _end_capture_task ────────────────────────────────────────────────────
+
+
+class TestEndCaptureTask:
+    def test_runs_schtasks_end_naming_the_task(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+            calls.append(list(args))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _end_capture_task()
 
         assert len(calls) == 1
-        args = calls[0]
-        assert args[:2] == ["taskkill", "/PID"]
-        assert "4242" in args
-        assert "/T" in args and "/F" in args
-        assert not any("/IM" in arg for arg in args)
-        assert not any("msedge" in arg.lower() for arg in args)
+        assert calls[0][:2] == ["schtasks", "/end"]
+        assert CAPTURE_TASK_NAME in calls[0]
 
-    def test_a_failed_kill_is_logged_and_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_missing_schtasks_is_logged_and_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_run(args: list[str], **kwargs: object) -> None:
-            raise OSError("no such process")
+            raise OSError("schtasks not found")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _kill_process_tree(1)  # must not raise
+        _end_capture_task()  # must not raise
+
+    def test_a_nonzero_exit_is_not_raised_and_not_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """D8 — `/end`'s exit code and status text are never informative
+        (a task already `Ready`, F7) and are never checked, only ever
+        run-and-forget."""
+
+        def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(returncode=1, stdout="ERROR: The task is not currently running.", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _end_capture_task()  # must not raise despite the non-zero exit
+
+
+# ── _trigger_capture_browser ─────────────────────────────────────────────
+
+
+class TestTriggerCaptureBrowser:
+    """Each test proves one of decisions D7/D8 discriminates against the
+    reversed behaviour, not merely that `_trigger_capture_browser` runs."""
+
+    def test_end_is_issued_before_run(self, settings: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        """D7 — assert the recorded call *order*, not just that both calls
+        happened; a reversed order would leave a task marked `Running` from
+        the previous capture unhealed before the new `/run`."""
+        settings.ensure_directories()
+        calls: list[list[str]] = []
+
+        def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+            calls.append(list(args))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _trigger_capture_browser()
+
+        assert len(calls) == 2
+        assert calls[0][:2] == ["schtasks", "/end"]
+        assert calls[1][:2] == ["schtasks", "/run"]
+
+    def test_the_stale_devtools_port_is_gone_at_the_moment_run_is_issued(
+        self, settings: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Not merely gone *afterwards* — the fake `subprocess.run` checks
+        the file's existence *at the instant* the `/run` call is made,
+        which fails if the deletion were reordered to after `/run` (or
+        dropped) rather than between `/end` and `/run`."""
+        settings.ensure_directories()
+        port_file = settings.tmp_dir / "DevToolsActivePort"
+        port_file.write_text("54321\n/devtools/browser/stale\n", encoding="utf-8")
+
+        observed_at_run: list[bool] = []
+
+        def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+            if "/run" in args:
+                observed_at_run.append(port_file.exists())
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _trigger_capture_browser()
+
+        assert observed_at_run == [False]
+
+    def test_a_nonzero_run_exit_code_raises_browsercaptureerror_with_the_output(
+        self, settings: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        settings.ensure_directories()
+
+        def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+            if "/run" in args:
+                return SimpleNamespace(
+                    returncode=1, stdout="ERROR: distinctive-stdout-marker", stderr="distinctive-stderr-marker"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(BrowserCaptureError) as excinfo:
+            _trigger_capture_browser()
+
+        assert "distinctive-stdout-marker" in str(excinfo.value)
+        assert "distinctive-stderr-marker" in str(excinfo.value)
+        assert "1" in str(excinfo.value)
+
+    def test_schtasks_missing_entirely_raises_browsercaptureerror_not_a_leaked_oserror(
+        self, settings: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        settings.ensure_directories()
+
+        def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+            if "/run" in args:
+                raise FileNotFoundError("[WinError 2] The system cannot find the file specified: 'schtasks'")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(BrowserCaptureError):
+            _trigger_capture_browser()
 
 
 # ── _content_height ──────────────────────────────────────────────────────
@@ -417,13 +541,20 @@ def _make_row(row_id: int, **overrides: object) -> SimpleNamespace:
     return SimpleNamespace(**fields)
 
 
-class FakeProcess:
-    def __init__(self, pid: int) -> None:
-        self.pid = pid
+async def _fake_close_browser_noop(port: int) -> None:
+    """Every orchestration test below supplies its own fake `connect`, so
+    `cleanup.port` never names a real Edge process — patched in so
+    `_Cleanup.run()`'s best-effort `Browser.close` step never attempts a
+    real network call against a port nothing is listening on (which would
+    otherwise retry for the full `_BROWSER_CLOSE_TIMEOUT_SECONDS` every
+    time). `_Cleanup.__init__` looks `_close_browser_over_cdp` up by name at
+    construction time, so patching the module attribute before `_run_capture`
+    constructs its `_Cleanup()` is enough — the same pattern issue #38 used
+    for `_kill_process_tree`."""
 
 
 class TestRunCaptureOrchestration:
-    def _base_kwargs(self, tmp_path: Path, transport: FakeTransport, kill_calls: list[int]) -> dict[str, Any]:
+    def _base_kwargs(self, tmp_path: Path, transport: FakeTransport, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         async def fake_connect(port: int, deadline: float) -> tuple[Any, FakeTransport]:
             return SimpleNamespace(close=_record_close), transport
 
@@ -433,13 +564,15 @@ class TestRunCaptureOrchestration:
         def fake_mint_token(session: Any) -> MintedToken:
             return MintedToken("raw-token", "token-hash", 1, "admin", "admin")
 
-        def fake_launch(edge_path: Path, profile_dir: Path) -> FakeProcess:
-            return FakeProcess(pid=999)
+        def fake_trigger() -> None:
+            return None
+
+        monkeypatch.setattr(screenshot_module, "_close_browser_over_cdp", _fake_close_browser_noop)
 
         return {
             "resolve_edge": lambda: tmp_path / "msedge.exe",
             "mint_token": fake_mint_token,
-            "launch_edge": fake_launch,
+            "trigger_browser": fake_trigger,
             "connect": fake_connect,
             "wait_for_port": fake_wait_for_port,
         }
@@ -458,10 +591,9 @@ class TestRunCaptureOrchestration:
                 "Page.captureScreenshot": [{"data": _TINY_PNG_B64}],
             }
         )
-        kill_calls: list[int] = []
-        monkeypatch.setattr(screenshot_module, "_kill_process_tree", kill_calls.append)
+        monkeypatch.setattr(screenshot_module, "_end_capture_task", lambda: None)
 
-        kwargs = self._base_kwargs(tmp_path, transport, kill_calls)
+        kwargs = self._base_kwargs(tmp_path, transport, monkeypatch)
         asyncio.run(_run_capture([_make_row(1)], "Main Incomer", **kwargs))
 
         methods = [method for method, _params in transport.calls]
@@ -472,9 +604,12 @@ class TestRunCaptureOrchestration:
         # an empty `localStorage`.
         assert methods.index("Page.enable") < methods.index("Page.addScriptToEvaluateOnNewDocument")
 
-    def test_kill_is_called_with_the_launched_pid(
+    def test_schtasks_end_runs_after_a_successful_capture(
         self, migrated_db: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Replaces #38's `test_kill_is_called_with_the_launched_pid` — there
+        is no PID any more to kill; the equivalent unconditional teardown
+        step (decision D6) is `schtasks /end`."""
         import asyncio
 
         from arichds.config import get_settings
@@ -486,17 +621,28 @@ class TestRunCaptureOrchestration:
                 "Page.captureScreenshot": [{"data": _TINY_PNG_B64}],
             }
         )
-        kill_calls: list[int] = []
-        monkeypatch.setattr(screenshot_module, "_kill_process_tree", kill_calls.append)
+        end_calls: list[bool] = []
+        monkeypatch.setattr(screenshot_module, "_end_capture_task", lambda: end_calls.append(True))
 
-        kwargs = self._base_kwargs(tmp_path, transport, kill_calls)
+        kwargs = self._base_kwargs(tmp_path, transport, monkeypatch)
         asyncio.run(_run_capture([_make_row(1)], "Main Incomer", **kwargs))
 
-        assert kill_calls == [999]
+        assert end_calls == [True]
 
-    def test_profile_dir_is_removed_after_success(
+    def test_browser_close_is_invoked_with_the_launched_port(
         self, migrated_db: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Code review round, problem 2 — `Browser.close` was only ever
+        proven correct in isolation (`TestCloseBrowserOverCdp`) or settable
+        by hand on a bare `_Cleanup` instance
+        (`TestCleanupRunsEndEvenWhenBrowserCloseRaises`); neither covers the
+        orchestration seam between `_run_capture` and `_Cleanup` — that
+        `cleanup.port` is actually set from the port `wait_for_port`
+        returned, and that `_Cleanup.run()` actually calls `_close_browser`
+        with it. Two mutations that leave every other test in this file
+        green must both fail this one: dropping `cleanup.port = port` in
+        `_run_capture`, and `if self.port is not None:` -> `if False:` in
+        `_Cleanup.run()`."""
         import asyncio
 
         from arichds.config import get_settings
@@ -508,24 +654,53 @@ class TestRunCaptureOrchestration:
                 "Page.captureScreenshot": [{"data": _TINY_PNG_B64}],
             }
         )
-        kill_calls: list[int] = []
-        monkeypatch.setattr(screenshot_module, "_kill_process_tree", kill_calls.append)
-        seen_dirs: list[Path] = []
-        real_remove = screenshot_module._remove_profile_dir
+        monkeypatch.setattr(screenshot_module, "_end_capture_task", lambda: None)
 
-        def spy_remove(profile_dir: Path) -> None:
-            seen_dirs.append(profile_dir)
-            real_remove(profile_dir)
+        close_browser_calls: list[int] = []
 
-        monkeypatch.setattr(screenshot_module, "_remove_profile_dir", spy_remove)
+        async def recording_close_browser(port: int) -> None:
+            close_browser_calls.append(port)
 
-        kwargs = self._base_kwargs(tmp_path, transport, kill_calls)
+        class RecordingCleanup(screenshot_module._Cleanup):
+            def __init__(self) -> None:
+                super().__init__()
+                self._close_browser = recording_close_browser
+
+        kwargs = self._base_kwargs(tmp_path, transport, monkeypatch)
+        kwargs["cleanup_cls"] = RecordingCleanup
         asyncio.run(_run_capture([_make_row(1)], "Main Incomer", **kwargs))
 
-        assert len(seen_dirs) == 1
-        assert not seen_dirs[0].exists()
+        # `fake_wait_for_port` in `_base_kwargs` always returns 12345 — the
+        # exact port `Browser.close` must be sent to.
+        assert close_browser_calls == [12345]
 
-    def test_profile_dir_and_token_are_still_cleaned_up_on_failure(
+    def test_the_profile_directory_still_exists_after_a_successful_capture(
+        self, migrated_db: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Inverted from #38's `test_profile_dir_is_removed_after_success`
+        (decision D2, issue #40): the profile directory is now fixed and
+        reused between captures — the service never creates or removes it,
+        so it must still be there afterwards, not gone."""
+        import asyncio
+
+        from arichds.config import get_settings
+
+        settings = get_settings()
+        settings.ensure_directories()
+        transport = FakeTransport(
+            responses={
+                "Runtime.evaluate": [_evaluate_result(["1"])],
+                "Page.captureScreenshot": [{"data": _TINY_PNG_B64}],
+            }
+        )
+        monkeypatch.setattr(screenshot_module, "_end_capture_task", lambda: None)
+
+        kwargs = self._base_kwargs(tmp_path, transport, monkeypatch)
+        asyncio.run(_run_capture([_make_row(1)], "Main Incomer", **kwargs))
+
+        assert settings.tmp_dir.is_dir()
+
+    def test_token_and_schtasks_end_still_run_on_failure(
         self, migrated_db: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A timeout mid-capture must still run every cleanup step."""
@@ -535,28 +710,18 @@ class TestRunCaptureOrchestration:
 
         get_settings().ensure_directories()
         transport = FakeTransport(responses={"Runtime.evaluate": [_evaluate_result(["nope"])]})
-        kill_calls: list[int] = []
-        monkeypatch.setattr(screenshot_module, "_kill_process_tree", kill_calls.append)
+        end_calls: list[bool] = []
+        monkeypatch.setattr(screenshot_module, "_end_capture_task", lambda: end_calls.append(True))
         deleted_hashes: list[str] = []
         monkeypatch.setattr(screenshot_module, "_delete_capture_token", deleted_hashes.append)
-        seen_dirs: list[Path] = []
-        real_remove = screenshot_module._remove_profile_dir
 
-        def spy_remove(profile_dir: Path) -> None:
-            seen_dirs.append(profile_dir)
-            real_remove(profile_dir)
-
-        monkeypatch.setattr(screenshot_module, "_remove_profile_dir", spy_remove)
-
-        kwargs = self._base_kwargs(tmp_path, transport, kill_calls)
+        kwargs = self._base_kwargs(tmp_path, transport, monkeypatch)
         kwargs["budget_seconds"] = 0.4
 
         with pytest.raises(BrowserCaptureError):
             asyncio.run(_run_capture([_make_row(1)], "Main Incomer", **kwargs))
 
-        assert kill_calls == [999]
-        assert len(seen_dirs) == 1
-        assert not seen_dirs[0].exists()
+        assert end_calls == [True]
         assert deleted_hashes == ["token-hash"]
 
     def test_no_rows_raises_before_anything_is_launched(self, migrated_db: Any, tmp_path: Path) -> None:
@@ -571,24 +736,20 @@ class TestRunCaptureOrchestration:
         with pytest.raises(BrowserCaptureError, match="Edge"):
             asyncio.run(_run_capture([_make_row(1)], "Main Incomer", resolve_edge=lambda: None))
 
-    def test_the_token_is_still_deleted_when_the_profile_directory_cannot_be_created(
+    def test_the_token_is_still_deleted_when_the_trigger_raises(
         self, migrated_db: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Self-check finding: minting the token and creating the profile
-        directory both used to sit *before* the `try/finally`, so a failure
-        between them (a real possibility — disk full, a permissions error)
-        left the token minted with nothing to delete it. Both now live
-        inside the same `try` as everything else `cleanup` owns."""
+        """Re-points #38's `..._when_the_profile_directory_cannot_be_created`
+        regression (issue #40): there is no `mkdir` any more (decision D2),
+        so the equivalent failure point between a successful mint and the
+        rest of the capture is the trigger itself (`schtasks` missing, the
+        task failing to start) — a failure there must still delete the
+        already-minted token."""
         import asyncio
 
         from arichds.config import get_settings
 
-        settings = get_settings()
-        settings.ensure_directories()
-        # A regular file where `tmp_dir` should be a directory — `mkdir`
-        # under it then fails with a real filesystem error, not a mock.
-        (settings.data_dir.resolve() / "tmp").rmdir()
-        (settings.data_dir.resolve() / "tmp").write_bytes(b"not a directory")
+        get_settings().ensure_directories()
 
         deleted_hashes: list[str] = []
         monkeypatch.setattr(screenshot_module, "_delete_capture_token", deleted_hashes.append)
@@ -596,13 +757,17 @@ class TestRunCaptureOrchestration:
         def fake_mint_token(session: Any) -> MintedToken:
             return MintedToken("raw-token", "token-hash", 1, "admin", "admin")
 
-        with pytest.raises((NotADirectoryError, FileExistsError, OSError)):
+        def failing_trigger() -> None:
+            raise BrowserCaptureError("schtasks /run failed")
+
+        with pytest.raises(BrowserCaptureError):
             asyncio.run(
                 _run_capture(
                     [_make_row(1)],
                     "Main Incomer",
                     resolve_edge=lambda: tmp_path / "msedge.exe",
                     mint_token=fake_mint_token,
+                    trigger_browser=failing_trigger,
                 )
             )
 
@@ -630,17 +795,18 @@ class HangingTransport:
 
 
 class TestCleanupSurvivesCancellationDuringClose:
-    """Code review round, problem 2 — a cancellation delivered *while*
-    `_Cleanup.run()` is awaiting `connection.close()` must not skip the
-    kill/remove/delete steps that follow it. Proven directly against
-    `_Cleanup`, independent of `asyncio.wait_for`'s own cancel-once
+    """Code review round, problem 2 (issue #38) — a cancellation delivered
+    *while* `_Cleanup.run()` is awaiting `connection.close()` must not skip
+    the `schtasks /end`/delete steps that follow it (reworked for the
+    scheduled-task teardown, issue #40, decision D6). Proven directly
+    against `_Cleanup`, independent of `asyncio.wait_for`'s own cancel-once
     behaviour (the fake `close()` used elsewhere in this file never
     actually suspends, so it cannot exercise this path at all) — the task
     is cancelled by the test itself while it is genuinely suspended inside
     `close()`, which is exactly the scenario `asyncio.shield` in
     `_Cleanup.run()` exists for."""
 
-    def test_a_cancellation_mid_close_still_runs_kill_and_delete(self) -> None:
+    def test_a_cancellation_mid_close_still_runs_end_and_delete(self) -> None:
         import asyncio
 
         close_started = asyncio.Event()
@@ -650,15 +816,14 @@ class TestCleanupSurvivesCancellationDuringClose:
                 close_started.set()
                 await asyncio.sleep(999)  # cancelled mid-await by the test itself, below
 
-        kill_calls: list[int] = []
+        end_calls: list[bool] = []
         deleted_hashes: list[str] = []
 
         cleanup = screenshot_module._Cleanup()
         cleanup.connection = SlowConnection()
-        cleanup.pid = 42
-        cleanup.profile_dir = None  # keep this test focused on close/kill/delete ordering
+        cleanup.port = None  # keep this test focused on close/end/delete ordering
         cleanup.token_hash = "token-hash"
-        cleanup._kill_process_tree = kill_calls.append
+        cleanup._end_capture_task = lambda: end_calls.append(True)
         cleanup._delete_token = deleted_hashes.append
 
         async def scenario() -> None:
@@ -669,7 +834,33 @@ class TestCleanupSurvivesCancellationDuringClose:
 
         asyncio.run(scenario())
 
-        assert kill_calls == [42]
+        assert end_calls == [True]
+        assert deleted_hashes == ["token-hash"]
+
+
+class TestCleanupRunsEndEvenWhenBrowserCloseRaises:
+    """D6 — `schtasks /end` is unconditional: a failing `Browser.close`
+    must not prevent it (or the token delete after it) from running."""
+
+    def test_schtasks_end_still_runs_when_browser_close_raises(self) -> None:
+        import asyncio
+
+        async def failing_close_browser(port: int) -> None:
+            raise RuntimeError("CDP connection refused")
+
+        end_calls: list[bool] = []
+        deleted_hashes: list[str] = []
+
+        cleanup = screenshot_module._Cleanup()
+        cleanup.port = 9999
+        cleanup.token_hash = "token-hash"
+        cleanup._close_browser = failing_close_browser
+        cleanup._end_capture_task = lambda: end_calls.append(True)
+        cleanup._delete_token = deleted_hashes.append
+
+        asyncio.run(cleanup.run())
+
+        assert end_calls == [True]
         assert deleted_hashes == ["token-hash"]
 
 
@@ -690,18 +881,11 @@ class TestHardTimeoutCeiling:
         get_settings().ensure_directories()
         transport = HangingTransport(hang_on="Runtime.evaluate")
 
-        kill_calls: list[int] = []
-        monkeypatch.setattr(screenshot_module, "_kill_process_tree", kill_calls.append)
+        end_calls: list[bool] = []
+        monkeypatch.setattr(screenshot_module, "_end_capture_task", lambda: end_calls.append(True))
         deleted_hashes: list[str] = []
         monkeypatch.setattr(screenshot_module, "_delete_capture_token", deleted_hashes.append)
-        seen_dirs: list[Path] = []
-        real_remove = screenshot_module._remove_profile_dir
-
-        def spy_remove(profile_dir: Path) -> None:
-            seen_dirs.append(profile_dir)
-            real_remove(profile_dir)
-
-        monkeypatch.setattr(screenshot_module, "_remove_profile_dir", spy_remove)
+        monkeypatch.setattr(screenshot_module, "_close_browser_over_cdp", _fake_close_browser_noop)
 
         async def fake_connect(port: int, deadline: float) -> tuple[Any, HangingTransport]:
             return SimpleNamespace(close=_record_close), transport
@@ -712,8 +896,8 @@ class TestHardTimeoutCeiling:
         def fake_mint_token(session: Any) -> MintedToken:
             return MintedToken("raw-token", "token-hash", 1, "admin", "admin")
 
-        def fake_launch(edge_path: Path, profile_dir: Path) -> FakeProcess:
-            return FakeProcess(pid=555)
+        def fake_trigger() -> None:
+            return None
 
         start = time.monotonic()
         with pytest.raises(BrowserCaptureError, match="hard"):
@@ -725,7 +909,7 @@ class TestHardTimeoutCeiling:
                     hard_margin=0.3,
                     resolve_edge=lambda: tmp_path / "msedge.exe",
                     mint_token=fake_mint_token,
-                    launch_edge=fake_launch,
+                    trigger_browser=fake_trigger,
                     connect=fake_connect,
                     wait_for_port=fake_wait_for_port,
                 )
@@ -737,9 +921,7 @@ class TestHardTimeoutCeiling:
         # Every cleanup step still ran despite the cancellation the hard
         # ceiling forced — this is the exact regression `_Cleanup.run()`'s
         # `asyncio.shield` guards against.
-        assert kill_calls == [555]
-        assert len(seen_dirs) == 1
-        assert not seen_dirs[0].exists()
+        assert end_calls == [True]
         assert deleted_hashes == ["token-hash"]
 
     def test_a_normal_capture_under_the_hard_ceiling_is_unaffected(
@@ -759,8 +941,9 @@ class TestHardTimeoutCeiling:
                 "Page.captureScreenshot": [{"data": _TINY_PNG_B64}],
             }
         )
-        kill_calls: list[int] = []
-        monkeypatch.setattr(screenshot_module, "_kill_process_tree", kill_calls.append)
+        end_calls: list[bool] = []
+        monkeypatch.setattr(screenshot_module, "_end_capture_task", lambda: end_calls.append(True))
+        monkeypatch.setattr(screenshot_module, "_close_browser_over_cdp", _fake_close_browser_noop)
 
         async def fake_connect(port: int, deadline: float) -> tuple[Any, FakeTransport]:
             return SimpleNamespace(close=_record_close), transport
@@ -771,8 +954,8 @@ class TestHardTimeoutCeiling:
         def fake_mint_token(session: Any) -> MintedToken:
             return MintedToken("raw-token", "token-hash", 1, "admin", "admin")
 
-        def fake_launch(edge_path: Path, profile_dir: Path) -> FakeProcess:
-            return FakeProcess(pid=321)
+        def fake_trigger() -> None:
+            return None
 
         png_bytes = asyncio.run(
             _run_capture_with_hard_deadline(
@@ -780,22 +963,206 @@ class TestHardTimeoutCeiling:
                 "Main Incomer",
                 resolve_edge=lambda: tmp_path / "msedge.exe",
                 mint_token=fake_mint_token,
-                launch_edge=fake_launch,
+                trigger_browser=fake_trigger,
                 connect=fake_connect,
                 wait_for_port=fake_wait_for_port,
             )
         )
 
         assert png_bytes  # the real capture succeeded, not swallowed by the wrapper
-        assert kill_calls == [321]
+        assert end_calls == [True]
+
+
+# ── Browser-level Browser.close (Findings F1, issue #40) ───────────────────
+
+
+class FakeHTTPResponse:
+    """A urllib-compatible fake response — supports the `with opener.open(...)
+    as response:` context-manager protocol :func:`_fetch_browser_ws_url` and
+    :func:`_fetch_first_page_ws_url` both use."""
+
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def __enter__(self) -> FakeHTTPResponse:
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+class TestFetchBrowserWsUrl:
+    def test_hits_json_version_not_json_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """F1 — `Browser.close` needs the *browser-level* ws URL from
+        `/json/version`, never `/json/list` (the page-level endpoint
+        `_fetch_first_page_ws_url` uses, which `Browser.close` rejects with
+        JSON-RPC -32601 when sent over a page-level connection)."""
+        import asyncio
+
+        requested_urls: list[str] = []
+
+        class FakeOpener:
+            def open(self, url: str, timeout: float | None = None) -> FakeHTTPResponse:
+                requested_urls.append(url)
+                payload = json.dumps({"webSocketDebuggerUrl": "ws://127.0.0.1:9999/devtools/browser/abc"}).encode(
+                    "utf-8"
+                )
+                return FakeHTTPResponse(payload)
+
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *args, **kwargs: FakeOpener())
+
+        result = asyncio.run(screenshot_module._fetch_browser_ws_url(9999, time.monotonic() + 5))
+
+        assert result == "ws://127.0.0.1:9999/devtools/browser/abc"
+        assert len(requested_urls) == 1
+        assert "/json/version" in requested_urls[0]
+        assert "/json/list" not in requested_urls[0]
+
+
+class TestCloseBrowserOverCdp:
+    def test_sends_browser_close_over_the_fetched_browser_level_connection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        import websockets.asyncio.client as ws_client_module
+
+        connected_urls: list[str] = []
+
+        class FakeBrowserConnection:
+            async def close(self) -> None:
+                return None
+
+        async def fake_connect(uri: str, **kwargs: Any) -> FakeBrowserConnection:
+            connected_urls.append(uri)
+            return FakeBrowserConnection()
+
+        monkeypatch.setattr(ws_client_module, "connect", fake_connect)
+
+        async def fake_fetch(port: int, deadline: float) -> str:
+            return "ws://127.0.0.1:9999/devtools/browser/abc-browser-level"
+
+        monkeypatch.setattr(screenshot_module, "_fetch_browser_ws_url", fake_fetch)
+
+        sent_requests: list[str] = []
+        real_transport_cls = screenshot_module._WebSocketCdpTransport
+
+        class RecordingTransport(real_transport_cls):
+            async def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+                sent_requests.append(method)
+                return {}
+
+        monkeypatch.setattr(screenshot_module, "_WebSocketCdpTransport", RecordingTransport)
+
+        asyncio.run(screenshot_module._close_browser_over_cdp(9999))
+
+        assert connected_urls == ["ws://127.0.0.1:9999/devtools/browser/abc-browser-level"]
+        assert sent_requests == ["Browser.close"]
+
+    def test_a_connection_closed_by_edge_mid_response_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Code review round, nit 1 — Edge tearing the socket down *is* what
+        a successful `Browser.close` looks like; `_WebSocketCdpTransport`'s
+        `recv()` loop raises `ConnectionClosed` in exactly that case, and it
+        must not propagate as a failure (`_Cleanup.run()` would otherwise
+        log a full traceback on every ordinary, successful close)."""
+        import asyncio
+
+        import websockets.asyncio.client as ws_client_module
+        from websockets.exceptions import ConnectionClosedOK
+
+        class FakeBrowserConnection:
+            async def close(self) -> None:
+                return None
+
+        async def fake_connect(uri: str, **kwargs: Any) -> FakeBrowserConnection:
+            return FakeBrowserConnection()
+
+        monkeypatch.setattr(ws_client_module, "connect", fake_connect)
+
+        async def fake_fetch(port: int, deadline: float) -> str:
+            return "ws://127.0.0.1:9999/devtools/browser/abc"
+
+        monkeypatch.setattr(screenshot_module, "_fetch_browser_ws_url", fake_fetch)
+
+        real_transport_cls = screenshot_module._WebSocketCdpTransport
+
+        class ClosesMidResponseTransport(real_transport_cls):
+            async def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+                raise ConnectionClosedOK(None, None)
+
+        monkeypatch.setattr(screenshot_module, "_WebSocketCdpTransport", ClosesMidResponseTransport)
+
+        asyncio.run(screenshot_module._close_browser_over_cdp(9999))  # must not raise
+
+
+# ── Capture serialisation (decision D9, issue #40) ─────────────────────────
+
+
+class TestCaptureLockSerialisesRenderBillingPng:
+    def test_two_concurrent_calls_do_not_overlap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The second caller must wait for the first rather than running
+        alongside it — proven by recording how many fake captures are
+        in flight at once, not merely that both eventually complete."""
+        import asyncio
+
+        active = {"count": 0, "max_seen": 0}
+        guard = threading.Lock()
+
+        async def fake_run_capture(rows: Any, device_name: str, **kwargs: Any) -> bytes:
+            with guard:
+                active["count"] += 1
+                active["max_seen"] = max(active["max_seen"], active["count"])
+            await asyncio.sleep(0.2)
+            with guard:
+                active["count"] -= 1
+            return b"png-bytes"
+
+        monkeypatch.setattr(screenshot_module, "_run_capture_with_hard_deadline", fake_run_capture)
+
+        results: list[bytes] = []
+        results_guard = threading.Lock()
+
+        def worker() -> None:
+            png_bytes = render_billing_png([_make_row(1)], "Main Incomer")
+            with results_guard:
+                results.append(png_bytes)
+
+        first = threading.Thread(target=worker)
+        second = threading.Thread(target=worker)
+        first.start()
+        time.sleep(0.05)  # let `first` acquire the lock before `second` starts
+        second.start()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+        assert len(results) == 2
+        assert active["max_seen"] == 1  # never both in flight at once
+
+    def test_a_lock_held_past_the_timeout_raises_naming_contention(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A wedged capture must not hang the *other* caller's HTTP request
+        forever — the wait is bounded, and the failure names contention
+        rather than surfacing as an opaque hang or timeout deep inside the
+        capture machinery."""
+        monkeypatch.setattr(screenshot_module, "_CAPTURE_LOCK_TIMEOUT_SECONDS", 0.2)
+        acquired = screenshot_module._CAPTURE_LOCK.acquire(timeout=1)
+        assert acquired
+        try:
+            with pytest.raises(BrowserCaptureError, match="[Cc]apture"):
+                render_billing_png([_make_row(1)], "Main Incomer")
+        finally:
+            screenshot_module._CAPTURE_LOCK.release()
 
 
 class TestTmpDir:
     def test_ensure_directories_creates_tmp_dir(self, settings: Any) -> None:
-        """`Settings.tmp_dir` (issue #38, step 4) — the per-capture Edge
-        profile directories live under here, inside `%ProgramData%\\ARICHDS`
-        and therefore covered by the installer's `[Dirs] Permissions:`
-        grant by construction, unlike `%TEMP%`."""
+        """`Settings.tmp_dir` (issue #38, step 4; the capture browser's one
+        **reused** Edge profile directory rather than a fresh one per
+        capture, issue #40 decision D2) — lives under
+        `%ProgramData%\\ARICHDS` and is the only directory covered by the
+        installer's `[Dirs] Permissions:` grant, unlike `%TEMP%`."""
         settings.ensure_directories()
 
         assert settings.tmp_dir == settings.data_dir.resolve() / "tmp"

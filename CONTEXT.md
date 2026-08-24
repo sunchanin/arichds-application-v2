@@ -249,7 +249,12 @@ periods** rendered as the Billing History table. Sending the `.png` believing it
 single month sends nine more. Nothing in the folder warns of this; saying so is the guard. The
 `.png` **is** a screenshot — a headless capture of the running Billing page taken over the Chrome
 DevTools Protocol against the already-installed Microsoft Edge, nobody signed in on screen
-(ADR 0017, reverses ADR 0014, issue #38); `.pdf`/`.xlsx` stay drawn, not screenshotted.
+(ADR 0017, reverses ADR 0014, issue #38); `.pdf`/`.xlsx` stay drawn, not screenshotted. Edge is
+launched under a `NT AUTHORITY\LOCAL SERVICE` scheduled task while the ARICHDS service itself
+stays `LocalSystem` (issue #40) — not an implementation detail: it is what keeps an
+operator-chosen `capture_dir` under `C:\Users\…` writable, since only the service (not Edge)
+ever writes the capture file, and a service pinned to a low-privilege account cannot write
+outside `%ProgramData%\ARICHDS` (the mistake issue #38 first shipped, and #40 corrects).
 _Avoid_: report, export (that's a different feature), snapshot
 
 **Export Format**:

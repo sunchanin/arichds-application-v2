@@ -1,5 +1,6 @@
 """Headless-screenshot renderer for the Billing capture PNG (ADR 0017,
-issue #38).
+issue #38; the browser launch mechanism reworked by issue #40, replacing
+#38's Part A).
 
 Retires :mod:`arichds.capture.png`'s Pillow drawing (ADR 0014, reversed) in
 favour of driving the **already-installed** Microsoft Edge over the Chrome
@@ -8,16 +9,31 @@ no window on screen, no bundled browser (``pyproject.toml``'s "pure Python,
 no native ext" is untouched: this launches the operating system's own copy,
 it bundles none).
 
+**The service stays ``LocalSystem`` (issue #40).** Only Edge itself runs
+under a low-privilege account — a Windows scheduled task
+(``installer/register-capture-task.ps1``) registered to
+``NT AUTHORITY\\LOCAL SERVICE`` at install time, which this module triggers
+with ``schtasks /run`` rather than launching Edge directly. Moving the whole
+*service* to that account (#38's original approach) cost it write access to
+any operator-chosen ``capture_dir`` outside ``%ProgramData%\\ARICHDS`` — see
+ADR 0017's Correction.
+
 One capture, start to finish:
 
-1. Resolve Edge's install path from the registry (:func:`resolve_edge_path`).
+1. Resolve Edge's install path from the registry (:func:`resolve_edge_path`)
+   — a **pre-flight check only** now: a missing Edge is reported clearly
+   before anything else runs, but the resolved path itself is never used to
+   launch anything (the scheduled task's own action already carries a
+   resolved path, fixed at install time).
 2. Mint a five-minute Access Token for the lowest-``id`` admin
    (:func:`_mint_capture_token`) — the same code path login uses.
-3. Launch Edge headless with a fresh, uniquely-named profile directory under
-   ``<data_dir>/tmp`` (:func:`_launch_edge`) — never ``%TEMP%``, which
-   resolves somewhere unwritable under the service account this ADR installs
-   (ADR 0017), and never a fixed name, which two concurrent captures would
-   collide on.
+3. Trigger the capture browser's scheduled task
+   (:func:`_trigger_capture_browser`) — ``schtasks /end`` first and ignored
+   (self-heal against a task a hard-killed service left stuck ``Running``,
+   which would otherwise refuse every subsequent ``/run``), then delete a
+   stale ``DevToolsActivePort`` left in the profile directory
+   (``<data_dir>/tmp``, ``Settings.tmp_dir`` — fixed and **reused** between
+   captures now, never created or removed here), then ``schtasks /run``.
 4. Read the DevTools port Chromium wrote to ``DevToolsActivePort``
    (:func:`_wait_for_devtools_port`) and connect over CDP.
 5. Seed the session and the capture request into ``localStorage`` /
@@ -27,11 +43,14 @@ One capture, start to finish:
    (:func:`~arichds.capture.dom.ids_match`) — the readiness signal and the
    correctness gate in one comparison (decision 6).
 6. Screenshot at 1920 CSS px wide, height grown to fit every row.
-7. **Always**, in this order: close the CDP connection, kill the Edge
-   process tree **by PID** (never by image name — a name-resolved kill has
-   already caused a real incident on the machine this runs on), remove the
-   profile directory, delete the ``UserToken`` row. A failure in any one
-   step must not prevent the others.
+7. **Always**, in this order: a best-effort ``Browser.close`` over a
+   *second*, browser-level CDP connection (page-level connections reject
+   that call — CDP Findings, issue #40), close the page-level CDP
+   connection, ``schtasks /end`` (**unconditional** — nothing kills a
+   process by PID or by image name any more; a name-resolved kill has
+   already caused a real incident on the machine this runs on), delete the
+   ``UserToken`` row. A failure in any one step must not prevent the
+   others.
 
 **Every failure raises :class:`BrowserCaptureError`** — callers
 (:func:`arichds.capture.service.write_png_capture`,
@@ -42,6 +61,13 @@ The 90-second budget is an **enforced ceiling**
 between CDP calls happen to check — a single CDP call that never returns
 (a renderer wedged in JS) cannot block the Scheduler thread past the
 budget plus a small margin.
+
+**Captures are serialised** (:data:`_CAPTURE_LOCK`, issue #40) — one shared
+Edge profile directory now that it is no longer minted fresh per capture, so
+two callers (the eager path on the single-threaded Scheduler, ADR 0008, and
+the Billing page's Capture button on a request thread) must never run at
+once. A wedged capture cannot hang a second caller forever: the wait is
+bounded by the same budget the capture itself is held to.
 """
 
 from __future__ import annotations
@@ -52,8 +78,8 @@ import json
 import logging
 import re
 import subprocess
+import threading
 import time
-import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -65,6 +91,7 @@ from sqlalchemy.orm import Session
 from arichds.auth.roles import Role
 from arichds.auth.security import create_access_token, hash_token
 from arichds.capture.dom import build_seed_script, ids_match, poll_script
+from arichds.capture.task import CAPTURE_TASK_NAME
 from arichds.config import get_settings
 from arichds.db.models import User, UserToken
 from arichds.db.session import session_scope
@@ -84,9 +111,16 @@ class BrowserCaptureError(Exception):
 
 #: Hard overall budget (issue #38, step 4) — the eager path runs on the
 #: single-threaded job-registry Scheduler (ADR 0008), so a stuck capture
-#: delays every other scheduled job by exactly this long. Nine meters on a
-#: day when every one of them is broken is ~13 minutes; the normal path is
-#: around ten seconds each.
+#: delays every other scheduled job by roughly this long once it is
+#: actually running. Nine meters on a day when every one of them is broken
+#: is ~13 minutes; the normal path is around ten seconds each.
+#:
+#: Code review round (issue #40), nit 3 — no longer "exactly this long":
+#: `_CAPTURE_LOCK` (:data:`_CAPTURE_LOCK_TIMEOUT_SECONDS`) can make a
+#: Scheduler-thread capture *wait up to another ~105s* before this budget
+#: even starts, if the Billing page's Capture button is holding the shared
+#: profile directory when the Scheduler's own tick arrives. The worst case
+#: for one meter is now roughly double this value, not this value.
 CAPTURE_BUDGET_SECONDS = 90.0
 
 #: Safety margin on top of :data:`CAPTURE_BUDGET_SECONDS` for the hard,
@@ -232,68 +266,77 @@ def _delete_capture_token(token_hash: str) -> None:
         logger.exception("Could not delete the capture token (hash prefix %s…)", token_hash[:8])
 
 
-# ── Process lifecycle (step 4) ──────────────────────────────────────────────
+# ── Browser trigger via the scheduled task (step 4, issue #40) ─────────────
+
+_SCHTASKS_END_ARGS = ("schtasks", "/end", "/TN", CAPTURE_TASK_NAME)
+_SCHTASKS_RUN_ARGS = ("schtasks", "/run", "/TN", CAPTURE_TASK_NAME)
 
 
-def _launch_edge(edge_path: Path, profile_dir: Path) -> subprocess.Popen[bytes]:
-    """Start headless Edge with a fresh profile directory and
-    ``--remote-debugging-port=0`` (an OS-assigned free port — a fixed port
-    collides between concurrent captures and needlessly opens a known
-    listener).
+def _end_capture_task() -> None:
+    """Best-effort ``schtasks /end`` on the capture browser task
+    (:data:`CAPTURE_TASK_NAME`, ``installer/register-capture-task.ps1``).
 
-    Two flag decisions worth recording explicitly rather than leaving to
-    guesswork the next time someone diffs this list against a prototype
-    (code review round, nit 6):
+    Used in two places: as :func:`_trigger_capture_browser`'s self-heal
+    (decision D7) immediately before every ``/run`` — a hard-killed service
+    (NSSM is configured ``AppExit Default Restart``) would otherwise leave
+    the task stuck ``Running``, and ``MultipleInstancesPolicy``'s
+    ``IgnoreNew`` default (F6) makes every subsequent ``/run`` fail forever
+    — and as :meth:`_Cleanup.run`'s unconditional teardown backstop after
+    ``Browser.close`` (decision D6).
 
-    * ``--hide-scrollbars`` — added. The Billing table renders under
-      ``scroll={{ x: tableWidth }}``, so an unhidden scrollbar could land
-      in the image. That is chrome the browser adds, not part of the page
-      ADR 0017 decision 3 approved truncating — hiding it is not the same
-      decision as widening the viewport, which stays untouched.
-    * ``--no-sandbox`` — **deliberately not added.** It weakens Chromium's
-      process sandbox and there is no evidence it is needed: the sandbox
-      is a low-privilege-process concern, and ``NT AUTHORITY\\LocalService``
-      is already a low-privilege account, unlike the root/administrative
-      contexts that usually force this flag. Nothing in this codebase can
-      test under the real service account (Out of Scope — this machine's
-      install is not ours to touch), so the honest answer is "unverified,
-      not assumed necessary." If the owner's install review shows Edge
-      failing to launch specifically under the service account (distinct
-      from a missing-Edge or wrong-account failure — see
-      ``installer/README.md``), that is the evidence to revisit this.
-    """
-    args = [
-        str(edge_path),
-        "--headless=new",
-        "--disable-gpu",
-        "--hide-scrollbars",
-        "--no-first-run",
-        "--no-default-browser-check",
-        f"--user-data-dir={profile_dir}",
-        "--remote-debugging-port=0",
-        "about:blank",
-    ]
-    return subprocess.Popen(args)  # noqa: S603
-
-
-def _kill_process_tree(pid: int) -> None:
-    """Kill *pid* and every child it spawned — **by PID, never by image
-    name**. ``--headless=new`` spawns renderer children that
-    ``Popen.kill()`` alone leaves behind; ``taskkill /IM msedge.exe`` would
-    kill the operator's own browser on a real machine (a name-resolved kill
-    has already caused a real incident here).
-
-    Swallows its own failure (logged) — a process already gone (e.g. it
-    crashed on its own) is not a capture failure.
+    Never raises: the documented CDP/`schtasks` contract for stopping a
+    browser is "best effort" either way (F2, F7 — neither
+    `Browser.close` nor `/end` promises to reap the whole process tree, only
+    the owner's own measurement on this machine did), and a task already
+    ``Ready`` returns *localized* status text (D8 — this product ships to
+    Thai-locale Windows machines) that must never be parsed to decide
+    anything, so there is nothing informative to branch on here even in the
+    non-zero-exit case.
     """
     try:
-        subprocess.run(  # noqa: S603
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-        )
+        subprocess.run(_SCHTASKS_END_ARGS, capture_output=True, check=False)  # noqa: S603
     except OSError:
-        logger.exception("Could not kill the Edge process tree (pid %s)", pid)
+        logger.exception("Could not run schtasks /end for the capture browser task")
+
+
+def _trigger_capture_browser() -> None:
+    """Start the capture browser via its scheduled task (issue #40, replaces
+    #38's Part A ``subprocess.Popen`` launch — Edge now runs under
+    ``NT AUTHORITY\\LOCAL SERVICE``, registered by
+    ``installer/register-capture-task.ps1``, never under this process's own
+    account).
+
+    In order:
+
+    1. :func:`_end_capture_task` — ignored (decision D7's self-heal).
+    2. Delete a stale ``DevToolsActivePort`` left in
+       :attr:`~arichds.config.Settings.tmp_dir` by a previous run — the
+       task's action is fixed at install time, so the profile directory is
+       now reused between captures (decision D2), and a leftover port file
+       would point :func:`_wait_for_devtools_port` at a dead port.
+    3. ``schtasks /run`` — a non-zero exit code or an ``OSError`` (schtasks
+       itself missing) becomes :class:`BrowserCaptureError`, carrying the
+       captured output. Never parsed to decide anything (decision D8) — only
+       reported, since `schtasks`'s own status text is localized.
+
+    Raises:
+        BrowserCaptureError: ``schtasks /run`` failed to start the task.
+    """
+    _end_capture_task()
+
+    port_file = get_settings().tmp_dir / "DevToolsActivePort"
+    port_file.unlink(missing_ok=True)
+
+    try:
+        result = subprocess.run(_SCHTASKS_RUN_ARGS, capture_output=True, text=True, check=False)  # noqa: S603
+    except OSError as exc:
+        raise BrowserCaptureError(f"Could not run schtasks to start the {CAPTURE_TASK_NAME!r} task: {exc}") from exc
+
+    if result.returncode != 0:
+        raise BrowserCaptureError(
+            f"schtasks /run /TN {CAPTURE_TASK_NAME!r} exited {result.returncode}: "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
 
 
 def _wait_for_devtools_port(profile_dir: Path, deadline: float) -> int:
@@ -390,6 +433,85 @@ async def _connect_transport(port: int, deadline: float) -> tuple[Any, CdpTransp
     ws_url = await _fetch_first_page_ws_url(port, deadline)
     connection = await connect(ws_url, proxy=None, max_size=_MAX_FRAME_SIZE)
     return connection, _WebSocketCdpTransport(connection)
+
+
+# ── Browser-level close (step 7, issue #40; Findings F1) ───────────────────
+
+#: Bound on the best-effort `Browser.close` attempt during cleanup — short,
+#: because this is advisory (F2): `_end_capture_task` right after it is the
+#: unconditional backstop regardless of whether this succeeds.
+_BROWSER_CLOSE_TIMEOUT_SECONDS = 5.0
+
+
+async def _fetch_browser_ws_url(port: int, deadline: float) -> str:
+    """``GET http://127.0.0.1:<port>/json/version`` and return the
+    **browser-level** ``webSocketDebuggerUrl`` (Findings F1) — ``Browser.close``
+    is a browser-scoped CDP domain and returns JSON-RPC ``-32601`` on the
+    page-level connection :func:`_fetch_first_page_ws_url` returns, so this
+    is deliberately a *second*, independent connection, never a reuse of the
+    capture's own page session.
+
+    Same ``urllib`` + ``ProxyHandler({})`` + no-proxy shape as
+    :func:`_fetch_first_page_ws_url` (Findings).
+    """
+    import urllib.error
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    url = f"http://127.0.0.1:{port}/json/version"
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with opener.open(url, timeout=2) as response:
+                info = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+            last_error = exc
+            await asyncio.sleep(0.1)
+            continue
+        ws_url = info.get("webSocketDebuggerUrl")
+        if ws_url:
+            return str(ws_url)
+        await asyncio.sleep(0.1)
+    raise BrowserCaptureError(f"Edge never exposed a browser-level target on port {port}: {last_error}")
+
+
+async def _close_browser_over_cdp(port: int) -> None:
+    """Best-effort ``Browser.close`` (decision D6) — a second, browser-level
+    CDP connection, opened just to send the one request and closed
+    immediately afterwards.
+
+    "Close browser gracefully" is the entire documented CDP contract (F2),
+    so this succeeding is not proof of anything — :func:`_end_capture_task`
+    running unconditionally right after it (:meth:`_Cleanup.run`) is the
+    real backstop. Every caller here treats a failure as advisory.
+    """
+    import contextlib
+
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import ConnectionClosed
+
+    deadline = time.monotonic() + _BROWSER_CLOSE_TIMEOUT_SECONDS
+    ws_url = await _fetch_browser_ws_url(port, deadline)
+    # `await connect(...)` — the same style :func:`_connect_transport` uses
+    # for the page-level connection, not `async with`, so a fake in tests
+    # only needs an async `.close()`, not the full async-context-manager
+    # protocol.
+    connection = await connect(ws_url, proxy=None, max_size=_MAX_FRAME_SIZE)
+    try:
+        transport = _WebSocketCdpTransport(connection)
+        # Edge tearing the socket down *is* what a successful `Browser.close`
+        # looks like from here (code review round, nit 1) —
+        # `_WebSocketCdpTransport.request` loops on `recv()` until a matching
+        # response id arrives, and if Edge closes the socket before sending
+        # one, that loop raises `ConnectionClosed` instead of returning
+        # normally. Letting it fall through to the caller's `except
+        # Exception` would log a full traceback into `arichds.log` on every
+        # *successful* close, which is exactly the file the README sends
+        # operators to for real failures.
+        with contextlib.suppress(ConnectionClosed):
+            await transport.request("Browser.close")
+    finally:
+        await connection.close()
 
 
 # ── Driving the capture over an already-connected transport (step 5) ───────
@@ -518,34 +640,50 @@ def _as_utc(moment: datetime) -> datetime:
 class _Cleanup:
     """Accumulates the teardown steps a capture attempt has actually
     started, run in the fixed order the ADR requires — a failure in one
-    step must not prevent the others (step 4)."""
+    step must not prevent the others (step 4, issue #38; reworked for the
+    scheduled-task launch, issue #40, decision D6)."""
 
     def __init__(self) -> None:
         self.connection: Any | None = None
-        self.pid: int | None = None
-        self.profile_dir: Path | None = None
+        self.port: int | None = None
         self.token_hash: str | None = None
-        self._kill_process_tree: Callable[[int], None] = _kill_process_tree
+        self._close_browser: Callable[[int], Awaitable[None]] = _close_browser_over_cdp
+        self._end_capture_task: Callable[[], None] = _end_capture_task
         self._delete_token: Callable[[str], None] = _delete_capture_token
 
     async def run(self) -> None:
-        """Run every step that was actually started, in order — **and
-        finish all four even when this coroutine itself is running because
-        the capture was cancelled** (code review round, problem 2).
+        """Run every step that was actually started, in the fixed order
+        (decision D6): a best-effort ``Browser.close`` over the
+        browser-level connection, close the page-level CDP connection,
+        ``schtasks /end`` (unconditional), delete the token — **and finish
+        all four even when this coroutine itself is running because the
+        capture was cancelled** (code review round, problem 2, issue #38).
 
         ``_run_capture``'s own ``finally: await cleanup.run()`` is exactly
         the case: when the hard timeout in :func:`_run_capture_with_hard_deadline`
         fires, ``asyncio.wait_for`` cancels the in-flight capture, and this
-        method is what runs while that cancellation is unwinding. ``await
-        self.connection.close()`` is the one truly async step here, so it
-        is the one place a *second* cancellation delivered mid-cleanup
-        could cut things short — ``asyncio.shield`` stops the shielded
-        awaitable itself from being cancelled, and the explicit
-        ``CancelledError`` catch (a ``BaseException``, not caught by
-        ``except Exception``) means a cancellation raised at this specific
-        await point is swallowed rather than skipping the kill/remove/
-        delete steps below.
+        method is what runs while that cancellation is unwinding. The two
+        truly async steps here (``Browser.close`` and closing the page
+        connection) are each wrapped in ``asyncio.shield`` for exactly that
+        reason — it stops the shielded awaitable itself from being
+        cancelled, and the explicit ``CancelledError`` catch (a
+        ``BaseException``, not caught by ``except Exception``) means a
+        cancellation raised at either await point is swallowed rather than
+        skipping the steps below it. ``schtasks /end`` being a synchronous
+        subprocess call is what makes this guarantee load-bearing rather
+        than decorative for the two steps after it — once resumed past the
+        shielded awaits, nothing below can be interrupted again without a
+        second, fresh cancellation.
         """
+        if self.port is not None:
+            try:
+                await asyncio.shield(
+                    asyncio.wait_for(self._close_browser(self.port), timeout=_BROWSER_CLOSE_TIMEOUT_SECONDS)
+                )
+            except asyncio.CancelledError:
+                logger.warning("Browser.close was interrupted by cancellation; continuing cleanup")
+            except Exception:  # noqa: BLE001 — best effort; every step below must still run.
+                logger.exception("Could not send Browser.close to the capture browser (best effort)")
         if self.connection is not None:
             try:
                 await asyncio.shield(self.connection.close())
@@ -553,21 +691,12 @@ class _Cleanup:
                 logger.warning("CDP connection close was interrupted by cancellation; continuing cleanup")
             except Exception:  # noqa: BLE001 — cleanup; every step below must still run.
                 logger.exception("Could not close the CDP connection cleanly")
-        if self.pid is not None:
-            self._kill_process_tree(self.pid)
-        if self.profile_dir is not None:
-            _remove_profile_dir(self.profile_dir)
+        try:
+            self._end_capture_task()
+        except Exception:  # noqa: BLE001 — cleanup; the token delete below must still run.
+            logger.exception("Could not run schtasks /end for the capture browser task")
         if self.token_hash is not None:
             self._delete_token(self.token_hash)
-
-
-def _remove_profile_dir(profile_dir: Path) -> None:
-    import shutil
-
-    try:
-        shutil.rmtree(profile_dir, ignore_errors=True)
-    except Exception:  # noqa: BLE001 — cleanup; must never mask the real error.
-        logger.exception("Could not remove the capture profile directory %s", profile_dir)
 
 
 async def _run_capture(
@@ -576,16 +705,17 @@ async def _run_capture(
     *,
     resolve_edge: Callable[[], Path | None] = resolve_edge_path,
     mint_token: Callable[[Session], MintedToken] = _mint_capture_token,
-    launch_edge: Callable[[Path, Path], subprocess.Popen[bytes]] = _launch_edge,
+    trigger_browser: Callable[[], None] = _trigger_capture_browser,
     connect: Callable[[int, float], Awaitable[tuple[Any, CdpTransport]]] = _connect_transport,
     wait_for_port: Callable[[Path, float], int] = _wait_for_devtools_port,
     cleanup_cls: type[_Cleanup] = _Cleanup,
     budget_seconds: float = CAPTURE_BUDGET_SECONDS,
 ) -> bytes:
-    """The full lifecycle: mint → launch → connect → drive → cleanup.
+    """The full lifecycle: pre-flight → mint → trigger → connect → drive →
+    cleanup.
 
     Every dependency above defaults to the real implementation; tests
-    override ``launch_edge``/``connect`` (and sometimes ``mint_token``) with
+    override ``trigger_browser``/``connect`` (and sometimes ``mint_token``) with
     fakes so no real Edge process or websocket is ever needed.
     """
     if not rows:
@@ -594,29 +724,34 @@ async def _run_capture(
     deadline = time.monotonic() + budget_seconds
     cleanup = cleanup_cls()
 
+    # A pre-flight check only now (decision D5) — the resolved path itself
+    # is never used to launch anything; the scheduled task's own action
+    # already carries a path resolved at install time. Kept because it
+    # names "Edge was uninstalled" as the cause instead of leaving the
+    # operator with an opaque `schtasks /run` failure.
     edge_path = resolve_edge()
     if edge_path is None:
         raise BrowserCaptureError("Microsoft Edge was not found on this machine.")
 
     settings = get_settings()
+    # Fixed and reused between captures (decision D2) — never created or
+    # removed here; the installer provisions it and grants the capture
+    # browser's account write access to it alone.
+    profile_dir = settings.tmp_dir
 
     # Everything from here on acquires a resource `cleanup` must release, so
-    # it all lives inside one `try/finally` — a failure creating the profile
-    # directory (say) right after a successful mint must still delete the
-    # token, not just a failure later in the launch/connect/drive chain.
+    # it all lives inside one `try/finally` — a failure minting the token
+    # (say) must still be followed by cleanup running, not just a failure
+    # later in the trigger/connect/drive chain.
     try:
         with session_scope() as session:
             minted = mint_token(session)
         cleanup.token_hash = minted.token_hash
 
-        profile_dir = (settings.tmp_dir / f"capture-{uuid.uuid4().hex}").resolve()
-        profile_dir.mkdir(parents=True, exist_ok=False)
-        cleanup.profile_dir = profile_dir
-
-        process = launch_edge(edge_path, profile_dir)
-        cleanup.pid = process.pid
+        trigger_browser()
 
         port = wait_for_port(profile_dir, deadline)
+        cleanup.port = port
         connection, transport = await connect(port, deadline)
         cleanup.connection = connection
 
@@ -667,6 +802,23 @@ async def _run_capture_with_hard_deadline(
         ) from exc
 
 
+#: Guards the whole capture attempt (decision D9, issue #40) — one shared
+#: Edge profile directory (`Settings.tmp_dir`, decision D2) now that it is
+#: no longer minted fresh per capture, so the two callers that can reach
+#: `render_billing_png` — the eager path on the single-threaded job-registry
+#: Scheduler (ADR 0008) and the Billing page's Capture button on a request
+#: thread — must never run at once. A plain, unbounded acquire would let a
+#: wedged capture hang the *other* caller's HTTP request indefinitely, so
+#: the wait below is bounded instead.
+_CAPTURE_LOCK = threading.Lock()
+
+#: How long a caller waits for a capture already in progress before giving
+#: up — the same ceiling `_run_capture_with_hard_deadline` enforces on a
+#: single capture (decision D9), since that is the longest a well-behaved
+#: holder can legitimately keep the lock.
+_CAPTURE_LOCK_TIMEOUT_SECONDS = CAPTURE_BUDGET_SECONDS + _HARD_TIMEOUT_MARGIN_SECONDS
+
+
 def render_billing_png(rows: Sequence[Any], device_name: str) -> bytes:
     """Render the Billing History table (up to ten closed periods) as a PNG
     by driving our own Billing page in headless Edge (ADR 0017).
@@ -694,8 +846,17 @@ def render_billing_png(rows: Sequence[Any], device_name: str) -> bytes:
 
     Raises:
         BrowserCaptureError: Edge could not be found, no admin exists to
-            mint a token for, the browser failed to launch or connect, or
-            the rendered rows never matched *rows* within the capture
-            budget.
+            mint a token for, the browser failed to launch or connect, the
+            rendered rows never matched *rows* within the capture budget, or
+            another capture was still in progress after
+            :data:`_CAPTURE_LOCK_TIMEOUT_SECONDS`.
     """
-    return asyncio.run(_run_capture_with_hard_deadline(rows, device_name))
+    if not _CAPTURE_LOCK.acquire(timeout=_CAPTURE_LOCK_TIMEOUT_SECONDS):
+        raise BrowserCaptureError(
+            f"Another capture is still in progress after {_CAPTURE_LOCK_TIMEOUT_SECONDS:.0f}s "
+            "(captures are serialised — one shared Edge profile directory, decision D9)."
+        )
+    try:
+        return asyncio.run(_run_capture_with_hard_deadline(rows, device_name))
+    finally:
+        _CAPTURE_LOCK.release()

@@ -175,17 +175,27 @@ class Settings(BaseSettings):
 
     @property
     def tmp_dir(self) -> Path:
-        """Directory for short-lived working state — today, just the
-        per-capture Edge profile directories the headless-screenshot
-        renderer creates (ADR 0017, issue #38).
+        """The headless-screenshot capture browser's **one, reused** Edge
+        profile directory (ADR 0017, issue #38; fixed and shared rather
+        than per-capture, issue #40).
 
-        Deliberately **not** the OS temp directory: under the service
-        account this ADR installs (``NT AUTHORITY\\LocalService``), ``%TEMP%``
-        resolves to ``C:\\Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\Temp``,
+        This service process runs as ``LocalSystem`` and never touches this
+        directory itself — Edge does, launched under a Windows scheduled
+        task registered to ``NT AUTHORITY\\LOCAL SERVICE``
+        (``installer/register-capture-task.ps1``, ``capture/screenshot.py``).
+        The task's action is fixed at install time, so the profile directory
+        can no longer be minted fresh per capture (that account has no
+        access to create one anywhere else) — captures are serialised
+        instead (``capture/screenshot.py``'s ``_CAPTURE_LOCK``, decision D9)
+        so the one directory is never used by two captures at once.
+
+        Deliberately **not** the OS temp directory: under the capture
+        browser's account, ``%TEMP%`` resolves to
+        ``C:\\Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\Temp``,
         which is outside the ``[Dirs] Permissions:`` grant the installer
-        gives this service on ``%ProgramData%\\ARICHDS``. Inside
-        :attr:`data_dir` instead, so it is covered by that grant by
-        construction.
+        gives that account — the *only* one it needs, since the service
+        itself is ``LocalSystem`` and needs no grant at all. Inside
+        :attr:`data_dir` instead, so it is covered by construction.
         """
         return self.data_dir.resolve() / "tmp"
 

@@ -93,14 +93,23 @@ MySQL, and ~30 tables.
   0017 (the capture image is a **headless screenshot of our own page** — **reverses 0014**:
   Edge ships with Windows and `websockets` already arrives via `uvicorn[standard]`, so driving
   the installed browser over CDP costs **0 MB** and makes fidelity an identity rather than an
-  approximation; the price is that the service **can no longer run as LocalSystem** (`msedge.exe`
-  exits 1002 under `nt authority\system`) and that the image is truncated exactly as the screen
-  is, which the owner chose; 0015 and 0010 are untouched; **fully implemented** with issue #38 —
+  approximation; the price is that Edge itself cannot run as LocalSystem (`msedge.exe` exits
+  1002 under `nt authority\system`) and that the image is truncated exactly as the screen is,
+  which the owner chose; 0015 and 0010 are untouched; **fully implemented** with issue #38 —
   `capture/screenshot.py` drives Edge over CDP against a seeded `web/src/capture.ts` request
   (`app/` decides which ten periods, never the page's own defaults), the DOM/JS contract lives
-  in `capture/dom.py`, the service now runs `NT AUTHORITY\LocalService` with a
-  `[Dirs] Permissions:` grant on `%ProgramData%\ARICHDS`, and `capture/png.py`'s Pillow renderer
-  is gone) ·
+  in `capture/dom.py`, and `capture/png.py`'s Pillow renderer is gone — **corrected by issue
+  #40**, which replaced #38's own fix: #38 read "the service can no longer run as LocalSystem"
+  too widely and moved the *whole service* to `NT AUTHORITY\LocalService`, which broke a
+  `capture_dir` (ADR 0010) or export folder (issue #30) under `C:\Users\…` on the first real
+  install (LocalService cannot write there); #40 puts the service back on **LocalSystem** and
+  launches only Edge through a Windows scheduled task, `ARICHDS Capture Browser`
+  (`installer/register-capture-task.ps1`), registered to `NT AUTHORITY\LOCAL SERVICE` and
+  triggered with `schtasks /run` — `capture/task.py` is the installer↔app contract for that
+  task, the same shape `capture/dom.py` is for the web↔app one; `%ProgramData%\ARICHDS\tmp`
+  is the only directory carrying a `[Dirs] Permissions:` grant, and it is now Edge's one
+  reused profile directory rather than a fresh one per capture, so captures are serialised by
+  a process-wide lock) ·
   0018 (billing has **two read shapes but still one write path** — a fifteen-minute *change
   check* (captureObjects + entriesInUse + the newest entry only) rides the **Load Profile
   cycle's existing connection** and triggers the unchanged whole-buffer read only when the
@@ -142,14 +151,20 @@ MySQL, and ~30 tables.
   `app/.venv`, `pyproject.toml` + pip.
 - `web/` — Vite + React + TS + **AntD v6 re-themed** (deep teal `#0f766e`, compact, light,
   English-only UI). No Tailwind — AntD tokens + its layout primitives cover the UI. pnpm.
-- `installer/` — Inno Setup script + NSSM service wrapper (`installer/vendor/nssm.exe` is a
-  vendor drop, never committed). Installs to `Program Files\ARICHDS`, data at
+- `installer/` — Inno Setup script (`arichds.iss`) + NSSM service wrapper
+  (`installer/vendor/nssm.exe` is a vendor drop, never committed) +
+  `register-capture-task.ps1` (registers the `NT AUTHORITY\LOCAL SERVICE`
+  scheduled task the capture browser runs under, ADR 0017, issues #38/#40).
+  Installs to `Program Files\ARICHDS`, data at
   `%ProgramData%\ARICHDS` (`arichds.db`, `license\`, `logs\`, `backup\`,
-  `tmp\` (per-capture Edge profile directories, ADR 0017, issue #38 — never `%TEMP%`), and
+  `tmp\` (the capture browser's one **reused** Edge profile directory, ADR 0017, issue #40 —
+  never `%TEMP%`, and the only `[Dirs] Permissions:` grant in the tree), and
   `secret\jwt_secret.key` —
   generated on first run, ADR 0003; deleting it signs everyone out). Port 8000, firewall
-  rule. Migration runs at service start — no installer migrate step. Runs as
-  `NT AUTHORITY\LocalService` (ADR 0017, issue #38) — see `installer/README.md`.
+  rule. Migration runs at service start — no installer migrate step. The service itself runs
+  as **LocalSystem**; only the capture browser's scheduled task runs as
+  `NT AUTHORITY\LOCAL SERVICE` (ADR 0017, issue #40 — corrects issue #38's own fix, which had
+  moved the whole service there) — see `installer/README.md`.
 - `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code signing. Private keys are
   NEVER committed.
 - `mockups/` — throwaway comparison app that decided D4 (AntD). Do not extend.
