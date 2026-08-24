@@ -87,6 +87,19 @@ or tracking per-meter deletions in a table ADR 0008 forbids. Neither is worth bu
   which is globally unique per meter, and the purge is by time rather than by owner — so
   neither install deletes rows it did not write in any way that matters, and an install that is
   removed leaves rows that age out on schedule.
+- **The two windows are the same length but not the same instant.** `db/retention.py` runs once
+  a day (`RETENTION_INTERVAL_SEC`), while the destination is purged on every sync cycle — so the
+  destination is up to a day *ahead* of us, and the row counts legitimately differ. Measured
+  2026-08-24 on a probe of the live data: 61,023 rows here, 60,379 there. A reader who expects
+  the counts to match will file it as a bug; the status display must not encourage that reading.
+- **The destination's cutoff is computed in local time**, because that is what its rows hold
+  (ADR 0021). Computing it in UTC and comparing against local-time rows silently deletes seven
+  hours too much on every cycle, with nothing to notice it.
+- **Appending and purging cannot fight**, and that is structural rather than lucky: the append
+  works from the newest end (the destination's own `MAX(read_at)` per `(meter_serial,
+  logger_id)`) and the purge from the oldest. A logger that lags behind another keeps its own
+  watermark and catches up without being masked — the same failure ADR 0008 had to fix on our
+  side at issue #24, avoided here by keying the watermark per logger rather than per meter.
 - **Nothing records that a purge ran** on either side. ADR 0008 forbids persisted job state and
   `db/retention.py` already honours that with a single INFO line; the destination's purge is
   the same shape.
