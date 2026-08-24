@@ -10,6 +10,7 @@ own `billing` gate: `format=pdf` needs `auto_capture`, `format=xlsx` needs
 
 from __future__ import annotations
 
+import base64
 import io
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,24 @@ from fastapi.testclient import TestClient
 pytestmark = pytest.mark.usefixtures("fake_meter")
 
 BILL_DATE = datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC)
+
+#: The smallest possible valid PNG (1x1, transparent) — no Pillow, no
+#: browser. `render_billing_png` (ADR 0017, issue #38) drives real headless
+#: Edge and needs a real admin account and a real port to navigate to;
+#: every HTTP-level test here that only cares about the *hardened write and
+#: serve* path around it stubs the renderer with this instead.
+_FAKE_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def stub_render_billing_png(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch `capture.service`'s imported `render_billing_png` to return
+    :data:`_FAKE_PNG_BYTES` — the hardened-write/serve path is still
+    exercised end to end; only the real browser drive is skipped."""
+    import arichds.capture.service as service_module
+
+    monkeypatch.setattr(service_module, "render_billing_png", lambda *args, **kwargs: _FAKE_PNG_BYTES)
 
 
 def make_device(admin_client: TestClient) -> int:
@@ -253,9 +272,12 @@ class TestBillingImageEndpoint:
     """``GET /api/billing/captures/image?device_id={id}`` — device-keyed,
     render-on-miss (D11, ADR 0014/0015, issue #35)."""
 
-    def test_t14_a_missing_png_is_rendered_written_and_served(self, admin_client: TestClient, tmp_path: Path) -> None:
+    def test_t14_a_missing_png_is_rendered_written_and_served(
+        self, admin_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """T14 — both halves in one test: the response body is PNG bytes,
         and the file now exists under capture_dir/<serial>/<stem>.png."""
+        stub_render_billing_png(monkeypatch)
         capture_dir = tmp_path / "captures"
         capture_dir.mkdir()
         set_capture_dir(admin_client, capture_dir)
@@ -270,13 +292,16 @@ class TestBillingImageEndpoint:
         written = list((capture_dir / "1232002893").glob("*.png"))
         assert len(written) == 1
 
-    def test_t15_the_filename_stem_is_the_newest_closed_periods(self, admin_client: TestClient, tmp_path: Path) -> None:
+    def test_t15_the_filename_stem_is_the_newest_closed_periods(
+        self, admin_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """T15 — with several closed periods, the endpoint's derived filename
         stem is the NEWEST closed period's, not the oldest or an arbitrary
         one."""
         from arichds.db.models import BillingReading
         from arichds.db.session import session_scope
 
+        stub_render_billing_png(monkeypatch)
         capture_dir = tmp_path / "captures"
         capture_dir.mkdir()
         set_capture_dir(admin_client, capture_dir)
@@ -347,7 +372,7 @@ class TestBillingImageEndpoint:
     def test_a_second_request_does_not_re_render(
         self, admin_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import arichds.capture.png as png_module
+        import arichds.capture.service as service_module
 
         capture_dir = tmp_path / "captures"
         capture_dir.mkdir()
@@ -355,23 +380,23 @@ class TestBillingImageEndpoint:
         device_id = make_device(admin_client)
         seed_closed(device_id)
 
-        first = admin_client.get("/api/billing/captures/image", params={"device_id": device_id})
-        assert first.status_code == 200, first.text
-
-        calls = []
-        original = png_module.render_billing_png
+        calls: list[int] = []
 
         def spy(*args, **kwargs):  # noqa: ANN002, ANN003, ANN201
             calls.append(1)
-            return original(*args, **kwargs)
+            return _FAKE_PNG_BYTES
 
-        monkeypatch.setattr(png_module, "render_billing_png", spy)
+        monkeypatch.setattr(service_module, "render_billing_png", spy)
+
+        first = admin_client.get("/api/billing/captures/image", params={"device_id": device_id})
+        assert first.status_code == 200, first.text
+        assert calls == [1]  # the first request DOES render — proves the spy itself is live
 
         second = admin_client.get("/api/billing/captures/image", params={"device_id": device_id})
 
         assert second.status_code == 200, second.text
         assert second.content == first.content
-        assert calls == []
+        assert calls == [1]  # unchanged — the renderer was never invoked the second time
 
     def test_t13_requires_billing_image_export(self, admin_client: TestClient, tmp_path: Path, relicense) -> None:
         """T13 — a licence with `billing` but not `billing_image_export` gets
@@ -410,6 +435,32 @@ class TestBillingImageEndpoint:
 
         assert response.status_code == 500, response.text
         assert "disk full" in response.json()["detail"]
+
+    def test_a_browsercaptureerror_is_a_500_naming_the_browser_not_an_unhandled_crash(
+        self, admin_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`BrowserCaptureError` (ADR 0017, issue #38) is a plain
+        `Exception`, not an `OSError` — today's `except OSError` at
+        `download_billing_image` does not catch it, so without an explicit
+        clause this would be an unhandled 500 with no detail."""
+        import arichds.api.billing as billing_module
+        from arichds.capture.screenshot import BrowserCaptureError
+
+        capture_dir = tmp_path / "captures"
+        capture_dir.mkdir()
+        set_capture_dir(admin_client, capture_dir)
+        device_id = make_device(admin_client)
+        seed_closed(device_id)
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise BrowserCaptureError("Microsoft Edge was not found on this machine.")
+
+        monkeypatch.setattr(billing_module, "write_png_capture", boom)
+
+        response = admin_client.get("/api/billing/captures/image", params={"device_id": device_id})
+
+        assert response.status_code == 500, response.text
+        assert "Microsoft Edge" in response.json()["detail"]
 
     def test_an_unknown_device_id_is_404(self, admin_client: TestClient, tmp_path: Path) -> None:
         capture_dir = tmp_path / "captures"

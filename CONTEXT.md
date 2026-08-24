@@ -239,9 +239,11 @@ download rather than tracked as a failure. The Open Period never has one.
 Three formats share that one filename stem, and **they do not cover the same span** (ADR 0015):
 `.pdf` and `.xlsx` hold **that one period**, while `.png` holds **the ten most recent closed
 periods** rendered as the Billing History table. Sending the `.png` believing it carries a
-single month sends nine more. Nothing in the folder warns of this; saying so is the guard.
-_Avoid_: report, export (that's a different feature), snapshot, screenshot (the `.png` is drawn
-server-side, never photographed from a browser — ADR 0014)
+single month sends nine more. Nothing in the folder warns of this; saying so is the guard. The
+`.png` **is** a screenshot — a headless capture of the running Billing page taken over the Chrome
+DevTools Protocol against the already-installed Microsoft Edge, nobody signed in on screen
+(ADR 0017, reverses ADR 0014, issue #38); `.pdf`/`.xlsx` stay drawn, not screenshotted.
+_Avoid_: report, export (that's a different feature), snapshot
 
 **Export Format**:
 The four machine-wide settings that govern the Load Profile CSV auto-export (M7 slice 3, issue

@@ -20,7 +20,7 @@ from sqlalchemy.orm.exc import UnmappedInstanceError
 from arichds.capture._render_shared import DisplayUnitScale
 from arichds.capture.paths import sanitize_meter_serial
 from arichds.capture.pdf import render_billing_pdf
-from arichds.capture.png import render_billing_png
+from arichds.capture.screenshot import render_billing_png
 from arichds.capture.write import write_capture
 from arichds.capture.xlsx import render_billing_xlsx
 from arichds.db.models import BillingReading as BillingReadingRow
@@ -112,6 +112,15 @@ def write_png_capture(
     """Render and hardened-write the PNG capture (up to ten closed periods,
     D4) for *row*'s meter at *target*.
 
+    *scale* is accepted for signature symmetry with
+    :func:`write_pdf_capture` / :func:`write_xlsx_capture` (both call sites
+    pass it positionally) but **deliberately not forwarded** to the renderer
+    (ADR 0017, issue #38, decision 10): the headless-screenshot renderer
+    drives the running Billing page, and that page reads the machine-wide
+    ``display_unit_scale`` itself through its own settings call — passing a
+    scale into a screenshot would be meaningless, ADR 0013's "display units
+    are a view" working exactly as intended.
+
     *row* must be an open-session ORM row for the ten-period query (D4) to
     run — :func:`~sqlalchemy.orm.object_session` resolves the session it is
     already attached to (both callers hold one: the eager path
@@ -132,6 +141,18 @@ def write_png_capture(
       disk or in the log to say so (ADR 0015's own "the failure mode is a
       person sending months of data believing they sent one" — the same
       shape, one row short instead of nine over). Logged loudly instead.
+
+    Both branches still genuinely render a **one-period** image, not a
+    timeout — this is *not* a leftover claim, it is re-verified against the
+    headless-screenshot renderer (ADR 0017, issue #38): the seeded
+    ``pageSize`` the renderer sends is exactly ``len(rows)`` (here, ``1``),
+    and the page's own query — same ``device_id``/``meter_serial``, ordered
+    newest first, bounded by an ``end`` one second past *row*'s own
+    ``bill_date`` — returns *row* itself as its single result (confirmed by
+    ``test_api_billing.py::TestSingleRowPageMatchesTheOnePeriodCaptureFallback``).
+    That composition is what makes it work: if a future change ever seeds a
+    ``pageSize`` that does not equal ``len(rows)`` again, this fallback
+    breaks the same way the ten-row window would.
     """
     try:
         session = object_session(row)
@@ -151,7 +172,7 @@ def write_png_capture(
             rows = _png_source_rows(session, row)
 
     allowlist = [capture_dir.resolve()]
-    write_capture(target, lambda: render_billing_png(rows, device_name, scale=scale), allowlist)
+    write_capture(target, lambda: render_billing_png(rows, device_name), allowlist)
 
 
 def capture_reading(

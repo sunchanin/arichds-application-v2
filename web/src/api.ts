@@ -816,9 +816,9 @@ export async function downloadBillingCapture(readingId: number, format: "pdf" | 
 
 /**
  * Download the Billing History image for one device — the ten most recent
- * closed periods, rendered server-side (M7 slice 4, issue #35, ADR
- * 0014/0015). Device-keyed, not reading-keyed: there is no per-row id to
- * pass, only the device the operator has selected.
+ * closed periods, a headless screenshot of this page itself (M7 slice 4,
+ * issue #35; issue #38, ADR 0017/0015). Device-keyed, not reading-keyed:
+ * there is no per-row id to pass, only the device the operator has selected.
  */
 export async function downloadBillingImage(deviceId: number): Promise<void> {
   return downloadBinary(`/api/billing/captures/image?device_id=${deviceId}`, "capture.png");
@@ -962,6 +962,10 @@ export const api = {
    * billing's row volume never justifies forcing either (SPEC §3.6). The
    * range, when given, is half-open on `bill_date`: `startIso` included,
    * `endIso` excluded.
+   *
+   * `meterSerial` (ADR 0017, issue #38, decision 7) restricts to one
+   * `meter_serial` — used only by the headless-screenshot renderer's seeded
+   * capture request; a human never sets this.
    */
   billing: (
     billingStatus: BillingStatus,
@@ -970,11 +974,13 @@ export const api = {
     endIso: string | undefined,
     limit: number,
     offset: number,
+    meterSerial?: string,
   ) => {
     const params = new URLSearchParams({ status: billingStatus, limit: String(limit), offset: String(offset) });
     if (deviceId !== undefined) params.set("device_id", String(deviceId));
     if (startIso !== undefined) params.set("start", startIso);
     if (endIso !== undefined) params.set("end", endIso);
+    if (meterSerial !== undefined) params.set("meter_serial", meterSerial);
     return request<BillingPage>(`/api/billing?${params.toString()}`);
   },
 

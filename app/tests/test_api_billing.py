@@ -41,7 +41,7 @@ def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = 
     return response.json()["data"]["id"]
 
 
-def seed_closed(device_id: int, bill_date: datetime, **columns: float) -> None:
+def seed_closed(device_id: int, bill_date: datetime, meter_serial: str | None = "1232002893", **columns: float) -> None:
     from arichds.db.models import BillingReading
     from arichds.db.session import session_scope
 
@@ -53,7 +53,7 @@ def seed_closed(device_id: int, bill_date: datetime, **columns: float) -> None:
                 read_at=bill_date,
                 record_status=None,
                 source="dlms",
-                meter_serial="1232002893",
+                meter_serial=meter_serial,
                 **columns,
             )
         )
@@ -178,6 +178,50 @@ class TestRange:
         assert response.status_code == 422, response.text
 
 
+class TestMeterSerialFilter:
+    """Decision 7, issue #38 — an optional ``meter_serial`` filter, added so
+    this endpoint agrees with ``capture/service.py``'s
+    ``_png_source_rows()`` (which already filters on ``meter_serial``)
+    unconditionally, rather than only for a device that has never had its
+    meter swapped (ADR 0005 — identity comes from the meter)."""
+
+    def test_meter_serial_restricts_to_that_serial_only(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE, meter_serial="OLD-SERIAL")
+        seed_closed(device_id, BASE + timedelta(days=30), meter_serial="NEW-SERIAL")
+
+        response = fetch(admin_client, "closed", device_id=device_id, meter_serial="NEW-SERIAL")
+
+        assert response.status_code == 200, response.text
+        items = response.json()["data"]["items"]
+        assert len(items) == 1
+        assert items[0]["meter_serial"] == "NEW-SERIAL"
+
+    def test_omitting_meter_serial_returns_every_serial(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE, meter_serial="OLD-SERIAL")
+        seed_closed(device_id, BASE + timedelta(days=30), meter_serial="NEW-SERIAL")
+
+        response = fetch(admin_client, "closed", device_id=device_id)
+
+        assert response.json()["data"]["total"] == 2
+
+    def test_an_unknown_meter_serial_is_a_200_with_an_empty_page_not_a_404(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE, meter_serial="OLD-SERIAL")
+
+        response = fetch(admin_client, "closed", device_id=device_id, meter_serial="NO-SUCH-SERIAL")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["items"] == []
+
+
 #: All sixty measurement column names (D19, M4c issue #24) — the API now
 #: returns every ``BillingReading`` measurement, not just the eight totals.
 _MEASUREMENT_PREFIXES_FLOAT = [
@@ -271,6 +315,36 @@ class TestOrdering:
 
         dates = [row["bill_date"] for row in response.json()["data"]["items"]]
         assert dates == sorted(dates, reverse=True)
+
+
+class TestSingleRowPageMatchesTheOnePeriodCaptureFallback:
+    """Code review round, problem 4 — `capture/service.py:write_png_capture`'s
+    detached/unmapped-row fallback seeds a one-row capture request
+    (`pageSize` now `len(rows) == 1`, decision from problem 1's fix). This
+    proves the composition that makes that fallback still succeed rather
+    than time out: `limit=1` bounded by `end=<anchor.bill_date + 1s>` for
+    the anchor's own `device_id`/`meter_serial` returns **exactly** the
+    anchor row, even with older closed periods for the same device/serial
+    on record — not some other row, and not more than one."""
+
+    def test_limit_one_with_the_anchors_own_end_bound_returns_only_the_anchor(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter, serial="SN-1")
+        anchor_bill_date = BASE
+        seed_closed(device_id, anchor_bill_date - timedelta(days=31))  # older — must NOT come back
+        seed_closed(device_id, anchor_bill_date - timedelta(days=62))  # older — must NOT come back
+        seed_closed(device_id, anchor_bill_date)  # the anchor itself
+
+        anchor_end = (anchor_bill_date + timedelta(seconds=1)).isoformat()
+        response = fetch(
+            admin_client, "closed", device_id=device_id, meter_serial="1232002893", end=anchor_end, limit=1
+        )
+
+        assert response.status_code == 200, response.text
+        items = response.json()["data"]["items"]
+        assert len(items) == 1
+        assert items[0]["bill_date"].startswith("2026-08-01")
 
 
 class TestAccess:

@@ -15,6 +15,7 @@ import {
   type BillingStatus,
   type Device,
 } from "../api";
+import { captureRequest } from "../capture";
 import { type DisplayUnitScale, type UnitKind, scaleValue, unitLabel, useDisplayUnitScale } from "../units";
 
 const { RangePicker } = DatePicker;
@@ -271,11 +272,17 @@ export function Billing({ role }: { role: "admin" | "user" }) {
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [tab, setTab] = useState<BillingStatus>("closed");
-  const [deviceId, setDeviceId] = useState<number | undefined>(undefined);
+  // Seeded from the capture request (ADR 0017, issue #38, decision 4) when
+  // present — the page is driven by seeded state, not by clicking, because
+  // exactly ten periods is unreachable through the UI and the `bill_date`
+  // bound needs instant precision the RangePicker cannot give it. `deviceId`
+  // and `pageSize` are read once via lazy initializers, matching how
+  // `captureRequest` itself is read once at module load.
+  const [deviceId, setDeviceId] = useState<number | undefined>(() => captureRequest?.deviceId);
   const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null);
 
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [pageSize, setPageSize] = useState(() => captureRequest?.pageSize ?? DEFAULT_PAGE_SIZE);
 
   // The loaded page is keyed by the scope it answers, so a page belonging to
   // the previous tab/device/range is never rendered under the new one — same
@@ -349,11 +356,21 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   };
 
   // Local days in, UTC instants out — the upper bound is the start of the day
-  // after the one picked, the exclusive bound the API wants.
-  const startIso = range ? range[0].startOf("day").toISOString() : undefined;
-  const endIso = range ? range[1].add(1, "day").startOf("day").toISOString() : undefined;
+  // after the one picked, the exclusive bound the API wants. In capture mode
+  // the RangePicker stays untouched (`range` is always `null` there — the
+  // page never renders it as visited) and `endIso` comes from the seeded
+  // request instead: it is chosen server-side to be exclusive of everything
+  // *after* the anchor row while including the anchor's own `bill_date`
+  // exactly (`_png_source_rows()` is `<=`, this endpoint's `end` is `<`).
+  const startIso = captureRequest ? undefined : range ? range[0].startOf("day").toISOString() : undefined;
+  const endIso = captureRequest
+    ? captureRequest.endIso
+    : range
+      ? range[1].add(1, "day").startOf("day").toISOString()
+      : undefined;
+  const meterSerial = captureRequest?.meterSerial ?? undefined;
 
-  const scope = `${tab}|${deviceId ?? ALL}|${startIso ?? ""}|${endIso ?? ""}`;
+  const scope = `${tab}|${deviceId ?? ALL}|${startIso ?? ""}|${endIso ?? ""}|${meterSerial ?? ""}`;
   const shown = loaded?.scope === scope ? loaded.page : null;
 
   useEffect(() => {
@@ -361,7 +378,7 @@ export function Billing({ role }: { role: "admin" | "user" }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     void api
-      .billing(tab, deviceId, startIso, endIso, pageSize, (page - 1) * pageSize)
+      .billing(tab, deviceId, startIso, endIso, pageSize, (page - 1) * pageSize, meterSerial)
       .then((result) => {
         if (current) setLoaded({ scope, page: result });
       })
@@ -380,11 +397,13 @@ export function Billing({ role }: { role: "admin" | "user" }) {
     // `scope` is derived from the same dependencies already listed; adding it
     // too would be redundant, not incorrect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, deviceId, startIso, endIso, page, pageSize, surface]);
+  }, [tab, deviceId, startIso, endIso, meterSerial, page, pageSize, surface]);
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-      {role === "admin" ? <CaptureSettingsCard surface={surface} /> : null}
+      {/* Hidden in capture mode (decision 8, issue #38): the folder path is
+          for a human admin, not for what the headless renderer photographs. */}
+      {role === "admin" && !captureRequest ? <CaptureSettingsCard surface={surface} /> : null}
       <Tabs activeKey={tab} onChange={onTabChange} items={TAB_ITEMS} />
       <Card size="small">
         <Flex gap="small" wrap align="center">

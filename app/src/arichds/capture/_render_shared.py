@@ -148,10 +148,15 @@ _SECTION_META = [
 #: of the five measurement sections (issue #35 / D8): each group expands to
 #: five ``(label, attr)`` pairs (Total, Rate A..D) via
 #: :func:`_measurement_section`. `ALL_SECTIONS` below is built from this, not
-#: declared a second time — the PNG renderer (:mod:`arichds.capture.png`)
-#: needs the grouping explicitly (its two-row header), and this file's own
-#: docstring exists to stop that grouping from being declared twice and
-#: drifting.
+#: declared a second time — :mod:`arichds.capture.pdf` and
+#: :mod:`arichds.capture.xlsx` are what actually read it (both import
+#: ``ALL_SECTIONS``), and this is what stops their two column sets from
+#: drifting apart (code review round, problem 5, corrects an earlier version
+#: of this comment). The Billing *page* (``web/src/pages/Billing.tsx``)
+#: renders the same grouping, but as its own hardcoded TypeScript — a
+#: parallel copy this module does not read from and cannot keep in sync;
+#: the headless-screenshot PNG renderer (ADR 0017, issue #38) photographs
+#: that page and does not read this module at all.
 #:
 #: **Two sections, not four, for the M4c additions** (D18) — SPEC §3.6:709
 #: said "เพิ่มอีก 4 หมวด" (four more sections), but the demand section already

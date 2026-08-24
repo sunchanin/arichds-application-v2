@@ -45,6 +45,7 @@ from arichds.api.deps import (
 )
 from arichds.api.envelope import ApiResponse
 from arichds.capture.paths import validate_capture_dir_setting
+from arichds.capture.screenshot import BrowserCaptureError
 from arichds.capture.service import capture_target_paths, write_pdf_capture, write_png_capture, write_xlsx_capture
 from arichds.config import get_settings
 from arichds.constants import O_BINARY, O_NOFOLLOW
@@ -258,6 +259,12 @@ def list_billing_readings(
         Literal["closed", "open"], Query(alias="status", description="Which tab: closed periods or the Open Period")
     ],
     device_id: Annotated[int | None, Query(ge=1, description="Restrict to one device; omitted = every device")] = None,
+    meter_serial: Annotated[
+        str | None,
+        Query(
+            description="Restrict to one meter_serial (ADR 0005 — identity comes from the meter); omitted = every serial"
+        ),
+    ] = None,
     start: Annotated[datetime | None, Query(description="Inclusive lower bound on bill_date, UTC")] = None,
     end: Annotated[datetime | None, Query(description="**Exclusive** upper bound on bill_date, UTC")] = None,
     limit: Annotated[int, Query(ge=1, le=500, description="Page size")] = 100,
@@ -270,6 +277,12 @@ def list_billing_readings(
 
     Unlike Load Profile, ``device_id`` and the range are optional: billing's
     row volume (~13/device/year) never justifies forcing one.
+
+    ``meter_serial`` (ADR 0017, issue #38, decision 7) makes this endpoint
+    agree unconditionally with :func:`~arichds.capture.service._png_source_rows`,
+    which has always filtered on it — without this param the two would
+    disagree the moment a device's meter is swapped (ADR 0005) and stay
+    disagreeing until enough new-serial periods accumulated on their own.
     """
     if device_id is not None:
         _require_device_exists(session, device_id)
@@ -289,6 +302,8 @@ def list_billing_readings(
     filters = [status_filter]
     if device_id is not None:
         filters.append(BillingReading.device_id == device_id)
+    if meter_serial is not None:
+        filters.append(BillingReading.meter_serial == meter_serial)
     if lower is not None:
         filters.append(BillingReading.bill_date >= lower)
     if upper is not None:
@@ -461,7 +476,8 @@ def download_billing_image(
 ) -> StreamingResponse:
     """Download the Billing History image (up to ten most recent closed
     periods) for one device — render-on-miss, device-keyed (D11, ADR
-    0014/0015, issue #35).
+    0015, issue #35; the renderer itself is a headless screenshot per
+    ADR 0017, issue #38).
 
     **Device-keyed, not reading-keyed** — after Step 6 the frontend has no
     per-row reading id left, and the button must not depend on which page of
@@ -524,6 +540,14 @@ def download_billing_image(
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not write the capture: {exc}"
+            ) from exc
+        except BrowserCaptureError as exc:
+            # `BrowserCaptureError` (ADR 0017, issue #38) is a plain
+            # `Exception`, not an `OSError` — Edge missing, the launch/connect
+            # failing, or the page never matching the expected rows all land
+            # here rather than the clause above, which would not catch them.
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not write the capture: {exc}"
             ) from exc

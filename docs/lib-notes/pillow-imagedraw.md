@@ -1,5 +1,12 @@
 # Pillow (`PIL.Image` / `PIL.ImageDraw` / `PIL.ImageFont`) — API digest for the Billing capture PNG (issue #35, M7 slice 4)
 
+> **Superseded by ADR 0017 (issue #38, 2026-08-22): nothing in `app/` renders with Pillow any
+> more.** `capture/png.py` (the renderer this digest documents) was retired — the Billing capture
+> `.png` is now a headless screenshot of the running Billing page (`capture/screenshot.py`). Pillow
+> itself is **still in the tree**, as a transitive dependency of `fpdf2` (which hard-requires it),
+> so this digest is kept for history rather than deleted — do not use it to justify writing new
+> Pillow rendering code.
+
 Written 2026-08-22, before the third capture renderer was implemented. Every signature below was
 read directly out of the **installed** package at
 `app/.venv/Lib/site-packages/PIL/` — Pillow **12.3.0** — either by running the snippet shown or

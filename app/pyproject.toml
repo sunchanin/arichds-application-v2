@@ -28,15 +28,27 @@ dependencies = [
     "gurux-net>=1.0.23",
     "gurux-serial>=1.0.21",
     "pyserial>=3.5",
-    # ─── Billing capture — PDF/xlsx/PNG (M6b issue #22, M7 slice 4 issue #35) ─
-    # All three pure Python (no Cairo/Pango/native ext) — see
-    # docs/lib-notes/fpdf2-and-openpyxl.md and docs/lib-notes/pillow-imagedraw.md.
-    # fpdf2/openpyxl pinned at the versions v1's renderers are field-proven
-    # against; Pillow was already installed transitively via fpdf2 (ADR 0014),
-    # promoted to a declared dependency at the version verified in the digest.
+    # ─── Billing capture — PDF/xlsx (M6b issue #22), PNG a headless screenshot
+    # (M7 slice 4 issue #35, retired by ADR 0017/issue #38) ────────────────────
+    # fpdf2/openpyxl pure Python (no Cairo/Pango/native ext), pinned at the
+    # versions v1's renderers are field-proven against — see
+    # docs/lib-notes/fpdf2-and-openpyxl.md. Pillow is declared here NOT because
+    # anything in app/ renders with it any more (ADR 0017 retired capture/png.py,
+    # docs/lib-notes/pillow-imagedraw.md) but because fpdf2 itself hard-depends
+    # on it (`Pillow!=9.2.*,>=8.3.2`, verified via `importlib.metadata` on the
+    # installed fpdf2 2026-08-22) — removing this line changes nothing about
+    # what gets installed, so it stays as an honest declaration of a transitive
+    # dependency rather than an implicit one.
     "fpdf2>=2.8.7",
     "openpyxl>=3.1.5",
     "pillow>=12.3.0",
+    # `websockets` speaks the Chrome DevTools Protocol for the headless-
+    # screenshot Billing capture renderer (`capture/screenshot.py`, ADR 0017,
+    # issue #38). Not a new install — it already arrives transitively via
+    # `uvicorn[standard]` and is present at 17.0.1 in this venv — but app/ now
+    # imports it directly, so it is promoted to a declared dependency, the
+    # same call this file already made for Pillow above.
+    "websockets>=17.0.1",
 ]
 
 [project.optional-dependencies]

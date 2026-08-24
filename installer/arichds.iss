@@ -21,7 +21,7 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 
 #define AppName        "ARICHDS"
-#define AppVersion     "0.1.0"
+#define AppVersion     "0.2.0"
 #define AppPublisher   "ARICHDS"
 #define ServiceName    "arichds"
 #define AppPort        "8000"
@@ -60,14 +60,26 @@ Source: "vendor\nssm.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 ; All runtime data lives here and SURVIVES UNINSTALL (see [UninstallDelete] —
-; which deliberately lists nothing under {commonappdata}).
-Name: "{commonappdata}\{#AppName}"
-Name: "{commonappdata}\{#AppName}\logs"
-Name: "{commonappdata}\{#AppName}\license"
+; which deliberately lists nothing under {commonappdata}). Every entry grants
+; `NT AUTHORITY\LocalService` (the `service` identifier — ADR 0017, issue #38)
+; modify rights: the service now runs as that account rather than LocalSystem,
+; because Edge exits 1002 under `nt authority\system` and the headless-screenshot
+; capture renderer (capture/screenshot.py) cannot run without it. Applied
+; "regardless of whether the directory existed prior to installation" (Inno
+; Setup 6 docs), which is what makes this work on an upgrade of an existing
+; install too — see installer/README.md for the inheritance caveat.
+Name: "{commonappdata}\{#AppName}"; Permissions: service-modify
+Name: "{commonappdata}\{#AppName}\logs"; Permissions: service-modify
+Name: "{commonappdata}\{#AppName}\license"; Permissions: service-modify
 ; Singular: the daily backup job writes here (SPEC §5, M5c) and resolves it from
 ; Settings.backup_dir, which is `<data>\backup`.
-Name: "{commonappdata}\{#AppName}\backup"
-Name: "{commonappdata}\{#AppName}\captures"
+Name: "{commonappdata}\{#AppName}\backup"; Permissions: service-modify
+Name: "{commonappdata}\{#AppName}\captures"; Permissions: service-modify
+; Short-lived working state (issue #38, step 4) — today, just the per-capture
+; Edge profile directories `capture/screenshot.py` creates under
+; Settings.tmp_dir. Inside {commonappdata}\ARICHDS rather than %TEMP%, which
+; resolves somewhere outside this grant under the LocalService account.
+Name: "{commonappdata}\{#AppName}\tmp"; Permissions: service-modify
 
 [Icons]
 Name: "{group}\{#AppName} Web UI"; Filename: "http://localhost:{#AppPort}/"
@@ -87,6 +99,17 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} AppDirectory ""{app}
 ; service (rather than machine-wide) keeps a dev checkout on the same box
 ; independent of the installed instance.
 Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} AppEnvironmentExtra ARICHDS_DATA_DIR={commonappdata}\{#AppName} ARICHDS_PORT={#AppPort}"; \
+    Flags: runhidden waituntilterminated
+; ── Run as LocalService, not LocalSystem (ADR 0017, issue #38) ──────────────
+; `msedge.exe` exits 1002 immediately under `nt authority\system` — for any
+; argument, including `--version` — so the headless-screenshot Billing
+; capture (capture/screenshot.py) cannot run under the default LocalSystem
+; account NSSM installs with. `NT AUTHORITY\LocalService` needs no password;
+; NSSM's docs require an explicit (empty) password argument even so — see
+; https://nssm.cc/commands, "If you absolutely must configure an account
+; with a blank password". Runs unconditionally, so it applies on an upgrade
+; of an existing service too, exactly like every other `nssm set` here.
+Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} ObjectName ""NT AUTHORITY\LocalService"" """""; \
     Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} AppStdout ""{commonappdata}\{#AppName}\logs\service.log"""; \
     Flags: runhidden waituntilterminated

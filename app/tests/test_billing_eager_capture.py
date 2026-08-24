@@ -10,6 +10,7 @@ Open Period. Gated on ``auto_capture`` (PDF) / ``billing_excel_export``
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -306,19 +307,28 @@ def _utc(moment: datetime) -> datetime:
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
+#: The smallest possible valid PNG (1x1, transparent) — no Pillow, no
+#: browser. `render_billing_png` (ADR 0017, issue #38) needs a real Edge
+#: install and a real admin account to run at all, so every test here that
+#: only cares about *which rows were selected* stubs it with this instead.
+_FAKE_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
 def _spy_render_billing_png(monkeypatch: pytest.MonkeyPatch) -> list[list[object]]:
     """Patch `capture.service`'s imported `render_billing_png` with a spy
-    that records the `rows` argument of every call and still delegates to
-    the real renderer, so the write path completes normally. Used to prove
-    the D4 row-selection query without inspecting the query directly."""
+    that records the `rows` argument of every call and returns fixed PNG
+    bytes, so the hardened-write path completes normally without a real
+    Edge/browser. Used to prove the D4 row-selection query without
+    inspecting the query directly."""
     import arichds.capture.service as service_module
 
     captured_rows: list[list[object]] = []
-    original = service_module.render_billing_png
 
-    def spy(rows, device_name, scale="kilo"):  # noqa: ANN001
+    def spy(rows, device_name):  # noqa: ANN001
         captured_rows.append(list(rows))
-        return original(rows, device_name, scale=scale)
+        return _FAKE_PNG_BYTES
 
     monkeypatch.setattr(service_module, "render_billing_png", spy)
     return captured_rows
@@ -326,8 +336,14 @@ def _spy_render_billing_png(monkeypatch: pytest.MonkeyPatch) -> list[list[object
 
 class TestPngIsWrittenWhenImageExportIsOn:
     def test_the_png_is_written_alongside_pdf_and_xlsx(
-        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features
+        self,
+        device_id: int,
+        fake_meter: FakeMeterState,
+        capture_dir: Path,
+        license_features,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        _spy_render_billing_png(monkeypatch)  # no real Edge/DB-admin needed to exercise the write path
         license_features(["billing", "auto_capture", "billing_excel_export", "billing_image_export"])
         set_capture_dir(capture_dir)
         fake_meter.billing_rows = [ENTRY_CLOSED]
@@ -367,15 +383,20 @@ class TestT11PngFailureNeverUndoesThePdf:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """T11 (D3) — a PNG render failure must not undo the PDF, must not
-        fail the read, and must be logged."""
+        fail the read, and must be logged. Raises `BrowserCaptureError`
+        specifically (ADR 0017, issue #38) rather than a generic exception —
+        `capture_reading()`'s `except Exception` catches it either way, but
+        this is what proves that specifically, rather than by reading the
+        `except` clause and trusting it."""
         import arichds.capture.service as service_module
+        from arichds.capture.screenshot import BrowserCaptureError
 
         license_features(["billing", "auto_capture", "billing_image_export"])
         set_capture_dir(capture_dir)
         fake_meter.billing_rows = [ENTRY_CLOSED]
 
         def boom(*args: object, **kwargs: object) -> None:
-            raise RuntimeError("png blew up")
+            raise BrowserCaptureError("png blew up")
 
         monkeypatch.setattr(service_module, "render_billing_png", boom)
 

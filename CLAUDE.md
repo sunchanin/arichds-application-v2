@@ -95,7 +95,12 @@ MySQL, and ~30 tables.
   the installed browser over CDP costs **0 MB** and makes fidelity an identity rather than an
   approximation; the price is that the service **can no longer run as LocalSystem** (`msedge.exe`
   exits 1002 under `nt authority\system`) and that the image is truncated exactly as the screen
-  is, which the owner chose; 0015 and 0010 are untouched; **not yet implemented**).
+  is, which the owner chose; 0015 and 0010 are untouched; **fully implemented** with issue #38 —
+  `capture/screenshot.py` drives Edge over CDP against a seeded `web/src/capture.ts` request
+  (`app/` decides which ten periods, never the page's own defaults), the DOM/JS contract lives
+  in `capture/dom.py`, the service now runs `NT AUTHORITY\LocalService` with a
+  `[Dirs] Permissions:` grant on `%ProgramData%\ARICHDS`, and `capture/png.py`'s Pillow renderer
+  is gone).
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
@@ -124,10 +129,12 @@ MySQL, and ~30 tables.
   English-only UI). No Tailwind — AntD tokens + its layout primitives cover the UI. pnpm.
 - `installer/` — Inno Setup script + NSSM service wrapper (`installer/vendor/nssm.exe` is a
   vendor drop, never committed). Installs to `Program Files\ARICHDS`, data at
-  `%ProgramData%\ARICHDS` (`arichds.db`, `license\`, `logs\`, `backup\`, and
+  `%ProgramData%\ARICHDS` (`arichds.db`, `license\`, `logs\`, `backup\`,
+  `tmp\` (per-capture Edge profile directories, ADR 0017, issue #38 — never `%TEMP%`), and
   `secret\jwt_secret.key` —
   generated on first run, ADR 0003; deleting it signs everyone out). Port 8000, firewall
-  rule. Migration runs at service start — no installer migrate step.
+  rule. Migration runs at service start — no installer migrate step. Runs as
+  `NT AUTHORITY\LocalService` (ADR 0017, issue #38) — see `installer/README.md`.
 - `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code signing. Private keys are
   NEVER committed.
 - `mockups/` — throwaway comparison app that decided D4 (AntD). Do not extend.

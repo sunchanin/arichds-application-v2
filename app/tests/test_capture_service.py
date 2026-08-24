@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,25 @@ import pytest
 from arichds.capture.service import capture_reading, capture_target_paths, write_png_capture
 
 BILL_DATE = datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC)
+
+#: The smallest possible valid PNG (1x1, transparent) — no Pillow, no
+#: browser. `render_billing_png` (ADR 0017, issue #38) needs a real Edge
+#: install and a real database to run at all, so every test here that only
+#: cares about the *hardened write* around it stubs the renderer with this
+#: instead of exercising the real headless-screenshot path.
+FAKE_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def stub_render_billing_png(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch `capture.service`'s imported `render_billing_png` to return
+    :data:`FAKE_PNG_BYTES` — the hardened-write path (target/allowlist/
+    fsync) is still exercised end to end; only the actual browser drive is
+    skipped."""
+    import arichds.capture.service as service_module
+
+    monkeypatch.setattr(service_module, "render_billing_png", lambda *args, **kwargs: FAKE_PNG_BYTES)
 
 
 def make_row(**overrides: object) -> SimpleNamespace:
@@ -111,7 +131,8 @@ class TestCaptureReading:
         assert pdf_path.exists()
         assert not xlsx_path.exists()
 
-    def test_writes_the_png_when_write_image_is_on(self, tmp_path: Path) -> None:
+    def test_writes_the_png_when_write_image_is_on(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub_render_billing_png(monkeypatch)
         row = make_row()
 
         capture_reading(row, "Main Incomer", tmp_path, write_excel=False, write_image=True)
@@ -119,6 +140,7 @@ class TestCaptureReading:
         pdf_path, _xlsx_path, png_path = capture_target_paths(tmp_path, "1232002893", BILL_DATE)
         assert pdf_path.exists()
         assert png_path.exists()
+        assert png_path.read_bytes() == FAKE_PNG_BYTES
 
     def test_t10_write_image_off_never_writes_a_png(self, tmp_path: Path) -> None:
         """T10 (D1/D3) — with `write_image` off, the PDF is still written and
@@ -184,11 +206,10 @@ class TestWritePngCaptureDetachedRow:
         )
 
         captured_rows: list[list[object]] = []
-        original = service_module.render_billing_png
 
-        def spy(rows, device_name, scale="kilo"):  # noqa: ANN001
+        def spy(rows, device_name):  # noqa: ANN001
             captured_rows.append(list(rows))
-            return original(rows, device_name, scale=scale)
+            return FAKE_PNG_BYTES
 
         monkeypatch.setattr(service_module, "render_billing_png", spy)
 
@@ -200,11 +221,12 @@ class TestWritePngCaptureDetachedRow:
         assert any("session" in record.message.lower() for record in caplog.records)
 
     def test_an_unmapped_simplenamespace_row_stays_silent(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The documented, intended fallback (pdf.py/xlsx.py's own row
         shape) — a plain test double, not an ORM row — must NOT warn; this
         is the case the review explicitly asked to keep silent."""
+        stub_render_billing_png(monkeypatch)
         row = make_row()
 
         with caplog.at_level("WARNING"):

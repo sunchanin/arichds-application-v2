@@ -174,6 +174,22 @@ class Settings(BaseSettings):
         return self.data_dir.resolve() / "secret"
 
     @property
+    def tmp_dir(self) -> Path:
+        """Directory for short-lived working state — today, just the
+        per-capture Edge profile directories the headless-screenshot
+        renderer creates (ADR 0017, issue #38).
+
+        Deliberately **not** the OS temp directory: under the service
+        account this ADR installs (``NT AUTHORITY\\LocalService``), ``%TEMP%``
+        resolves to ``C:\\Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\Temp``,
+        which is outside the ``[Dirs] Permissions:`` grant the installer
+        gives this service on ``%ProgramData%\\ARICHDS``. Inside
+        :attr:`data_dir` instead, so it is covered by that grant by
+        construction.
+        """
+        return self.data_dir.resolve() / "tmp"
+
+    @property
     def jwt_secret_path(self) -> Path:
         """Absolute path to the per-install JWT signing secret (ADR 0003).
 
@@ -188,7 +204,14 @@ class Settings(BaseSettings):
         SQLite will not create a missing parent directory, and neither will the
         rotating log handler — so this runs before either is opened.
         """
-        for directory in (self.data_dir.resolve(), self.license_dir, self.log_dir, self.secret_dir, self.backup_dir):
+        for directory in (
+            self.data_dir.resolve(),
+            self.license_dir,
+            self.log_dir,
+            self.secret_dir,
+            self.backup_dir,
+            self.tmp_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
 
 

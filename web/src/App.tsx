@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api, type LicenseStatus } from "./api";
 import { type Session, clearSession, getSession, onSessionChange, setSession } from "./auth";
+import { captureRequest } from "./capture";
 import { AppShell } from "./components/AppShell";
 import { Activation } from "./pages/Activation";
 import { AppLog } from "./pages/AppLog";
@@ -88,7 +89,12 @@ export default function App() {
   const [status, setStatus] = useState<LicenseStatus | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [page, setPage] = useState<Page>("devices");
+  // Capture mode (ADR 0017, issue #38) starts on Billing instead of Devices —
+  // no menu click, so the headless renderer never touches the sider. Read
+  // once via `useState`'s lazy initializer, matching `session` above; a
+  // capture request never changes mid-session so this never needs to react
+  // to it again.
+  const [page, setPage] = useState<Page>(() => (captureRequest ? "billing" : "devices"));
 
   // A 401 anywhere in the app clears the session; this is what turns that into
   // a re-render back to Login, without any page knowing about any other page.

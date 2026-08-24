@@ -1,5 +1,10 @@
 # The capture image is drawn, never screenshotted
 
+> **Superseded by ADR 0017.** The capture PNG is now a headless screenshot of our own Billing
+> page, driven over CDP against the already-installed Microsoft Edge — see
+> `docs/adr/0017-the-capture-image-is-a-headless-screenshot-of-our-own-page.md`. This document is
+> kept as the historical record of the decision it reverses; nothing below is edited.
+
 The owner relayed a customer request in two clauses that cannot both be honoured literally:
 *"capture จากหน้าจอจริงๆเลย"* and *"ต้องการให้มัน capture แบบ auto ได้ถึงแม้ว่าจะไม่ได้เปิดหน้า UI
 ทิ้งเอาไว้"*. **When nobody is looking at the page there is no screen to photograph** — no

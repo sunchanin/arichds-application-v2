@@ -100,6 +100,70 @@ Removing them would
 be unrecoverable, so it is a manual decision — delete that folder by hand if you
 really mean it.
 
+## The service account (ADR 0017, issue #38)
+
+The service runs as **`NT AUTHORITY\LocalService`**, not `LocalSystem` — the
+installer's own `nssm set … ObjectName` in `[Run]` does this on every
+install and every upgrade. This is a real change from earlier builds, which
+ran as `LocalSystem` with no `ObjectName` set at all.
+
+**Why**: the Billing capture `.png` (ADR 0017) is now a headless screenshot
+of the running Billing page, taken by driving the already-installed
+Microsoft Edge over the Chrome DevTools Protocol. `msedge.exe` exits **1002**
+immediately under `nt authority\system` — for any argument, including
+`--version` — and runs normally under `nt authority\local service`. There is
+no other account that gets both "Edge starts" and "no password to manage":
+LocalService needs neither a password nor profile provisioning.
+
+**What it costs**: LocalService is *not* administrator-equivalent the way
+LocalSystem is. It loses write access to any operator-chosen directory
+outside `C:\ProgramData\ARICHDS` — a `capture_dir` (ADR 0010) or a Load
+Profile export folder (issue #30) pointed at, say, `D:\Exports`, whose
+default ACL gives `BUILTIN\Users` read-and-execute only. `capture_reading()`
+logs and swallows a write failure there rather than surfacing it — see
+**Troubleshooting** below for where that shows up.
+
+### What the owner must verify after installing or upgrading
+
+```powershell
+sc qc arichds
+```
+Expect `SERVICE_START_NAME : NT AUTHORITY\LocalService` (NSSM/Windows may
+display it as `NT AUTHORITY\LocalService` or `.\LocalService`; both name the
+same well-known account).
+
+```powershell
+icacls C:\ProgramData\ARICHDS
+```
+Expect an ACE for `NT AUTHORITY\LOCAL SERVICE` carrying **`(OI)(CI)`** and
+`(M)` (modify). **The `(OI)(CI)` inheritance flags are the thing to check.**
+Inno Setup 6's `[Dirs] Permissions:` docs state the permission is applied
+"regardless of whether the directory existed prior to installation," but
+say nothing about whether the ACE it writes is flagged inheritable —
+verified against the published docs 2026-08-22, no primary source either
+way. If `(OI)(CI)` is missing on a subfolder created *after* install (a new
+device's capture folder, for instance), the one-time fix is:
+```powershell
+icacls C:\ProgramData\ARICHDS /grant "NT AUTHORITY\LOCAL SERVICE":(OI)(CI)M /T
+```
+This command is documentation only — **do not run it** unless `icacls`
+above actually shows the flags missing.
+
+The `MachineGuid` registry read (`licensing/fingerprint.py`) that produces
+the Machine ID needs no special grant — `HKLM\SOFTWARE\Microsoft\Cryptography`
+carries a `BUILTIN\Users` `ReadKey` ACE (inherited, `ContainerInherit`),
+confirmed by `Get-Acl` on this machine 2026-08-22 — but an ACL read is
+*evidence*, not *proof*: the authoritative check is that the two things
+below actually work under the real service token.
+
+- The **Activation page still shows a Machine ID** after install — this is
+  the proof the `MachineGuid` read succeeded under LocalService. If it
+  instead shows an error, the machine has dropped into Limited Mode
+  (ADR 0001) and the registry read is the first thing to check.
+- A **Billing capture `.png` appears under `capture_dir`** for a device with
+  a closed period (wait for the next scheduled billing read, or use the
+  Billing page's "Capture image" button).
+
 ## After installing
 
 1. Open `http://localhost:8000/` (the installer offers this at the end).
@@ -115,6 +179,7 @@ really mean it.
 5. Paste the code into the Activation page (an administrator account is required
    to do this). It takes effect immediately — the poller starts and the Devices
    page appears with no service restart.
+6. Run the checks under **The service account** above.
 
 ## Troubleshooting
 
@@ -124,3 +189,5 @@ really mean it.
 | Web UI unreachable from another machine | The firewall rule exists (`netsh advfirewall firewall show rule name="ARICHDS Web UI (TCP 8000)"`) and nothing else holds port 8000 |
 | Uninstall hangs | An `nssm remove` without `confirm` opens a GUI dialog. The script always passes `confirm`; if you removed it by hand, put it back |
 | Activation refused with `WRONG_MACHINE` | The Machine ID sent to the vendor does not match this machine. Re-copy it from the Activation page — it is bound to the hardware |
+| A Billing capture `.png` never appears, or an operator-chosen `capture_dir`/export folder outside `C:\ProgramData\ARICHDS` never gets written to, with no error shown anywhere in the UI | **This is the LocalService cost above — it is silent by design.** Check the App Log page (admin) and `C:\ProgramData\ARICHDS\logs\arichds.log` for a swallowed write failure. Fix by granting the operator's own folder: `icacls "<the folder>" /grant "NT AUTHORITY\LOCAL SERVICE":(OI)(CI)M /T` |
+| A Billing capture `.png` fails with a 500 naming Edge | `resolve_edge_path()` (`capture/screenshot.py`) could not find `msedge.exe` via the registry or either well-known Program Files location — Edge was uninstalled or is at a non-standard path |
