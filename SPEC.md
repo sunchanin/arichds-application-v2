@@ -129,7 +129,7 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
 **Password**: ขั้นต่ำ 8 ตัวอักษร (และไม่เกิน 72 **ไบต์** — ขีดจำกัดของ bcrypt 5) ไม่บังคับ complexity ·
 ลืมรหัส = admin ตั้งใหม่ให้จากหน้า User Management (ไม่มี email infra) · admin คนเดียวลืมเอง =
 ทางหนีไฟผ่าน vendor CLI บนเครื่อง (**ยังไม่ได้ทำ** — `tools/arichds_vendor.py` มีแค่
-keygen/sign/fingerprint) · **ไม่มี lockout/rate-limit** — บันทึก failed login ลง log
+keygen/sign/sign-meter/fingerprint) · **ไม่มี lockout/rate-limit** — บันทึก failed login ลง log
 (โผล่ App Log ใน M7); bcrypt ช้าพอเป็น rate-limit ธรรมชาติ และเครื่องอยู่ใน LAN ปิด
 
 **User Management** (M2-2 — admin เท่านั้นทุก endpoint):

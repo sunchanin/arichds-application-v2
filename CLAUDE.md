@@ -124,7 +124,10 @@ MySQL, and ~30 tables.
   ID**, checked at Create **and re-checked at Update when the serial changes** (or the gate is
   bypassable by swapping the meter), grandfathering devices that predate it and stacking with
   `max_meters` rather than replacing it; the price is that an RMA and a hardware migration both
-  cost new codes; **not yet implemented**).
+  cost new codes; the vendor half landed with issue #41 —
+  `licensing/meter_activation_code.py`, `tools/arichds_vendor.py sign-meter`, and
+  `/activate-meter` — the product half (the `devices` column, the gate at Create, the re-check
+  at Update) is issue #42 and **not yet implemented**).
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
@@ -165,8 +168,8 @@ MySQL, and ~30 tables.
   as **LocalSystem**; only the capture browser's scheduled task runs as
   `NT AUTHORITY\LOCAL SERVICE` (ADR 0017, issue #40 — corrects issue #38's own fix, which had
   moved the whole service there) — see `installer/README.md`.
-- `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code signing. Private keys are
-  NEVER committed.
+- `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code + Meter Activation Code
+  signing. Private keys are NEVER committed.
 - `mockups/` — throwaway comparison app that decided D4 (AntD). Do not extend.
 - `docs/` — REMAKE-PLAN + ADRs, plus `lib-notes/` (per-module API digests), `meter-notes/`
   (register maps scanned off real meters) and `issues/` (local issue files for work that does

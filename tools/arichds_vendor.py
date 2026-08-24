@@ -23,6 +23,16 @@ Commands
     Prints the one-line Activation Code on stdout. That single line is what the
     customer pastes into the first-run Activation page.
 
+``sign-meter``
+    Sign a Meter Activation Code for one meter on one machine (ADR 0019)::
+
+        python tools/arichds_vendor.py sign-meter --meter-serial <serial> --machine-id <64-hex>
+
+    Prints the one-line Meter Activation Code on stdout. Bound to both the
+    Meter Serial and the Machine ID — a separate wire format from the
+    Activation Code above, verified by
+    ``app/src/arichds/licensing/meter_activation_code.py``.
+
 ``fingerprint``
     Print *this* machine's Machine ID — for vendor-side testing, so you can sign
     a code for your own dev box without asking anyone for their ID.
@@ -115,6 +125,31 @@ def _to_iso(value: datetime | None) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.astimezone(UTC).isoformat()
+
+
+#: Meter Activation Code payload version. This format has no predecessor.
+METER_PAYLOAD_VERSION = 1
+METER_TYPE = "meter"
+
+
+def build_meter_payload(
+    *,
+    meter_serial: str,
+    machine_id: str,
+    issued_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a Meter Activation Code payload. Mirrors the app's field-for-field.
+
+    MUST match ``arichds.licensing.meter_activation_code.build_meter_payload``.
+    """
+    return {
+        "v": METER_PAYLOAD_VERSION,
+        "product": PRODUCT,
+        "type": METER_TYPE,
+        "meter_serial": meter_serial,
+        "machine_id": machine_id,
+        "issued_at": _to_iso(issued_at or datetime.now(UTC)),
+    }
 
 
 def sign_payload(private_pem: bytes, payload: dict[str, Any]) -> str:
@@ -224,6 +259,44 @@ def cmd_sign(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sign_meter(args: argparse.Namespace) -> int:
+    """Sign a Meter Activation Code for one meter on one machine (ADR 0019)."""
+    private_path = Path(args.private_key)
+    if not private_path.exists():
+        print(f"ERROR: Private key not found at {private_path}.", file=sys.stderr)
+        print("       Run: python tools/arichds_vendor.py keygen", file=sys.stderr)
+        return 1
+
+    meter_serial = args.meter_serial.strip()
+    if not meter_serial:
+        print("ERROR: --meter-serial must not be empty or whitespace-only.", file=sys.stderr)
+        return 1
+    if len(meter_serial) > 64:
+        print("ERROR: --meter-serial must be 64 characters or fewer after stripping.", file=sys.stderr)
+        return 1
+
+    machine_id = args.machine_id.strip().lower()
+    if len(machine_id) != 64 or not all(c in "0123456789abcdef" for c in machine_id):
+        print("ERROR: --machine-id must be the 64-character hex Machine ID shown on the", file=sys.stderr)
+        print("       Activation page (or from `arichds_vendor.py fingerprint`).", file=sys.stderr)
+        return 1
+
+    payload = build_meter_payload(meter_serial=meter_serial, machine_id=machine_id)
+    code = sign_payload(private_path.read_bytes(), payload)
+
+    print(f"Meter Serial : {payload['meter_serial']}", file=sys.stderr)
+    print(f"Machine ID   : {payload['machine_id']}", file=sys.stderr)
+    print("\nMETER ACTIVATION CODE (send this single line to the customer):\n", file=sys.stderr)
+    print(code)
+
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(code, encoding="utf-8")
+        print(f"\nAlso written to {out_path}", file=sys.stderr)
+    return 0
+
+
 def cmd_fingerprint(args: argparse.Namespace) -> int:
     """Print this machine's Machine ID (vendor-side testing)."""
     sys.path.insert(0, str(REPO_ROOT / "app" / "src"))
@@ -250,6 +323,7 @@ Examples:
   python tools/arichds_vendor.py sign --customer "Acme Co" --machine-id <64-hex>
   python tools/arichds_vendor.py sign --customer "Acme Co" --machine-id <64-hex> \\
       --mode leased --lease-days 45 --max-meters 30
+  python tools/arichds_vendor.py sign-meter --meter-serial <serial> --machine-id <64-hex>
 """,
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -281,6 +355,13 @@ Examples:
     sign.add_argument("--private-key", default=str(DEFAULT_PRIVATE_KEY_PATH), help="Signing private key path.")
     sign.add_argument("--out", default=None, help="Also write the code to this file.")
     sign.set_defaults(func=cmd_sign)
+
+    sign_meter = sub.add_parser("sign-meter", help="Sign a Meter Activation Code for one meter on one machine.")
+    sign_meter.add_argument("--meter-serial", required=True, help="The Meter Serial read off the meter.")
+    sign_meter.add_argument("--machine-id", required=True, help="The customer's 64-hex Machine ID.")
+    sign_meter.add_argument("--private-key", default=str(DEFAULT_PRIVATE_KEY_PATH), help="Signing private key path.")
+    sign_meter.add_argument("--out", default=None, help="Also write the code to this file.")
+    sign_meter.set_defaults(func=cmd_sign_meter)
 
     fingerprint = sub.add_parser("fingerprint", help="Print this machine's Machine ID.")
     fingerprint.set_defaults(func=cmd_fingerprint)
