@@ -160,7 +160,8 @@ Skill calls: 1
   ประหยัดรอบค้นที่ไม่จำเป็นไปหนึ่งรอบ
 
 ## Commit
-`<hash>` — `feat: issue Meter Activation Codes from the vendor CLI (#41)`
+`12ec84e` — `feat: issue Meter Activation Codes from the vendor CLI (#41)`
+9 ไฟล์ · +1,060 / −5
 
 **ยังไม่มีอะไรให้เจ้าของยืนยันด้วยมือในใบนี้** — code ที่ออกได้ยังไม่มีที่ให้วาง เพราะฟอร์ม
 Add Device คือ #42 · `/activate-meter` เขียนความจริงข้อนี้ไว้ใน Step 4 แล้ว ไม่ได้เขียนวิธีวาง
