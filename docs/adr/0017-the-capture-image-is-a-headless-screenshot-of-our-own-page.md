@@ -53,12 +53,32 @@ absent" as a permanent cost; that cost is now zero.
 
 ## What this costs instead
 
-- **The service can no longer run as LocalSystem.** `msedge.exe` exits **1002** immediately under
-  `nt authority\system` — for any argument, including `--version` — and runs normally under
-  `nt authority\local service`. Session 0 is *not* the obstacle; the SYSTEM account is. The
-  installer currently sets no `ObjectName`, so this is a real change to how ARICHDS is installed,
-  and it drags NTFS grants on `%ProgramData%\ARICHDS` along with it. This is the single largest
-  consequence of this ADR and the reason it is an ADR rather than a refactor.
+- **Edge cannot run as LocalSystem — but the service still can.** `msedge.exe` exits **1002**
+  immediately under `nt authority\system`, for any argument including `--version`, and runs
+  normally under `nt authority\local service`. Session 0 is *not* the obstacle; the SYSTEM
+  account is.
+
+  **Correction, 2026-08-22 (same day).** This bullet first read *"the service can no longer run as
+  LocalSystem"* and called that the largest consequence of the ADR. That inference was wrong, and
+  issue #38 shipped it: the service was switched to `NT AUTHORITY\LocalService`, and on the first
+  real install the capture failed with a 422 because LocalService cannot write a `capture_dir`
+  under `C:\Users\…`, which is where operators actually put it. The Load Profile CSV export
+  directory has the same shape and would have failed the same way, silently.
+
+  What is actually true is narrower: **only the `msedge.exe` launch must leave SYSTEM.** Edge never
+  writes the capture — it renders and returns bytes over CDP, and the service writes the file. So
+  the browser is started through a Windows scheduled task registered to
+  `NT AUTHORITY\LOCAL SERVICE`, triggered by the service with `schtasks /run`, while the service
+  itself stays `LocalSystem` and everything it already does — the Poller, the exports, the capture
+  write — is untouched. The only NTFS grant needed is on `%ProgramData%\ARICHDS\tmp`, for Edge's
+  own profile directory.
+
+  Measured on this machine before adopting it, rather than reasoned about: a SYSTEM caller's
+  `schtasks /run` returns 0 and Edge comes up owned by `LOCAL SERVICE` with a reachable CDP port;
+  `Browser.close` takes all eleven of its processes down and returns the task to `Ready`;
+  `schtasks /end` from SYSTEM does the same as a fallback; and a relaunch after either stop
+  succeeds — which matters because `schtasks /run` refuses a task still marked `Running`, so a
+  stop that left it stuck would have broken every capture after the first.
 - **The image is truncated exactly as the screen is.** 0014 counted "carries every column" as an
   advantage over a screenshot. The owner reviewed the truncated prototype and chose the screen's
   own framing (*"คอลัมน์โดนตัดไม่เป็นไรเอาเท่าที่เห็นในหน้าจอ"*, 2026-08-22). The full 43-column
