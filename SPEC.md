@@ -1108,9 +1108,17 @@ watermark ที่เลื่อนเมื่อ ACK · หัวข้อ�
   `block_cipher_key` แต่ endpoint ไม่เคยส่งกลับ · ฟอร์มบนหน้า `DatabaseDestination.tsx`
   มีช่อง host · port · database · user · password ครบอยู่แล้วตั้งแต่ issue #37 แค่ยังไม่ต่อหลังบ้าน
 - **หน้าเว็บต้องบอกสถานะ**: sync ล่าสุดเมื่อไหร่ · กี่แถว · ผิดพลาดว่าอะไร · ปุ่มทดสอบการเชื่อมต่อ
+- **เป้าหมายจริงคือ MariaDB ไม่ใช่ MySQL** — ลูกค้าใช้ XAMPP และปุ่มที่เขียนว่า "MySQL" บน
+  XAMPP Control Panel สตาร์ต **MariaDB** (เครื่องอ้างอิง: `10.4.32-MariaDB`) · ออกแบบและทดสอบกับ
+  MariaDB 10.4 · รับ MySQL 8 ด้วยได้เกือบฟรีโดยใช้ URL scheme `mysql+pymysql://` ซึ่ง SQLAlchemy
+  แยกเองว่าปลายทางเป็นตัวไหน — **ไม่ใช่** `mariadb+pymysql://` ที่ปฏิเสธ MySQL ·
+  ⚠️ `caching_sha2_password` **ไม่มีใน MariaDB** ห้ามเขียนเกณฑ์ทดสอบรอบ auth plugin ที่ปลายทาง
+  ไม่มีวันมี · charset ประกาศใน DDL เอง ไม่รับมรดกจาก server (XAMPP ตั้ง `utf8mb4` ไว้แล้วที่
+  `my.ini:160` แต่ default ของ MariaDB คือ `latin1` และ `my.ini` ของลูกค้ารายอื่นไม่ใช่ใบนี้)
 - **PyMySQL ผ่าน SQLAlchemy Core** — pure Python ไม่ต้องมี C toolchain ตอน PyInstaller ·
-  และทำให้ **ทดสอบได้โดยไม่ต้องมี MySQL**: compile statement กับ `mysql` dialect แล้ว assert
-  SQL ที่ออกมา · integration test จริงข้ามได้เมื่อไม่มี `ARICHDS_TEST_MYSQL_URL`
+  ทดสอบกับ server จริงเป็นหลัก **ไม่ใช่** assert สตริง SQL ที่ compile ออกมา เพราะ dialect ของ
+  MySQL กับ MariaDB ใน SQLAlchemy ไม่เหมือนกัน — assert กับ `mysql` dialect ผ่านได้ทั้งที่
+  MariaDB รับคนละอย่าง · integration test อ่าน `ARICHDS_TEST_MYSQL_URL` และข้ามเมื่อไม่มี
 
 ## 4. เทคนิค & สถาปัตยกรรม (Technical & Architecture)
 
