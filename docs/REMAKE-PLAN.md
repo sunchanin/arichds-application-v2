@@ -1,8 +1,13 @@
 # ARICHDS Application v2 — แผนงาน Remake
 
 > ร่างที่ 2 — 2026-08-02 (แก้หลัง `/scrutinize` + ข้อมูลเพิ่มจากเจ้าของโปรเจค)
+> ปรับสถานะล่าสุด 2026-08-24 — ดู "สถานะปัจจุบัน" ท้าย §0
 > ต้นทาง: `C:\Users\HP\Documents\Work\cewe` (arichds-application v1)
-> ขั้นถัดไป: `/grill-with-docs`
+>
+> ⚠️ **เลข ADR ในเอกสารนี้อ้างสองชุด** — ตัวที่เขียนว่า **(v1)** อยู่ในรีโป `cewe` ซึ่งเก็บ ADR
+> ไว้ **สามที่** (`docs/adr/`, `cewe-worker/src/billing/docs/adr/`, `modbus-logger/docs/adr/`)
+> ส่วนที่ไม่มีวงเล็บคือ `docs/adr/` ของ v2 เอง · ตอนร่างเอกสารนี้ v2 ยังไม่มี ADR จึงไม่กำกวม
+> วันนี้ v2 มีถึง 0019 แล้ว และเลขชนกันเกือบทุกตัว — **0016 · 0018 · 0019 ชนกันตรง ๆ**
 
 ---
 
@@ -13,6 +18,23 @@
 1. **v1 ยังไม่เคยถูกใช้งานจริง — มีแค่ demo ให้ลูกค้าดู** → ไม่มีข้อมูล production, ไม่มี license ที่ออกไปแล้ว, ไม่ต้องเขียนสคริปต์ migrate, ไม่ต้อง maintain v1 คู่ขนาน, **เปลี่ยนชื่อเชิง cryptographic ได้ฟรี**
 2. **แต่ business logic ผ่านหน้างานลูกค้าและลูกค้ายืนยันแล้ว** → กฎทางธุรกิจของ v1 คือ ground truth ห้ามคิดใหม่ ("ยังไม่ใช้งานจริง" กับ "ยังไม่พิสูจน์" คนละเรื่องกัน)
 3. **มี API ของทีมเราเองบนเครื่องลูกค้า อ่าน database ของโปรแกรมโดยตรง เพื่อส่ง billing + load profile ไปแสดงบนเว็บไซต์** → นี่คือของที่ผูกกับ *ชื่อตาราง* ของเรา และเป็นตัวบล็อกการลีน database ตัวจริง (ดู §3.5)
+
+### สถานะปัจจุบัน (2026-08-24)
+
+**M1–M7 ลงครบแล้ว** · M8 ลงเฉพาะหน้าจอ · M9 เปลี่ยนรูปจากที่วางไว้ (ดูในหัวข้อของมัน)
+
+สามเรื่องที่เกิดขึ้นหลังร่างนี้และเปลี่ยนสิ่งที่เอกสารบรรยายไว้:
+
+- **capture ของ Billing กลายเป็น screenshot ของหน้าเว็บตัวเอง** ไม่ใช่เอกสารที่วาดขึ้น —
+  ADR 0014 สั่งให้วาดด้วย Pillow แล้ว **ADR 0017 กลับคำ** เพราะ premise ของ 0014
+  (*"ไม่มีหน้าจอให้ถ่ายตอนไม่มีคนดู"*) ผิดทั้งสี่ข้อ · ไฟล์ที่ได้เพิ่มเป็นสามนามสกุลใต้ชื่อเดียวกัน
+  โดย `.png` กินสิบรอบบิลส่วนอีกสองอันกินรอบเดียว (ADR 0015 — ดูเหมือนบั๊กแต่เป็นการตัดสินใจ)
+- **Data-out แตกเป็นสองชนิด** — ADR 0016 นิยาม *Data-out Destination* (FTP · MySQL ของลูกค้า ·
+  โฟลเดอร์ที่ถูก replicate เป็นรูปเดียวกัน) และบันทึกว่า **ฐานข้อมูลของลูกค้าเป็นปลายทาง ไม่ใช่ที่เก็บของเรา**
+  เพราะ MySQL แสดง partial unique index ที่ ADR 0009 พึ่งอยู่ไม่ได้ · ไซต์ที่ห้ามข้อมูลออก cloud
+  ใช้ Syncthing กับโฟลเดอร์ที่ operator ตั้งเอง โดย **ไม่มีโค้ดฝั่งเราเลย**
+- **licensing ลงลึกถึงระดับมิเตอร์** — ADR 0019 เพิ่ม *Meter Activation Code* ผูกกับ
+  Meter Serial + Machine ID ซึ่งเดิมวางไว้ที่ M9 หลัง portal พร้อม แต่ถูกดึงมาทำแบบ offline ก่อน
 
 ---
 
@@ -178,7 +200,7 @@ API ตัวกลางที่อ่านตารางเรา, หน�
 ## 2. หลักการออกแบบ v2
 
 1. **หนึ่ง process หนึ่ง binary หนึ่ง installer หนึ่ง license** — ไม่มี worker/logger คนละภาษาอีก
-2. **หนึ่ง database** — จบ cross-DB (ADR 0004) และ dual-DB auth/core
+2. **หนึ่ง database** — จบ cross-DB (ADR 0004 (v1)) และ dual-DB auth/core
 3. **Lean by default** — ตาราง / thread / abstraction ต้องบอกได้ว่า *ใครอ่าน* ถึงมีสิทธิ์อยู่
 4. **ข้อมูลออกทาง contract ไม่ใช่ทางตาราง** — ไม่มีใครนอกโปรแกรมแตะ schema ได้อีก
 5. **Portal-first activation** — online เป็นทางหลัก, offline เป็นทางหนีไฟถาวร
@@ -262,7 +284,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 | สคริปต์ bootstrap ฐานข้อมูล | `bootstrap-mysql.ps1` + `.bat` |
 | แนบ MySQL portable ไปกับแพ็กเกจ | `installer/windows/vendor/` + ต้องรัน `trim-mysql-zip.ps1` ย่อ 85% ก่อนแพ็ก |
 | ตรวจ MySQL เดิม / พอร์ต 3306 ชน | logic install-or-reuse detection |
-| user 2 ตัว + grant คู่ `localhost`/`127.0.0.1` + SELECT ข้าม DB | ADR 0008 |
+| user 2 ตัว + grant คู่ `localhost`/`127.0.0.1` + SELECT ข้าม DB | ADR 0008 (v1) |
 | service ตัวที่สองให้ start/stop/monitor | NSSM MySQL service |
 | **หน้า Database Settings ทั้งหน้า** + `db_settings_service.py` + `/settings/database` + `/database/test` | ลูกค้าต้องกรอก host/port/user/pass |
 | คู่มือ migration + `migrate.bat` | `docs/install/migration.md` |
@@ -311,7 +333,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 - ตัดทิ้ง: `records_96`, `alarms`, `logger_exports`, `logger_confirmations`, `device_connection_log`, aggregate `_5m`/`_15m` (คำนวณตอน query ได้)
 - ชื่อ DB/ตาราง/env → `arichds` / `ARICHDS_*` ทั้งหมด **รวมถึงชื่อเชิง crypto** (fingerprint salt, signing version) เพราะยังไม่มี license ออกไป ถ้าไม่เปลี่ยนตอนนี้ = แบกชื่อ `CEWE` ไปตลอดชีวิตโปรเจค
 
-### 3.5 ⭐ Data-out — ปิดหนี้ ADR 0006
+### 3.5 ⭐ Data-out — ปิดหนี้ ADR 0006 (v1, billing)
 
 **สถานะปัจจุบัน**: ทีมเราเขียน API ไว้บนเครื่องลูกค้า อ่าน `billing` + `load profile` จากตารางตรง ๆ แล้วส่งขึ้น server เพื่อแสดงบนเว็บไซต์
 
@@ -336,7 +358,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 | ชนิด | พฤติกรรม | วิธี sync |
 |---|---|---|
 | `load_profile_readings` | append-only | watermark ตาม rowid/`read_at` ตรง ๆ |
-| `billing_readings` | **ไม่ append-only** — open period คือแถวเดียวที่ถูก upsert ซ้ำในที่เดิม (ADR 0018) และ backfill แทรกแถว `bill_date` *เก่ากว่า* watermark (ADR 0012) | track ด้วย `updated_at` หรือส่ง open slot ซ้ำทุกรอบ ให้ server upsert ด้วย key `(device, bill_date)` |
+| `billing_readings` | **ไม่ append-only** — open period คือแถวเดียวที่ถูก upsert ซ้ำในที่เดิม (ADR 0018 (v1)) และ backfill แทรกแถว `bill_date` *เก่ากว่า* watermark (ADR 0012 (v1)) | track ด้วย `updated_at` หรือส่ง open slot ซ้ำทุกรอบ ให้ server upsert ด้วย key `(device, bill_date)` |
 
 > ถ้าใช้ watermark เดียวกันหมด: เว็บไซต์จะไม่เห็นบิลงวดปัจจุบันขยับ และไม่เห็นประวัติที่ backfill — โดยที่ sync ไม่ error เลย
 
@@ -351,7 +373,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 
 v1 มีกลไกขายแยกฟีเจอร์อยู่แล้วและ **ใช้งานจริง**: `require_feature()` ที่ระดับ router (`billing/router.py:77`,
 `battery/router.py:31`) และระดับ endpoint (`billing/router.py:371` → `billing_excel_export`)
-ชุดที่เปิดใช้ = `.env FEATURES ∩ license features` (`features.py`, ADR 0011 amends 0001)
+ชุดที่เปิดใช้ = `.env FEATURES ∩ license features` (`features.py`, ADR 0011 (v1) amends 0001 (v1))
 
 นี่คือกลไกที่ทำให้ **ขายฟีเจอร์แยกกันได้** จึงต้องอยู่ใน v2 ตั้งแต่ต้น และต้องเป็นส่วนหนึ่งของ
 **สัญญา license ที่ M0 นิยามให้ portal v2 ทำตาม** — ไม่ใช่ของที่ค่อยแปะทีหลัง
@@ -473,7 +495,7 @@ Read now / Test connection ได้คิวก่อน poller + เทสผ�
 
 **M4a (ภายในวันที่ 5) — SMW110W4 รุ่นเดียว ทั้ง DLMS serial และ TCP**:
 driver + serial transport (`ConnectionParams.serial()`) ·
-manual-priority gate (ADR 0020) · ปิดเรื่อง scaler (§5)
+manual-priority gate (ADR 0020 (v1)) · ปิดเรื่อง scaler (§5)
 **Exit**: อ่าน SMW110W4 จริงได้ทั้งสอง transport ลงตาราง `load_profile_readings`
 
 > ✅ **โค้ดของ M4a ลงครบแล้ว (2026-08-07)** — issue #9 (`ConnectionParams.serial()` ·
@@ -554,7 +576,7 @@ manual-priority gate (ADR 0020) · ปิดเรื่อง scaler (§5)
 > **ช่องกรอก `block_cipher_key` / `authentication_key` — ปิดแล้วว่าไม่ทำ** (SPEC §3.3) ·
 > v1 เก็บคีย์ TCC เป็น module constant และไดรเวอร์ *ignores* คีย์ที่ส่งมาต่อ device
 
-**M4b (วันที่ 6–14) — เส้นทาง Modbus** *(gate: mapping — เดินด้วย DERIVED ของ ADR 0005 ระหว่างรอลูกค้ายืนยัน)*:
+**M4b (วันที่ 6–14) — เส้นทาง Modbus** *(gate: mapping — เดินด้วย DERIVED ของ ADR 0005 (v1) ระหว่างรอลูกค้ายืนยัน)*:
 SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register → COSEM ตอนเขียน** (§6.1) + modbus billing cut (ADR ใหม่)
 **Exit**: มิเตอร์ modbus ลงตารางเดียวกับ DLMS หน่วย/เวลา normalize ถูกต้อง
 
@@ -589,7 +611,7 @@ SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register 
 > คนละเลข) และ Premier 550 (คอลัมน์ชนกัน) จะเดินจริงที่ M4c
 
 ### M6 — Billing
-open-period upsert slot (ADR 0018) · **เส้นทางอ่านเส้นเดียว — "backfill" ถูกยุบเป็นแนวคิด (ADR 0009)** ·
+open-period upsert slot (ADR 0018 (v1)) · **เส้นทางอ่านเส้นเดียว — "backfill" ถูกยุบเป็นแนวคิด (ADR 0009)** ·
 capture PDF/xlsx · feature entitlement · หน้า Billing
 (modbus billing cut ย้ายไปอยู่ M4b — มันเกิดได้ต่อเมื่อเส้นทาง modbus เขียนข้อมูลแล้ว)
 
@@ -618,8 +640,13 @@ capture PDF/xlsx · feature entitlement · หน้า Billing
 > **parity ของ billing ย้ายไปเป็น exit ของ M4c** พร้อม CEWE ทั้งสามรุ่น ซึ่งต่อได้จากเครื่องพัฒนา
 > — บรรทัด 462 พูดถึง M5/M6 คู่กันอยู่แล้ว แต่บรรทัดนี้ไม่เคยถูกแก้ตามตอน grill M5
 
+> 🔄 **capture โตขึ้นหลัง M6** — เพิ่มนามสกุลที่สาม `.png` และ **สามไฟล์ใช้ชื่อเดียวกันทั้งหมด
+> ทั้งที่ครอบคลุมช่วงเวลาต่างกัน** (pdf/xlsx = รอบเดียว · png = สิบรอบล่าสุด) ซึ่งเจ้าของเลือกเอง
+> — ADR 0015 · **อย่า "แก้ให้มันสอดคล้องกัน"** · และตัว renderer เปลี่ยนจากการวาดด้วย Pillow
+> (ADR 0014) ไปเป็น **screenshot ของหน้า Billing จริงผ่าน headless Edge** (ADR 0017 กลับคำ 0014)
+
 ### M7 — โมดูลเบาที่เหลือทั้งหมด
-Energy Summary (TOU buckets — ADR 0016) · Holidays · Special Days (`src/special_days/` — v1 มีโมดูลจริง อย่าลืมตามที่ ADR 0020 ระบุว่ายังไม่ gated) ·
+Energy Summary (TOU buckets — ADR 0016 (v1)) · Holidays · Special Days (`src/special_days/` — v1 มีโมดูลจริง อย่าลืมตามที่ ADR 0020 (v1) ระบุว่ายังไม่ gated) ·
 Battery · Export Format · App Log (log viewer + credential redaction ตาม §5)
 → หน้า FE 6 หน้าในก้อนเดียว: EnergySummary / Holidays / SpecialDays / Battery / ExportFormat / AppLog
 **Exit**: **output parity กับ v1** + เทสผ่าน — **นับหน้าครบ**: 14 หน้า v1 = 12 หน้ามีเจ้าของใน M2–M7
@@ -649,11 +676,33 @@ push billing + LP ขึ้น server · watermark (interval) + `updated_at` (bi
 ปลด API ตัวกลางบนเครื่องลูกค้า
 **Exit**: เว็บไซต์ได้ข้อมูลจาก v2 โดยไม่มีใครแตะตาราง และตัวกลางถูกถอนออกจากเครื่องลูกค้าแล้ว
 
+> 🔄 **แก้รูปหลัง grill 2026-08-22 (ADR 0016)** — ปลายทางมีสามแบบและ **เป็นรูปเดียวกันหมด** คือ
+> *Data-out Destination*: FTP/SFTP · MySQL ของลูกค้าเอง · โฟลเดอร์ที่ถูก replicate ·
+> **ฐานข้อมูลของลูกค้าคือปลายทาง ไม่ใช่ที่เก็บของเรา** เพราะ MySQL ไม่มี partial unique index
+> ที่ ADR 0009 พึ่งอยู่ และการทำให้มันเป็นที่เก็บจะทำให้ downtime ของลูกค้ากลายเป็น downtime ของเรา
+>
+> ✅ **หน้าจอลงแล้ว (issue #37)** — Database + File Upload เป็น presentation-only ยังไม่มี transport
+> ⏳ **transport ยังไม่ได้ทำ** — นี่คือเนื้อของ M8 ที่เหลือ
+>
+> 🔀 **มีไซต์ที่ไม่เข้าเส้นทางนี้เลย** — ลูกค้าบางรายห้ามข้อมูลออก cloud ⇒ ใช้ **Syncthing**
+> mirror โฟลเดอร์ที่ operator ตั้งไว้ (`capture_dir`, export dir) ไปเครื่องปลายทาง
+> **โดยไม่มีโค้ดฝั่งเราเลย** · เปิดคำถามค้างไว้ข้อหนึ่ง: ข้อห้ามนั้นครอบถึง push ขึ้น server
+> ของทีมเราเองด้วยหรือไม่ — **ต้องถามก่อนเริ่ม M8 ไม่ใช่หลัง**
+
 ### M9 — Online activation 🔒 *(gate: portal v2 พร้อม)*
 > milestone เดียวในแผนที่ถูกบล็อกด้วยรีโปอื่น — วางแยกไว้เพื่อไม่ให้ลาก M1–M8 ไปติดด้วย
 
 online activation flow · lease renew · meter key redeem · fallback กลับไป offline เมื่อ portal ล่ม
 **Exit**: ติดตั้งจบด้วย activation key เพียงตัวเดียว โดยไม่ต้องติดต่อ vendor
+
+> 🔄 **ครึ่งหนึ่งของ milestone นี้ถูกดึงมาทำก่อน (ADR 0019, 2026-08-24)** — *meter key redeem*
+> ไม่รอ portal อีกต่อไป: **Meter Activation Code** เป็นสตริงที่เราเซ็นแบบ offline ผูกกับ
+> **Meter Serial + Machine ID** ตรวจตอนเพิ่มมิเตอร์ และตรวจซ้ำตอน Update เมื่อ serial เปลี่ยน
+> (ไม่งั้นสลับมิเตอร์แล้วข้าม gate ได้) · ของเดิมที่เพิ่มไปแล้วได้รับการยกเว้น และบังคับ**ควบคู่**
+> กับ `max_meters` ที่มีอยู่แล้วใน Activation Code ไม่ใช่แทนที่
+>
+> ⇒ สิ่งที่ portal เข้ามาเปลี่ยนคือ **ช่องทางส่งมอบ ไม่ใช่รูปแบบของ artifact** — ถ้า portal
+> ออก artifact คนละแบบ code ที่ออกไปแล้วทุกใบจะกลายเป็นงาน migrate
 
 ### M10 — Hardening & pilot
 limited mode ครบทุกเส้นทาง · ลงหน้างานลูกค้า 1 ราย
@@ -667,16 +716,16 @@ Business logic ของ v1 ผ่านหน้างานลูกค้า�
 
 - OBIS map / register map ทุกไดรเวอร์ (`src/drivers/*`, `internal/meter/*/registers.go`) + เอกสารสแกน OBIS ใน `docs/requirements/`
 - Gurux wrapper (`GX*.py`) — vendored ห้าม rename API
-- ADR 0018 open-period upsert slot · ADR 0020 manual-priority gate · ADR 0016 holiday/TOU
+- ADR 0018 (v1) open-period upsert slot · ADR 0020 (v1) manual-priority gate · ADR 0016 (v1) holiday/TOU
 
-> ⚠️ **ADR 0019 (modbus billing cut) ยกมาทั้งดุ้นไม่ได้** — มันอ่านจากตาราง modbus ที่ §6.1 ลบทิ้ง
+> ⚠️ **ADR 0019 (v1) (modbus billing cut) ยกมาทั้งดุ้นไม่ได้** — มันอ่านจากตาราง modbus ที่ §6.1 ลบทิ้ง
 > v2 ต้องอ่านจาก `load_profile_readings` แทน (ช่วง 15 นาทีเพียงพอสำหรับจุดตัด 00:00) และหลัง normalize แล้ว
 > ประโยค *"NO ÷10000 scaling"* ในตัว ADR จะไม่จริงอีกต่อไป → **เขียน ADR ใหม่ ไม่ใช่ก๊อบ** เก็บเฉพาะ *กฎทางธุรกิจ*
 > (ระบบเป็นคนตัดบิลให้ modbus, snapshot ที่ 00:00 ของวันบิล, ตามทันย้อนหลังได้, idempotent ด้วย `(device_id, bill_date)`)
 - Ed25519 verify primitive + golden vectors (แต่ **ชื่อ** เปลี่ยนได้ เพราะยังไม่มี license ออกไป)
 - Credential redaction filter
 
-**ADR 0010 (scaler phantom ×10) — ปิดที่ M4 (acquisition) ไม่ใช่ open decision**
+**ADR 0010 (v1) (scaler phantom ×10) — ปิดที่ M4 (acquisition) ไม่ใช่ open decision**
 กติกาคือ **"ค่าที่แสดงออกต้องตรงกับ v1"** ไม่ใช่ "ต้องคัดลอกวิธีคำนวณของ v1"
 v2 เขียน scaler ให้ถูกต้องได้ ตราบใดที่ billing (÷10000) และ energy summary (÷1000) ยังออกตัวเลขเดิม
 → เอาค่าที่ลูกค้ายืนยันแล้วมาเขียนเป็น test case ล็อกไว้ก่อนแตะโค้ด
@@ -758,7 +807,7 @@ flowchart LR
 ```
 
 **สิ่งที่หายไปทั้งหมด**: ตาราง 91 และ 55 คอลัมน์ · ตาราง aggregate `_5m`/`_15m` ทุกยี่ห้อ + โค้ดสร้าง aggregate ·
-`modbus_repository.py` ทั้งไฟล์ + การ branch `if source == 'modbus'` ตอนอ่าน · การอ่านข้ามฐานข้อมูล (ADR 0004) ·
+`modbus_repository.py` ทั้งไฟล์ + การ branch `if source == 'modbus'` ตอนอ่าน · การอ่านข้ามฐานข้อมูล (ADR 0004 (v1)) ·
 โค้ด Go ที่สร้าง schema เองตอนรัน
 
 **จำนวนแถวลดตาม** — D8 บอกว่า DLMS เป็นหลัก สมมติ 20 มิเตอร์ (18 DLMS + 2 Modbus):
@@ -795,7 +844,7 @@ flowchart LR
 **1. register ที่ไม่ได้ map 77 ตัวหายถาวร** — วันหน้าอยากได้กลับมาต้องเพิ่ม mapping แล้ว *รอเก็บใหม่* ย้อนหลังไม่ได้
 วันนี้ไม่มีใครดูมันและลูกค้ายืนยัน 15 นาทีแล้ว จึงคุ้ม แต่ต้องรู้ว่าแลกอะไรไป
 
-**2. ⚠️ mapping ยังไม่ได้ยืนยันกับลูกค้า** — ADR 0005 เขียนกำกับตัวเองว่า
+**2. ⚠️ mapping ยังไม่ได้ยืนยันกับลูกค้า** — ADR 0005 (v1) เขียนกำกับตัวเองว่า
 *"DERIVED — Confirm with the customer, especially the smw110 blanks"*
 - แปลงตอนอ่าน (v1): map ผิด → แก้โค้ด ข้อมูลเก่ากลับมาถูกทันที
 - แปลงตอนเขียน (v2): map ผิด → **ข้อมูลที่เก็บไปแล้วผิดถาวร**
