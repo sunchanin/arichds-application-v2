@@ -20,7 +20,21 @@ the long-term archive our 90-day window cannot be.
 **The destination holds exactly what we hold, and our sync job deletes from the customer's
 database to keep it that way.** Rows past `RETENTION_DAYS` are removed from their
 `load_profile_readings` on the same schedule they are removed from ours. The owner chose this
-explicitly on 2026-08-24, against the recommendation in the grill.
+explicitly on 2026-08-24, against the recommendation in the grill, and the customer confirmed it
+the same day — **their stated reason is limited disk space on the machine.**
+
+**That reason does not survive measurement, and this ADR records the fact rather than hiding
+it**, because an ADR resting on a falsifiable premise gets reversed by the first person who
+measures. Taken from the real destination tables on 2026-08-24, after loading the live data:
+**173 bytes per row including indexes** — 10 MB for a 90-day window at three meters, about 30 MB
+at nine, about 67 MB at twenty. Never purging at all would cost roughly 120 MB a year at nine
+meters, or **0.6 GB after five years**. On any ordinary machine that is nothing. It is only real
+on the kind of small industrial PC this product does sometimes run on, where Windows and XAMPP
+have already taken most of a 32–64 GB disk.
+
+**The decision stands regardless, on the reason below that has nothing to do with space**: an
+append-only destination has a silent, permanent data-loss window past day 90. Anyone revisiting
+this because the size argument turned out to be small must answer that one first.
 
 Recorded because a `DELETE` statement fired into someone else's database reads as a bug, or as
 an overreach, to anyone who finds it without this page. It is neither. It is the destination
