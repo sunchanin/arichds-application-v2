@@ -58,6 +58,11 @@ class _FakeBillingReader:
         self._buffer = buffer
         self.opened_profile_obis: str | None = None
         self.calls: list[tuple[str, int]] = []
+        #: ``(index, count)`` for every ``readRowsByEntry`` call — kept
+        #: separate from ``calls`` (which only ever recorded the index) so
+        #: existing assertions on ``calls`` stay meaningful while a test can
+        #: still verify the requested row *count*, not just its start.
+        self.entry_access_calls: list[tuple[int, int]] = []
 
     def read(self, obj: Any, attr: int) -> Any:
         if isinstance(obj, GXDLMSProfileGeneric):
@@ -85,6 +90,7 @@ class _FakeBillingReader:
 
     def readRowsByEntry(self, pg: Any, index: int, count: int) -> list[list[Any]]:  # noqa: N802
         self.calls.append(("__rows__", index))
+        self.entry_access_calls.append((index, count))
         return self._buffer[index - 1 : index - 1 + count]
 
 
@@ -181,6 +187,156 @@ class TestResetReasonKeyDeclaredAbsentSkipsTheWarning:
 
         assert readings[0].is_open is True
         assert any("reset-reason" in record.message.lower() for record in caplog.records)
+
+
+class TestBillingNewestClosedBillDate:
+    """The Billing Change Check's driver-side read (ADR 0018, D1/D2/D11/D13,
+    issue #43)."""
+
+    def test_the_signal_is_the_newest_closed_period_not_the_open_row(self) -> None:
+        """D1 — entry 1 is the Open Period on this profile (F4); its bill
+        date must never be what this method answers. Mutation: answering
+        with the open row's bill date instead would return the 2026-08-07
+        date below rather than the 2026-07-31 one."""
+        reader = _FakeBillingReader(
+            [(CLOCK_OBIS, 2)],
+            entries_in_use=2,
+            buffer=[
+                [datetime(2026, 8, 7, 11, 0)],  # entry 1 — open, newest clock
+                [datetime(2026, 7, 31, 17, 0)],  # entry 2 — closed
+            ],
+        )
+        driver = _build_driver(reader)
+
+        result = driver.billing_newest_closed_bill_date()
+
+        assert result == datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+
+    def test_two_entries_are_read_in_one_call(self) -> None:
+        """D1 — the check reads count=2, never a single entry access call."""
+        reader = _FakeBillingReader(
+            [(CLOCK_OBIS, 2)],
+            entries_in_use=2,
+            buffer=[[datetime(2026, 8, 7, 11, 0)], [datetime(2026, 7, 31, 17, 0)]],
+        )
+        driver = _build_driver(reader)
+
+        driver.billing_newest_closed_bill_date()
+
+        assert reader.entry_access_calls == [(1, 2)]
+
+    def test_a_disconnected_driver_returns_none(self) -> None:
+        driver = _FakeSeamDriver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        assert driver.billing_newest_closed_bill_date() is None
+
+    def test_an_empty_buffer_returns_none(self) -> None:
+        reader = _FakeBillingReader([(CLOCK_OBIS, 2)], entries_in_use=0, buffer=[])
+        driver = _build_driver(reader)
+
+        assert driver.billing_newest_closed_bill_date() is None
+
+    def test_ordering_comes_from_the_declaration_not_a_hardcoded_index(self) -> None:
+        """D11(a) — a driver declaring oldest-first must ask for the entries
+        near the END of the buffer, not index 1. Mutation (a) — hardcoding
+        index 1 regardless of the declaration — stays green on a
+        newest-first driver but goes red here, where the declared driver is
+        oldest-first and the buffer's last two entries are what must be
+        read."""
+
+        class _OldestFirstSeamDriver(_FakeSeamDriver):
+            BILLING_NEWEST_ENTRY_FIRST = False
+
+        reader = _FakeBillingReader(
+            [(CLOCK_OBIS, 2)],
+            entries_in_use=3,
+            buffer=[
+                [datetime(2026, 6, 1, 0, 0)],  # entry 1 — oldest
+                [datetime(2026, 7, 1, 0, 0)],  # entry 2 — closed, newest closed
+                [datetime(2026, 8, 7, 11, 0)],  # entry 3 — open, newest
+            ],
+        )
+        driver = _OldestFirstSeamDriver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        driver._reader = reader  # noqa: SLF001
+        driver._client = SimpleNamespace(objects=[])  # noqa: SLF001
+
+        result = driver.billing_newest_closed_bill_date()
+
+        rows_calls = [c for c in reader.calls if c[0] == "__rows__"]
+        assert rows_calls == [("__rows__", 2)]  # index = entries_in_use - 1 = 2, not 1
+        assert result == datetime(2026, 6, 30, 17, 0, tzinfo=UTC)  # entry 2's date, meter-local -> UTC
+
+    def test_flipping_the_declaration_changes_the_requested_index(self) -> None:
+        """D11(b) — the same buffer, read through both declarations, must ask
+        for different entry-access windows. Proves the ordering flag actually
+        reaches the request rather than being read and ignored."""
+        buffer = [
+            [datetime(2026, 6, 1, 0, 0)],
+            [datetime(2026, 7, 1, 0, 0)],
+            [datetime(2026, 8, 7, 11, 0)],
+        ]
+
+        newest_first_reader = _FakeBillingReader([(CLOCK_OBIS, 2)], entries_in_use=3, buffer=buffer)
+        newest_first = _build_driver(newest_first_reader)
+        newest_first.billing_newest_closed_bill_date()
+
+        class _OldestFirstSeamDriver(_FakeSeamDriver):
+            BILLING_NEWEST_ENTRY_FIRST = False
+
+        oldest_first_reader = _FakeBillingReader([(CLOCK_OBIS, 2)], entries_in_use=3, buffer=buffer)
+        oldest_first = _OldestFirstSeamDriver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        oldest_first._reader = oldest_first_reader  # noqa: SLF001
+        oldest_first._client = SimpleNamespace(objects=[])  # noqa: SLF001
+        oldest_first.billing_newest_closed_bill_date()
+
+        newest_first_index = [c for c in newest_first_reader.calls if c[0] == "__rows__"][0][1]
+        oldest_first_index = [c for c in oldest_first_reader.calls if c[0] == "__rows__"][0][1]
+        assert newest_first_index != oldest_first_index
+
+    def test_entries_in_use_moving_alone_does_not_change_the_answer(self) -> None:
+        """D13 — entriesInUse only tells the read where the buffer's newest
+        end is (needed for an oldest-first profile's index math); it is never
+        the change signal itself. Two reads whose first two (newest-first)
+        entries are identical must answer identically even though the ring
+        counter grew — proving nothing about *this* method depends on the
+        counter beyond locating the window."""
+        smaller_buffer = _FakeBillingReader(
+            [(CLOCK_OBIS, 2)],
+            entries_in_use=3,
+            buffer=[[datetime(2026, 8, 7, 11, 0)], [datetime(2026, 7, 31, 17, 0)], [datetime(2026, 6, 30, 17, 0)]],
+        )
+        larger_buffer = _FakeBillingReader(
+            [(CLOCK_OBIS, 2)],
+            entries_in_use=13,
+            buffer=[[datetime(2026, 8, 7, 11, 0)], [datetime(2026, 7, 31, 17, 0)], [datetime(2026, 6, 30, 17, 0)]],
+        )
+
+        first = _build_driver(smaller_buffer).billing_newest_closed_bill_date()
+        second = _build_driver(larger_buffer).billing_newest_closed_bill_date()
+
+        assert first == second == datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+
+    def test_reads_use_the_classifier_not_a_fresh_guess(self) -> None:
+        """D1 — the reset-reason cell decides open/closed exactly as
+        :meth:`read_billing` decides it, via ``_classify_open``. A row whose
+        reset-reason cell is NOT the not-reset sentinel is closed even at
+        position 0."""
+
+        class _ClockAndResetReason(_FakeSeamDriver):
+            pass
+
+        capture = [(CLOCK_OBIS, 2), ("0.0.0.1.12.255", 2)]
+        reader = _FakeBillingReader(
+            capture,
+            entries_in_use=1,
+            buffer=[[datetime(2026, 7, 31, 17, 0), 3]],  # reset-reason 3 != 255 -> closed, even at position 0
+        )
+        driver = _ClockAndResetReason(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        driver._reader = reader  # noqa: SLF001
+        driver._client = SimpleNamespace(objects=[])  # noqa: SLF001
+
+        result = driver.billing_newest_closed_bill_date()
+
+        assert result == datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
 
 
 class TestCumulDemandCosemClassIsDeclaredPerDriver:

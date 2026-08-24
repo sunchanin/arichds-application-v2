@@ -62,6 +62,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from arichds.acquisition.billing import billing_change_check, read_and_store_billing
 from arichds.acquisition.drivers.base import IntervalReading, MeterDriver
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
 from arichds.acquisition.poller import build_driver
@@ -214,6 +215,7 @@ def read_and_store_load_profile(
     stored = 0
     budget_exhausted = False
     error: str | None = None
+    trigger_billing = False
 
     if background:
         # Never blocks, and never preempts what is in flight. A tick that cannot
@@ -233,14 +235,14 @@ def read_and_store_load_profile(
                     error=None,
                     skipped=True,
                 )
-            stored, budget_exhausted, error = _read_while_holding(
-                driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec
+            stored, budget_exhausted, error, trigger_billing = _read_while_holding(
+                driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec, True
             )
     else:
         try:
             with registry.get(endpoint).manual(timeout=lock_timeout_sec):
-                stored, budget_exhausted, error = _read_while_holding(
-                    driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec
+                stored, budget_exhausted, error, trigger_billing = _read_while_holding(
+                    driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec, False
                 )
         except TimeoutError as exc:
             # Reachable from the manual path only — ``background()`` yields False
@@ -250,6 +252,23 @@ def read_and_store_load_profile(
             logger.warning("Load profile read of %s skipped: %s busy", device_name, endpoint)
             error = f"The line to {endpoint} was still busy after {lock_timeout_sec:g}s — nothing was read."
             _ = exc
+
+    # The Billing Change Check's whole-buffer read, when it fires, runs here
+    # — AFTER the Transport Endpoint lock above has already been released
+    # (D5, ADR 0018, issue #43). `PriorityEndpointLock` is not reentrant
+    # (`locks.py`): calling this from *inside* either `with` block above
+    # would hit `try_acquire_background` -> False and return `skipped=True`
+    # silently, so the trigger would never fire in production while every
+    # fake-lock unit test stayed green. `read_and_store_billing` is called
+    # unchanged (D6) — same function Read now and the daily job call, so
+    # ADR 0009's write path and the eager capture path (`billing.py:183-184`)
+    # both run exactly as they do today. *registry* is threaded through
+    # explicitly (rather than left to default to the process-wide one) so a
+    # caller that passed its own `locks=` — every test in this module — gets
+    # a billing read that takes the *same* Transport Endpoint lock the walk
+    # just released, not a different registry that would never collide.
+    if trigger_billing:
+        read_and_store_billing(device_id, locks=registry, background=True)
 
     return LoadProfileReadResult(
         supported=True,
@@ -268,28 +287,53 @@ def _read_while_holding(
     per_logger_start: dict[int, datetime | None],
     now_utc: datetime,
     budget_sec: float,
-) -> tuple[int, bool, str | None]:
-    """Connect once, walk every logger's window, disconnect — the endpoint
-    already held for the whole visit (D3, M4c issue #24).
+    run_billing_check: bool,
+) -> tuple[int, bool, str | None, bool]:
+    """Connect once, walk every logger's window, run the Billing Change
+    Check, disconnect — the endpoint already held for the whole visit (D3,
+    M4c issue #24; the check added at D8, issue #43).
 
     Extracted so the two acquisition paths differ **only** in how they take the
     lock: the read itself must not depend on who asked for it, or the priority
     rule would quietly become a second code path through the meter.
 
+    Args:
+        run_billing_check: True only on the background path (D7, ADR 0018) —
+            a Manual Read ("Read now") must not silently grow a whole
+            billing read plus capture-file writes on a path someone is
+            waiting on.
+
+    The check itself runs **after** the walk and **before** `disconnect()`
+    (D8) — after, because the walk is this call's actual purpose and its
+    budget bounds how long the endpoint is held; before disconnect, because
+    it needs the same live association the walk just used. It is gated on
+    `driver.supports_billing()` here (not inside
+    :func:`~arichds.acquisition.billing.billing_change_check`, which has no
+    way to ask that question) and any failure inside the check itself is
+    already swallowed by that function (D9) — this call site adds no second
+    guard, because a function documented to never raise needs none.
+
     Returns:
         ``(rows stored across every logger, whether any logger's walk hit the
-        shared budget, the first error sentence encountered or None)``.
+        shared budget, the first error sentence encountered or None, whether
+        the whole-buffer billing read should run — decided here but executed
+        by the caller only after this function's own endpoint acquisition has
+        ended, D5)``.
     """
     try:
         driver.connect()
     except Exception as exc:  # noqa: BLE001 — every meter failure becomes a sentence, never a 500.
         logger.exception("Load profile read of %s at %s failed to connect", device_name, endpoint)
-        return 0, False, f"The read of {endpoint} stopped after a {type(exc).__name__}."
+        return 0, False, f"The read of {endpoint} stopped after a {type(exc).__name__}.", False
     else:
         # `_walk` returns its own error rather than raising: a failure on chunk
         # three must still report the two chunks already committed, and an
         # exception unwinding past here would lose that count.
-        return _walk_every_logger(driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec)
+        stored, budget_exhausted, error = _walk_every_logger(
+            driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec
+        )
+        trigger_billing = run_billing_check and driver.supports_billing() and billing_change_check(driver, device_id)
+        return stored, budget_exhausted, error, trigger_billing
     finally:
         driver.disconnect()
 

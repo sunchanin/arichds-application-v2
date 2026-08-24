@@ -58,6 +58,25 @@ class TestTheCapabilityContract:
             driver.read_billing()
 
 
+class TestTheBillingChangeCheckBaseContract:
+    """D10/D11, issue #43 — the Billing Change Check's per-driver seam. Same
+    pairing shape as :meth:`MeterDriver.load_profile_oldest_reading`: a
+    non-abstract method that answers ``None`` ("cannot say") by default, so a
+    driver with no scanned billing profile yet degrades to "never trigger",
+    never a crash."""
+
+    def test_the_base_default_cannot_answer(self) -> None:
+        driver = _MinimalDriver()
+        assert driver.billing_newest_closed_bill_date() is None
+
+    def test_entry_ordering_defaults_to_newest_first(self) -> None:
+        """Every billing implementation shipped today reads newest-first
+        (finding 4) — the base default matches that, and a driver whose
+        profile is actually oldest-first must override it explicitly."""
+        driver = _MinimalDriver()
+        assert driver.BILLING_NEWEST_ENTRY_FIRST is True
+
+
 class TestBillingReadingShape:
     """The dataclass fields are spelled out, not generated — a generated field
     set would defeat type checking."""

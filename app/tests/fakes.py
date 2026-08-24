@@ -104,6 +104,21 @@ class FakeMeterState:
             what the job's "one meter call regardless of how many times the
             cycle runs today" test counts against.
         battery_error: What a failing battery read raises.
+        billing_newest_closed: What :meth:`FakeSmw110Driver.billing_newest_closed_bill_date`
+            replays (the Billing Change Check, ADR 0018, issue #43). ``None``
+            (the default) is the base-class behaviour — a driver that cannot
+            say, exactly like :attr:`load_profile_oldest`'s own default. A
+            fake that answered by default here would silently turn the
+            billing trigger on in every existing background load-profile
+            test.
+        billing_newest_closed_reads: How many times it was asked.
+        billing_newest_closed_error: What a failing read raises — the Load
+            Profile walk it rides on must survive it (D9).
+        call_order: Every ``connect``/``read_load_profile``/``billing_check``/
+            ``disconnect`` call, in the order the fake actually saw them —
+            the only way a test can prove the Billing Change Check runs
+            *after* the walk and *before* disconnect (D8) rather than merely
+            "at some point during the visit".
     """
 
     meter_serial: str | None = DEFAULT_FAKE_SERIAL
@@ -133,6 +148,10 @@ class FakeMeterState:
     battery_status: str | None = None
     battery_reads: int = 0
     battery_error: Exception | None = None
+    billing_newest_closed: datetime | None = None
+    billing_newest_closed_reads: int = 0
+    billing_newest_closed_error: Exception | None = None
+    call_order: list[str] = field(default_factory=list)
 
 
 _STATE = FakeMeterState()
@@ -202,6 +221,7 @@ class FakeMeterDriver(MeterDriver):
         """Record the connect, or raise whatever the test asked for."""
         with _GUARD:
             _STATE.connects += 1
+            _STATE.call_order.append("connect")
             error = _STATE.connect_error
         if error is not None:
             raise error
@@ -210,6 +230,7 @@ class FakeMeterDriver(MeterDriver):
         """Record the disconnect. Never raises, like every real driver."""
         with _GUARD:
             _STATE.disconnects += 1
+            _STATE.call_order.append("disconnect")
 
     def _park(self) -> None:
         """Announce that a read has begun and hold there if the test asked."""
@@ -276,6 +297,7 @@ class FakeSmw110Driver(FakeMeterDriver):
         """
         with _GUARD:
             _STATE.load_profile_windows.append((logger_id, start_utc, end_utc))
+            _STATE.call_order.append("read_load_profile")
             reads = len(_STATE.load_profile_windows)
             error = _STATE.load_profile_error
             fail_after = _STATE.load_profile_fail_after
@@ -323,6 +345,24 @@ class FakeSmw110Driver(FakeMeterDriver):
             raise error
 
         return rows
+
+    def billing_newest_closed_bill_date(self) -> datetime | None:
+        """Record the call and the order it happened in, honour the failure
+        knob, replay the seeded answer.
+
+        ``None`` (the default) is the base-class behaviour, exactly like
+        :meth:`load_profile_oldest_reading` above — a driver that cannot say,
+        which must degrade the Billing Change Check to "never trigger"
+        rather than turning it on in every existing background test.
+        """
+        with _GUARD:
+            _STATE.billing_newest_closed_reads += 1
+            _STATE.call_order.append("billing_check")
+            error = _STATE.billing_newest_closed_error
+            answer = _STATE.billing_newest_closed
+        if error is not None:
+            raise error
+        return answer
 
     def supports_energy_registers(self) -> bool:
         """Yes — like the real ``Smw110Driver``/``SmartTccDriver`` (M7-1,

@@ -111,14 +111,32 @@ MySQL, and ~30 tables.
   reused profile directory rather than a fresh one per capture, so captures are serialised by
   a process-wide lock) ·
   0018 (billing has **two read shapes but still one write path** — a fifteen-minute *change
-  check* (captureObjects + entriesInUse + the newest entry only) rides the **Load Profile
-  cycle's existing connection** and triggers the unchanged whole-buffer read only when the
-  newest `bill_date` moved; ADR 0009's "one read path" is about how rows are *produced*, and
-  that is untouched. **Not `entriesInUse`** — a full ring saturates it
-  (`smw110w4-scan.md:71`), which would be silent after about a year. `BILLING_INTERVAL_SEC`
-  stays daily as a **backstop**, deliberately, so do not "fix" it to 900. Measured, because the
-  first draft guessed: the saving is 33–73 % of a cycle, not 13x, and the real cost is the
-  association — Premier 550 was seen at **95.5 s** to connect; **not yet implemented**) ·
+  check* rides the **Load Profile cycle's existing connection** and triggers the unchanged
+  whole-buffer read only when the newest bill_date it finds actually changed; ADR 0009's "one
+  read path" is about how rows are *produced*, and that is untouched. **Not `entriesInUse`** —
+  a full ring saturates it (`smw110w4-scan.md:71`), which would be silent after about a year.
+  `BILLING_INTERVAL_SEC` stays daily as a **backstop**, deliberately, so do not "fix" it to
+  900. Measured, because the first draft guessed: the saving is 33–73 % of a cycle, not 13x,
+  and the real cost is the association — Premier 550 was seen at **95.5 s** to connect;
+  **fully implemented, with two corrections, by issue #43**: the ADR's own literal steps 2–3
+  were wrong on real hardware and are amended in the ADR text itself rather than silently
+  overridden — the newest *entry* is the Open Period on every model shipped today and its
+  `bill_date` advances on every single read (CONTEXT.md — Open Period), so comparing against
+  it would have fired the whole-buffer read on every tick; the actual signal is the newest
+  **closed** period, found by reading two entries and classifying them with the driver's own
+  `_classify_open`. And the comparison keys on `device_id` alone, not `(device, meter_serial)`
+  — both driver read paths already store `meter_serial=None` when the serial register read
+  fails after the buffer was read, which would have made the filtered `MAX` come back `NULL`
+  forever and fired a full read every cycle. `MeterDriver.billing_newest_closed_bill_date()` /
+  `BILLING_NEWEST_ENTRY_FIRST` (base default `True`, entry ordering is a property of the
+  profile per the gurux-dlms skill) landed on `base.py`, `_dlms_profile.py` and `smw110.py`;
+  `billing_change_check()` landed on `billing.py`; the wiring inside
+  `load_profile.py::_read_while_holding` runs the check **after** the logger walk and
+  **before** `disconnect()`, gated to the background path only (a Manual Read must not grow a
+  whole billing read on a path someone is waiting on), and fires
+  `read_and_store_billing(device_id, background=True)` **after** the Transport Endpoint lock
+  block has exited — `PriorityEndpointLock` is not reentrant, so calling it from inside that
+  lock would return `skipped=True` silently while every fake-lock unit test stayed green) ·
   0019 (a meter is **licensed individually, not just counted** — `max_meters` already gates the
   *count*; a **Meter Activation Code** is signed per meter and bound to **Meter Serial + Machine
   ID**, checked once at Create, grandfathering devices that predate it and stacking with

@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from arichds.acquisition.drivers.base import BillingReading, MeterDriver
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
@@ -275,6 +275,109 @@ def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> Non
                 )
         except Exception:  # noqa: BLE001 — capture must never fail the read that produced the row.
             logger.exception("Capture failed for %s reading id %s", device_name, reading_id)
+
+
+def billing_change_check(driver: MeterDriver, device_id: int) -> bool:
+    """The Billing Change Check (ADR 0018, corrected by issue #43's D1/D2) —
+    decides whether the whole-buffer billing read should run this Load
+    Profile tick.
+
+    Called only from inside :func:`~arichds.acquisition.load_profile._read_while_holding`,
+    on an already-connected driver, on the **background** path only (D7) —
+    never a second association, and never from a Manual Read.
+
+    **The signal is the newest CLOSED period's bill date, not the newest
+    entry's** (D1): the newest entry is the Open Period on every model this
+    product reads today, and its Bill Date advances on every single read
+    (CONTEXT.md — Open Period) — comparing against it would trigger the
+    whole-buffer read on every tick, exactly the cost this check exists to
+    avoid.
+
+    **Compared on `device_id` alone, never `(device, meter_serial)`** (D2):
+    both driver read paths store ``meter_serial=None`` when the serial
+    register read fails after the buffer was already read
+    (`_dlms_profile.py`, `smw110.py`), so a serial filter would exclude
+    legitimately stored rows, `MAX` would come back `NULL` forever, and this
+    check would fire a full read every cycle.
+
+    **`entriesInUse` is read by the driver but is never this function's
+    signal** (D13) — it saturates once a ring is full
+    (`docs/meter-notes/smw110w4-scan.md:71`, a billing ring reaches its own
+    ceiling after roughly a year on this fleet); the newest closed
+    `bill_date` cannot saturate the same way, and this function has no
+    visibility into `entriesInUse` at all — it only ever asks the driver for
+    a `bill_date`.
+
+    Returns:
+        True when the whole-buffer read should run: nothing is stored for
+        this device yet (D4 — a freshly added device gets its billing inside
+        one cycle rather than waiting up to a day), or the newest closed
+        period the meter reports differs from the newest closed period
+        already stored (D3 — exact inequality, never ``>``: a buffer that
+        moved *backwards* is still worth re-reading, and the whole-buffer
+        write path is idempotent). Any failure — an unsupported driver, an
+        unreadable buffer, a DB error — is logged and swallowed, returning
+        False: the daily full read stays the backstop (D9).
+    """
+    try:
+        newest_closed = driver.billing_newest_closed_bill_date()
+    except Exception:  # noqa: BLE001 — D9: an optional trigger must never break the walk it rides on.
+        logger.exception(
+            "Billing change check failed for device id %s — the daily read stays the only signal", device_id
+        )
+        return False
+
+    if newest_closed is None:
+        return False
+
+    try:
+        with session_scope() as session:
+            stored_newest = session.scalar(
+                select(func.max(BillingReadingRow.bill_date)).where(
+                    BillingReadingRow.device_id == device_id,
+                    # D2 — device_id alone, and D1's "closed only": the Open
+                    # Period slot's bill_date advances on every read and must
+                    # never win this MAX.
+                    BillingReadingRow.record_status.is_(None),
+                )
+            )
+    except Exception:  # noqa: BLE001 — same rule, the DB side of the check.
+        logger.exception("Billing change check's stored lookup failed for device id %s", device_id)
+        return False
+
+    if stored_newest is None:
+        # D4 — nothing stored yet: trigger, so a freshly added device gets
+        # its billing inside one Load Profile cycle rather than waiting up
+        # to a day. Accepted degenerate case: if the whole-buffer read this
+        # triggers persistently stores nothing (a driver bug, a malformed
+        # buffer), this branch re-triggers every single LP cycle — bounded
+        # at one full read per cycle, no worse than a naive fifteen-minute
+        # billing job would cost, and now attributable in the log line
+        # below rather than a silent repeat.
+        logger.info(
+            "Billing change check: device id %s has no stored closed period yet "
+            "(meter's newest closed: %s) — triggering the whole-buffer read",
+            device_id,
+            newest_closed.isoformat(),
+        )
+        return True
+
+    # SQLite hands back naive datetimes; every row in this table is UTC by
+    # the normalization contract (module docstring).
+    stored_newest = stored_newest.replace(tzinfo=UTC)
+    changed = newest_closed != stored_newest  # D3 — != not >.
+    if changed:
+        # The only line that says the feature is doing anything at all on an
+        # ordinary tick — without it an operator has no way to tell a
+        # triggered read from a coincidentally-scheduled daily one.
+        logger.info(
+            "Billing change check: device id %s's newest closed period changed "
+            "(meter: %s, stored: %s) — triggering the whole-buffer read",
+            device_id,
+            newest_closed.isoformat(),
+            stored_newest.isoformat(),
+        )
+    return changed
 
 
 def billing_cycle() -> None:

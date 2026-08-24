@@ -470,6 +470,22 @@ class MeterDriver(ABC):
     #: first slice with a model that does not need one.
     BILLING_COLUMN_SPAN: int | None = None
 
+    #: Whether this driver's billing ProfileGeneric returns its **newest**
+    #: entry at index 1 (``True``, the default) or its **oldest** entry there
+    #: (``False``) — entry ordering is a property of the *profile*, not the
+    #: model (gurux-dlms skill, "Entry order is a property of the profile").
+    #: Every billing implementation shipped today reads newest-first: the
+    #: three CEWE models and SMART TCC (`_dlms_profile.py`, F4/F6) and the
+    #: SMW110W4 (`smw110.py`, ``is_open = position == 0``) — the *opposite*
+    #: of that same SMW110W4's own **load profile**, which is oldest-first
+    #: (`docs/meter-notes/smw110w4-scan.md:74`). The Billing Change Check
+    #: (issue #43, ADR 0018) reads its ``readRowsByEntry`` window off this
+    #: declaration rather than assuming index 1 — a driver that gets this
+    #: backwards would silently always read the oldest end of the buffer,
+    #: which is what makes the declaration itself testable rather than a
+    #: comment nobody can falsify.
+    BILLING_NEWEST_ENTRY_FIRST: bool = True
+
     @property
     @abstractmethod
     def model_name(self) -> str:
@@ -655,6 +671,38 @@ class MeterDriver(ABC):
             NotImplementedError: Always, on a driver that has no billing profile.
         """
         raise NotImplementedError(f"{type(self).__name__} has no billing profile — check supports_billing() first")
+
+    def billing_newest_closed_bill_date(self) -> datetime | None:
+        """The Billing Change Check's per-tick signal (ADR 0018, corrected by
+        issue #43's D1/D2) — the newest **closed** period's ``bill_date``, or
+        ``None`` when this driver cannot answer.
+
+        Callable only when :meth:`supports_billing` returns ``True``, and only
+        on the Load Profile cycle's own connection (ADR 0018 — this rides the
+        existing association; it is never a second one). Assumes
+        :meth:`connect` succeeded.
+
+        **Deliberately not the newest entry's ``bill_date``.** The newest
+        entry is the Open Period on every model this product reads today —
+        its Bill Date is the meter's live clock and advances on every single
+        read (CONTEXT.md — Open Period) — so a check keyed on it would fire
+        the whole-buffer read on every tick, which is exactly the cost this
+        check exists to avoid.
+
+        Non-abstract and returning ``None`` rather than raising — the same
+        "answer or say you cannot" shape as
+        :meth:`load_profile_oldest_reading`, so a driver with no scanned
+        billing profile yet degrades to "never trigger" (the daily
+        :data:`~arichds.constants.BILLING_INTERVAL_SEC` backstop stands)
+        rather than breaking the Load Profile walk it is called from.
+
+        Returns:
+            The newest closed period's ``bill_date``, timezone-aware UTC, or
+            ``None`` when this driver cannot establish it — an empty buffer,
+            an unreadable capture list, or a driver that has not implemented
+            this yet.
+        """
+        return None
 
     def supports_energy_registers(self) -> bool:
         """Whether this driver can read the standalone Energy Registers

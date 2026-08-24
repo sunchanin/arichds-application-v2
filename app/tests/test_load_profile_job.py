@@ -23,16 +23,20 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fakes import FakeMeterState
+from fakes import FakeMeterDriver, FakeMeterState, FakeSmw110Driver
 from sqlalchemy import func, select
 
-from arichds.acquisition.drivers.base import IntervalReading
+from arichds.acquisition.drivers.base import BillingReading, IntervalReading
 from arichds.acquisition.load_profile import read_and_store_load_profile
 from arichds.acquisition.locks import EndpointLocks
 from arichds.config import Settings
 from arichds.constants import LOAD_PROFILE_BACKFILL_DAYS, LOAD_PROFILE_CHUNK_HOURS, SOURCE_DLMS
+from arichds.db.app_settings import CAPTURE_DIR_KEY, set_setting
+from arichds.db.models import BillingReading as BillingReadingRow
 from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 from arichds.db.session import session_scope
+from arichds.licensing.current import set_current_license_service
+from arichds.licensing.service import LicenseState
 
 pytestmark = pytest.mark.usefixtures("fake_meter")
 
@@ -118,6 +122,17 @@ def stored_rows(device_id: int) -> list[LoadProfileReading]:
                 .where(LoadProfileReading.device_id == device_id)
                 .order_by(LoadProfileReading.read_at)
             )
+        )
+
+
+def stored_billing_closed_count(device_id: int) -> int:
+    with session_scope() as session:
+        return len(
+            session.scalars(
+                select(BillingReadingRow).where(
+                    BillingReadingRow.device_id == device_id, BillingReadingRow.record_status.is_(None)
+                )
+            ).all()
         )
 
 
@@ -586,3 +601,159 @@ class TestAMeterWhoseBufferIsShallowerThanTheBackfillWindow:
 
         assert fake_meter.load_profile_windows[0][1] == NOW - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
         assert result.stored == 0  # the full walk is budget-bound, exactly as before
+
+
+#: A closed period the Billing Change Check's own whole-buffer read (D6)
+#: stores. Deliberately carrying no open row — the store path does not need
+#: one to write a closed period.
+_CLOSED_BILLING_ROW = BillingReading(
+    bill_date=datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC),
+    source=SOURCE_DLMS,
+    is_open=False,
+    meter_serial="1232002893",
+    import_active_kwh_total=198685.030,
+)
+
+
+class TestBillingChangeCheckWiring:
+    """D5-D9, issue #43, ADR 0018 — the Billing Change Check rides the Load
+    Profile cycle's own connection, and when it fires, the whole-buffer
+    billing read runs strictly after the Transport Endpoint lock is
+    released."""
+
+    def test_a_background_read_with_a_differing_signal_stores_billing_rows(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """D5/D6, mutation row 7 — a REAL EndpointLocks. If the whole-buffer
+        read ran *inside* the Load Profile lock, `read_and_store_billing`'s
+        own `background=True` acquisition would see the endpoint already
+        held and silently return `skipped=True` — nothing would be stored.
+        Asserting "it was called" would not catch that; asserting rows
+        landed does."""
+        locks = EndpointLocks()
+        fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+        fake_meter.billing_rows = [_CLOSED_BILLING_ROW]
+
+        read_and_store_load_profile(device_id, locks=locks, background=True, now=NOW)
+
+        assert stored_billing_closed_count(device_id) == 1
+
+    def test_an_unchanged_signal_never_calls_the_whole_buffer_read(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.billing_newest_closed = None  # base-class "cannot say" — never triggers
+        fake_meter.billing_rows = [_CLOSED_BILLING_ROW]
+
+        read_and_store_load_profile(device_id, background=True, now=NOW)
+
+        assert fake_meter.billing_reads == 0
+        assert stored_billing_closed_count(device_id) == 0
+
+    def test_a_manual_read_never_runs_the_billing_read(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        """D7, mutation row 9 — the check is gated on the background path. A
+        person pressing Read now must not silently grow a whole billing read
+        plus capture-file writes on a path they are waiting on."""
+        fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+        fake_meter.billing_rows = [_CLOSED_BILLING_ROW]
+
+        read_and_store_load_profile(device_id, now=NOW)  # background=False — Read now
+
+        assert fake_meter.billing_newest_closed_reads == 0
+        assert stored_billing_closed_count(device_id) == 0
+
+    def test_the_check_is_not_attempted_on_a_model_without_billing(
+        self, device_id: int, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A driver with a load profile but no billing profile must never
+        even be asked — mirrors the real catalog (a driver's
+        ``supports_billing()`` is what gates this, never a hardcoded model
+        list, CLAUDE.md's "no if/elif on model" invariant)."""
+
+        class _NoBillingDriver(FakeSmw110Driver):
+            def supports_billing(self) -> bool:
+                return False
+
+        monkeypatch.setattr(
+            "arichds.acquisition.drivers.factory._registry",
+            lambda: {"prometer100": FakeMeterDriver, "smw110": _NoBillingDriver},
+        )
+        fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+
+        read_and_store_load_profile(device_id, background=True, now=NOW)
+
+        assert fake_meter.billing_newest_closed_reads == 0
+
+    def test_the_check_is_not_attempted_when_the_endpoint_was_busy(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """A background tick that could not even take the endpoint (ADR 0006
+        — skipped, never queued) must never reach the check."""
+        locks = EndpointLocks()
+        assert locks.get(ENDPOINT).acquire_manual(timeout=0) is True
+        fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+
+        result = read_and_store_load_profile(device_id, locks=locks, background=True, now=NOW)
+
+        assert result.skipped is True
+        assert fake_meter.billing_newest_closed_reads == 0
+
+    def test_the_check_runs_after_the_walk_and_before_disconnect(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """D8, mutation row 10 — recorded call order, not just "it happened
+        somewhere during the visit"."""
+        fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+
+        read_and_store_load_profile(device_id, background=True, now=NOW)
+
+        order = fake_meter.call_order
+        assert order[0] == "connect"
+        assert order[-1] == "disconnect"
+        last_walk_index = max(i for i, event in enumerate(order) if event == "read_load_profile")
+        billing_check_index = order.index("billing_check")
+        assert billing_check_index > last_walk_index
+        assert billing_check_index < order.index("disconnect")
+
+    def test_a_raising_check_does_not_break_the_walks_own_result(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """D9, mutation row 11 — an optional trigger must never break the
+        Load Profile walk it rides on."""
+        fake_meter.billing_newest_closed_error = RuntimeError("meter refused the billing profile")
+        fake_meter.load_profile_rows = [ANCHOR_ROW]
+
+        result = read_and_store_load_profile(device_id, background=True, now=NOW)
+
+        assert result.error is None
+        assert result.stored == 1
+        assert fake_meter.billing_newest_closed_reads == 1  # the check WAS attempted, and it failed safely
+
+    def test_the_whole_buffer_read_stores_rows_and_reaches_the_eager_capture_path(
+        self, device_id: int, fake_meter: FakeMeterState, tmp_path
+    ) -> None:
+        """D6, mutation row 8 — proves it is genuinely
+        ``read_and_store_billing`` that runs, not a bare
+        ``driver.read_billing()`` bolted onto the Load Profile connection: a
+        direct driver call would store nothing (no ``_store``/``_upsert_*``)
+        and reach no eager capture (``_capture_new_closed_periods`` lives
+        inside ``read_and_store_billing`` alone)."""
+
+        class _StubLicenseService:
+            def current_state(self) -> LicenseState:
+                return LicenseState(state="active", reason=None, features=["billing", "auto_capture"])
+
+        capture_dir = tmp_path / "captures"
+        capture_dir.mkdir()
+        with session_scope() as session:
+            set_setting(session, CAPTURE_DIR_KEY, str(capture_dir))
+        set_current_license_service(_StubLicenseService())
+        try:
+            fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+            fake_meter.billing_rows = [_CLOSED_BILLING_ROW]
+
+            read_and_store_load_profile(device_id, background=True, now=NOW)
+        finally:
+            set_current_license_service(None)
+
+        assert stored_billing_closed_count(device_id) == 1
+        assert any(f.suffix == ".pdf" for f in capture_dir.rglob("*") if f.is_file())

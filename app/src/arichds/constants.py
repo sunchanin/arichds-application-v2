@@ -82,6 +82,17 @@ LOAD_PROFILE_INTERVAL_SEC: Final[int] = 900
 # period is monthly and every read is a full-buffer read (ADR 0009 — there is
 # no window, so no watermark and no catch-up to reason about); once a day is
 # the SPEC-mandated cadence, not a tuned value.
+#
+# D12, ADR 0018, issue #43: since the Billing Change Check landed, this is a
+# **backstop**, not the primary detection path — the check rides the Load
+# Profile cycle's own connection every ~15 minutes and triggers the
+# whole-buffer read the moment a period actually closes; this daily interval
+# only matters if the check itself is ever wrong for a device (an unreadable
+# buffer, an ordering assumption that turns out to be model-specific).
+# **Do not "simplify" this to 900** — a separate association at that cadence
+# is exactly the second-connection-per-tick cost ADR 0018 exists to avoid;
+# the whole point of riding the Load Profile connection is to pay that cost
+# once, not to make this interval redundant with it.
 BILLING_INTERVAL_SEC: Final[int] = 86400
 
 # ─── Battery (SPEC §3.7, M7-2, issue #29) ──────────────────────────────────────

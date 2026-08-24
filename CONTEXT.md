@@ -143,6 +143,18 @@ provisional by definition, and it is the one place billing shows a number that i
 bill.
 _Avoid_: current billing, running row, latest reading (that's whichever period is newest)
 
+**Billing Change Check**:
+A cheap read inside the **Load Profile** cycle's own connection (ADR 0018, issue #43) that
+decides whether the whole-buffer billing read should run this tick — the fifteen-minute
+detection a customer needs without a second association per device per cycle. It reads the
+newest **two** billing entries and classifies them exactly as a full billing read would, then
+compares the newest one that classifies **closed** against the newest closed period already
+stored for that device. It is never the newest entry's Bill Date — that is the Open Period,
+whose Bill Date advances on every single read, which would make the check fire on every tick
+if it were the signal. `BILLING_INTERVAL_SEC` stays the daily backstop for when this check
+itself cannot answer.
+_Avoid_: billing poll, bill_date check, watermark (billing has no watermark, ADR 0009)
+
 **Energy Summary**:
 Interval Readings added up into **Time-of-Use buckets** — Peak, Off-Peak and Holiday — per
 device and local calendar day. It is **derived, never stored and never read from a meter**:

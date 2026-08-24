@@ -490,6 +490,111 @@ class TestAMeterSerialFailureDoesNotDiscardTheBuffer:
         assert any("serial" in record.message.lower() for record in caplog.records)
 
 
+class TestBillingNewestClosedBillDate:
+    """The Billing Change Check's SMW110 read (ADR 0018, D1/D11/D13, issue
+    #43) — same span mechanics as :meth:`read_billing`, reading only the
+    newest two entries."""
+
+    def test_the_signal_is_the_newest_closed_period_not_the_open_row(self) -> None:
+        """D1 — entry 1 is the Open Period on this profile
+        (``is_open = position == 0`` in :meth:`read_billing`); this must
+        answer entry 2's date, never entry 1's."""
+        reader = FakeBillingReader(_billing_capture_objects(), entries_in_use=len(THREE_ENTRY_BUFFER))
+        client = FakeBillingClient(buffer=THREE_ENTRY_BUFFER)
+        driver = _build_driver(reader, client)
+
+        result = driver.billing_newest_closed_bill_date()
+
+        assert result == datetime(2026, 7, 31, 17, 0, tzinfo=UTC)
+
+    def test_two_entries_are_read_in_one_call(self) -> None:
+        reader = FakeBillingReader(_billing_capture_objects(), entries_in_use=len(THREE_ENTRY_BUFFER))
+        client = FakeBillingClient(buffer=THREE_ENTRY_BUFFER)
+        driver = _build_driver(reader, client)
+
+        driver.billing_newest_closed_bill_date()
+
+        request_calls = [c for c in client.calls if c[0] == "readRowsByEntry"]
+        assert len(request_calls) == 1
+        assert request_calls[0][1:3] == (1, 2)
+
+    def test_a_disconnected_driver_returns_none(self) -> None:
+        driver = Smw110Driver(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        assert driver.billing_newest_closed_bill_date() is None
+
+    def test_no_entries_in_use_returns_none(self) -> None:
+        reader = FakeBillingReader(_billing_capture_objects(), entries_in_use=0)
+        client = FakeBillingClient(buffer=[])
+        driver = _build_driver(reader, client)
+
+        assert driver.billing_newest_closed_bill_date() is None
+        assert client.calls == []  # never even asked for a span
+
+    def test_captureobjects_is_restored_after_the_read(self) -> None:
+        full = _billing_capture_objects(extra_trailing_columns=5)
+        reader = FakeBillingReader(full, entries_in_use=len(THREE_ENTRY_BUFFER))
+        client = FakeBillingClient(buffer=THREE_ENTRY_BUFFER)
+        driver = _build_driver(reader, client)
+
+        driver.billing_newest_closed_bill_date()
+
+        # A second call must not see a truncated captureObjects list left
+        # over from the first (finally-restore, same discipline as read_billing).
+        driver.billing_newest_closed_bill_date()
+        request_calls = [c for c in client.calls if c[0] == "readRowsByEntry"]
+        assert len(request_calls) == 2
+
+    def test_ordering_comes_from_the_declaration_not_a_hardcoded_index(self) -> None:
+        """D11(a)/(b) — flipping the declaration on a subclass must change
+        the requested index, proving the ordering is read off the
+        declaration rather than hardcoded."""
+
+        class _OldestFirstSmw110(Smw110Driver):
+            BILLING_NEWEST_ENTRY_FIRST = False
+
+        reader = FakeBillingReader(_billing_capture_objects(), entries_in_use=len(THREE_ENTRY_BUFFER))
+        client = FakeBillingClient(buffer=THREE_ENTRY_BUFFER)
+        driver = _OldestFirstSmw110(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        driver._reader = reader  # noqa: SLF001
+        driver._client = client  # noqa: SLF001
+
+        driver.billing_newest_closed_bill_date()
+
+        request_calls = [c for c in client.calls if c[0] == "readRowsByEntry"]
+        assert request_calls[0][1] == len(THREE_ENTRY_BUFFER) - 1  # index = entries_in_use - 1, not 1
+
+    def test_an_oldest_first_declaration_reverses_the_window_before_classifying(self) -> None:
+        """D11 — the request half of the declaration (above) is not enough:
+        an oldest-first driver must also reverse the fetched window before
+        deciding which row is open, or ``is_open = position == 0`` marks the
+        OLDER of the two fetched rows open and returns the open period's own
+        bill date instead of the newest closed one — silently, and per ADR
+        0018's amendment that fires the whole-buffer read on every tick.
+
+        With ``entries_in_use=3`` the declaration above requests index 2,
+        count 2, which ``FakeBillingClient`` slices as
+        ``buffer[1:3] == [ENTRY_2, ENTRY_3]``. Reversed (correct), position 0
+        is ENTRY_3 (open, skipped) and position 1 is ENTRY_2 (closed) —
+        ENTRY_2's date. Without the reversal, position 0 is ENTRY_2 (open,
+        skipped) and position 1 is ENTRY_3 (closed) — ENTRY_3's date. The two
+        answers differ, which is what makes this assertion discriminate the
+        reversal rather than only the request.
+        """
+
+        class _OldestFirstSmw110(Smw110Driver):
+            BILLING_NEWEST_ENTRY_FIRST = False
+
+        reader = FakeBillingReader(_billing_capture_objects(), entries_in_use=len(THREE_ENTRY_BUFFER))
+        client = FakeBillingClient(buffer=THREE_ENTRY_BUFFER)
+        driver = _OldestFirstSmw110(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+        driver._reader = reader  # noqa: SLF001
+        driver._client = client  # noqa: SLF001
+
+        result = driver.billing_newest_closed_bill_date()
+
+        assert result == datetime(2026, 7, 31, 17, 0, tzinfo=UTC)  # ENTRY_2's date, not ENTRY_3's
+
+
 class TestScalerReadsAreMemoizedPerCall:
     """Review finding — the same sibling OBIS was re-read once per tariff
     column sharing it, holding the Transport Endpoint longer than necessary

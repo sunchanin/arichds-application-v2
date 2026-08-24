@@ -16,7 +16,7 @@ import pytest
 from fakes import FakeMeterState
 from sqlalchemy import select
 
-from arichds.acquisition.billing import billing_cycle, read_and_store_billing
+from arichds.acquisition.billing import billing_change_check, billing_cycle, read_and_store_billing
 from arichds.acquisition.drivers.base import BillingReading
 from arichds.acquisition.locks import EndpointLocks
 from arichds.config import Settings
@@ -394,6 +394,117 @@ class TestItNeverTouchesDeviceStatus:
             assert device is not None
             assert device.status == "unknown"
             assert device.consecutive_failures == 0
+
+
+class _StubBillingDriver:
+    """The minimal seam :func:`billing_change_check` actually depends on —
+    not a full :class:`MeterDriver`, so these tests exercise the check's own
+    D2/D3/D4/D9 logic without any DLMS mechanics (those are covered against
+    the real drivers in ``test_dlms_profile_seams.py`` /
+    ``test_smw110_billing.py``)."""
+
+    def __init__(self, newest_closed: datetime | None = None, error: Exception | None = None) -> None:
+        self._newest_closed = newest_closed
+        self._error = error
+        self.calls = 0
+
+    def billing_newest_closed_bill_date(self) -> datetime | None:
+        self.calls += 1
+        if self._error is not None:
+            raise self._error
+        return self._newest_closed
+
+
+class TestBillingChangeCheck:
+    """D1-D4, D9, D13 — issue #43, ADR 0018 (corrected)."""
+
+    def test_no_stored_closed_rows_triggers(self, device_id: int) -> None:
+        """D4 — a freshly added device with nothing stored yet gets its
+        billing inside one Load Profile cycle rather than waiting a day."""
+        driver = _StubBillingDriver(newest_closed=datetime(2026, 7, 31, 10, 0, tzinfo=UTC))
+
+        assert billing_change_check(driver, device_id) is True
+
+    def test_an_unchanged_newest_closed_period_does_not_trigger(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2]
+        read_and_store_billing(device_id, now=NOW)
+        driver = _StubBillingDriver(newest_closed=ENTRY_2.bill_date)
+
+        assert billing_change_check(driver, device_id) is False
+
+    def test_a_genuinely_new_closed_period_triggers(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2]
+        read_and_store_billing(device_id, now=NOW)
+        driver = _StubBillingDriver(newest_closed=ENTRY_1.bill_date)  # a period the store has never seen closed
+
+        assert billing_change_check(driver, device_id) is True
+
+    def test_the_stored_open_slot_never_wins_the_comparison(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        """D2 — ``record_status IS NULL`` filter. Mutation: dropping it lets
+        the open slot's ever-advancing bill_date win the stored-side MAX,
+        which would make this compare ENTRY_2 (unchanged closed) against
+        ENTRY_1 (the open slot) and wrongly trigger."""
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2]  # ENTRY_1 open, ENTRY_2 closed
+        read_and_store_billing(device_id, now=NOW)
+        driver = _StubBillingDriver(newest_closed=ENTRY_2.bill_date)  # the closed period, unchanged
+
+        assert billing_change_check(driver, device_id) is False
+
+    def test_a_stored_closed_row_with_no_meter_serial_still_counts(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """D2 — compared on ``device_id`` alone, never
+        ``(device, meter_serial)``. Mutation: filtering on meter_serial would
+        exclude a legitimately stored row whose ``meter_serial`` is ``None``
+        — the real failure mode both driver read paths hit when the serial
+        register read fails *after* the billing buffer was already read
+        (`_dlms_profile.py`, `smw110.py`) — making the stored-side ``MAX``
+        come back ``NULL`` and firing a full read every single cycle."""
+        no_serial_closed = BillingReading(
+            bill_date=ENTRY_2.bill_date,
+            source=SOURCE_DLMS,
+            is_open=False,
+            meter_serial=None,  # the serial-read-failed-after-buffer-read case
+            import_active_kwh_total=198685.030,
+        )
+        fake_meter.billing_rows = [ENTRY_1, no_serial_closed]
+        read_and_store_billing(device_id, now=NOW)
+        driver = _StubBillingDriver(newest_closed=ENTRY_2.bill_date)  # unchanged
+
+        assert billing_change_check(driver, device_id) is False
+
+    def test_a_backward_moving_bill_date_still_triggers(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        """D3 — ``!=``, not ``>``. A buffer that appears to have moved
+        backwards (a wrapped ring, a re-provisioned meter) is still worth
+        re-reading; the whole-buffer write path is idempotent."""
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2]
+        read_and_store_billing(device_id, now=NOW)
+        driver = _StubBillingDriver(newest_closed=ENTRY_3.bill_date)  # earlier than the stored ENTRY_2
+
+        assert billing_change_check(driver, device_id) is True
+
+    def test_a_driver_that_cannot_answer_does_not_trigger(self, device_id: int) -> None:
+        """The base-class default (``None``) must degrade to 'no trigger',
+        never raise or crash the walk it rides on."""
+        driver = _StubBillingDriver(newest_closed=None)
+
+        assert billing_change_check(driver, device_id) is False
+
+    def test_a_raising_driver_is_swallowed_and_does_not_trigger(self, device_id: int) -> None:
+        """D9 — any failure inside the check is swallowed."""
+        driver = _StubBillingDriver(error=RuntimeError("meter refused the billing profile"))
+
+        assert billing_change_check(driver, device_id) is False
+
+    def test_a_raising_driver_logs_a_warning(self, device_id: int, caplog: pytest.LogCaptureFixture) -> None:
+        driver = _StubBillingDriver(error=RuntimeError("meter refused the billing profile"))
+
+        with caplog.at_level("WARNING"):
+            billing_change_check(driver, device_id)
+
+        assert any(str(device_id) in record.message for record in caplog.records)
 
 
 class TestBillingCycle:

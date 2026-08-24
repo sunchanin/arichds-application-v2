@@ -752,6 +752,82 @@ class DlmsProfileDriver(DlmsDriver):
             )
         return readings
 
+    def billing_newest_closed_bill_date(self) -> datetime | None:
+        """Read the newest **closed** billing period's ``bill_date`` — the
+        Billing Change Check's per-tick signal (ADR 0018, D1/D2/D11/D13,
+        issue #43).
+
+        Reads two entries, not one, because entry 1 (or its equivalent for an
+        oldest-first profile — :attr:`BILLING_NEWEST_ENTRY_FIRST`) is the
+        Open Period on this base's own read shape (F4/F6). Classification
+        goes through :meth:`_classify_open` — the same classifier
+        :meth:`read_billing` uses — never a fresh guess, so this answers
+        exactly what a full read would have called "the newest closed row"
+        had it stopped after two entries.
+
+        Costs three DLMS round trips: attr 3 (``captureObjects``), attr 7
+        (``entriesInUse``), and one ``readRowsByEntry`` for two rows — no
+        span, unlike :class:`~arichds.acquisition.drivers.smw110.Smw110Driver`.
+
+        Every failure path returns ``None``, following
+        :meth:`load_profile_oldest_reading`'s discipline: an unreadable
+        buffer must leave the Load Profile walk this rides on exactly as it
+        was, never break it (D9).
+        """
+        if self._reader is None or self._client is None:
+            return None
+        try:
+            pg = GXDLMSProfileGeneric(self.BILLING_PROFILE_OBIS)
+            self._client.objects.append(pg)
+
+            self._reader.read(pg, 3)  # populates pg.captureObjects — live, never cached (D7)
+            # entriesInUse tells us the buffer is non-empty and, for an
+            # oldest-first profile, where the newest end of the ring is — it
+            # is NEVER this method's change signal (D13): it saturates once a
+            # ring is full (docs/meter-notes/smw110w4-scan.md:71), which a
+            # billing ring reaches after roughly a year on this fleet, while
+            # the newest closed bill_date keeps moving underneath it.
+            entries_in_use = int(self._reader.read(pg, 7))
+            if entries_in_use <= 0:
+                return None
+
+            positions = positions_by_obis_attr(pg.captureObjects)
+            expected_cell_count = len(pg.captureObjects)
+
+            bill_date_key = next((key for key in self.BILL_DATE_CANDIDATES if key in positions), None)
+            if bill_date_key is None:
+                return None
+
+            declared_reset_reason_key = self.RESET_REASON_KEY
+            if declared_reset_reason_key is not None and declared_reset_reason_key in positions:
+                reset_reason_key = declared_reset_reason_key
+            else:
+                reset_reason_key = None
+
+            count = min(2, entries_in_use)
+            index = 1 if self.BILLING_NEWEST_ENTRY_FIRST else max(1, entries_in_use - 1)
+
+            rows = self._reader.readRowsByEntry(pg, index, count) or []
+            if not self.BILLING_NEWEST_ENTRY_FIRST:
+                rows = list(reversed(rows))  # newest first either way (D11)
+
+            open_assigned = False
+            for position, row in enumerate(rows):
+                if len(row) != expected_cell_count:
+                    continue
+                local_dt = coerce_clock_cell(row[positions[bill_date_key]])
+                if local_dt is None:
+                    continue
+                is_open, open_assigned = self._classify_open(row, positions, reset_reason_key, position, open_assigned)
+                if not is_open:
+                    return meter_local_to_utc(local_dt)
+            return None
+        except Exception:  # noqa: BLE001 — an optional signal must never break the walk it rides on (D9).
+            logger.info(
+                "%s: could not read the newest closed billing period — the daily backstop stands", self.model_name
+            )
+            return None
+
     def _classify_open(
         self,
         row: list[Any],

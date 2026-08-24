@@ -439,6 +439,19 @@ class TestTheDefaultRegistry:
         assert default_jobs() is not default_jobs()
 
 
+class TestBillingIntervalStaysDaily:
+    """D12, issue #43 — the Billing Change Check (ADR 0018) makes
+    ``BILLING_INTERVAL_SEC`` a backstop rather than the primary detection
+    path, but it must stay at 86400. ``TestTheDefaultRegistry`` above asserts
+    intervals by **constant reference** (``[job.interval_sec for job in
+    jobs] == [..., BILLING_INTERVAL_SEC, ...]``), so it stays green even if
+    someone edits the constant's own value to 900 — this asserts the
+    literal."""
+
+    def test_billing_interval_is_still_one_day_in_seconds(self) -> None:
+        assert BILLING_INTERVAL_SEC == 86400
+
+
 # ─── The load-profile cycle (D5–D7) ───────────────────────────────────────────
 
 #: A fixed anchor so the seeded buffer is arithmetic rather than a clock race.
