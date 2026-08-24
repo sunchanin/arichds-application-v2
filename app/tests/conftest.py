@@ -51,6 +51,17 @@ ADMIN_CREDENTIALS = {"username": "admin", "password": "admin-password"}
 #: A second, non-admin account, created by the admin through ``POST /api/users``.
 USER_CREDENTIALS = {"username": "operator", "password": "operator-password"}
 
+#: One throwaway Ed25519 vendor key, generated once per test process — a
+#: module-level constant rather than a fixture, so it can be used from the
+#: ~180 ``add_device(...)`` call sites across the suite, most of which are
+#: plain functions rather than fixtures. Both wire formats share it (ADR
+#: 0019, "The decision": one vendor key signs both the Activation Code and
+#: the Meter Activation Code); :func:`_trust_vendor_key` below is what makes
+#: every verifier in the suite trust it by default.
+_VENDOR_PRIVATE_KEY = Ed25519PrivateKey.generate()
+VENDOR_PRIVATE_KEY_PEM = _VENDOR_PRIVATE_KEY.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+VENDOR_PUBLIC_KEY_PEM = _VENDOR_PRIVATE_KEY.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+
 
 @pytest.fixture(scope="session", autouse=True)
 def cheap_password_hashing() -> Iterator[None]:
@@ -79,6 +90,55 @@ def cheap_password_hashing() -> Iterator[None]:
         mp.setattr(bcrypt, "gensalt", lambda rounds=4, prefix=b"2b": real_gensalt(rounds, prefix))
         mp.setattr(security, "DUMMY_PASSWORD_HASH", security.hash_password("arichds-dummy-password"))
         yield
+
+
+def _import_vendor_cli():
+    """Import ``tools/arichds_vendor.py`` outside of a fixture context.
+
+    Mirrors the ``vendor_cli`` fixture below's lazy ``sys.path`` insertion —
+    pulled out into a plain function so :func:`mint_meter_activation_code`
+    can be called from module-level ``add_device`` helpers across the suite,
+    which take no fixture arguments.
+    """
+    if str(TOOLS_DIR) not in sys.path:
+        sys.path.insert(0, str(TOOLS_DIR))
+    import arichds_vendor
+
+    return arichds_vendor
+
+
+def mint_meter_activation_code(*, meter_serial: str, machine_id: str = TEST_MACHINE_ID) -> str:
+    """Sign a Meter Activation Code with the process-wide throwaway vendor key.
+
+    ``meter_activation_code`` became a required Create field with ADR 0019
+    (issue #42), so every device-creating test needs one. A plain function
+    rather than a fixture: the suite has ~180 ``add_device(...)`` call sites
+    across a dozen files, most of them plain functions, and threading a
+    fixture through all of them would be the tail wagging the dog. Trusted
+    automatically — :func:`_trust_vendor_key` below patches
+    ``arichds.licensing.activation_code.load_public_key_pem`` to this same
+    key's public half for every test.
+    """
+    vendor_cli = _import_vendor_cli()
+    payload = vendor_cli.build_meter_payload(meter_serial=meter_serial, machine_id=machine_id)
+    return vendor_cli.sign_payload(VENDOR_PRIVATE_KEY_PEM, payload)
+
+
+@pytest.fixture(autouse=True)
+def _trust_vendor_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every verifier trust the process-wide throwaway vendor key.
+
+    Autouse because ``meter_activation_code`` is now a required Create field
+    (ADR 0019) and most of the suite creates a device somewhere — without
+    this, every file with its own ``add_device`` helper would need to request
+    a fixture just to make :func:`mint_meter_activation_code`'s output
+    verify. A test that deliberately wants a *different* key
+    (``test_meter_activation_code.py``'s own ``vendor_keys`` fixture, say)
+    patches the same ``monkeypatch`` afterwards, and the later patch wins.
+    """
+    from arichds.licensing import activation_code as ac
+
+    monkeypatch.setattr(ac, "load_public_key_pem", lambda: VENDOR_PUBLIC_KEY_PEM)
 
 
 @pytest.fixture(autouse=True)
@@ -153,11 +213,7 @@ def vendor_cli():
     Testing against the actual CLI is the point: the canonical-payload rule is
     duplicated on both sides on purpose, and this is what catches them drifting.
     """
-    if str(TOOLS_DIR) not in sys.path:
-        sys.path.insert(0, str(TOOLS_DIR))
-    import arichds_vendor
-
-    return arichds_vendor
+    return _import_vendor_cli()
 
 
 # ─── Client fixtures ──────────────────────────────────────────────────────────
@@ -182,26 +238,27 @@ def unlicensed_client(migrated_db: Settings, monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.fixture
-def sign_activation_code(monkeypatch: pytest.MonkeyPatch, vendor_cli) -> Callable[..., str]:
-    """Issue Activation Codes for :data:`TEST_MACHINE_ID`, signed with one throwaway key.
+def sign_activation_code(vendor_cli) -> Callable[..., str]:
+    """Issue Activation Codes for :data:`TEST_MACHINE_ID`, signed with the
+    process-wide throwaway vendor key.
+
+    Signs with :data:`VENDOR_PRIVATE_KEY_PEM` — the same key
+    :func:`mint_meter_activation_code` uses, and the one
+    :func:`_trust_vendor_key` (autouse) already makes every verifier trust,
+    so this fixture needs no ``monkeypatch`` of its own (ADR 0019, "The
+    decision": one vendor key signs both wire formats).
 
     A factory rather than a single code so a test can re-license the running
     machine — which is the only honest way to prove ADR 0001's "applies live":
     a second, different license goes through the real activation endpoint and
     the next request must see it.
     """
-    from arichds.licensing import activation_code as ac
-
-    private_key = Ed25519PrivateKey.generate()
-    private_pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
-    public_pem = private_key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
-    monkeypatch.setattr(ac, "load_public_key_pem", lambda: public_pem)
 
     def issue(*, max_meters: int | None = None, features: list[str] | None = None) -> str:
         payload = vendor_cli.build_payload(
             customer="Acme Co", machine_id=TEST_MACHINE_ID, max_meters=max_meters, features=features
         )
-        return vendor_cli.sign_payload(private_pem, payload)
+        return vendor_cli.sign_payload(VENDOR_PRIVATE_KEY_PEM, payload)
 
     return issue
 

@@ -150,6 +150,7 @@ interface DeviceFormValues {
   name: string;
   brand: string;
   model: string;
+  meter_activation_code: string;
   site_name: string;
   site_code: string;
   customer: string;
@@ -175,6 +176,7 @@ const EMPTY_FORM: DeviceFormValues = {
   name: "",
   brand: "",
   model: "",
+  meter_activation_code: "",
   site_name: "",
   site_code: "",
   customer: "",
@@ -237,6 +239,9 @@ function toFormValues(device: Device): DeviceFormValues {
     name: device.name,
     brand: device.brand,
     model: device.model,
+    // The API never returns a stored code (`DeviceOut` deliberately omits
+    // it), and edit never sends one (`toInput`'s `mode === "create"` guard).
+    meter_activation_code: "",
     site_name: device.site_name,
     site_code: device.site_code ?? "",
     customer: device.customer ?? "",
@@ -278,6 +283,9 @@ function toInput(values: DeviceFormValues, mode: "create" | "edit"): DeviceInput
     model: values.model,
     site_name: values.site_name.trim(),
     transport: transportFromForm(values),
+    // Create only — ADR 0019 checks it once, at Create; Update never
+    // re-validates it, so sending it there would be misleading at best.
+    ...(mode === "create" ? { meter_activation_code: values.meter_activation_code } : {}),
     site_code: blankToNull(values.site_code),
     customer: blankToNull(values.customer),
     meter_number: blankToNull(values.meter_number),
@@ -575,12 +583,15 @@ export function Devices({ role }: { role: "admin" | "user" }) {
    * The name is cleared because it must be unique — a copied name is a
    * guaranteed 409 — and the password goes back to the brand default, since the
    * field was blank while editing and blank on a *create* would send nothing.
+   * The Meter Activation Code is cleared for the same reason as the name: a
+   * copied code belongs to the other meter, and pasting it here is a
+   * guaranteed refusal (ADR 0019 — a code is bound to one Meter Serial).
    */
   const copyDevice = () => {
     const values = form.getFieldsValue();
     const entry = catalog.find((candidate) => candidate.model === values.model);
     setSelectedId(null);
-    fill({ ...values, name: "", password: entry?.fixed_password ?? "" });
+    fill({ ...values, name: "", password: entry?.fixed_password ?? "", meter_activation_code: "" });
   };
 
   // ─── Actions ────────────────────────────────────────────────────────────────
@@ -922,6 +933,22 @@ export function Devices({ role }: { role: "admin" | "user" }) {
                         <Typography.Text>{meterSerial ?? NOTHING}</Typography.Text>
                       </Form.Item>
                     </Col>
+                    {mode === "create" ? (
+                      <Col xs={24} md={8}>
+                        <Form.Item
+                          name="meter_activation_code"
+                          label="Meter Activation Code"
+                          rules={[{ required: true, message: "Paste the code the vendor issued for this meter." }]}
+                          extra="Test connection to read the Meter Serial, ask the vendor for a code, then paste it here before Create Device."
+                        >
+                          <Input.TextArea
+                            rows={2}
+                            placeholder="Paste the code the vendor issued"
+                            style={{ fontFamily: "monospace", fontSize: 12 }}
+                          />
+                        </Form.Item>
+                      </Col>
+                    ) : null}
                     <Col xs={24} md={8}>
                       <Form.Item name="site_code" label="Site Code">
                         <Input placeholder="Optional" />

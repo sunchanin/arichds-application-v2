@@ -55,6 +55,11 @@ class Device(Base):
             across the devices that currently exist. Nullable only because rows
             created before M3 were never probed; code must never assume it is
             set. Deleting a device frees its serial for reuse.
+        meter_activation_code: The Meter Activation Code (ADR 0019, issue #42)
+            this device was verified against at Create — checked once, never
+            re-evaluated. Nullable is what grandfathering means: a device
+            created before this gate landed holds no code and keeps working.
+            Not returned by the API; nothing reads it back.
         site_name: Which site this meter is at — required by the form, and how
             the Devices tree groups. Pre-M3 rows carry the placeholder the
             migration wrote.
@@ -107,6 +112,9 @@ class Device(Base):
     # Unique AND nullable on purpose: SQLite permits many NULLs in a unique
     # index, which is exactly the "not yet identified" state pre-M3 rows are in.
     meter_serial: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, default=None)
+    # Not unique, not indexed: the serial column above is already the unique
+    # key, and nothing queries devices by their code.
+    meter_activation_code: Mapped[str | None] = mapped_column(String(1024), default=None)
     # The server_default is duplicated verbatim in migration 0003 rather than
     # shared through a constant: a migration must freeze the world as it was
     # when it was written, so it may not import anything that can be edited

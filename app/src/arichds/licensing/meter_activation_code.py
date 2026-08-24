@@ -9,10 +9,12 @@ verify branch.
 
 Deliberately **no expiry field**. ADR 0019's "When it is checked" section
 records that this is an entitlement checked at the moment of entitlement —
-Create, and Update when the serial changes — never re-evaluated
-continuously the way ADR 0001 requires of the machine licence. A nullable
-``expires_at`` key here would be an invitation to implement the continuous
-check the ADR explicitly rejects.
+Create only; ADR 0005's ``_reject_changed_serial`` already refuses any
+Update that changes the probed serial, which is why that section is amended
+(issue #42) rather than this module growing an Update-side re-check — never
+re-evaluated continuously the way ADR 0001 requires of the machine licence.
+A nullable ``expires_at`` key here would be an invitation to implement the
+continuous check the ADR explicitly rejects.
 
 This module reuses the sibling module's primitives (``canonical_payload_bytes``,
 ``load_public_key_pem``, ``encode_activation_code``, ``_b64url_decode``) rather

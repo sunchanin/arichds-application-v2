@@ -5,6 +5,7 @@ meter-import replace-the-whole-set path.
 from __future__ import annotations
 
 import pytest
+from conftest import mint_meter_activation_code
 from fakes import FakeMeterState
 from fastapi.testclient import TestClient
 
@@ -22,7 +23,8 @@ DEVICE = {
 
 def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = "SN-1") -> int:
     fake_meter.meter_serial = serial
-    response = client.post("/api/devices", json=DEVICE)
+    payload = {**DEVICE, "meter_activation_code": mint_meter_activation_code(meter_serial=serial)}
+    response = client.post("/api/devices", json=payload)
     assert response.status_code == 201, response.text
     return response.json()["data"]["id"]
 
@@ -214,7 +216,12 @@ class TestImportFromMeter:
         fake_meter.meter_serial = "SN-2"
         response = admin_client.post(
             "/api/devices",
-            json={**DEVICE, "brand": "cewe", "model": "prometer100"},
+            json={
+                **DEVICE,
+                "brand": "cewe",
+                "model": "prometer100",
+                "meter_activation_code": mint_meter_activation_code(meter_serial="SN-2"),
+            },
         )
         assert response.status_code == 201, response.text
         device_id = response.json()["data"]["id"]

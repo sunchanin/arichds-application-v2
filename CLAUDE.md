@@ -121,13 +121,18 @@ MySQL, and ~30 tables.
   association — Premier 550 was seen at **95.5 s** to connect; **not yet implemented**) ·
   0019 (a meter is **licensed individually, not just counted** — `max_meters` already gates the
   *count*; a **Meter Activation Code** is signed per meter and bound to **Meter Serial + Machine
-  ID**, checked at Create **and re-checked at Update when the serial changes** (or the gate is
-  bypassable by swapping the meter), grandfathering devices that predate it and stacking with
+  ID**, checked once at Create, grandfathering devices that predate it and stacking with
   `max_meters` rather than replacing it; the price is that an RMA and a hardware migration both
   cost new codes; the vendor half landed with issue #41 —
   `licensing/meter_activation_code.py`, `tools/arichds_vendor.py sign-meter`, and
-  `/activate-meter` — the product half (the `devices` column, the gate at Create, the re-check
-  at Update) is issue #42 and **not yet implemented**).
+  `/activate-meter` — the product half landed with issue #42: the nullable `devices.
+  meter_activation_code` column (migration 0013), the gate wired into `create_device` between
+  `_reject_duplicate_serial` and the row write, and the Add-device form field. **Update needs no
+  code check** — the ADR's own text originally described one ("re-checked at Update when the
+  serial changes"), but the shipped `_reject_changed_serial` (ADR 0005) already refuses *any*
+  Update whose probed serial differs from the stored one, unconditionally, which is stricter than
+  a re-check would be; adding one would only re-open the bypass by loosening that refusal. The
+  ADR's "When it is checked" section is amended in place to say so.).
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject

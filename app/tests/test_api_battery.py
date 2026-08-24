@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import mint_meter_activation_code
 from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.usefixtures("fake_meter")
@@ -32,7 +33,9 @@ def add_device(client: TestClient, *, serial: str = "SN-1", **overrides: object)
     from fakes import fake_meter_state
 
     fake_meter_state().meter_serial = serial
-    response = client.post("/api/devices", json={**DEVICE, **overrides})
+    payload = {**DEVICE, **overrides}
+    payload.setdefault("meter_activation_code", mint_meter_activation_code(meter_serial=serial))
+    response = client.post("/api/devices", json=payload)
     assert response.status_code == 201, response.text
     return response.json()["data"]["id"]
 

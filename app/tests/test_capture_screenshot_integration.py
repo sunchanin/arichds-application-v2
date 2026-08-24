@@ -131,6 +131,10 @@ class TestRealHeadlessCapture:
                 assert activate_response.json()["success"] is True
 
                 fake_meter.meter_serial = "INTEGRATION-SN-1"
+                meter_code_payload = vendor_cli.build_meter_payload(
+                    meter_serial="INTEGRATION-SN-1", machine_id=test_machine_id
+                )
+                meter_code = vendor_cli.sign_payload(private_pem, meter_code_payload)
                 device_response = client.post(
                     "/api/devices",
                     json={
@@ -140,6 +144,7 @@ class TestRealHeadlessCapture:
                         "site_name": "Plant A",
                         "transport": {"kind": "net", "host": "127.0.0.1", "port": 4059},
                         "password": "hunter2",
+                        "meter_activation_code": meter_code,
                     },
                 )
                 assert device_response.status_code == 201, device_response.text

@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from conftest import mint_meter_activation_code
+from fakes import DEFAULT_FAKE_SERIAL
 from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.usefixtures("fake_meter")
@@ -51,6 +53,7 @@ def make_device(admin_client: TestClient) -> int:
             "site_name": "Plant A",
             "transport": {"kind": "net", "host": "127.0.0.1", "port": 4059},
             "password": "hunter2",
+            "meter_activation_code": mint_meter_activation_code(meter_serial=DEFAULT_FAKE_SERIAL),
         },
     )
     assert response.status_code == 201, response.text

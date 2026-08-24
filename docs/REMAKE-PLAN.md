@@ -695,10 +695,12 @@ push billing + LP ขึ้น server · watermark (interval) + `updated_at` (bi
 online activation flow · lease renew · meter key redeem · fallback กลับไป offline เมื่อ portal ล่ม
 **Exit**: ติดตั้งจบด้วย activation key เพียงตัวเดียว โดยไม่ต้องติดต่อ vendor
 
-> 🔄 **ครึ่งหนึ่งของ milestone นี้ถูกดึงมาทำก่อน (ADR 0019, 2026-08-24)** — *meter key redeem*
-> ไม่รอ portal อีกต่อไป: **Meter Activation Code** เป็นสตริงที่เราเซ็นแบบ offline ผูกกับ
-> **Meter Serial + Machine ID** ตรวจตอนเพิ่มมิเตอร์ และตรวจซ้ำตอน Update เมื่อ serial เปลี่ยน
-> (ไม่งั้นสลับมิเตอร์แล้วข้าม gate ได้) · ของเดิมที่เพิ่มไปแล้วได้รับการยกเว้น และบังคับ**ควบคู่**
+> 🔄 **ครึ่งหนึ่งของ milestone นี้ถูกดึงมาทำก่อน (ADR 0019, ทำเสร็จ 2026-08-24 ด้วย issue #41/#42)**
+> — *meter key redeem* ไม่รอ portal อีกต่อไป: **Meter Activation Code** เป็นสตริงที่เราเซ็นแบบ
+> offline ผูกกับ **Meter Serial + Machine ID** ตรวจ**ครั้งเดียวตอนเพิ่มมิเตอร์**เท่านั้น — ไม่ตรวจซ้ำ
+> ตอน Update, เพราะ `_reject_changed_serial` (ADR 0005) ปฏิเสธการเปลี่ยน serial ที่ Update อยู่แล้ว
+> โดยไม่มีเงื่อนไขอยู่ก่อนแล้ว ซึ่งเข้มกว่าการตรวจซ้ำเสียอีก (ร่างแรกของ ADR นี้เข้าใจผิดว่าต้องตรวจซ้ำ
+> — แก้ไขแล้วในตัว ADR) · ของเดิมที่เพิ่มไปแล้วได้รับการยกเว้น และบังคับ**ควบคู่**
 > กับ `max_meters` ที่มีอยู่แล้วใน Activation Code ไม่ใช่แทนที่
 >
 > ⇒ สิ่งที่ portal เข้ามาเปลี่ยนคือ **ช่องทางส่งมอบ ไม่ใช่รูปแบบของ artifact** — ถ้า portal

@@ -37,10 +37,21 @@ Test connection  →  Meter Serial  →  ask us for a code  →  paste it  →  
 
 ## When it is checked
 
-**At Create, and again at Update when the serial changes.** Checking only at Create leaves an
-open door: unplug the meter, plug in a different one, press Update — ADR 0005's serial-change
-handling accepts the new identity, and the device keeps running on a code issued for the old
-serial. The gate would be bypassable without any special knowledge.
+**At Create.**
+
+> **Amendment (issue #42 implementation, 2026-08-24):** this section originally said the gate
+> was also checked "again at Update when the serial changes," reasoning that ADR 0005's
+> serial-change handling "accepts the new identity" and would otherwise let a device keep
+> running on a code issued for the old serial. **That is false about the shipped code.**
+> `_reject_changed_serial` (`api/devices.py`, ADR 0005) already refuses **any** Update whose
+> probed serial differs from the stored one, with a 409, unconditionally — the only case it
+> lets through is a stored `NULL` serial (a pre-M3 row being identified for the first time, ADR
+> 0019's own "Devices that predate this" population). There is no window in which an Update
+> silently repoints a device at a different physical meter, so there is nothing for a
+> Meter-Activation-Code re-check to close that isn't already closed, and adding one would only
+> *loosen* `_reject_changed_serial` into "admit the new serial if a valid code is supplied" —
+> reopening the exact bypass this section was written to prevent. No Update-side code check was
+> built; do not add one without first relaxing `_reject_changed_serial` on purpose.
 
 It is deliberately **not** re-checked continuously. That is what separates it from the machine
 licence, where ADR 0001 requires live re-evaluation because Limited Mode has to arrive and
@@ -68,10 +79,14 @@ un-coded meters stays that way. `max_meters` is what still bounds it.
 
 ## Consequences
 
-- **A meter swap costs a new code.** Replacing a failed meter under RMA changes the serial, so
-  Update rejects the old code and the customer must come back to us. That is the deliberate
-  price of closing the bypass above, and it needs to be in the operator documentation, not
-  discovered at a site visit.
+- **A meter swap costs a new code.** Replacing a failed meter under RMA changes the serial, and
+  the shipped code never gets as far as checking a code over it: `_reject_changed_serial` (ADR
+  0005) refuses the Update outright with a 409 the moment the probed serial disagrees with the
+  stored one. The operator's real procedure is **delete the device and create a new one** —
+  `POST /api/devices` with a code issued for the new serial — not edit the existing row. Deleting
+  discards that device's stored readings, with no tombstone (ADR 0005 — the freed serial can be
+  re-added later; `delete_device`). That is the deliberate price of closing the bypass above,
+  and it needs to be in the operator documentation, not discovered at a site visit.
 - **Moving an install to new hardware invalidates every meter code**, because the Machine ID
   changes — on top of the machine licence itself needing reissue. A hardware migration is now
   an N+1 code operation, not a one-code operation.

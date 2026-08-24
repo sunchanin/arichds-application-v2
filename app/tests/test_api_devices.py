@@ -24,18 +24,21 @@ nothing here touches a real meter.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 
 import pytest
+from conftest import mint_meter_activation_code
 from fakes import FakeMeterState
 from fastapi.testclient import TestClient
 
 from arichds.acquisition.locks import EndpointLocks
 from arichds.acquisition.poller import Poller, TickOutcome
 from arichds.acquisition.probe import ProbeFailure
+from arichds.licensing import activation_code as ac
 
 pytestmark = pytest.mark.usefixtures("fake_meter")
 
@@ -73,9 +76,16 @@ def with_transport_overrides(payload: dict, overrides: dict) -> dict:
 
 
 def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = "SN-1", **overrides: object):
-    """Create a device whose meter reports *serial*."""
+    """Create a device whose meter reports *serial*.
+
+    Defaults ``meter_activation_code`` to one minted for *serial* (ADR 0019,
+    issue #42) — an explicit override in *overrides* (a deliberately wrong or
+    missing code, say) takes precedence.
+    """
     fake_meter.meter_serial = serial
-    return client.post("/api/devices", json=with_transport_overrides(DEVICE, overrides))
+    payload = with_transport_overrides(DEVICE, overrides)
+    payload.setdefault("meter_activation_code", mint_meter_activation_code(meter_serial=serial))
+    return client.post("/api/devices", json=payload)
 
 
 class TestCreateDevice:
@@ -203,7 +213,10 @@ class TestCreateRefusedByTheMeter:
     ) -> None:
         if error is None:
             fake_meter.meter_serial = None
-            response = admin_client.post("/api/devices", json=DEVICE)
+            # The probe fails before the code is ever checked, so any
+            # well-formed code clears Pydantic's required-field validation.
+            payload = {**DEVICE, "meter_activation_code": mint_meter_activation_code(meter_serial="unused")}
+            response = admin_client.post("/api/devices", json=payload)
         else:
             setattr(fake_meter, knob, error)
             response = add_device(admin_client, fake_meter)
@@ -375,7 +388,9 @@ class TestCreateAndUpdateOverSerial:
 
     def add(self, client: TestClient, fake_meter: FakeMeterState, *, serial: str = "SN-SERIAL-1", **overrides: object):
         fake_meter.meter_serial = serial
-        return client.post("/api/devices", json={**SERIAL_DEVICE, **overrides})
+        payload = {**SERIAL_DEVICE, **overrides}
+        payload.setdefault("meter_activation_code", mint_meter_activation_code(meter_serial=serial))
+        return client.post("/api/devices", json=payload)
 
     def test_creates_over_serial_and_the_endpoint_is_the_bare_com_port(
         self, admin_client: TestClient, fake_meter: FakeMeterState
@@ -396,7 +411,10 @@ class TestCreateAndUpdateOverSerial:
 
     def test_no_serial_refuses_the_create(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
         fake_meter.meter_serial = None
-        response = admin_client.post("/api/devices", json=SERIAL_DEVICE)
+        # The probe fails before the code is ever checked, so any well-formed
+        # code clears Pydantic's required-field validation.
+        payload = {**SERIAL_DEVICE, "meter_activation_code": mint_meter_activation_code(meter_serial="unused")}
+        response = admin_client.post("/api/devices", json=payload)
 
         assert response.json()["error"]["reason"] == ProbeFailure.NO_SERIAL.value
         assert admin_client.get("/api/devices").json()["data"] == []
@@ -427,7 +445,8 @@ class TestTransportSchema:
 
     def test_a_serial_request_needs_no_host_or_port(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
         fake_meter.meter_serial = "SN-1"
-        assert admin_client.post("/api/devices", json=SERIAL_DEVICE).status_code == 201
+        payload = {**SERIAL_DEVICE, "meter_activation_code": mint_meter_activation_code(meter_serial="SN-1")}
+        assert admin_client.post("/api/devices", json=payload).status_code == 201
 
     def test_serial_missing_serial_port_is_422(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
         transport = {k: v for k, v in SERIAL_DEVICE["transport"].items() if k != "serial_port"}
@@ -454,7 +473,12 @@ class TestTransportSchema:
     ) -> None:
         fake_meter.meter_serial = "SN-1"
         transport = {**SERIAL_DEVICE["transport"], "parity": "even"}
-        response = admin_client.post("/api/devices", json={**SERIAL_DEVICE, "transport": transport})
+        payload = {
+            **SERIAL_DEVICE,
+            "transport": transport,
+            "meter_activation_code": mint_meter_activation_code(meter_serial="SN-1"),
+        }
+        response = admin_client.post("/api/devices", json=payload)
 
         assert response.status_code == 201
         assert response.json()["data"]["transport"]["parity"] == "Even"
@@ -646,6 +670,163 @@ class TestQuota:
         admin_client.delete(f"/api/devices/{device_id}")
 
         assert add_device(admin_client, fake_meter, name="Second", serial="SN-2").status_code == 201
+
+
+class TestMeterActivationCode:
+    """ADR 0019, issue #42 — the per-meter licensing gate.
+
+    Checked once, at Create, against the **probed** serial and this
+    machine's Machine ID (:data:`conftest.TEST_MACHINE_ID`, since every
+    ``admin_client`` fixture patches ``LicenseService.machine_id`` to it).
+    Update never re-checks it (Decision 3): ``_reject_changed_serial``
+    (``TestUpdateRefusedOnSerialMismatch`` above) already refuses any Update
+    whose probed serial differs from the stored one, unconditionally, which
+    is stricter than a re-check would be.
+    """
+
+    def test_a_valid_code_creates_and_is_stored(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        code = mint_meter_activation_code(meter_serial="SN-1")
+        response = add_device(admin_client, fake_meter, serial="SN-1", meter_activation_code=code)
+
+        assert response.status_code == 201
+        device_id = response.json()["data"]["id"]
+        assert stored_secret(device_id, "meter_activation_code") == code
+
+    def test_a_code_for_a_different_serial_is_refused_and_names_it(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        code = mint_meter_activation_code(meter_serial="SN-DIFFERENT")
+        response = add_device(admin_client, fake_meter, serial="SN-1", meter_activation_code=code)
+
+        assert response.status_code == 409
+        assert "SN-DIFFERENT" in response.json()["detail"]
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_a_code_for_a_different_machine_is_refused(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """A code bound to ``machine_id=""`` is "a different machine" from
+        :data:`conftest.TEST_MACHINE_ID` — chosen deliberately: it is the one
+        value that would *wrongly* validate if the handler ever hardcoded an
+        empty string instead of reading ``license_service.machine_id``."""
+        code = mint_meter_activation_code(meter_serial="SN-1", machine_id="")
+        response = add_device(admin_client, fake_meter, serial="SN-1", meter_activation_code=code)
+
+        assert response.status_code == 409
+        assert "machine" in response.json()["detail"].lower()
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_a_tampered_code_is_refused_and_does_not_echo_its_payload(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """The signature check fails before the serial in the payload can be
+        trusted — so that serial must never reach the response, however
+        distinctive it is."""
+        code = mint_meter_activation_code(meter_serial="SN-1")
+        payload_b64, signature_b64 = code.split(".")
+        payload = json.loads(ac._b64url_decode(payload_b64))
+        payload["meter_serial"] = "ATTACKER-CONTROLLED-SERIAL"
+        tampered = ac.encode_activation_code(payload, ac._b64url_decode(signature_b64))
+
+        response = add_device(admin_client, fake_meter, serial="SN-1", meter_activation_code=tampered)
+
+        assert response.status_code == 409
+        assert "ATTACKER-CONTROLLED-SERIAL" not in response.text
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_a_missing_code_is_422_and_writes_nothing(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.meter_serial = "SN-1"
+        response = admin_client.post("/api/devices", json=DEVICE)
+
+        assert response.status_code == 422
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_a_blank_code_is_422(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        fake_meter.meter_serial = "SN-1"
+        response = admin_client.post("/api/devices", json={**DEVICE, "meter_activation_code": ""})
+
+        assert response.status_code == 422
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_a_full_quota_refuses_even_a_valid_code_without_probing(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        relicense(admin_client, max_meters=1)
+        add_device(admin_client, fake_meter, serial="SN-1")
+        connects_before = fake_meter.connects
+
+        code = mint_meter_activation_code(meter_serial="SN-2")
+        response = add_device(admin_client, fake_meter, name="Second", serial="SN-2", meter_activation_code=code)
+
+        assert response.status_code == 409
+        assert fake_meter.connects == connects_before
+        assert len(admin_client.get("/api/devices").json()["data"]) == 1
+
+    def test_spare_quota_still_requires_a_valid_code(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.meter_serial = "SN-1"
+        response = admin_client.post("/api/devices", json={**DEVICE, "meter_activation_code": "garbage"})
+
+        assert response.status_code == 409
+        assert admin_client.get("/api/devices/quota").json()["data"]["used"] == 0
+
+    def test_update_refusing_a_changed_serial_leaves_the_stored_code_untouched(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        code = mint_meter_activation_code(meter_serial="SN-1")
+        device_id = add_device(admin_client, fake_meter, serial="SN-1", meter_activation_code=code).json()["data"]["id"]
+
+        fake_meter.meter_serial = "SN-OTHER"
+        response = admin_client.put(f"/api/devices/{device_id}", json=DEVICE)
+
+        assert response.status_code == 409
+        assert stored_secret(device_id, "meter_activation_code") == code
+
+    def test_update_fills_in_a_null_serial_without_a_code(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = insert_unidentified_device()
+        fake_meter.meter_serial = "SN-NEW"
+
+        response = admin_client.put(f"/api/devices/{device_id}", json=DEVICE)
+
+        assert response.status_code == 200
+        assert response.json()["data"]["meter_serial"] == "SN-NEW"
+
+    def test_update_that_keeps_the_serial_needs_no_code_and_keeps_the_stored_one(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        code = mint_meter_activation_code(meter_serial="SN-1")
+        device_id = add_device(admin_client, fake_meter, serial="SN-1", meter_activation_code=code).json()["data"]["id"]
+
+        response = admin_client.put(f"/api/devices/{device_id}", json=DEVICE)
+
+        assert response.status_code == 200
+        assert stored_secret(device_id, "meter_activation_code") == code
+
+    def test_a_null_code_row_is_served_normally_by_list_and_read_now(self, admin_client: TestClient) -> None:
+        """Regression guard for grandfathering — a pre-gate row has no code
+        and must keep working exactly as before."""
+        device_id = insert_unidentified_device()
+        from arichds.db.models import Device
+        from arichds.db.session import session_scope
+
+        with session_scope() as session:
+            session.get(Device, device_id).meter_serial = "SN-REGRESSION"
+
+        listed = admin_client.get("/api/devices").json()["data"][0]
+        assert listed["meter_serial"] == "SN-REGRESSION"
+        assert "meter_activation_code" not in listed
+
+        assert admin_client.post(f"/api/devices/{device_id}/read-now").status_code == 200
+
+    def test_device_out_has_no_meter_activation_code_field(self) -> None:
+        from arichds.api.devices import DeviceOut
+
+        assert "meter_activation_code" not in schema_property_names(DeviceOut)
 
 
 class TestTestConnection:

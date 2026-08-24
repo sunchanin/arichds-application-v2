@@ -646,6 +646,13 @@ export interface DeviceInput {
   /** `net` or `serial` (issue #9) — the operator's Transport switch. */
   transport: Transport;
   password?: string;
+  /**
+   * Signed by the vendor for this Meter Serial and this Machine ID (ADR
+   * 0019, issue #42). Required on create; omitted on an edit — Update never
+   * re-checks it (`_reject_changed_serial` already refuses any probed-serial
+   * change, unconditionally).
+   */
+  meter_activation_code?: string;
   site_code?: string | null;
   customer?: string | null;
   meter_number?: string | null;

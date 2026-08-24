@@ -83,6 +83,8 @@ from arichds.api.deps import AdminDep, CurrentUserDep, LicenseServiceDep, Poller
 from arichds.api.envelope import ApiResponse
 from arichds.constants import JOB_BILLING, JOB_LIVENESS, JOB_LOAD_PROFILE
 from arichds.db.models import BillingReading, Device, DeviceEvent, LoadProfileReading
+from arichds.licensing import WRONG_METER, verify_meter_activation_code
+from arichds.licensing import activation_code as ac
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +253,11 @@ class DeviceCreate(BaseModel):
             security boundary, so convenience (the edit form prefills it and
             Test Connection needs no retyping) wins over secrecy. The two
             cipher keys below are unaffected — they are never returned.
+        meter_activation_code: The Meter Activation Code (ADR 0019, issue
+            #42) — signed by the vendor for this Meter Serial and this
+            Machine ID. Verified against the **probed** serial, never the
+            operator's claim, and required: a customer can only add the
+            meters they were sold.
         site_code: Record-only.
         customer: Record-only.
         meter_number: Record-only operator label — not the Meter Serial.
@@ -268,6 +275,7 @@ class DeviceCreate(BaseModel):
     site_name: str = Field(min_length=1, max_length=255)
     transport: Transport
     password: str = Field(default="", max_length=128)
+    meter_activation_code: str = Field(min_length=1, max_length=1024)
     site_code: str | None = Field(default=None, max_length=80)
     customer: str | None = Field(default=None, max_length=255)
     meter_number: str | None = Field(default=None, max_length=80)
@@ -292,6 +300,16 @@ class DeviceUpdate(DeviceCreate):
     """
 
     password: str | None = Field(default=None, max_length=128)
+    # Accepted but never checked on this leg (ADR 0019, issue #42, "the issue
+    # and the ADR are both wrong about the shipped code" — see the code
+    # review that produced this decision). ADR 0019 asks Update to re-check a
+    # code when the probed serial changes; it does not need to, because
+    # `_reject_changed_serial` already refuses *any* Update whose probed
+    # serial differs from the stored one, unconditionally — a stricter gate
+    # than a re-check would be. This field exists only so the inherited
+    # required field does not turn every PUT into a 422; the frontend never
+    # sends it on edit.
+    meter_activation_code: str | None = Field(default=None, max_length=1024)
 
 
 class DeviceOut(BaseModel):
@@ -714,6 +732,56 @@ def _enforce_quota(session: SessionDep, max_meters: int | None) -> None:
         )
 
 
+def _verify_meter_activation_code(code: str, *, meter_serial: str, machine_id: str) -> str:
+    """Verify a Meter Activation Code against the **probed** serial and this
+    machine's Machine ID (ADR 0019, issue #42).
+
+    Checked once, at Create — deliberately **not** a live re-check the way
+    ADR 0001 requires of the machine licence. ADR 0019's "When it is
+    checked" section makes this an entitlement decided at the moment of
+    entitlement: a meter already added keeps working, and nothing here
+    should grow into a background re-validation loop.
+
+    ``meter_serial`` must be the probed serial (ADR 0005), never the
+    operator's typed claim — the row's identity and the code's identity are
+    checked independently of each other.
+
+    Raises:
+        HTTPException: 409 naming which of the three things was wrong.
+            ``WRONG_METER``'s message is the only one that echoes a serial
+            from the code's own payload — it is the one case where the
+            signature has already verified, so that serial is vendor-signed
+            rather than attacker-controlled.
+
+    Returns:
+        *code*, unchanged, to store on the new row.
+    """
+    result = verify_meter_activation_code(code, meter_serial=meter_serial, machine_id=machine_id)
+    if result.valid:
+        return code
+
+    if result.reason == WRONG_METER:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This Meter Activation Code was issued for meter {result.meter_serial!r}, not "
+                f"{meter_serial!r}. Ask the vendor for a code issued for this meter."
+            ),
+        )
+    if result.reason == ac.WRONG_MACHINE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This Meter Activation Code was issued for a different machine. "
+                "Ask the vendor for a code issued for this machine."
+            ),
+        )
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="This is not a valid Meter Activation Code. Ask the vendor for one issued for this meter.",
+    )
+
+
 def _require_device(session: SessionDep, device_id: int) -> Device:
     """Load a device or refuse with 404.
 
@@ -835,14 +903,18 @@ def create_device(
     quota and the name are cheap and decided locally, so a person never waits
     seconds on a DLMS association to be told they made a typo. Only then does
     the machine talk to the meter, and only if the meter answers with an
-    identity is a row written — ADR 0005's "no serial, no row".
+    identity is a row written — ADR 0005's "no serial, no row". The Meter
+    Activation Code is checked last, against the **probed** serial — a taken
+    serial is refused before it, since that is a structural conflict the
+    operator must resolve whatever their code says (ADR 0019).
 
     The Poller restarts so the new device gets a worker without waiting for a
     process restart — the same "applies live" principle as activation.
 
     Raises:
         HTTPException: 403 for a non-admin · 422 for an unknown model · 409 for
-            a full quota, a taken name, or a serial another device holds.
+            a full quota, a taken name, a serial another device holds, or a
+            Meter Activation Code that does not verify (ADR 0019).
 
     Returns:
         The created device, or a 502 failure envelope naming why the meter
@@ -860,12 +932,18 @@ def create_device(
         return _probe_failure(response, exc)
 
     _reject_duplicate_serial(session, probe.meter_serial)
+    stored_code = _verify_meter_activation_code(
+        payload.meter_activation_code,
+        meter_serial=probe.meter_serial,
+        machine_id=license_service.machine_id,
+    )
 
     device = Device(
         name=payload.name,
         brand=payload.brand,
         model=payload.model.lower(),
         meter_serial=probe.meter_serial,
+        meter_activation_code=stored_code,
         site_name=payload.site_name,
         site_code=payload.site_code,
         customer=payload.customer,

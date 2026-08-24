@@ -56,7 +56,7 @@ app\.venv\Scripts\python.exe tools\arichds_vendor.py sign-meter --meter-serial "
 
 Print the full command output, making the `METER ACTIVATION CODE` block prominent (it's on stdout; the Meter Serial/Machine ID summary is on stderr — show both).
 
-**Be honest about what happens next: there is nowhere to paste this code yet.** The operator flow that consumes a Meter Activation Code — the Add Device form checking it at Create (ADR 0019) — is issue #42 and not built. Until then, the code is issued and held by the vendor; do not write instructions for pasting it into a screen that does not exist. Note for the record: it is bound to this Meter Serial and Machine ID and does not expire on its own.
+**Tell the operator where this goes.** The Add Device form's Identity card has a required Meter Activation Code field, shown on create only, right after the Meter Serial (ADR 0019, issue #42) — paste this code there before pressing Create Device. Note for the record: it is bound to this Meter Serial and Machine ID and does not expire on its own; a wrong serial, wrong machine, or unverifiable code is refused with 409 naming which.
 
 ## Never
 
