@@ -100,7 +100,22 @@ MySQL, and ~30 tables.
   (`app/` decides which ten periods, never the page's own defaults), the DOM/JS contract lives
   in `capture/dom.py`, the service now runs `NT AUTHORITY\LocalService` with a
   `[Dirs] Permissions:` grant on `%ProgramData%\ARICHDS`, and `capture/png.py`'s Pillow renderer
-  is gone).
+  is gone) ·
+  0018 (billing has **two read shapes but still one write path** — a fifteen-minute *change
+  check* (captureObjects + entriesInUse + the newest entry only) rides the **Load Profile
+  cycle's existing connection** and triggers the unchanged whole-buffer read only when the
+  newest `bill_date` moved; ADR 0009's "one read path" is about how rows are *produced*, and
+  that is untouched. **Not `entriesInUse`** — a full ring saturates it
+  (`smw110w4-scan.md:71`), which would be silent after about a year. `BILLING_INTERVAL_SEC`
+  stays daily as a **backstop**, deliberately, so do not "fix" it to 900. Measured, because the
+  first draft guessed: the saving is 33–73 % of a cycle, not 13x, and the real cost is the
+  association — Premier 550 was seen at **95.5 s** to connect; **not yet implemented**) ·
+  0019 (a meter is **licensed individually, not just counted** — `max_meters` already gates the
+  *count*; a **Meter Activation Code** is signed per meter and bound to **Meter Serial + Machine
+  ID**, checked at Create **and re-checked at Update when the serial changes** (or the gate is
+  bypassable by swapping the meter), grandfathering devices that predate it and stacking with
+  `max_meters` rather than replacing it; the price is that an RMA and a hardware migration both
+  cost new codes; **not yet implemented**).
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject

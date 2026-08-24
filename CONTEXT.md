@@ -19,6 +19,13 @@ later). Pasting it into the first-run page activates the machine — effective i
 service restart.
 _Avoid_: license key, serial number
 
+**Meter Activation Code**:
+A one-line signed string the vendor issues for **one meter on one machine** — bound to both the
+Meter Serial and the Machine ID — which an operator must supply to add that meter. Separate from
+the Activation Code, which licenses the machine; both are enforced, and so is the machine
+license's meter quota.
+_Avoid_: meter licence, device key, per-meter Activation Code
+
 **Limited Mode**:
 The state when no valid license is present: API returns 403 `LICENSE_INVALID` (health + SPA
 still reachable), polling stays off, the process stays alive. Leaving Limited Mode is immediate
