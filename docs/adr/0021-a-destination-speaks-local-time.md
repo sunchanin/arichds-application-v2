@@ -67,10 +67,18 @@ Two things absorb it, deliberately rather than by luck:
 
 - The conversion lives in **one** function, used by both the write and the watermark read, so
   there is no second place for the two to disagree.
-- The insert is `INSERT IGNORE` against a unique key on `(meter_serial, logger_id, read_at)`,
-  and the watermark is rewound by a safety margin before sending. An off-by-offset therefore
-  re-sends rows the destination already has and they are dropped, rather than creating
-  duplicates. The failure mode is bounded waste instead of silent corruption.
+- The insert is `INSERT … ON DUPLICATE KEY UPDATE` against a unique key on
+  `(meter_serial, logger_id, read_at)`, and the watermark is rewound by a safety margin before
+  sending. An off-by-offset therefore re-sends rows the destination already has and they collapse
+  onto the existing row, rather than creating duplicates. The failure mode is bounded waste
+  instead of silent corruption.
+
+  **Not `INSERT IGNORE`**, which dedups identically and was what an earlier draft of this ADR
+  said. Measured against MariaDB 10.4.32 on 2026-08-24: `IGNORE` downgrades data errors to
+  warnings **even under `STRICT_TRANS_TABLES`**, so an over-long value is truncated and stored
+  silently, while both plain `INSERT` and `ON DUPLICATE KEY UPDATE` raise `ERROR 1406 Data too
+  long`. Dedup was never worth buying with a swallowed error — least of all on the boundary this
+  ADR exists to keep honest.
 
 ## Alternatives rejected
 

@@ -1088,8 +1088,17 @@ watermark ที่เลื่อนเมื่อ ACK · หัวข้อ�
   Limited Mode หยุด scheduler ทั้ง thread อยู่แล้ว ⇒ sync หยุดเองโดยไม่ต้องเขียนอะไรเพิ่ม
 - **สองตาราง สองวิธีเขียน เพราะมันต่างกันจริง**:
   - `load_profile_readings` — ถามปลายทางว่า `MAX(read_at)` ต่อ `(meter_serial, logger_id)`
-    ถึงไหน ถอยหลังด้วย safety margin แล้วส่งที่ใหม่กว่าด้วย `INSERT IGNORE` ⇒ **ไม่เก็บ state
-    ฝั่งเรา** (ADR 0008) · แถวไม่เคยเปลี่ยนค่า
+    ถึงไหน ถอยหลังด้วย safety margin แล้วส่งที่ใหม่กว่าด้วย
+    **`INSERT … ON DUPLICATE KEY UPDATE`** ⇒ **ไม่เก็บ state ฝั่งเรา** (ADR 0008) · แถวไม่เคยเปลี่ยนค่า
+    · **ห้ามใช้ `INSERT IGNORE`** แม้จะ dedup ได้เหมือนกัน — วัดกับ MariaDB 10.4.32 ตัวจริง
+    (2026-08-24): `IGNORE` ลดทอน error เป็น warning **แม้อยู่ใต้ `STRICT_TRANS_TABLES`** ⇒ serial
+    ยาว 80 ตัวถูกตัดเหลือ 64 แล้วเขียนลงไปเงียบๆ ขณะที่ทั้ง plain `INSERT` และ `ON DUPLICATE KEY
+    UPDATE` ขึ้น `ERROR 1406 Data too long` ตามที่ควร · และ `ON DUPLICATE KEY UPDATE` ยัง dedup
+    ถูกต้อง (เขียนซ้ำสองครั้ง เหลือแถวเดียว ค่าแรกอยู่)
+  - **ตั้ง `sql_mode` ของ session เองตอนต่อ** ไม่รับมรดกจาก server — XAMPP ตั้ง
+    `NO_ZERO_IN_DATE,NO_ZERO_DATE,NO_ENGINE_SUBSTITUTION` ไว้ **ไม่มี `STRICT_TRANS_TABLES`**
+    (วัดจากเครื่องจริง) ⇒ ค่าที่ยาวเกินหรือเกินช่วงจะถูกตัด/หนีบเงียบๆ · เหตุผลเดียวกับที่
+    ADR 0021 เลือก `DATETIME` แทน `TIMESTAMP`: ความถูกต้องต้องไม่ขึ้นกับ `my.ini` ของลูกค้า
   - `billing_readings` — ล้างทั้งตารางแล้วเขียนใหม่ใน transaction เดียว (28 แถววันนี้) ·
     ต้องเป็นแบบนี้เพราะแถว Open Period **ถูกแก้ทับที่เดิมทุกครั้งที่อ่าน** (§3.8, `updated_at`)
     และ identity ของมันคือ partial unique index สองตัวที่ MySQL เขียนไม่ได้ (ADR 0016) ·

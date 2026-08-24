@@ -147,7 +147,9 @@ MySQL, and ~30 tables.
   conversion depends on the customer's `my.cnf`). This names a rule that already held —
   `export/format.py:162` and the web pages both convert — rather than inventing one; the hazard
   is that the load-profile watermark now compares local against UTC, absorbed by one shared
-  conversion plus `INSERT IGNORE` on a rewound watermark; **not yet implemented**).
+  conversion plus `INSERT … ON DUPLICATE KEY UPDATE` on a rewound watermark — **not `INSERT
+  IGNORE`**, which dedups the same way but swallows data errors even under `STRICT_TRANS_TABLES`,
+  measured on MariaDB 10.4.32; **not yet implemented**).
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
