@@ -344,3 +344,20 @@ architecture: it has chosen a different Destination. A Destination **never becom
 unreachable one costs a retry, never a reading (ADR 0016).
 _Avoid_: endpoint (that's the **Transport Endpoint** — the meter side, and the lock keys on it),
 sync target, backend, database connection
+
+**Database Destination**:
+The customer's own SQL database, written to as one kind of **Data-out Destination**. We create
+the tables in it, we own their shape, and we are the only writer — it holds finished readings
+keyed on **Meter Serial**, never our `devices.id` (a SQLite rowid, reused after a delete).
+Distinct from the team's central server, which is a different Destination with a different
+transport (SPEC §3.8). ADR 0016 is why it is a Destination at all and not the store.
+_Avoid_: our database, the MySQL backend, the remote DB, external database
+
+**Mirror Window**:
+How much history a **Data-out Destination** is kept at — exactly what our own store holds, and
+no more. Our sync both writes new rows and deletes rows past retention in the customer's
+database, so the Destination is a mirror of the last 90 days rather than an archive that
+outlives them (ADR 0020). A Destination that has fallen behind is caught up on the next cycle;
+one that has fallen behind by more than the window loses nothing, because those rows are no
+longer ours to send.
+_Avoid_: archive, backup, retention (that's our own store's policy — `RETENTION_DAYS`), history

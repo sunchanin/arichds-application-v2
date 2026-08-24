@@ -1049,10 +1049,11 @@ one header.
 - **Meter Key** (โมเดลเดิม v1 #145): 1 key = 1 device slot ผูก serial มิเตอร์ผ่าน probe-first redeem ·
   ลบ device แล้ว slot ไม่คืน · เกิน `max_meters` ต้องใช้ key — **ทั้งย่อหน้านี้เริ่มมีผลที่ M9**
   (redeem ต้องมี portal) · **M3 บังคับด้วยการนับจำนวนอย่างเดียว ไม่มีช่อง Meter Key ในฟอร์ม** (§3.3)
-- **Feature entitlement**: enabled = `.env FEATURES ∩ license features` · sellable 9 ตัว (M7 slice 4,
-  issue #35 เพิ่ม `billing_image_export`; เดิม 8 ตัวเท่า v1):
+- **Feature entitlement**: enabled = `.env FEATURES ∩ license features` · sellable 10 ตัว (M7 slice 4,
+  issue #35 เพิ่ม `billing_image_export`; §3.10 เพิ่ม `database_destination`; เดิม 8 ตัวเท่า v1):
   `billing` `load_profile` `energy_summary` `special_days` **`records`** `battery` `auto_capture`
-  `billing_excel_export` `billing_image_export` · ops-only (ใน .env เท่านั้น): `app_log`
+  `billing_excel_export` `billing_image_export` **`database_destination`** ·
+  ops-only (ใน .env เท่านั้น): `app_log`
   (`api_config` ของ v1 ตายไปกับหน้า ApiConfig)
   — ✅ **`instantaneous` → `records` (เจ้าของตัดสิน grill M6, 2026-08-09)**: หน้าที่คีย์นี้คุมชื่อ
   **Records** ตั้งแต่ grill M3 · คีย์ชื่อเดิมขัด `CONTEXT.md` (ซึ่ง `_Avoid_: instantaneous records`
@@ -1063,6 +1064,53 @@ one header.
   เป็นรายการหนึ่งใน registry ที่ `ARICHDS_POLL_ENABLED` กับ Limited Mode คุมอยู่แล้วเหมือนทุก job
 - ชื่อเชิง cryptographic ทั้งหมดเปลี่ยนเป็น ARICHDS (fingerprint salt, signing version, keypair ใหม่)
   — ทำได้เพราะไม่มี license v1 ในสนาม · **v2 คือผู้นิยาม contract แล้ว portal v2 ทำตาม**
+
+### 3.10 Data-out: Database Destination (โมดูลใหม่ — grill แล้ว 2026-08-24)
+
+**ไม่ใช่ M8 และไม่ทำให้ M8 ใกล้เสร็จขึ้น** — §3.8 คือ push ขึ้น server ของทีมด้วย JSON + JWT +
+watermark ที่เลื่อนเมื่อ ACK · หัวข้อนี้คือเขียนลง MySQL ของลูกค้าเอง คนละ transport คนละ contract
+คนละกลไก · ADR 0016 จัดสองอย่างนี้ไว้ใต้คำว่า **Data-out Destination** เดียวกันเพราะรูปทรง
+**เชิงแนวคิด**เหมือนกัน ไม่ใช่เพราะโค้ดใช้ร่วมกันได้ · M8 คงคิวเดิม
+
+- **ส่งสองตาราง**: `billing_readings` · `load_profile_readings` — ลูกค้าขอเท่านี้ ไม่ส่ง energy
+  summary ไม่ส่งรายชื่อมิเตอร์ ไม่ส่ง `devices` (ตารางนั้นถือรหัสมิเตอร์เป็น plaintext
+  บวก `block_cipher_key` / `authentication_key` ที่ API ไม่เคยส่งออก)
+- **เราสร้างตารางเอง** `CREATE TABLE IF NOT EXISTS` ตอน sync ครั้งแรก ⇒ account ต้องมีสิทธิ์
+  `CREATE` · `SELECT` · `INSERT` · `DELETE` · ขอลูกค้าสร้าง database แยกให้เฉพาะเรา ไม่ใช่ GRANT
+  บนฐานที่มีตารางธุรกิจของเขาปนอยู่
+- **ระบุแถวด้วย Meter Serial ไม่ใช่ `device_id`** — `devices.id` เป็น alias ของ rowid ใน SQLite
+  จึงถูกใช้ซ้ำหลังลบ ปลายทางไม่มีวันรู้เรื่องการลบนั้น และข้อมูลสองมิเตอร์จะกองใต้เลขเดียวกัน ·
+  `billing_readings` มี `meter_serial` ต่อแถวอยู่แล้ว (§3.6) · `load_profile_readings` ไม่มี
+  ต้อง join จาก `devices` ตอนเขียน · unique key ปลายทาง = `(meter_serial, logger_id, read_at)`
+- **เวลาท้องถิ่น ไม่ใช่ UTC** (ADR 0021) — `DATETIME` ไม่ใช่ `TIMESTAMP` · offset มาจาก
+  `METER_LOCAL_UTC_OFFSET_HOURS` ไม่ใช่ timezone ของเครื่อง
+- **รอบ 15 นาที** เท่ารอบ Load Profile · หนึ่งบรรทัดใน `default_jobs()` ไม่มี thread ใหม่ ·
+  Limited Mode หยุด scheduler ทั้ง thread อยู่แล้ว ⇒ sync หยุดเองโดยไม่ต้องเขียนอะไรเพิ่ม
+- **สองตาราง สองวิธีเขียน เพราะมันต่างกันจริง**:
+  - `load_profile_readings` — ถามปลายทางว่า `MAX(read_at)` ต่อ `(meter_serial, logger_id)`
+    ถึงไหน ถอยหลังด้วย safety margin แล้วส่งที่ใหม่กว่าด้วย `INSERT IGNORE` ⇒ **ไม่เก็บ state
+    ฝั่งเรา** (ADR 0008) · แถวไม่เคยเปลี่ยนค่า
+  - `billing_readings` — ล้างทั้งตารางแล้วเขียนใหม่ใน transaction เดียว (28 แถววันนี้) ·
+    ต้องเป็นแบบนี้เพราะแถว Open Period **ถูกแก้ทับที่เดิมทุกครั้งที่อ่าน** (§3.8, `updated_at`)
+    และ identity ของมันคือ partial unique index สองตัวที่ MySQL เขียนไม่ได้ (ADR 0016) ·
+    ใช้ `DELETE` ไม่ใช่ `TRUNCATE` — `TRUNCATE` เป็น DDL ที่ rollback ไม่ได้ ⇒ คนอ่านอยู่จะเห็น
+    ตารางว่าง
+- **ปลายทางเก็บ 90 วันเท่าเรา ไม่ใช่คลัง** (ADR 0020) — job ของเราลบของเก่าในฐานลูกค้าด้วย ·
+  ผลที่ตามมาและ **ห้ามไป "แก้ให้เหมือนกัน"**: ลบ device แล้ว billing ของมันหายจากปลายทางในรอบถัดไป
+  แต่ load profile ค้างอยู่ได้ถึง 90 วัน
+- **มีเพดานเวลาต่อรอบ + `connect_timeout` / `read_timeout`** — **บังคับ ไม่ใช่ตัวเลือก**:
+  scheduler เป็น thread เดียวรัน job เรียงกัน job ที่ค้างลากการอ่านมิเตอร์ค้างตาม ·
+  MySQL ที่ต่อไม่ติดบน Windows ค้าง ~21 วิจาก TCP retry อย่างเดียว
+- **Feature key ที่ 10: `database_destination`** (ขายแยก) · sync ส่งเฉพาะตารางที่ลูกค้ามีสิทธิ์อยู่แล้ว
+  — ไม่มี `billing` ก็ไม่ส่ง billing
+- **ตั้งค่าที่ `/settings/database-destination`** ตามรูป `/settings/display` และ
+  `/settings/export-format` · **password เป็น write-only** — เก็บ plaintext ตามแบบแผน
+  `block_cipher_key` แต่ endpoint ไม่เคยส่งกลับ · ฟอร์มบนหน้า `DatabaseDestination.tsx`
+  มีช่อง host · port · database · user · password ครบอยู่แล้วตั้งแต่ issue #37 แค่ยังไม่ต่อหลังบ้าน
+- **หน้าเว็บต้องบอกสถานะ**: sync ล่าสุดเมื่อไหร่ · กี่แถว · ผิดพลาดว่าอะไร · ปุ่มทดสอบการเชื่อมต่อ
+- **PyMySQL ผ่าน SQLAlchemy Core** — pure Python ไม่ต้องมี C toolchain ตอน PyInstaller ·
+  และทำให้ **ทดสอบได้โดยไม่ต้องมี MySQL**: compile statement กับ `mysql` dialect แล้ว assert
+  SQL ที่ออกมา · integration test จริงข้ามได้เมื่อไม่มี `ARICHDS_TEST_MYSQL_URL`
 
 ## 4. เทคนิค & สถาปัตยกรรม (Technical & Architecture)
 

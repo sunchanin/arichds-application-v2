@@ -132,7 +132,22 @@ MySQL, and ~30 tables.
   serial changes"), but the shipped `_reject_changed_serial` (ADR 0005) already refuses *any*
   Update whose probed serial differs from the stored one, unconditionally, which is stricter than
   a re-check would be; adding one would only re-open the bypass by loosening that refusal. The
-  ADR's "When it is checked" section is amended in place to say so.).
+  ADR's "When it is checked" section is amended in place to say so. ·
+  0020 (a destination **mirrors our window, it never archives** — the customer's MySQL holds
+  exactly the 90 days our own store holds, so the sync **deletes from their database** as well as
+  writing to it; the owner chose this against the grill's recommendation, and it is why a
+  `DELETE` fired into someone else's database is deliberate rather than a bug. It dissolves the
+  silent data-loss window an append-only destination would have past day 90. **Do not "fix" the
+  asymmetry it creates**: deleting a device erases its billing from the destination on the next
+  cycle but leaves its load profile for up to 90 days, because billing is replaced wholesale and
+  load profile is appended; **not yet implemented**) ·
+  0021 (a destination **speaks local time** — UTC stops at our boundary; the store stays UTC and
+  the invariant above is untouched, but the Database Destination receives
+  `METER_LOCAL_UTC_OFFSET_HOURS`-shifted values in `DATETIME` (never `TIMESTAMP`, whose
+  conversion depends on the customer's `my.cnf`). This names a rule that already held —
+  `export/format.py:162` and the web pages both convert — rather than inventing one; the hazard
+  is that the load-profile watermark now compares local against UTC, absorbed by one shared
+  conversion plus `INSERT IGNORE` on a rewound watermark; **not yet implemented**).
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
