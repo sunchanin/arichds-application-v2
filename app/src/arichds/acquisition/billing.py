@@ -34,6 +34,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import func, select
 
@@ -451,6 +452,29 @@ def _store(
     return stored, open_updated, new_closed_ids
 
 
+def _measurement_differs(stored_value: Any, incoming_value: Any) -> bool:
+    """Compare one stored measurement column to the freshly-read value for
+    the same column (issue #45).
+
+    Exact comparison, no tolerance: fifty of the sixty columns are floats,
+    stored and read back unchanged as SQLite ``REAL`` values, and
+    ``None == None`` must count as equal. **Ten are not floats at all** —
+    the Demand Time columns are ``DateTime(timezone=True)``, and SQLAlchemy
+    2.0.51 does not round-trip ``tzinfo`` through SQLite (measured): an
+    aware value written comes back naive. A naive *stored* datetime is
+    re-attached to UTC before comparing — every row in this table is UTC by
+    the normalization contract
+    (module docstring) — the same reattachment :func:`billing_change_check`
+    already does at ``stored_newest.replace(tzinfo=UTC)`` and the house
+    pattern at ``api/billing.py``'s ``_ensure_utc_or_none``. A stored value
+    that is not itself a naive datetime, or an incoming value that is not a
+    datetime at all, is compared as-is.
+    """
+    if isinstance(stored_value, datetime) and stored_value.tzinfo is None and isinstance(incoming_value, datetime):
+        stored_value = stored_value.replace(tzinfo=UTC)
+    return stored_value != incoming_value
+
+
 def _upsert_closed(
     session,  # noqa: ANN001 — a Session, typed by its only caller.
     device_id: int,
@@ -490,9 +514,7 @@ def _upsert_closed(
         session.flush()
         return row.id
 
-    # Exact comparison, no tolerance: both sides are round-tripped SQLite REALs
-    # of the same computation, and None == None must count as equal.
-    if any(getattr(existing, key) != value for key, value in incoming.items()):
+    if any(_measurement_differs(getattr(existing, key), value) for key, value in incoming.items()):
         logger.warning(
             "Billing period for device %s at bill_date %s is already stored with a different value — "
             "skipping (stored history is never rewritten)",

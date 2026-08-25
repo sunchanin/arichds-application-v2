@@ -94,6 +94,23 @@ ENTRY_3 = BillingReading(
     import_active_kwh_total=189917.399,
 )
 
+#: A closed period carrying a populated Demand Time column (issue #45) — the
+#: existing ENTRY_1/2/3 fixtures leave all ten Demand Time fields ``None``,
+#: which is exactly why the aware-vs-naive comparison bug (production: every
+#: closed row with a captured max demand warns on every re-read) was
+#: invisible to the suite. Live-probe evidence (2026-08-25, Prometer 100
+#: 203.170.151.152:4059): every one of a device's closed periods with a
+#: non-null Demand Time column warns, every re-read, identically.
+ENTRY_WITH_DEMAND_TIME = BillingReading(
+    bill_date=datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC),
+    source=SOURCE_DLMS,
+    is_open=False,
+    meter_serial="1232002893",
+    import_active_kwh_total=198685.030,
+    max_demand_import_active_kw_total=127.570966,
+    max_demand_import_active_time_total=datetime(2026, 7, 10, 7, 45, tzinfo=UTC),
+)
+
 
 class TestRereadingIsANoOp:
     def test_reading_the_same_buffer_twice_stores_nothing_new(self, device_id: int, fake_meter: FakeMeterState) -> None:
@@ -129,6 +146,113 @@ class TestRereadingIsANoOp:
             import_active_kwh_total=ENTRY_2.import_active_kwh_total + 0.001,
         ).as_columns()
         assert a != b
+
+
+class TestRereadingWithDemandTimeIsANoOp:
+    """Issue #45 — reproduces the production condition directly: a closed
+    period whose Demand Time columns are populated must not warn on a
+    re-read of unchanged data."""
+
+    def test_rereading_an_unchanged_closed_period_with_demand_time_logs_no_warning(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_WITH_DEMAND_TIME]
+        read_and_store_billing(device_id, now=NOW)
+
+        with caplog.at_level("WARNING"):
+            result = read_and_store_billing(device_id, now=NOW)
+
+        messages = [record.message for record in caplog.records]
+        assert not any("already stored with a different value" in m for m in messages)
+        # A masked exception in the comparison would surface as `error`, not
+        # a WARNING — checked so a raising comparison can't hide behind the
+        # broad `except Exception` around the read+store call.
+        assert result.error is None
+
+    def test_a_period_whose_demand_time_columns_are_all_none_also_reads_with_no_warning(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """ENTRY_2's ten Demand Time fields are all ``None`` — the other half
+        of the domain :func:`_measurement_differs` must get right: ``None``
+        is never a datetime, so the reattachment must not run at all here."""
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2]
+        read_and_store_billing(device_id, now=NOW)
+
+        with caplog.at_level("WARNING"):
+            result = read_and_store_billing(device_id, now=NOW)
+
+        messages = [record.message for record in caplog.records]
+        assert not any("already stored with a different value" in m for m in messages)
+        assert result.error is None
+
+    def test_rereading_with_an_aware_bill_date_reports_zero_newly_stored(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """Regression guard for the ``bill_date`` lookup at ``_upsert_closed``
+        (:467-473 in issue #45's prompt) — it must keep finding the stored
+        row by an aware incoming ``bill_date`` against SQLite's naive
+        return, exactly as before this fix; a naive bind here would silently
+        re-insert every closed period on every read."""
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2, ENTRY_3]
+        read_and_store_billing(device_id, now=NOW)
+
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 0
+        assert result.error is None
+
+
+class TestADifferingDemandTimeIsSkipped:
+    """Issue #45 — the fix must not silence a genuine Demand Time change; it
+    only fixes the comparison of a value that did not actually change."""
+
+    def test_a_changed_demand_time_value_for_an_already_stored_period_is_not_rewritten(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_WITH_DEMAND_TIME]
+        read_and_store_billing(device_id, now=NOW)
+        stored_before = closed_rows(device_id)[0].max_demand_import_active_time_total
+
+        changed = BillingReading(
+            bill_date=ENTRY_WITH_DEMAND_TIME.bill_date,
+            source=SOURCE_DLMS,
+            is_open=False,
+            meter_serial="1232002893",
+            import_active_kwh_total=198685.030,
+            max_demand_import_active_kw_total=127.570966,
+            max_demand_import_active_time_total=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),  # a different capture time
+        )
+        fake_meter.billing_rows = [ENTRY_1, changed]
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert closed_rows(device_id)[0].max_demand_import_active_time_total == stored_before
+        assert result.stored == 0
+
+    def test_a_changed_demand_time_value_logs_a_warning(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_WITH_DEMAND_TIME]
+        read_and_store_billing(device_id, now=NOW)
+
+        changed = BillingReading(
+            bill_date=ENTRY_WITH_DEMAND_TIME.bill_date,
+            source=SOURCE_DLMS,
+            is_open=False,
+            meter_serial="1232002893",
+            import_active_kwh_total=198685.030,
+            max_demand_import_active_kw_total=127.570966,
+            max_demand_import_active_time_total=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),
+        )
+        fake_meter.billing_rows = [ENTRY_1, changed]
+
+        with caplog.at_level("WARNING"):
+            read_and_store_billing(device_id, now=NOW)
+
+        messages = [record.message for record in caplog.records]
+        assert any(
+            "already stored with a different value" in m and ENTRY_WITH_DEMAND_TIME.bill_date.isoformat() in m
+            for m in messages
+        )
 
 
 class TestADifferingClosedPeriodIsSkipped:
