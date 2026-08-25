@@ -49,6 +49,16 @@ dependencies = [
     # imports it directly, so it is promoted to a declared dependency, the
     # same call this file already made for Pillow above.
     "websockets>=17.0.1",
+    # ─── Database Destination — the customer's own MariaDB/MySQL (ADR 0016,
+    # ADR 0020, ADR 0021, SPEC §3.10, issue #46) ──────────────────────────────
+    # Driven through SQLAlchemy Core, never the ORM: the destination's tables
+    # are ours but they are not our store, and no model in `db/models.py` may
+    # grow a second bind. PyMySQL is pure Python — it needs no C toolchain at
+    # PyInstaller time, which is why it is the driver and not mysqlclient.
+    # The real target is MariaDB 10.4 (XAMPP's "MySQL" button starts MariaDB);
+    # the `mysql+pymysql://` URL scheme resolves to either engine, while
+    # `mariadb+pymysql://` refuses a real MySQL 8.
+    "pymysql>=1.1",
 ]
 
 [project.optional-dependencies]

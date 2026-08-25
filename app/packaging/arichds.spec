@@ -68,6 +68,15 @@ hiddenimports += [
     "gurux_common",
     "alembic",
     "sqlalchemy.dialects.sqlite",
+    # Same reason `sqlalchemy.dialects.sqlite` is listed one line up:
+    # SQLAlchemy resolves a dialect through an entry point at `create_engine`
+    # time, which PyInstaller's static analysis cannot see. The Database
+    # Destination (issue #46) builds a `mysql+pymysql://` URL at runtime from
+    # `settings` rows, so neither name appears in any import statement — a
+    # missing hidden import here produces an exe that works in dev and fails
+    # only on the customer machine, at the first sync cycle.
+    "sqlalchemy.dialects.mysql",
+    "pymysql",
     # The vendored Gurux wrappers are imported by bare name from
     # arichds/vendor/gurux/__init__.py, which puts its own directory on sys.path.
     "GXDLMSReader",

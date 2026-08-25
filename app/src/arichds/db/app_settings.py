@@ -52,6 +52,39 @@ EXPORT_AUTO_SAVE_ENABLED_DEFAULT = "false"
 EXPORT_OUTPUT_DIR_KEY = "export_output_dir"
 EXPORT_OUTPUT_DIR_DEFAULT = ""
 
+#: The five Database Destination keys (SPEC §3.10, ADR 0016, issue #46) — the
+#: connection to the customer's own MariaDB/MySQL. Machine-wide, same as every
+#: key above. An empty `db_dest_host` **or** `db_dest_database` means "not
+#: configured" and the sync returns immediately — the convention
+#: CAPTURE_DIR_DEFAULT and EXPORT_OUTPUT_DIR_DEFAULT already set.
+DB_DEST_HOST_KEY = "db_dest_host"
+DB_DEST_HOST_DEFAULT = ""
+
+#: MySQL/MariaDB's own default port. Stored as a string like every other value
+#: in this table and parsed at the read site — the API's `…Out` model is what
+#: declares it an `int`.
+DB_DEST_PORT_KEY = "db_dest_port"
+DB_DEST_PORT_DEFAULT = "3306"
+
+DB_DEST_DATABASE_KEY = "db_dest_database"
+DB_DEST_DATABASE_DEFAULT = ""
+
+DB_DEST_USER_KEY = "db_dest_user"
+DB_DEST_USER_DEFAULT = ""
+
+#: Stored in the clear, following `block_cipher_key` / `authentication_key`
+#: (`db/models.py:129-131`). The two protections are that **the API never
+#: returns it** (`DatabaseDestinationOut` has no `password` field at all) and
+#: that :class:`~arichds.logging_config.CredentialRedactionFilter` covers it.
+#:
+#: **The key name ends in the literal `password` on purpose**: the filter's
+#: existing `(password\\s*[=:]\\s*)\\S+` pattern matches anywhere in a line, so
+#: `db_dest_password=…` is already redacted without a new pattern. Renaming
+#: this key to anything not ending in `password` would silently drop that
+#: protection — `test_dataout_config_api.py` pins it.
+DB_DEST_PASSWORD_KEY = "db_dest_password"
+DB_DEST_PASSWORD_DEFAULT = ""
+
 
 def get_setting(session: Session, key: str, default: str) -> str:
     """Return *key*'s stored value, or *default* if the row is absent."""

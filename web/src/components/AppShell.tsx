@@ -95,11 +95,11 @@ const { Header, Sider, Content } = Layout;
  * Issue #37 adds the **Data-out Destination** group — Database and File
  * Upload — after Settings. **Admin-only, for the same reason App Log is**:
  * the fields are machine-internal credentials, not meter data, so the group
- * and both entries are *absent* for a `user`, not disabled. Unlike every
- * other entry in this list, neither page carries a transport yet — the
- * Data-out module (SPEC §3.8) that would make them work is a later
- * milestone; these two pages exist only to make the destination concept
- * legible ahead of that, and are presentation-only until it lands.
+ * and both entries are *absent* for a `user`, not disabled. **The two now
+ * differ**: Database carries a real transport since issue #46 (SPEC §3.10 —
+ * the `dbdest_sync` job writes into the customer's own MariaDB every fifteen
+ * minutes), while File Upload is still presentation-only, waiting on the
+ * Data-out module (SPEC §3.8) that is a later milestone.
  *
  * The header carries who is signed in, the way to change your own password
  * (every role — the modal is owned here, so no page has to pass a prop for it),

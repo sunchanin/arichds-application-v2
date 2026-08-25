@@ -162,6 +162,67 @@ BACKUP_KEEP_COUNT: Final[int] = 7
 JOB_RETENTION: Final[str] = "retention"
 JOB_BACKUP: Final[str] = "backup"
 
+# ─── Database Destination (SPEC §3.10, ADR 0016/0020/0021, M8-adjacent, #46) ──
+# The sync that writes `load_profile_readings` and `billing_readings` into the
+# customer's own MariaDB/MySQL — a Data-out Destination (CONTEXT.md), never our
+# store.
+#
+# Its own interval, deliberately NOT aliased to LOAD_PROFILE_INTERVAL_SEC even
+# though both are 900 today. CSV_EXPORT_INTERVAL_SEC above *does* alias it, and
+# the reason is specific: that job is registered immediately behind the
+# load-profile cycle and exists to run in the same pass, so one constant is one
+# policy. This job is registered last and has no such relationship — it is a
+# network write to a machine we do not own, on a cadence the owner picked for
+# freshness. Sharing the constant would mean retuning the meter read silently
+# retunes the customer's database, which is exactly what constants.py:126-129
+# already refuses for RETENTION_DAYS / LOAD_PROFILE_BACKFILL_DAYS.
+DBDEST_SYNC_INTERVAL_SEC: Final[int] = 900
+# The wall-clock ceiling on one cycle, the shape LOAD_PROFILE_READ_BUDGET_SEC
+# established. **Mandatory, not advisory** (SPEC §3.10): the scheduler runs
+# every job sequentially on one thread, so a sync that hangs on an unreachable
+# or locked customer database hangs the meter reads behind it. A cycle that
+# runs out of budget stops cleanly and resumes on the next tick — which works
+# only because the load-profile watermark lives in the destination rather than
+# in a job record (ADR 0008), so a partial cycle is not a lost cycle.
+DBDEST_SYNC_BUDGET_SEC: Final[float] = 60.0
+# Per-connection timeouts, handed to PyMySQL. A Windows host that is simply not
+# answering burns ~21 s on TCP retries alone, which is why the connect timeout
+# is explicit rather than inherited from the OS.
+DBDEST_CONNECT_TIMEOUT_SEC: Final[int] = 10
+DBDEST_READ_TIMEOUT_SEC: Final[int] = 30
+# Shorter than the two above because a *person* is waiting on the Test
+# connection button, and a button that appears dead for twenty seconds gets
+# pressed again. The sync job's own budget covers the background path.
+DBDEST_TEST_CONNECT_TIMEOUT_SEC: Final[int] = 5
+# How far the destination's own MAX(read_at) is rewound before we send. The
+# safety margin ADR 0021 names: the watermark crosses a timezone boundary on
+# every cycle, and re-sending an hour of rows that collapse onto themselves
+# through ON DUPLICATE KEY UPDATE is a bounded waste, where an off-by-offset
+# with no margin is a silent gap. Measured on the design probe (2026-08-24):
+# one hour cost 28 re-sent rows and 0.4 s on the second cycle.
+DBDEST_WATERMARK_REWIND_SEC: Final[int] = 3600
+# Rows per source query, per executemany batch, and per purge `DELETE … LIMIT`.
+# Matches RETENTION_DELETE_BATCH_SIZE's value for the same reason it was chosen
+# there — a batch small enough that no single statement holds a lock long, big
+# enough that the round trips disappear — but is its own constant: that one
+# governs SQLite on our disk, this one governs a network round trip to someone
+# else's server.
+DBDEST_ROW_CHUNK: Final[int] = 5000
+# The session sql_mode we set ourselves at connect, never inherited (SPEC
+# §3.10, decision 7b). The reference server runs
+# `NO_ZERO_IN_DATE,NO_ZERO_DATE,NO_ENGINE_SUBSTITUTION` with **no**
+# `STRICT_TRANS_TABLES` (measured on MariaDB 10.4.32, 2026-08-24), which makes
+# an over-long or out-of-range value truncate or clamp silently. Same argument
+# ADR 0021 makes for DATETIME over TIMESTAMP: correctness must not live in the
+# customer's `my.ini`. Nothing else belongs in here — ONLY_FULL_GROUP_BY in
+# particular would break our own GROUP BY watermark query.
+DBDEST_SESSION_SQL_MODE: Final[str] = "STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,NO_ENGINE_SUBSTITUTION"
+# The scheduler-registry name. Deliberately **not** the same literal as the
+# `database_destination` feature key below: one names a job in a log line, the
+# other names an entitlement in a licence, and a grep that confuses them would
+# be reading the wrong thing.
+JOB_DBDEST_SYNC: Final[str] = "dbdest_sync"
+
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"
 SOURCE_MODBUS: Final[str] = "modbus"
@@ -238,12 +299,15 @@ TOU_PEAK_START_UTC: Final[int] = 2
 TOU_PEAK_END_UTC: Final[int] = 15
 
 # ─── Feature entitlement (SPEC §3.9, M6b issue #22) ───────────────────────────
-# Enabled = `.env FEATURES ∩ license features`. Nine sellable keys (M7 slice 4,
-# issue #35, added `billing_image_export` — D1) plus one ops-only key that
-# `.env` alone controls and the license never governs. `records` (not
-# `instantaneous`) is the key that gates the Records page — owner decision
-# 2026-08-09, SPEC §3.9. No licence has been issued yet (SPEC.md:1050-1053),
-# so this key set is still free to change.
+# Enabled = `.env FEATURES ∩ license features`. Ten sellable keys (M7 slice 4,
+# issue #35, added `billing_image_export` — D1; issue #46 added
+# `database_destination`, SPEC §3.10) plus one ops-only key that `.env` alone
+# controls and the license never governs. `records` (not `instantaneous`) is
+# the key that gates the Records page — owner decision 2026-08-09, SPEC §3.9.
+# No licence has been issued yet (SPEC.md:1050-1053), so this key set is still
+# free to change — which is why `database_destination` was added the moment the
+# module was designed rather than when it shipped: adding it now is free and
+# adding it after the first licence is issued is not.
 SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "billing",
@@ -255,6 +319,7 @@ SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
         "auto_capture",
         "billing_excel_export",
         "billing_image_export",
+        "database_destination",
     }
 )
 FEATURE_KEYS: Final[frozenset[str]] = SELLABLE_FEATURE_KEYS | frozenset({"app_log"})

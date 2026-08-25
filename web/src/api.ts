@@ -595,6 +595,84 @@ export interface ExportFormatSettings {
   export_output_dir: string;
 }
 
+/**
+ * What the last Database Destination sync cycle did (issue #46).
+ *
+ * In memory on the service only (ADR 0008 forbids persisted job state), so it
+ * is `null` until a cycle has run since the last restart — which is not an
+ * error state and must not be shown as one.
+ */
+export interface DatabaseDestinationSyncStatus {
+  /** When the cycle finished, UTC. */
+  ran_at: string;
+  /** Interval Readings sent — "sent", never "gained": a row re-sent inside the watermark rewind counts here. */
+  load_profile_rows: number;
+  /** Billing Readings written by the whole-table replace. */
+  billing_rows: number;
+  /** Rows removed from the destination past the Mirror Window (ADR 0020). */
+  purged_rows: number;
+  /** Rows with no Meter Serial to attribute them to. */
+  skipped_rows: number;
+  duration_sec: number;
+  error: string | null;
+  /** The cycle stopped on its wall-clock budget and resumes next tick — **not** an error. */
+  budget_exhausted: boolean;
+}
+
+/**
+ * The Database Destination connection settings (issue #46, SPEC §3.10).
+ *
+ * **There is no `password` field, by design** — the API never returns it
+ * (write-only, the `block_cipher_key` precedent). `password_set` is what lets
+ * the form show "unchanged" rather than an empty box that reads as a cleared
+ * value.
+ */
+export interface DatabaseDestinationSettings {
+  /** `""` means "not configured" — the sync then does nothing, with no error. */
+  host: string;
+  port: number;
+  /** `""` means "not configured", same as `host`. */
+  database: string;
+  user: string;
+  password_set: boolean;
+  last_sync: DatabaseDestinationSyncStatus | null;
+}
+
+/**
+ * The body `PUT /api/settings/database-destination` takes.
+ *
+ * **Omit `password` to keep the stored one; send `""` to store an empty
+ * password.** The empty string is deliberate: XAMPP's `root` genuinely has no
+ * password, so treating `""` as "keep" would make the customer's own reference
+ * setup impossible to enter. Send the field only when it was actually edited.
+ */
+export interface DatabaseDestinationUpdate {
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  password?: string;
+}
+
+/** The six outcomes `POST …/test` distinguishes. "Connection failed" alone is what it exists to replace. */
+export type DatabaseDestinationTestResult =
+  | "ok"
+  /** Nothing saved to test yet. A blank host is **not** a connection failure — the driver defaults it to localhost. */
+  | "not_configured"
+  | "unreachable"
+  | "auth_failed"
+  | "database_missing"
+  | "missing_privilege";
+
+/** What `POST /api/settings/database-destination/test` returns — always on a 200, failures included. */
+export interface DatabaseDestinationTest {
+  result: DatabaseDestinationTestResult;
+  /** One operator-actionable English sentence. */
+  message: string;
+  /** `SELECT VERSION()` on success, `null` otherwise. */
+  server_version: string | null;
+}
+
 /** What `POST /api/load-profile/export` ("Save CSV now") did. */
 export interface LoadProfileExportResult {
   rows_written: number;
@@ -1112,6 +1190,32 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(settings),
     }),
+
+  /**
+   * The Database Destination settings plus the last cycle's status — any
+   * authenticated caller. Never carries the password.
+   */
+  databaseDestinationSettings: () =>
+    request<DatabaseDestinationSettings>("/api/settings/database-destination"),
+
+  /**
+   * Save the Database Destination settings — admin-only. **Include
+   * `password` only when the field was actually edited**: omitting it keeps
+   * the stored one, while sending `""` deliberately stores an empty password.
+   */
+  updateDatabaseDestinationSettings: (settings: DatabaseDestinationUpdate) =>
+    request<DatabaseDestinationSettings>("/api/settings/database-destination", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
+
+  /**
+   * Test the connection with the **stored** settings — admin-only, no body.
+   * Every outcome comes back on a 200 with a `result`; a failure here is not
+   * an HTTP error, so it never reaches the page's generic error surface.
+   */
+  testDatabaseDestination: () =>
+    request<DatabaseDestinationTest>("/api/settings/database-destination/test", { method: "POST" }),
 
   /**
    * "Save CSV now" — export one device's pending Interval Readings at once,

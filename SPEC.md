@@ -1137,7 +1137,8 @@ watermark ที่เลื่อนเมื่อ ACK · หัวข้อ�
 - **ตั้งค่าที่ `/settings/database-destination`** ตามรูป `/settings/display` และ
   `/settings/export-format` · **password เป็น write-only** — เก็บ plaintext ตามแบบแผน
   `block_cipher_key` แต่ endpoint ไม่เคยส่งกลับ · ฟอร์มบนหน้า `DatabaseDestination.tsx`
-  มีช่อง host · port · database · user · password ครบอยู่แล้วตั้งแต่ issue #37 แค่ยังไม่ต่อหลังบ้าน
+  มีช่อง host · port · database · user · password ครบอยู่แล้วตั้งแต่ issue #37 · **ต่อหลังบ้านแล้วที่
+  issue #46** — ฟอร์มบันทึกจริง มีปุ่ม Test connection ที่แยกผลลัพธ์ห้าแบบ และการ์ดสถานะรอบล่าสุด
 - **หน้าเว็บต้องบอกสถานะ**: sync ล่าสุดเมื่อไหร่ · กี่แถว · ผิดพลาดว่าอะไร · ปุ่มทดสอบการเชื่อมต่อ
 - **เป้าหมายจริงคือ MariaDB ไม่ใช่ MySQL** — ลูกค้าใช้ XAMPP และปุ่มที่เขียนว่า "MySQL" บน
   XAMPP Control Panel สตาร์ต **MariaDB** (เครื่องอ้างอิง: `10.4.32-MariaDB`) · ออกแบบและทดสอบกับ
@@ -1161,7 +1162,10 @@ watermark ที่เลื่อนเมื่อ ACK · หัวข้อ�
   primitives พอแล้ว) · **SQLAlchemy 2** (ORM — ไม่ใช้ SQLModel แม้ FastAPI skill จะแนะนำ
   เพราะ Alembic autogenerate + batch mode คือเส้นทางหลักของ schema; ตัดสิน M1) ·
   SQLite (WAL) + Alembic ชุดเดียว (`render_as_batch=True` ตั้งแต่ migration แรก) ·
-  Gurux DLMS (vendored `GX*.py` ห้ามแก้ API) · pymodbus · Ed25519 (`cryptography`)
+  Gurux DLMS (vendored `GX*.py` ห้ามแก้ API) · pymodbus · Ed25519 (`cryptography`) ·
+  **PyMySQL** (Database Destination §3.10 เท่านั้น — pure Python จึงไม่ต้องมี C toolchain ตอน
+  PyInstaller · ขับผ่าน **SQLAlchemy Core** ไม่ใช่ ORM เพราะฐานลูกค้าเป็น *ปลายทาง* ไม่ใช่ store
+  ของเรา · URL scheme `mysql+pymysql://` รับได้ทั้ง MariaDB 10.4 และ MySQL 8)
 - **สถาปัตยกรรม**: 1 process — main thread (uvicorn) + poller pool (1 thread/มิเตอร์, lock ต่อ
   transport endpoint) + scheduler thread เดียวรันทุก periodic job จาก registry
   `[(name, interval, fn)]` (LP scheduler, billing auto-read, retention, backup, sync, license recheck)

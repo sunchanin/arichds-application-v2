@@ -30,10 +30,12 @@ from arichds.constants import (
     BATTERY_INTERVAL_SEC,
     BILLING_INTERVAL_SEC,
     CSV_EXPORT_INTERVAL_SEC,
+    DBDEST_SYNC_INTERVAL_SEC,
     JOB_BACKUP,
     JOB_BATTERY,
     JOB_BILLING,
     JOB_CSV_EXPORT,
+    JOB_DBDEST_SYNC,
     JOB_LOAD_PROFILE,
     JOB_RETENTION,
     LOAD_PROFILE_INTERVAL_SEC,
@@ -41,6 +43,7 @@ from arichds.constants import (
     SCHEDULER_MIN_SLEEP_SEC,
     SCHEDULER_STOP_JOIN_TIMEOUT_SEC,
 )
+from arichds.dataout.sync import database_destination_cycle
 from arichds.db.backup import backup_database
 from arichds.db.retention import purge_expired
 from arichds.export.csv_export import csv_export_cycle
@@ -409,4 +412,13 @@ def default_jobs() -> list[Job]:
         # side of that trade by a wide margin.
         Job(name=JOB_BACKUP, interval_sec=BACKUP_INTERVAL_SEC, fn=backup_database),
         Job(name=JOB_RETENTION, interval_sec=RETENTION_INTERVAL_SEC, fn=purge_expired),
+        # The Database Destination sync (issue #46, SPEC §3.10) — **last,
+        # deliberately**. It is the only job here that talks to a machine we
+        # do not own, and the only one that can legitimately consume its
+        # whole wall-clock budget (a first-run backfill was 61,023 rows on the
+        # design probe). Everything ahead of it is a meter read or a local
+        # disk job, and jobs run sequentially in registry order on the one
+        # thread, so putting it anywhere earlier would let a slow customer
+        # database delay a meter read within the same pass.
+        Job(name=JOB_DBDEST_SYNC, interval_sec=DBDEST_SYNC_INTERVAL_SEC, fn=database_destination_cycle),
     ]

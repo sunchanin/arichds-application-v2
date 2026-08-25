@@ -682,7 +682,11 @@ push billing + LP ขึ้น server · watermark (interval) + `updated_at` (bi
 > ที่ ADR 0009 พึ่งอยู่ และการทำให้มันเป็นที่เก็บจะทำให้ downtime ของลูกค้ากลายเป็น downtime ของเรา
 >
 > ✅ **หน้าจอลงแล้ว (issue #37)** — Database + File Upload เป็น presentation-only ยังไม่มี transport
-> ⏳ **transport ยังไม่ได้ทำ** — นี่คือเนื้อของ M8 ที่เหลือ
+> ✅ **Database Destination ต่อจริงแล้ว (issue #46, SPEC §3.10)** — `dataout/` + job `dbdest_sync`
+> รอบ 15 นาที เขียน `load_profile_readings` / `billing_readings` ลง MariaDB ของลูกค้า
+> (ADR 0020 mirror 90 วัน · ADR 0021 เวลาท้องถิ่น) ⇒ หน้า `DatabaseDestination.tsx` ใช้งานได้จริงแล้ว
+> ⏳ **transport ที่เหลือยังไม่ได้ทำ** — push ขึ้น server ของทีม (§3.8) และ File Upload
+> ยังเป็นเนื้อของ M8 · **คนละ transport คนละ contract กับ §3.10 อย่าเหมารวม**
 >
 > 🔀 **มีไซต์ที่ไม่เข้าเส้นทางนี้เลย** — ลูกค้าบางรายห้ามข้อมูลออก cloud ⇒ ใช้ **Syncthing**
 > mirror โฟลเดอร์ที่ operator ตั้งไว้ (`capture_dir`, export dir) ไปเครื่องปลายทาง

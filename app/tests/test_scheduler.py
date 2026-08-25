@@ -16,6 +16,7 @@ owns the job wrapped around it.
 from __future__ import annotations
 
 import logging
+import pathlib
 import threading
 import time
 from collections.abc import Iterator
@@ -42,11 +43,14 @@ from arichds.constants import (
     BATTERY_INTERVAL_SEC,
     BILLING_INTERVAL_SEC,
     CSV_EXPORT_INTERVAL_SEC,
+    DBDEST_SYNC_INTERVAL_SEC,
+    JOB_DBDEST_SYNC,
     LOAD_PROFILE_INTERVAL_SEC,
     MANUAL_READ_LOCK_TIMEOUT_SEC,
     RETENTION_INTERVAL_SEC,
     SOURCE_DLMS,
 )
+from arichds.dataout.sync import database_destination_cycle
 from arichds.db.backup import backup_database
 from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 from arichds.db.retention import purge_expired
@@ -538,15 +542,16 @@ class TestSchedulerMasterSwitch:
 
 
 class TestTheDefaultRegistry:
-    """D12 — six jobs at M7 slice 3 (csv_export, issue #30, added a sixth,
-    right behind load_profile). M8 adds sync one line at a time."""
+    """D12 — seven jobs at issue #46 (`dbdest_sync`, the Database Destination,
+    added a seventh at the **end**). M8's central-server push adds its own one
+    line at a time, still unbuilt."""
 
-    def test_it_holds_the_load_profile_csv_export_billing_battery_backup_and_retention_jobs(self) -> None:
+    def test_it_holds_all_seven_jobs_in_order(self) -> None:
         jobs = default_jobs()
 
-        # Asserted deliberately so that whoever adds M8's sync has to come
+        # Asserted deliberately so that whoever adds M8's push has to come
         # here and update the count on purpose.
-        assert len(jobs) == 6
+        assert len(jobs) == 7
         assert [job.name for job in jobs] == [
             "load_profile",
             "csv_export",
@@ -554,6 +559,7 @@ class TestTheDefaultRegistry:
             "battery",
             "backup",
             "retention",
+            "dbdest_sync",
         ]
         assert [job.interval_sec for job in jobs] == [
             LOAD_PROFILE_INTERVAL_SEC,
@@ -562,6 +568,7 @@ class TestTheDefaultRegistry:
             BATTERY_INTERVAL_SEC,
             BACKUP_INTERVAL_SEC,
             RETENTION_INTERVAL_SEC,
+            DBDEST_SYNC_INTERVAL_SEC,
         ]
         assert [job.fn for job in jobs] == [
             load_profile_cycle,
@@ -570,6 +577,7 @@ class TestTheDefaultRegistry:
             battery_cycle,
             backup_database,
             purge_expired,
+            database_destination_cycle,
         ]
 
     def test_csv_export_is_registered_immediately_behind_load_profile(self) -> None:
@@ -591,6 +599,32 @@ class TestTheDefaultRegistry:
     def test_it_returns_a_fresh_list_each_call(self) -> None:
         """A function, not a module constant — one ``setattr`` swaps it whole."""
         assert default_jobs() is not default_jobs()
+
+    def test_the_database_destination_sync_is_registered_last(self) -> None:
+        """Issue #46. **Last, deliberately**: it is the only network job that
+        can legitimately consume its whole budget, and everything ahead of it
+        is a meter read or a local disk job that should not queue behind it
+        within a pass (jobs run sequentially on one thread).
+        """
+        jobs = default_jobs()
+
+        assert jobs[-1].name == JOB_DBDEST_SYNC
+        assert jobs[-1].interval_sec == DBDEST_SYNC_INTERVAL_SEC
+        assert jobs[-1].fn is database_destination_cycle
+
+    def test_the_sync_interval_is_its_own_constant_not_the_load_profile_one(self) -> None:
+        """`CSV_EXPORT_INTERVAL_SEC` aliases `LOAD_PROFILE_INTERVAL_SEC`
+        because that job runs in the same pass right behind it; this one does
+        not, and `constants.py:126-129` already refuses to share a constant
+        between independent policies. They are equal today and must not be the
+        same object.
+        """
+        import arichds.constants as constants
+
+        assert DBDEST_SYNC_INTERVAL_SEC == 900
+        source = pathlib.Path(constants.__file__).read_text(encoding="utf-8")
+        assert "DBDEST_SYNC_INTERVAL_SEC: Final[int] = 900" in source
+        assert "DBDEST_SYNC_INTERVAL_SEC: Final[int] = LOAD_PROFILE_INTERVAL_SEC" not in source
 
 
 class TestBillingIntervalStaysDaily:

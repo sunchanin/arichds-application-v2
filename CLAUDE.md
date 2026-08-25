@@ -89,7 +89,13 @@ MySQL, and ~30 tables.
   partial unique indexes ADR 0009's invariant rests on, and making their database the store
   would make their downtime our downtime; FTP upload, a customer MySQL and a replicated folder
   are all the same shape, a **Data-out Destination**, which is SPEC §3.8's surface; the
-  presentation-only pages landed with issue #37, the transport is M8 and unbuilt) ·
+  presentation-only pages landed with issue #37. **Two transports, do not conflate them**:
+  the **Database Destination** (the customer's own MariaDB/MySQL, SPEC §3.10) **landed with
+  issue #46** — `dataout/`, the `dbdest_sync` scheduler job, the three
+  `/api/settings/database-destination` endpoints and a working
+  `web/src/pages/DatabaseDestination.tsx`; the **central-server push** (SPEC §3.8, JSON + JWT
+  + an ACK-driven watermark) is still **M8 and unbuilt**, on its own queue, and
+  `FileUploadDestination.tsx` remains a presentation-only shell) ·
   0017 (the capture image is a **headless screenshot of our own page** — **reverses 0014**:
   Edge ships with Windows and `websockets` already arrives via `uvicorn[standard]`, so driving
   the installed browser over CDP costs **0 MB** and makes fidelity an identity rather than an
@@ -158,7 +164,14 @@ MySQL, and ~30 tables.
   silent data-loss window an append-only destination would have past day 90. **Do not "fix" the
   asymmetry it creates**: deleting a device erases its billing from the destination on the next
   cycle but leaves its load profile for up to 90 days, because billing is replaced wholesale and
-  load profile is appended; **not yet implemented**) ·
+  load profile is appended; **fully implemented with issue #46**: `dataout/sync.py`'s
+  `_purge_destination` deletes past `RETENTION_DAYS` from the customer's
+  `load_profile_readings` in `DELETE … LIMIT` batches, `_replace_billing` writes billing
+  wholesale inside one transaction and **never purges it**, and the purge runs even when the
+  append hit its budget so the window cannot drift. One correction the implementation forced,
+  in the ADR's favour: the ADR says nothing records that a purge ran, and nothing persisted
+  does — but the page needs a status, so the counts live in one in-memory frozen dataclass
+  (`dataout/status.py`) that resets on restart, which is ADR 0008-clean) ·
   0021 (a destination **speaks local time** — UTC stops at our boundary; the store stays UTC and
   the invariant above is untouched, but the Database Destination receives
   `METER_LOCAL_UTC_OFFSET_HOURS`-shifted values in `DATETIME` (never `TIMESTAMP`, whose
@@ -167,7 +180,17 @@ MySQL, and ~30 tables.
   is that the load-profile watermark now compares local against UTC, absorbed by one shared
   conversion plus `INSERT … ON DUPLICATE KEY UPDATE` on a rewound watermark — **not `INSERT
   IGNORE`**, which dedups the same way but swallows data errors even under `STRICT_TRANS_TABLES`,
-  measured on MariaDB 10.4.32; **not yet implemented**).
+  measured on MariaDB 10.4.32; **fully implemented with issue #46**: `dataout/sync.py`'s
+  `_to_local` / `_from_local` are the one pair the row write, the watermark read and the purge
+  cutoff all go through, and `dataout/schema.py` maps every `DateTime(timezone=True)` to a naive
+  `DATETIME`. `dataout/` imports nothing from `export/`, as this ADR's Consequences require, and
+  `test_dataout_sync.py` asserts that rather than trusting it. Two corrections the real server
+  forced, both about the *implementation's* research rather than the ADR's own text: PyMySQL
+  reports **2003** for an unresolvable host as well as for a refused connection — not 2005, and
+  not the C client's 2002 — so the Test connection check keys on neither; and SQLAlchemy's
+  `CreateTable` renders a `UniqueConstraint` inline but emits a plain `Index` as a **separate**
+  statement, so `reconcile` must create the secondary indexes itself or the destination silently
+  gets none).
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
@@ -190,7 +213,10 @@ MySQL, and ~30 tables.
   **SQLAlchemy 2** ORM + SQLite WAL + one Alembic setup (`render_as_batch=True`) · poller ·
   job-registry scheduler · licensing · `auth/` (bcrypt + PyJWT, Role enum, token service —
   HTTP-free; the guard dependencies live in `api/deps.py`) · `export/` (the Load Profile CSV
-  auto-export — row/filename formatting and the exporter itself, issue #30). Venv at
+  auto-export — row/filename formatting and the exporter itself, issue #30) · `dataout/` (the
+  **Database Destination** — the customer's own MariaDB/MySQL written through SQLAlchemy Core +
+  PyMySQL on the `dbdest_sync` job, issue #46; deliberately **not** part of `export/`, which
+  ADR 0021 forbids it from sharing a local-time helper with). Venv at
   `app/.venv`, `pyproject.toml` + pip.
 - `web/` — Vite + React + TS + **AntD v6 re-themed** (deep teal `#0f766e`, compact, light,
   English-only UI). No Tailwind — AntD tokens + its layout primitives cover the UI. pnpm.
@@ -267,8 +293,11 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
   are field-proven; never "improve", rename, or reformat their APIs.
 - **Credential redaction filter on every log handler** — keys like `password=`, `*_key=`,
   `token=` become `[REDACTED]`.
-- **Auth is user JWT only** — no API keys, no inbound M2M surface. Data leaves the box via
-  the push sync module only; nothing external reads our tables.
+- **Auth is user JWT only** — no API keys, no inbound M2M surface. Data leaves the box only
+  through a **Data-out Destination we drive outbound** — the Database Destination
+  (ADR 0016/0020/0021, issue #46, `dataout/`) and the central-server push (SPEC §3.8, still
+  unbuilt), which are **two transports and two contracts, not one** (SPEC §3.10). Nothing
+  external reads our tables.
 - **English-only UI** — no Thai strings in `web/` (v1 had them; do not carry them over).
 
 ## v1 as reference (read-only)
