@@ -311,13 +311,24 @@ check.
 
 **Scheduler**:
 The single background thread that runs every periodic job from a registry of
-`(name, interval, fn)` — one thread for all of them, not one per job. Jobs run sequentially in
+`(name, interval, fn)`, **plus one-shot lane** (`Scheduler.run_soon`, issue #44) for a callable
+queued to run once, as soon as the thread gets to it, never re-registered — one thread for all
+of it, not one per job and not a second thread for one-shots either. Jobs run sequentially in
 registry order, each on its own interval, and a job that throws costs only its own cycle: it is
-logged and runs again at its next interval. It stops in Limited Mode and starts on activation,
-without a restart. **Not all of its jobs read meters**: it runs the load-profile cycle (every
-enabled device that is not Offline) alongside Retention and the Daily Backup, which touch no
-meter at all. Every meter read it does make is background work — a device whose Transport
-Endpoint is busy is skipped and read next cycle, never queued ahead of a person.
+logged and runs again at its next interval; a one-shot that throws costs only itself the same
+way. It stops in Limited Mode and starts on activation, without a restart. **Not all of its jobs
+read meters**: it runs the load-profile cycle (every enabled device that is not Offline)
+alongside Retention and the Daily Backup, which touch no meter at all. **Almost every meter read
+it does make is background work** — a device whose Transport Endpoint is busy is skipped and
+read next cycle, never queued ahead of a person — **with one deliberate exception**: the
+one-shot lane's own queued callable, the first load-profile read after Create, takes the
+**Manual** path (`background=False`) instead, because `poller.restart()` has just made the
+Transport Endpoint predictably busy with that same device's first Poller tick, and a background
+acquisition there would silently skip forever (see Manual Read, below). The price of that
+exception is written down here because it is otherwise easy to miss: that one-shot runs on this
+same single job thread, so it can hold it for up to `MANUAL_READ_LOCK_TIMEOUT_SEC` +
+`LOAD_PROFILE_READ_BUDGET_SEC` (120 s + 60 s) waiting for and then walking one device, delaying
+every other registry job behind it in that pass — including Backup and Retention.
 _Avoid_: cron, worker, background service, a per-module scheduler (v1 had seven)
 
 **Probe**:
@@ -334,9 +345,16 @@ Reading, and it never reports a measured value. M5 and M6 name their jobs (`load
 _Avoid_: ping, health check
 
 **Manual Read**:
-A read a person asked for — Read now, Test connection, or the probe behind Create/Update.
-Manual Reads take the Transport Endpoint lock ahead of the Poller: a skipped background tick
-costs one minute of data, a person waiting on a button costs trust.
+A read a person asked for — Read now (the Devices page's three-job version, and the
+page-scoped Load Profile / Billing buttons, issue #44), Test connection, or the probe behind
+Create/Update. Manual Reads take the Transport Endpoint lock ahead of the Poller: a skipped
+background tick costs one minute of data, a person waiting on a button costs trust.
+Extended by issue #44 to one more case with no button at all: the first load-profile read
+queued right after Create, on the Scheduler's one-shot lane. Nobody presses anything for it,
+but it takes the Manual path (`background=False`) deliberately — `poller.restart()` a few
+lines up means the new device's first Poller tick runs immediately, so the Transport Endpoint
+is predictably held the moment it runs, and only the Manual path waits for it rather than
+skipping silently (ADR 0006's priority rule is otherwise untouched).
 _Avoid_: on-demand read, forced read
 
 **Pause**:

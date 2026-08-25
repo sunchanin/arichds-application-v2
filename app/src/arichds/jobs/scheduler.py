@@ -101,6 +101,17 @@ class Scheduler:
         self._enabled = enabled
         self._stop_timeout = stop_timeout
         self._shutdown = threading.Event()
+        # The one-shot lane (D2/D3, issue #44) — `_wake` is bound fresh in
+        # `start()`, exactly like `_shutdown` above and for the same reason
+        # (see `start()`'s comment): a thread abandoned by a previous
+        # `stop()` must keep watching the wake it was given, not a
+        # replacement's. `_pending` and its lock are process-lifetime, not
+        # per-run, because a `run_soon` called before the first `start()` (or
+        # between a `stop()` and the next `start()`) must still run on the
+        # next pass rather than being lost.
+        self._wake: threading.Event | None = None
+        self._pending: list[tuple[str, Callable[[], None]]] = []
+        self._pending_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._guard = threading.Lock()
         self._running = False
@@ -132,10 +143,15 @@ class Scheduler:
             # the next start()'s unset event and run on forever beside its
             # replacement. Same rule as Poller._worker, one thread instead of n.
             self._shutdown = threading.Event()
+            # Same rule, same reason, for the one-shot lane's wake (D3): a
+            # stale thread's own wake must not be the one a future run_soon()
+            # sets.
+            self._wake = threading.Event()
             shutdown = self._shutdown
+            wake = self._wake
             self._thread = threading.Thread(
                 target=self._run,
-                args=(shutdown,),
+                args=(shutdown, wake),
                 name="arichds-scheduler",
                 daemon=True,
             )
@@ -159,6 +175,11 @@ class Scheduler:
             if not self._running:
                 return
             self._shutdown.set()
+            # Also wakes a thread parked in `wake.wait(delay)` — without this,
+            # stop() would wait out the sleep exactly the way TestStopIsPrompt
+            # already guards `_shutdown` against.
+            if self._wake is not None:
+                self._wake.set()
             thread = self._thread
             self._thread = None
             self._running = False
@@ -177,11 +198,12 @@ class Scheduler:
                 return
         logger.info("Scheduler stopped")
 
-    def _run(self, shutdown: threading.Event) -> None:
-        """Run every due job, then sleep until the next one is due.
+    def _run(self, shutdown: threading.Event, wake: threading.Event) -> None:
+        """Run every queued one-shot, then every due job, then sleep until the
+        next thing to do.
 
-        ``shutdown`` is the event bound when this thread was created, NOT
-        ``self._shutdown`` — see :meth:`start`.
+        ``shutdown`` and ``wake`` are the events bound when this thread was
+        created, NOT ``self._shutdown`` / ``self._wake`` — see :meth:`start`.
 
         Two timing rules, both deliberate:
 
@@ -194,6 +216,12 @@ class Scheduler:
           queued twice. There are no catch-up runs: for the load-profile job the
           watermark already makes a late cycle read everything it missed, and a
           job that stacks up would be reading the same meter twice at once.
+
+        **One-shots run before the due jobs, every pass** (D2, issue #44) — a
+        one-shot queued by :meth:`run_soon` while this thread is mid-sleep is
+        drained the moment it wakes, ahead of whatever the registry has due,
+        so a person who just added a device is never queued behind the site's
+        whole load-profile cycle.
         """
         logger.info("Scheduler thread started")
         # Due immediately: the first pass runs everything.
@@ -201,6 +229,18 @@ class Scheduler:
 
         while not shutdown.is_set():
             now = time.monotonic()
+
+            for name, fn in self._drain_pending():
+                # Same per-item shutdown check as the jobs loop below, and the
+                # same reason: a one-shot already running is never interrupted,
+                # but one still queued must not start after shutdown.
+                if shutdown.is_set():
+                    break
+                try:
+                    fn()
+                except Exception:  # noqa: BLE001 — one bad one-shot must never kill the thread or the jobs behind it.
+                    logger.exception("One-shot job %s failed", name)
+
             for index, job in enumerate(self._jobs):
                 # Checked per job, not just per pass: a job already running is
                 # never interrupted, but one that has not started must not begin
@@ -223,13 +263,86 @@ class Scheduler:
                     logger.exception("Job %s failed", job.name)
                 due[index] = time.monotonic() + job.interval_sec
 
-            # Event.wait doubles as the sleep and the shutdown check, so stopping
-            # never waits out a full interval. With an empty registry there is no
-            # next due time and it waits for the shutdown alone.
+            # `wake` doubles as the sleep and as run_soon()'s wakeup, the same
+            # way `shutdown` doubles as the sleep and the shutdown check — so
+            # neither stopping nor a queued one-shot ever waits out a full
+            # interval. With an empty registry there is no next due time and
+            # this waits for a wake (a shutdown or a run_soon) alone.
             delay = max(min(due) - time.monotonic(), SCHEDULER_MIN_SLEEP_SEC) if due else None
-            if shutdown.wait(delay):
+
+            wake.clear()
+
+            # Re-checked here, immediately AFTER the clear() above and not
+            # only at the top of the `while` — a one-shot or a job can
+            # legitimately outlast stop()'s join (a load-profile cycle can,
+            # and so can a stuck one-shot), so this thread may still be
+            # running well after stop() returned. `stop()` sets `shutdown`
+            # and then `wake`, in that order; checking `shutdown` *before*
+            # this clear() (an earlier version of this method did) leaves a
+            # window where a `stop()` landing between that check and this
+            # clear() sets both events, and the clear() right here then
+            # discards the very wake `stop()` used to unstick this thread —
+            # which then blocks on `wake.wait()` below with nothing left to
+            # wake it, forever with an empty registry (`delay` is `None`).
+            # Checking after the clear() closes that window: whichever of
+            # the two events `stop()` reaches first, this check (or the
+            # `wake.wait()` two lines down, if `stop()` finishes setting
+            # `wake` in the instant right after this check) still catches it.
+            if shutdown.is_set():
                 break
+
+            if self._has_pending():
+                # Closes the gap between the drain above and this clear(): a
+                # run_soon() landing in that gap sets `wake` and would
+                # otherwise be discarded right here, then sit unseen for up to
+                # `delay` — 900s against the real registry.
+                continue
+            wake.wait(delay)
         logger.info("Scheduler thread stopped")
+
+    # ── The one-shot lane (D2/D3, issue #44) ─────────────────────────────────
+
+    def run_soon(self, name: str, fn: Callable[[], None]) -> None:
+        """Queue *fn* to run once, on the job thread, as soon as it can get to it.
+
+        This is what lets a new device's first load-profile read happen within
+        seconds of Create rather than waiting up to ``LOAD_PROFILE_INTERVAL_SEC``
+        (issue #44) — without a second thread, a bare ``threading.Thread`` in
+        the request handler, or reading inline in the request. *fn* runs on
+        **this** Scheduler's one thread, wrapped in the same try/except
+        discipline a registered job gets (see :meth:`_run`): a raising one-shot
+        is logged and costs nothing beyond itself.
+
+        Safe to call before the first :meth:`start`, or between a :meth:`stop`
+        and the next :meth:`start` — *fn* is queued regardless and runs on the
+        next pass, the same way a registered job runs immediately on a fresh
+        thread's first pass (D10).
+
+        Args:
+            name: What this one-shot is called in logs. The only thing that
+                identifies it, mirroring :class:`Job`.
+            fn: The work. Takes nothing and returns nothing.
+        """
+        with self._pending_lock:
+            self._pending.append((name, fn))
+        # Read after appending, under no lock: `_wake` is only ever replaced
+        # wholesale by start() (a fresh Event, never mutated in place), so a
+        # stale reference here is at worst a wake this call happens to miss —
+        # already covered by the next pass draining `_pending` regardless.
+        wake = self._wake
+        if wake is not None:
+            wake.set()
+
+    def _drain_pending(self) -> list[tuple[str, Callable[[], None]]]:
+        """Take every queued one-shot, leaving the queue empty."""
+        with self._pending_lock:
+            pending, self._pending = self._pending, []
+        return pending
+
+    def _has_pending(self) -> bool:
+        """Whether a one-shot is queued and not yet drained."""
+        with self._pending_lock:
+            return bool(self._pending)
 
     # ── License integration (ADR 0001) ───────────────────────────────────────
 

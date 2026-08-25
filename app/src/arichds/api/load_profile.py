@@ -54,6 +54,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from arichds.acquisition.load_profile import read_and_store_load_profile
 from arichds.api.deps import SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
 from arichds.db.app_settings import EXPORT_OUTPUT_DIR_DEFAULT, EXPORT_OUTPUT_DIR_KEY, get_setting
@@ -262,4 +263,84 @@ def export_load_profile_now(
     result = export_device(device_id, require_auto_save=False)
     return ApiResponse.ok(
         LoadProfileExportResult(rows_written=result.rows_written, path=str(result.path) if result.path else None)
+    )
+
+
+class LoadProfileReadOut(BaseModel):
+    """What ``POST /api/load-profile/read`` did (issue #44).
+
+    Shaped on ``api/energy.py``'s ``EnergyRegisterReadOut``: a live-read
+    failure is a verdict carried on ``error``, never an HTTP error status.
+
+    Attributes:
+        stored: How many Interval Readings this call wrote — mirrors
+            ``LoadProfileReadResult.stored``.
+        through: The highest ``read_at`` now stored for this device, or
+            ``None`` if it still has no rows.
+        history_remains: Whether another press would make progress — see
+            :attr:`~arichds.acquisition.load_profile.LoadProfileReadResult.history_remains`.
+            The Load Profile page's button loops on this field (D11).
+        error: An operator-facing sentence, or ``None`` on success.
+    """
+
+    stored: int
+    through: datetime | None
+    history_remains: bool
+    error: str | None
+
+    @field_validator("through")
+    @classmethod
+    def _ensure_utc_or_none(cls, value: datetime | None) -> datetime | None:
+        """Same re-attachment as :meth:`LoadProfileRowOut._ensure_utc`, but
+        ``None``-safe: a device with no stored rows yet has no ``through``."""
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+@router.post("/read")
+def trigger_load_profile_read(
+    device_id: Annotated[int, Query(ge=1)],
+    session: SessionDep,
+) -> ApiResponse[LoadProfileReadOut]:
+    """Read the meter's load profile now, through the Manual Read lock
+    (issue #44, D7) — button-triggered, mirroring ``api/energy.py``'s
+    ``trigger_energy_register_read``.
+
+    Any authenticated role — matches every other Read now surface in this
+    product and the rest of this router.
+
+    **No liveness probe, and this never touches device status** (D7): Read
+    now on the Devices page probes first because liveness is the one job
+    that writes device status (ADR 0004); a page-scoped read that probed
+    would buy a second DLMS association per press for a status column this
+    page does not show. Mirrors ``api/devices.py``'s own
+    ``_read_load_profile_job``, minus the liveness probe in front of it.
+
+    **Runs only this job** — never billing (D1/D7): a device with no stored
+    closed period already gets billing from inside the ordinary Load Profile
+    cycle's Billing Change Check (#43, ADR 0018).
+
+    Raises:
+        HTTPException: 404 for an unknown device, or one whose driver has no
+            load profile at all (``supported=False``) — a structural fact
+            about the device, not a live-read failure. A live-read failure
+            (connection dropped, endpoint busy, budget exhausted) is **not**
+            an HTTPException — it comes back on the payload's ``error``
+            field, same as Test Connection.
+    """
+    _require_device_exists(session, device_id)
+
+    result = read_and_store_load_profile(device_id)
+    if not result.supported:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=result.error or "This device has no load profile."
+        )
+    return ApiResponse.ok(
+        LoadProfileReadOut(
+            stored=result.stored,
+            through=result.through,
+            history_remains=result.history_remains,
+            error=result.error,
+        )
     )

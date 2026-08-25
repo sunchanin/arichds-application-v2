@@ -79,7 +79,15 @@ from arichds.acquisition.status import (
     record_no_driver,
     record_success,
 )
-from arichds.api.deps import AdminDep, CurrentUserDep, LicenseServiceDep, PollerDep, SessionDep, get_current_user
+from arichds.api.deps import (
+    AdminDep,
+    CurrentUserDep,
+    LicenseServiceDep,
+    PollerDep,
+    SchedulerDep,
+    SessionDep,
+    get_current_user,
+)
 from arichds.api.envelope import ApiResponse
 from arichds.constants import JOB_BILLING, JOB_LIVENESS, JOB_LOAD_PROFILE
 from arichds.db.models import BillingReading, Device, DeviceEvent, LoadProfileReading
@@ -894,6 +902,7 @@ def create_device(
     response: Response,
     session: SessionDep,
     poller: PollerDep,
+    scheduler: SchedulerDep,
     license_service: LicenseServiceDep,
     admin: AdminDep,
 ) -> ApiResponse[DeviceOut]:
@@ -910,6 +919,14 @@ def create_device(
 
     The Poller restarts so the new device gets a worker without waiting for a
     process restart — the same "applies live" principle as activation.
+
+    **The first load-profile read is queued, not run here** (issue #44,
+    D1/D4/D5) — after the commit, so the queued callable never resolves the
+    device by id before the row exists, and via
+    :meth:`~arichds.jobs.scheduler.Scheduler.run_soon` rather than inline, so
+    this handler keeps returning as fast as it does today. See
+    :func:`_read_initial_load_profile` for what runs and why it takes the
+    Manual path.
 
     Raises:
         HTTPException: 403 for a non-admin · 422 for an unknown model · 409 for
@@ -975,7 +992,54 @@ def create_device(
     logger.info("Device %s added at %s (serial %s)", device.name, device.transport_endpoint, device.meter_serial)
 
     poller.restart()
+    # After the commit (D5) — the row must exist before the queued callable
+    # resolves it by id on the Scheduler's own thread. Ordering relative to
+    # poller.restart() above does not matter: the Manual path this callable
+    # takes waits for the Transport Endpoint rather than requiring the
+    # Poller's worker to exist first.
+    device_id = device.id
+    scheduler.run_soon(f"initial_load_profile:{device_id}", lambda: _read_initial_load_profile(device_id))
     return ApiResponse.ok(_to_out(device))
+
+
+def _read_initial_load_profile(device_id: int) -> None:
+    """The first load-profile read after Create (issue #44, D1/D4/D5) — a
+    machine that was just activated should start collecting now, not wait up
+    to ``LOAD_PROFILE_INTERVAL_SEC``.
+
+    Runs on the Scheduler's one-shot lane (:meth:`~arichds.jobs.scheduler.Scheduler.run_soon`),
+    never inline in the request — ``POST /devices`` must return as fast as it
+    does today.
+
+    **Takes the Manual path** (``background=False``, the default) — D4.
+    ``create_device`` calls ``poller.restart()`` a few lines up, and a new
+    worker's first tick runs immediately (``poller.py``), so the Transport
+    Endpoint is *predictably* held the moment this runs. A background
+    acquisition would return ``skipped=True`` and never actually read the
+    meter in production, while every unit test that does not reproduce that
+    exact race would stay green — the same failure #43's review caught by
+    mutation.
+
+    **Calls the load-profile reader and nothing else** (D1) — a device with
+    no stored closed billing period already gets a whole-buffer billing read
+    from inside the ordinary Load Profile cycle's own Billing Change Check
+    (``billing.py``'s ``stored_newest is None`` branch, #43/ADR 0018), so this
+    must not call :func:`~arichds.acquisition.billing.read_and_store_billing`
+    or ``billing_change_check`` — that would read billing over a *second*
+    Transport Endpoint acquisition for no reason ADR 0018 has priced.
+
+    Never raises: a meter failure is a log line, exactly like every other
+    background read in this product (ADR 0004 — a load-profile failure is
+    never a device-status strike, and this queued callable is not allowed to
+    take the Scheduler thread down with it either).
+    """
+    try:
+        outcome = read_and_store_load_profile(device_id)
+    except Exception:  # noqa: BLE001 — a one-shot must never raise past the Scheduler.
+        logger.exception("Initial load-profile read of device id %s failed", device_id)
+        return
+    if outcome.error is not None:
+        logger.warning("Initial load-profile read of device id %s: %s", device_id, outcome.error)
 
 
 @router.put("/{device_id}")
@@ -1338,7 +1402,14 @@ def _read_load_profile_job(device_id: int, model: str) -> ReadNowJobResult:
     # to a shorter sentence instead of a TypeError inside the format.
     through = f" up to {outcome.through:%Y-%m-%d %H:%M} UTC" if outcome.through is not None else ""
     detail = f"Stored {outcome.stored} Interval Readings{through}."
-    if outcome.budget_exhausted:
+    # Gated on `history_remains` (D10, issue #44), not `budget_exhausted`
+    # alone — pressing Read now again after a call that stored nothing
+    # re-walks the identical empty window and cannot make progress
+    # (`LoadProfileReadResult.history_remains`'s own docstring). The
+    # `stored == 0` branch above already returns before this point, so this
+    # is the single, canonical gate rather than a second definition of the
+    # same rule.
+    if outcome.history_remains:
         detail += " More history remains — press Read now again to continue."
     return ReadNowJobResult(job=JOB_LOAD_PROFILE, ok=True, detail=detail)
 

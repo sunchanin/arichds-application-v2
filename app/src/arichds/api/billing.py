@@ -35,6 +35,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from arichds.acquisition.billing import read_and_store_billing
 from arichds.api.deps import (
     AdminDep,
     FeatureDisabledError,
@@ -326,6 +327,66 @@ def list_billing_readings(
     items = [_to_row_out(reading, device_name) for reading, device_name in rows]
 
     return ApiResponse.ok(BillingPage(items=items, total=total, limit=limit, offset=offset))
+
+
+class BillingReadOut(BaseModel):
+    """What ``POST /api/billing/read`` did (issue #44).
+
+    Shaped on ``api/energy.py``'s ``EnergyRegisterReadOut`` and
+    ``api/load_profile.py``'s ``LoadProfileReadOut``: a live-read failure is
+    a verdict carried on ``error``, never an HTTP error status.
+
+    Attributes:
+        stored: How many **closed** periods this call newly inserted —
+            mirrors ``BillingReadResult.stored``.
+        open_updated: Whether the device's Open Period slot was inserted or
+            changed by this call.
+        error: An operator-facing sentence, or ``None`` on success.
+    """
+
+    stored: int
+    open_updated: bool
+    error: str | None
+
+
+@router.post("/read")
+def trigger_billing_read(
+    device_id: Annotated[int, Query(ge=1)],
+    session: SessionDep,
+) -> ApiResponse[BillingReadOut]:
+    """Read the meter's whole billing buffer now, through the Manual Read
+    lock (issue #44, D7, ADR 0009) — button-triggered, mirroring
+    ``api/energy.py``'s ``trigger_energy_register_read``.
+
+    Any authenticated role — matches every other Read now surface in this
+    product and the rest of this router.
+
+    **No liveness probe, and this never touches device status** (D7) — same
+    reasoning as ``api/load_profile.py``'s own ``trigger_load_profile_read``:
+    Read now on the Devices page probes first because liveness is the one
+    job that writes device status (ADR 0004); a page-scoped read that probed
+    would buy a second DLMS association per press for a status column this
+    page does not show. Mirrors ``api/devices.py``'s own
+    ``_read_billing_job``, minus the liveness probe in front of it.
+
+    **Runs only this job** — never the load profile (D7).
+
+    Raises:
+        HTTPException: 404 for an unknown device, or one whose driver has no
+            billing profile at all (``supported=False``) — a structural fact
+            about the device, not a live-read failure. A live-read failure
+            (connection dropped, endpoint busy) is **not** an HTTPException —
+            it comes back on the payload's ``error`` field, same as Test
+            Connection.
+    """
+    _require_device_exists(session, device_id)
+
+    result = read_and_store_billing(device_id)
+    if not result.supported:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=result.error or "This device has no billing profile."
+        )
+    return ApiResponse.ok(BillingReadOut(stored=result.stored, open_updated=result.open_updated, error=result.error))
 
 
 #: Every ``billing_readings`` column that is not part of a row's identity —

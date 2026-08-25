@@ -1,7 +1,7 @@
 import { App, Button, Card, DatePicker, Empty, Flex, Form, Input, Select, Space, Switch, Table, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiRequestError,
@@ -247,11 +247,21 @@ function ExportControlsCard({
  * Load Profile (M5b-1) — read a device's stored Interval Readings over a date
  * range.
  *
- * **Read-only, and it never talks to a meter.** Every row shown here was
- * recorded by the meter itself and stored by Read now (#15) or the Scheduler's
- * load-profile job (#16). The page has no Read now button of its own in this
- * slice — that capability already lives on the Devices page, and duplicating it
- * here was not part of what this slice was asked to ship (SPEC §3.5).
+ * Every row shown here was recorded by the meter itself and stored by Read
+ * now (either the Devices page's three-job version or this page's own
+ * button below), or the Scheduler's load-profile job (#16).
+ *
+ * **This page's own Read now button (issue #44) reverses this docstring's
+ * former claim that it has none.** The original reasoning — "that capability
+ * already lives on the Devices page, and duplicating it here was not part of
+ * what this slice was asked to ship" — was reconsidered: a new device's
+ * first load-profile read is now also queued automatically at Create
+ * (issue #44's other half, `app/src/arichds/api/devices.py`'s
+ * `_read_initial_load_profile`), and an operator watching this page for an
+ * existing device should not have to leave it for the Devices page's
+ * unrelated three-job version. This page's button loops — pressing again
+ * for as long as `history_remains` says another call would make progress —
+ * and reads only the load profile, never billing.
  *
  * **One list call paints the four filters.** Site group, brand, model and device
  * all narrow the array from a single `GET /api/devices` — the pattern the
@@ -375,9 +385,82 @@ export function LoadProfile({ role }: { role: "admin" | "user" }) {
     [byModel],
   );
 
+  // Read now (issue #44, D11/D12) — loops `while (result.history_remains)`,
+  // showing the running total beside the button, until the walk is done, a
+  // press fails, the component unmounts, or the selected device changes.
+  // `readGeneration` is what "stops" means in practice: incrementing it
+  // makes every in-flight loop's next check see a mismatch and give up
+  // without touching state for a device the operator has already left.
+  const [reading, setReading] = useState(false);
+  const [progress, setProgress] = useState<{ stored: number; through: string | null } | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const readGenerationRef = useRef(0);
+
+  // True unmount only — a device change is cancelled from inside the four
+  // handlers below, which can safely call setState (they run in response to
+  // a user event, not a cleanup), unlike this effect's cleanup.
+  useEffect(() => {
+    return () => {
+      readGenerationRef.current += 1;
+    };
+  }, []);
+
+  const cancelReadLoop = useCallback(() => {
+    readGenerationRef.current += 1;
+    setReading(false);
+    setProgress(null);
+  }, []);
+
+  const onReadNow = useCallback(() => {
+    if (deviceId === undefined) return;
+    const generation = readGenerationRef.current;
+    const targetDeviceId = deviceId;
+    let total = 0;
+    let through: string | null = null;
+
+    setReading(true);
+    setProgress({ stored: 0, through: null });
+
+    const step = (): void => {
+      void api
+        .readLoadProfileNow(targetDeviceId)
+        .then((result) => {
+          if (readGenerationRef.current !== generation) return; // unmounted or device changed
+          if (result.error) {
+            message.error(result.error);
+            setReading(false);
+            setProgress(null);
+            setRefreshTick((tick) => tick + 1);
+            return;
+          }
+          total += result.stored;
+          if (result.through) through = result.through;
+          setProgress({ stored: total, through });
+          if (result.history_remains) {
+            step();
+            return;
+          }
+          const throughText = through ? ` up to ${dayjs(through).format("YYYY-MM-DD HH:mm")}` : "";
+          message.success(`Stored ${total} Interval Reading${total === 1 ? "" : "s"}${throughText}.`);
+          setReading(false);
+          setProgress(null);
+          setRefreshTick((tick) => tick + 1);
+        })
+        .catch((err: unknown) => {
+          if (readGenerationRef.current !== generation) return;
+          surface(err, "Could not read the load profile.");
+          setReading(false);
+          setProgress(null);
+          setRefreshTick((tick) => tick + 1);
+        });
+    };
+    step();
+  }, [deviceId, message, surface]);
+
   // Changing a broader filter drops the narrower ones — including the selected
   // device, which is how a device that falls out of the narrowed set is cleared.
   const onSiteChange = (value: string) => {
+    cancelReadLoop();
     setSite(value);
     setBrand(ALL);
     setModel(ALL);
@@ -386,6 +469,7 @@ export function LoadProfile({ role }: { role: "admin" | "user" }) {
   };
 
   const onBrandChange = (value: string) => {
+    cancelReadLoop();
     setBrand(value);
     setModel(ALL);
     setDeviceId(undefined);
@@ -393,12 +477,14 @@ export function LoadProfile({ role }: { role: "admin" | "user" }) {
   };
 
   const onModelChange = (value: string) => {
+    cancelReadLoop();
     setModel(value);
     setDeviceId(undefined);
     setPage(1);
   };
 
   const onDeviceChange = (value: number) => {
+    cancelReadLoop();
     setDeviceId(value);
     setPage(1);
   };
@@ -454,7 +540,10 @@ export function LoadProfile({ role }: { role: "admin" | "user" }) {
     return () => {
       current = false;
     };
-  }, [deviceId, startIso, endIso, page, pageSize, surface]);
+    // `refreshTick` (issue #44) is the one addition: it forces this effect to
+    // re-run once the Read now loop finishes, without changing `scope`, so
+    // the same page reloads rather than the view resetting.
+  }, [deviceId, startIso, endIso, page, pageSize, surface, refreshTick]);
 
   const columns = useMemo(() => buildColumns(scale), [scale]);
   /** The total of every column width, so the horizontal scroll has something to scroll to. */
@@ -508,6 +597,19 @@ export function LoadProfile({ role }: { role: "admin" | "user" }) {
             // would hide them. This page is M5b's and ships no new UI here.
             disabledDate={(current) => current.isAfter(dayjs().endOf("day"))}
           />
+          <Button type="primary" onClick={onReadNow} loading={reading} disabled={deviceId === undefined}>
+            Read now
+          </Button>
+          {/* Running total while the loop is in flight (D12, issue #44) — a
+              90-day backfill stores rows outside the table's default "today"
+              range, so without this the operator sees an unchanged table and
+              concludes nothing happened. */}
+          {progress ? (
+            <Text type="secondary">
+              Stored {progress.stored} so far
+              {progress.through ? ` — up to ${dayjs(progress.through).format("YYYY-MM-DD HH:mm")}` : ""}
+            </Text>
+          ) : null}
         </Flex>
       </Card>
 

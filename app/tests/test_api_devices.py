@@ -172,6 +172,110 @@ class TestCreateDevice:
         assert data["group_name"] == "Feeders"
 
 
+class RecordingScheduler:
+    """A stand-in for the process Scheduler that records ``run_soon`` calls
+    without running them — the same pattern ``RestartCountingPoller``/the raw
+    ``Poller`` swap-in below already use for ``app.state.poller``."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Callable[[], None]]] = []
+
+    def run_soon(self, name: str, fn: Callable[[], None]) -> None:
+        self.calls.append((name, fn))
+
+
+class TestCreateEnqueuesTheFirstLoadProfileRead:
+    """Issue #44, D1/D4/D5 — a new device's first load-profile read is queued
+    on the Scheduler's one-shot lane, not run inline, and reads only the load
+    profile, on the Manual path."""
+
+    def test_it_enqueues_exactly_one_one_shot(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        scheduler = RecordingScheduler()
+        admin_client.app.state.scheduler = scheduler
+
+        add_device(admin_client, fake_meter, brand="mitsu", model="smw110")
+
+        assert len(scheduler.calls) == 1
+
+    def test_the_meter_is_not_read_a_second_time_during_the_request(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """D5 — ``POST /devices`` must return as fast as it does today: only
+        the Create probe itself talks to the meter, not the queued one-shot."""
+        scheduler = RecordingScheduler()
+        admin_client.app.state.scheduler = scheduler
+
+        add_device(admin_client, fake_meter, brand="mitsu", model="smw110")
+
+        assert fake_meter.connects == 1, "something read the meter beyond the Create probe itself"
+        assert fake_meter.disconnects == 1
+
+    def test_the_queued_one_shot_reads_the_load_profile_on_the_manual_path(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """D4 — never ``background=True``: the Poller worker's own immediate
+        first tick (``poller.restart()``) predictably holds the endpoint, and
+        a background acquisition would silently skip (ADR 0006) — the exact
+        failure #43's review caught by mutation."""
+        from arichds.acquisition.load_profile import LoadProfileReadResult
+
+        scheduler = RecordingScheduler()
+        admin_client.app.state.scheduler = scheduler
+        calls: list[dict[str, object]] = []
+
+        def spy(device_id: int, **kwargs: object) -> LoadProfileReadResult:
+            calls.append({"device_id": device_id, **kwargs})
+            return LoadProfileReadResult(supported=True, stored=0, through=None, budget_exhausted=False, error=None)
+
+        monkeypatch.setattr("arichds.api.devices.read_and_store_load_profile", spy)
+
+        data = add_device(admin_client, fake_meter, brand="mitsu", model="smw110").json()["data"]
+        assert len(scheduler.calls) == 1
+        _name, fn = scheduler.calls[0]
+        fn()
+
+        assert len(calls) == 1, "the queued one-shot did not call the load-profile reader exactly once"
+        assert calls[0]["device_id"] == data["id"]
+        assert calls[0].get("background") is not True, "the one-shot took the background path, not Manual"
+
+    def test_the_queued_one_shot_never_calls_the_billing_reader(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """D1 — billing already arrives within one Load Profile cycle through
+        #43's Billing Change Check; the one-shot must call
+        ``read_and_store_load_profile`` and nothing else."""
+        scheduler = RecordingScheduler()
+        admin_client.app.state.scheduler = scheduler
+        billing_calls: list[int] = []
+        monkeypatch.setattr(
+            "arichds.api.devices.read_and_store_billing",
+            lambda device_id, **kwargs: billing_calls.append(device_id),
+        )
+
+        add_device(admin_client, fake_meter, brand="mitsu", model="smw110")
+        _name, fn = scheduler.calls[0]
+        fn()
+
+        assert billing_calls == [], "the one-shot called the billing reader — D1 forbids this"
+
+    def test_a_raising_reader_does_not_escape_the_one_shot(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The one-shot itself must never raise (Scheduler's own try/except is
+        a second line of defence, not the only one)."""
+
+        def boom(device_id: int, **kwargs: object) -> None:
+            raise RuntimeError("the meter blew up")
+
+        scheduler = RecordingScheduler()
+        admin_client.app.state.scheduler = scheduler
+        monkeypatch.setattr("arichds.api.devices.read_and_store_load_profile", boom)
+
+        add_device(admin_client, fake_meter, brand="mitsu", model="smw110")
+        _name, fn = scheduler.calls[0]
+        fn()  # must not raise
+
+
 class TestCreateRefusedByTheMeter:
     """D7 — a meter fault is a 502 with a failure envelope, and writes nothing."""
 
@@ -1328,6 +1432,50 @@ class TestReadNow:
     ) -> None:
         fake_meter.connect_error = ConnectionRefusedError("refused")
         assert "hunter2" not in admin_client.post(f"/api/devices/{device_id}/read-now").text
+
+
+class TestMoreHistoryRemainsSentence:
+    """D10, issue #44 — the "More history remains" invitation gates on
+    ``LoadProfileReadResult.history_remains``, not ``budget_exhausted`` alone.
+    Pressing Read now again after a call that stored nothing re-walks the
+    identical empty window (the property's own docstring) — provably not
+    progress — so the sentence must not appear in that case, the v1 symptom
+    recorded at SPEC.md:457."""
+
+    def test_absent_when_the_walk_stored_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from arichds.acquisition.load_profile import LoadProfileReadResult
+        from arichds.api.devices import _read_load_profile_job
+
+        monkeypatch.setattr(
+            "arichds.api.devices.read_and_store_load_profile",
+            lambda device_id, **kwargs: LoadProfileReadResult(
+                supported=True, stored=0, through=None, budget_exhausted=True, error=None
+            ),
+        )
+
+        result = _read_load_profile_job(1, "smw110")
+
+        assert "More history remains" not in result.detail
+
+    def test_present_when_the_walk_stored_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from arichds.acquisition.load_profile import LoadProfileReadResult
+        from arichds.api.devices import _read_load_profile_job
+
+        monkeypatch.setattr(
+            "arichds.api.devices.read_and_store_load_profile",
+            lambda device_id, **kwargs: LoadProfileReadResult(
+                supported=True,
+                stored=5,
+                through=datetime(2026, 8, 7, tzinfo=UTC),
+                budget_exhausted=True,
+                error=None,
+                advanced=True,
+            ),
+        )
+
+        result = _read_load_profile_job(1, "smw110")
+
+        assert "More history remains" in result.detail
 
 
 class TestReadNowRunsTheLoadProfileJob:

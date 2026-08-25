@@ -106,6 +106,13 @@ class LoadProfileReadResult:
             ``error``: nothing was asked of the meter, nothing was lost, and the
             next cycle reads it from the same watermark. Only the background
             path can set it, so Read now never sees it.
+        advanced: True when at least one logger's own stored watermark is
+            **strictly later** than it was before this call (issue #44, review
+            round 1's fix). The one thing :attr:`history_remains` actually
+            needs — see its own docstring for why ``stored`` cannot answer
+            this question. Defaults to False so a background-skip or an
+            unsupported-driver construction, neither of which reads anything,
+            needs no extra argument.
     """
 
     supported: bool
@@ -116,6 +123,45 @@ class LoadProfileReadResult:
     # Defaulted so every existing construction — and `api/devices.py`, which
     # renders the Read now modal — needs no change.
     skipped: bool = False
+    advanced: bool = False
+
+    @property
+    def history_remains(self) -> bool:
+        """Whether another call to :func:`read_and_store_load_profile` would
+        make progress (D9, issue #44) — **not** ``budget_exhausted`` alone,
+        and, as of review round 1, **not** ``stored > 0`` either.
+
+        The first cut of this property used ``budget_exhausted and stored >
+        0``, and that is wrong: the driver's window is inclusive on both
+        bounds (module docstring, "the boundary row is re-read and
+        upserted"), so a call whose only write is that boundary row reports
+        ``stored >= 1`` with the watermark **exactly unchanged**. On a meter
+        with a recording gap starting right at the watermark — powered down
+        or relocated for months while it kept its buffer — that made every
+        call report ``stored=1, budget_exhausted=True`` forever, and
+        ``history_remains`` never went false. Since this drives a Manual
+        Read that outranks background work on that Transport Endpoint (ADR
+        0006) and the Load Profile page loops on it with no iteration cap
+        (D11), that is not merely wrong, it is a button that presses itself
+        without limit — the exact thing ADR 0006's acceptance of background
+        starvation was conditioned on staying bounded.
+
+        ``advanced`` is the real signal: whether a logger's own watermark is
+        strictly later than it was before this call. A re-stored boundary
+        row leaves the watermark exactly where it was, so it does not count,
+        no matter how many rows ``stored`` says were written. A call that
+        stores nothing at all cannot advance a watermark either — the
+        ``(budget_exhausted=True, stored=0)`` case still resolves to False,
+        as it always did, just now for the more fundamental reason.
+        ``_backfill_start``'s own docstring records the failure this whole
+        property closes — a meter whose buffer is shallower than the
+        backfill window can spend its whole budget on empty chunks and store
+        zero rows, and looping on that call is provably infinite, not merely
+        slow. The ordinary Load Profile cycle is what eventually clamps the
+        backfill start to the meter's own oldest entry
+        (:func:`_backfill_start`) and heals both cases on its own.
+        """
+        return self.budget_exhausted and self.advanced
 
 
 def read_and_store_load_profile(
@@ -270,12 +316,22 @@ def read_and_store_load_profile(
     if trigger_billing:
         read_and_store_billing(device_id, locks=registry, background=True)
 
+    # One query serves both `through` and `advanced` — `_through` would
+    # otherwise run the identical `_per_logger_watermarks` select a second
+    # time. Reached whether the walk stored rows, stored nothing, or the
+    # Manual path timed out on a busy endpoint (per_logger_start then equals
+    # per_logger_after and `advanced` is correctly False).
+    with session_scope() as session:
+        per_logger_after = _per_logger_watermarks(session, device_id)
+    through = min(per_logger_after.values()) if per_logger_after else None
+
     return LoadProfileReadResult(
         supported=True,
         stored=stored,
-        through=_through(device_id),
+        through=through,
         budget_exhausted=budget_exhausted,
         error=error,
+        advanced=_advanced(per_logger_start, per_logger_after),
     )
 
 
@@ -625,3 +681,26 @@ def _through(device_id: int) -> datetime | None:
     with session_scope() as session:
         per_logger = _per_logger_watermarks(session, device_id)
     return min(per_logger.values()) if per_logger else None
+
+
+def _advanced(before: dict[int, datetime | None], after: dict[int, datetime]) -> bool:
+    """Whether any logger's own watermark moved strictly later than it was
+    before this call — the real termination signal for
+    :attr:`LoadProfileReadResult.history_remains` (issue #44, review round 1).
+
+    Deliberately **not** "were rows stored": the driver's window is inclusive
+    on both bounds (module docstring), so re-reading and re-upserting the
+    boundary row reports rows stored with the watermark exactly unchanged.
+    Comparing *before* (``per_logger_start``, taken before the walk) against
+    *after* (``per_logger_after``, read back from the table once the walk and
+    the Billing Change Check have both finished) is what tells a real advance
+    apart from that re-write.
+
+    A logger absent from *after* has no stored rows at all and cannot have
+    advanced. A logger whose *before* value was ``None`` (never read) counts
+    as advanced the moment it gains any row, matching every other watermark
+    comparison in this module.
+    """
+    return any(
+        before.get(logger_id) is None or mark_after > before[logger_id] for logger_id, mark_after in after.items()
+    )

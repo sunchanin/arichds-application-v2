@@ -247,11 +247,20 @@ function CaptureSettingsCard({ surface }: { surface: (err: unknown, fallback: st
 /**
  * Billing (M6a, issue #21) — read a device's stored Billing Readings, either tab.
  *
- * **Read-only, and it never talks to a meter.** Every row shown here was
- * frozen by the meter itself and stored by Read now or the Scheduler's daily
- * `billing` job. Exactly like Load Profile's own slice (#17), this page has
- * no Read now button of its own — that capability lives on the Devices page.
+ * Every row shown here was frozen by the meter itself and stored by Read now
+ * (either the Devices page's three-job version or this page's own button
+ * below), the Scheduler's daily `billing` job, or the Billing Change Check
+ * riding the Load Profile cycle (#43, ADR 0018).
  *
+ * **This page's own Read now button (issue #44) reverses this docstring's
+ * former claim that it has none.** The original reasoning — "that capability
+ * lives on the Devices page" — was reconsidered: an operator waiting on one
+ * device's billing should not have to leave this page for the Devices page's
+ * unrelated three-job version just to press a button. This page's button
+ * reads only this device's whole billing buffer (ADR 0009), never the load
+ * profile, and is hidden in capture mode (D13, below).
+ *
+
  * **Two tabs, one endpoint, a different `status`.** History is every closed
  * period (`record_status IS NULL`); Current is the device's Open Period
  * (`record_status = 'open'`) — at most one row per device, and it is the one
@@ -337,6 +346,39 @@ export function Billing({ role }: { role: "admin" | "user" }) {
       .finally(() => setImageDownloading(false));
   }, [deviceId, surface]);
 
+  // Read now (issue #44, D11) — one whole-buffer round trip (ADR 0009), one
+  // toast, one refresh. `refreshTick` is the minimal trigger the fetch
+  // effect below needed added to it — neither this page nor LoadProfile.tsx
+  // had one before this issue.
+  const [reading, setReading] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const onReadNow = useCallback(() => {
+    if (deviceId === undefined) return;
+    setReading(true);
+    api
+      .readBillingNow(deviceId)
+      .then((result) => {
+        // A meter failure is a verdict on `result.error`, never a thrown
+        // error (mirrors Test Connection / EnergySummary.tsx's own
+        // `onReadNow`) — surfaced via `message`, not `surface()`, which is
+        // reserved for request-layer failures.
+        if (result.error) {
+          message.error(result.error);
+          return;
+        }
+        const parts: string[] = [];
+        if (result.stored > 0) {
+          parts.push(`${result.stored} closed billing period${result.stored === 1 ? "" : "s"}`);
+        }
+        if (result.open_updated) parts.push("the Open Period");
+        message.success(parts.length > 0 ? `Stored ${parts.join(" and ")}.` : "No new billing periods to store.");
+        setRefreshTick((tick) => tick + 1);
+      })
+      .catch((err: unknown) => surface(err, "Could not read the billing buffer."))
+      .finally(() => setReading(false));
+  }, [deviceId, message, surface]);
+
   const onTabChange = (key: string) => {
     setTab(key as BillingStatus);
     setPage(1);
@@ -395,9 +437,12 @@ export function Billing({ role }: { role: "admin" | "user" }) {
       current = false;
     };
     // `scope` is derived from the same dependencies already listed; adding it
-    // too would be redundant, not incorrect.
+    // too would be redundant, not incorrect. `refreshTick` (issue #44) is the
+    // one addition: it forces this effect to re-run after a successful Read
+    // now without changing `scope`, so the same page reloads rather than the
+    // view resetting.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, deviceId, startIso, endIso, meterSerial, page, pageSize, surface]);
+  }, [tab, deviceId, startIso, endIso, meterSerial, page, pageSize, surface, refreshTick]);
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -427,6 +472,14 @@ export function Billing({ role }: { role: "admin" | "user" }) {
               Capture image
             </Button>
           </Tooltip>
+          {/* Hidden in capture mode (D13, issue #44) — a button offering to
+              talk to a meter has no place in a headless screenshot a human
+              carries to a customer (ADR 0015/0017). */}
+          {captureRequest ? null : (
+            <Button type="primary" onClick={onReadNow} loading={reading} disabled={deviceId === undefined}>
+              Read now
+            </Button>
+          )}
         </Flex>
       </Card>
       <Card size="small">

@@ -30,6 +30,7 @@ from arichds.auth.service import resolve_token
 from arichds.config import get_settings
 from arichds.db.models import User
 from arichds.db.session import get_session_factory
+from arichds.jobs.scheduler import Scheduler
 from arichds.licensing.features import feature_enabled
 from arichds.licensing.service import LicenseService
 
@@ -59,9 +60,15 @@ def get_poller(request: Request) -> Poller:
     return request.app.state.poller
 
 
+def get_scheduler(request: Request) -> Scheduler:
+    """Return the process Scheduler from application state."""
+    return request.app.state.scheduler
+
+
 SessionDep = Annotated[Session, Depends(get_db_session)]
 LicenseServiceDep = Annotated[LicenseService, Depends(get_license_service)]
 PollerDep = Annotated[Poller, Depends(get_poller)]
+SchedulerDep = Annotated[Scheduler, Depends(get_scheduler)]
 BearerDep = Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)]
 
 

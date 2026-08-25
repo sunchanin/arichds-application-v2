@@ -364,3 +364,129 @@ class TestAccess:
 
         assert response.status_code == 200, response.text
         assert response.json()["data"]["total"] == 1
+
+
+class TestReadNow:
+    """D7/D8, issue #44 — the Billing page's own Read now route. Mirrors
+    ``api/energy.py``'s ``trigger_energy_register_read`` and
+    ``test_api_load_profile.py``'s own ``TestReadNow``."""
+
+    def test_any_authenticated_role_gets_200(
+        self, user_client: TestClient, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+
+        response = user_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+
+    def test_an_unknown_device_is_404(self, admin_client: TestClient) -> None:
+        response = admin_client.post("/api/billing/read?device_id=999")
+
+        assert response.status_code == 404
+
+    def test_an_unsupported_model_is_404(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """``prometer100`` has no driver-level billing profile."""
+        device_id = add_device(admin_client, fake_meter, brand="cewe", model="prometer100")
+
+        response = admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 404
+
+    def test_a_meter_failure_is_a_200_with_the_verdict_on_the_payload(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        fake_meter.connect_error = ConnectionError("boom")
+
+        response = admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        body = response.json()["data"]
+        assert body["error"] is not None
+        assert body["stored"] == 0
+
+    def test_it_stores_and_reports_the_fields(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        from arichds.acquisition.drivers.base import BillingReading
+
+        device_id = add_device(admin_client, fake_meter)
+        fake_meter.billing_rows = [
+            BillingReading(
+                bill_date=BASE,
+                is_open=False,
+                source="dlms",
+                meter_serial="SN-1",
+                import_active_kwh_total=100.0,
+            ),
+            # A freshly-created device has no Open Period row yet, so this
+            # insert is what proves `open_updated` is the *real* field, not a
+            # hardcoded `False` that would happen to match a closed-only buffer.
+            BillingReading(
+                bill_date=BASE.replace(month=BASE.month + 1),
+                is_open=True,
+                source="dlms",
+                meter_serial="SN-1",
+                import_active_kwh_total=10.0,
+            ),
+        ]
+
+        response = admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        body = response.json()["data"]
+        assert body["stored"] == 1
+        assert body["error"] is None
+        assert body["open_updated"] is True
+
+    def test_it_never_reads_the_load_profile(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """D7 — this route runs only its own job."""
+        device_id = add_device(admin_client, fake_meter)
+
+        admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert fake_meter.load_profile_windows == []
+
+    def test_it_takes_the_manual_path(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """D4/D7, minor 4 review round 1 — never ``background=True``. A
+        background acquisition returns ``skipped=True, stored=0, error=None``
+        the moment the endpoint is busy, so the button would report "no new
+        data" without ever telling the operator the read never ran."""
+        from arichds.acquisition.billing import BillingReadResult
+
+        calls: list[dict[str, object]] = []
+
+        def spy(device_id: int, **kwargs: object) -> BillingReadResult:
+            calls.append(kwargs)
+            return BillingReadResult(supported=True, stored=0, open_updated=False, error=None)
+
+        monkeypatch.setattr("arichds.api.billing.read_and_store_billing", spy)
+        device_id = add_device(admin_client, fake_meter)
+
+        response = admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        assert len(calls) == 1
+        assert calls[0].get("background") is not True, "the route took the background path, not Manual"
+
+    def test_it_never_touches_device_status(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """D7 — no liveness probe, so even a meter failure here leaves
+        ``devices.status``/``status_checked_at`` exactly as they were."""
+        from arichds.db.models import Device
+        from arichds.db.session import session_scope
+
+        device_id = add_device(admin_client, fake_meter)
+        with session_scope() as session:
+            device = session.get(Device, device_id)
+            assert device is not None
+            before = (device.status, device.status_checked_at, device.consecutive_failures)
+
+        fake_meter.connect_error = ConnectionError("boom")
+        admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        with session_scope() as session:
+            device = session.get(Device, device_id)
+            assert device is not None
+            after = (device.status, device.status_checked_at, device.consecutive_failures)
+        assert after == before

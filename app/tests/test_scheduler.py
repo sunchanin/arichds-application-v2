@@ -262,6 +262,95 @@ class TestJobsWithDifferentIntervalsCoexist:
         assert len(daily) == 1, f"the daily job ran {len(daily)} times — it is following the frequent job's cadence"
 
 
+class TestRunSoon:
+    """D2/D3, issue #44 — the one-shot lane a new device's first load-profile
+    read rides so it does not wait for `LOAD_PROFILE_INTERVAL_SEC`."""
+
+    def test_a_queued_one_shot_runs(self) -> None:
+        ran = threading.Event()
+        scheduler = Scheduler(jobs=[Job(name="fake", interval_sec=0.02, fn=lambda: None)])
+        scheduler.start()
+        try:
+            scheduler.run_soon("one_shot", ran.set)
+            assert ran.wait(timeout=2.0), "the queued one-shot never ran"
+        finally:
+            scheduler.stop()
+
+    def test_a_one_shot_runs_within_about_a_second_against_a_900s_registry(self) -> None:
+        """D3 — `run_soon` must wake the thread, or a one-shot queued behind
+        the real registry's 900 s interval would sit for up to fifteen
+        minutes — indistinguishable from not implementing this at all."""
+        ran = threading.Event()
+        scheduler = Scheduler(jobs=[Job(name="slow_cadence", interval_sec=900.0, fn=lambda: None)])
+        scheduler.start()
+        try:
+            started = time.monotonic()
+            scheduler.run_soon("one_shot", ran.set)
+            assert ran.wait(timeout=1.0), "the one-shot did not run within ~1s against a 900s registry"
+            elapsed = time.monotonic() - started
+            assert elapsed < 1.0, f"the one-shot took {elapsed:.2f}s — it waited for the 900s interval"
+        finally:
+            scheduler.stop()
+
+    def test_a_raising_one_shot_costs_only_itself(self, caplog: pytest.LogCaptureFixture) -> None:
+        def boom() -> None:
+            raise RuntimeError("the one-shot blew up")
+
+        ran = threading.Event()
+        scheduler = Scheduler(jobs=[Job(name="slow_cadence", interval_sec=900.0, fn=lambda: None)])
+        scheduler.start()
+        with caplog.at_level(logging.ERROR, logger="arichds.jobs.scheduler"):
+            try:
+                scheduler.run_soon("boom", boom)
+                scheduler.run_soon("good", ran.set)
+                assert ran.wait(timeout=1.0), "the good one-shot behind a raising one never ran"
+            finally:
+                scheduler.stop()
+        assert "boom" in caplog.text, "the raising one-shot's name was not logged"
+        assert "the one-shot blew up" in caplog.text, "the traceback of the failing one-shot was not logged"
+
+    def test_run_soon_before_start_runs_on_the_first_pass(self) -> None:
+        ran = threading.Event()
+        scheduler = Scheduler(jobs=[])
+        scheduler.run_soon("early", ran.set)
+        try:
+            scheduler.start()
+            assert ran.wait(timeout=2.0), "a one-shot queued before start() was never run"
+        finally:
+            scheduler.stop()
+
+    def test_a_one_shot_after_a_stop_that_left_a_stuck_thread_still_runs_on_the_new_one(self) -> None:
+        """D3 — the wake is bound per `start()`, the same rule `_shutdown`
+        follows and for the same reason: a thread abandoned by a previous
+        `stop()` must not be able to swallow a wake meant for its replacement."""
+        release = threading.Event()
+        in_stuck = threading.Event()
+
+        def stuck() -> None:
+            in_stuck.set()
+            release.wait(timeout=10)
+
+        scheduler = Scheduler(jobs=[], stop_timeout=0.1)
+        scheduler.start()
+        try:
+            scheduler.run_soon("stuck", stuck)
+            assert in_stuck.wait(timeout=5), "the stuck one-shot never started"
+            scheduler.stop()  # the thread is still parked inside `stuck`, past the join timeout
+
+            scheduler.start()  # a fresh thread, its own wake
+
+            ran = threading.Event()
+            scheduler.run_soon("after_restart", ran.set)
+            assert ran.wait(timeout=2.0), "the one-shot queued after restart never ran on the new thread"
+        finally:
+            release.set()
+            scheduler.stop()
+        # The stale first thread only observes shutdown and exits *after*
+        # `release.set()` above unblocks it from inside `stuck()` — waited out
+        # explicitly so it cannot leak into the next test's thread count.
+        assert wait_until(lambda: not live_scheduler_threads()), "a scheduler thread leaked past this test"
+
+
 class TestStopIsPrompt:
     """Shutdown must not wait out an interval — the real one is 900 s."""
 
@@ -345,6 +434,71 @@ class TestStopIsPrompt:
             assert "arichds-scheduler" in caplog.text, "the warning does not name the thread"
         finally:
             release.set()
+
+    def test_a_stop_landing_exactly_at_wake_clear_still_lets_the_thread_exit(self) -> None:
+        """Minor 3, review round 1 — a `stop()` landing between the old
+        shutdown recheck and `wake.clear()` had the clear() throw away the
+        very wake `stop()` had just set, then `wake.wait()` parked forever
+        (empty registry, `delay` is `None`, nothing left to wake it). The fix
+        moves the recheck to *after* the clear().
+
+        Reproduced deterministically: `threading.Event` is patched with a
+        subclass whose first `.clear()` call parks until released, so the
+        test can set `shutdown` and `wake` itself — exactly what `stop()`
+        does — and only then let the parked `clear()` proceed, landing the
+        race in the same spot every run rather than hoping for a timing
+        accident.
+        """
+
+        real_event = threading.Event  # captured before the patch below, so
+        # _RaceEvent's own helper Events are real ones — constructing them
+        # via the patched `threading.Event` would recurse forever.
+
+        class _RaceEvent(threading.Event):
+            def __init__(self) -> None:
+                super().__init__()
+                self.about_to_clear = real_event()
+                self.release_clear = real_event()
+                self._armed = True
+
+            def clear(self) -> None:
+                if self._armed:
+                    self._armed = False
+                    self.about_to_clear.set()
+                    assert self.release_clear.wait(timeout=5), "the race trigger never fired"
+                super().clear()
+
+        scheduler = Scheduler(jobs=[])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(threading, "Event", _RaceEvent)
+            scheduler.start()
+
+        wake = scheduler._wake
+        assert isinstance(wake, _RaceEvent), "the scheduler's own wake was not constructed under the patch"
+        try:
+            assert wake.about_to_clear.wait(timeout=5), "the thread never reached wake.clear()"
+
+            # Exactly what stop() does — done here directly, and BEFORE
+            # releasing the parked clear(), so the clear() unavoidably
+            # discards this wake the moment it proceeds. This is "a stop()
+            # landing between the shutdown check and wake.clear()", made
+            # deterministic rather than a timing race.
+            scheduler._shutdown.set()
+            scheduler._wake.set()
+            wake.release_clear.set()
+
+            started = time.monotonic()
+            scheduler.stop()
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 5, (
+                f"stop() waited {elapsed:.1f}s — the thread parked on wake.wait() instead of exiting once "
+                "shutdown was observed"
+            )
+            assert wait_until(lambda: not live_scheduler_threads()), "the thread never exited"
+        finally:
+            wake.release_clear.set()  # in case an assertion above failed before reaching it
+            scheduler.stop()
 
 
 class TestSchedulerFollowsLicenseState:

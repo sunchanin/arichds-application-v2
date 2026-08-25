@@ -171,6 +171,23 @@ export interface LoadProfilePage {
   offset: number;
 }
 
+/**
+ * What `POST /api/load-profile/read` did (issue #44). A live-read failure is
+ * a verdict on `error`, never a thrown error — mirrors
+ * `EnergyRegisterReadResult` ("always arrives on a 200 — the verdict is in
+ * here").
+ */
+export interface LoadProfileReadNowResult {
+  stored: number;
+  /** UTC, ISO-8601 — the highest `read_at` now stored, or null if the
+   * device still has no rows. */
+  through: string | null;
+  /** Whether another press would make progress (D9) — the Load Profile
+   * page's button loops on this field, never on `detail`/message text. */
+  history_remains: boolean;
+  error: string | null;
+}
+
 /** Which Billing page tab a row belongs to — closed periods (History) or the
  * one Open Period slot (Current), from `GET /api/billing`'s `status` query. */
 export type BillingStatus = "closed" | "open";
@@ -292,6 +309,18 @@ export interface BillingPage {
 export interface BillingSettings {
   capture_dir: string;
   capture_count: number;
+}
+
+/**
+ * What `POST /api/billing/read` did (issue #44). A live-read failure is a
+ * verdict on `error`, never a thrown error — mirrors
+ * `LoadProfileReadNowResult`.
+ */
+export interface BillingReadNowResult {
+  /** How many closed periods this call newly inserted. */
+  stored: number;
+  open_updated: boolean;
+  error: string | null;
 }
 
 /**
@@ -995,6 +1024,15 @@ export const api = {
   billingSettings: () => request<BillingSettings>("/api/billing/settings"),
 
   /**
+   * Read one device's whole billing buffer now, through the Manual Read
+   * lock (issue #44, ADR 0009 — one round trip). Any authenticated role. A
+   * meter failure comes back as `{error: "…"}` on a 200, same as Test
+   * Connection.
+   */
+  readBillingNow: (deviceId: number) =>
+    request<BillingReadNowResult>(`/api/billing/read?device_id=${deviceId}`, { method: "POST" }),
+
+  /**
    * Save `capture_dir` — admin-only. An empty string disables capture; a
    * non-empty value is validated server-side (ADR 0010) and a rejection
    * comes back as a 422 the caller renders via `ApiRequestError.message`.
@@ -1082,6 +1120,16 @@ export const api = {
    */
   exportLoadProfileNow: (deviceId: number) =>
     request<LoadProfileExportResult>(`/api/load-profile/export?device_id=${deviceId}`, { method: "POST" }),
+
+  /**
+   * Read one device's load profile now, through the Manual Read lock (issue
+   * #44). Any authenticated role. `422`/`404` never happen for a normal
+   * press — a `404` means the device or its driver's load profile is gone;
+   * a meter failure comes back as `{error: "…"}` on a 200, same as Test
+   * Connection.
+   */
+  readLoadProfileNow: (deviceId: number) =>
+    request<LoadProfileReadNowResult>(`/api/load-profile/read?device_id=${deviceId}`, { method: "POST" }),
 
   /**
    * The Time-of-Use daily totals for one device (M7-1, issue #28). Both

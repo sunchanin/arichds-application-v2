@@ -27,7 +27,7 @@ from fakes import FakeMeterDriver, FakeMeterState, FakeSmw110Driver
 from sqlalchemy import func, select
 
 from arichds.acquisition.drivers.base import BillingReading, IntervalReading
-from arichds.acquisition.load_profile import read_and_store_load_profile
+from arichds.acquisition.load_profile import LoadProfileReadResult, read_and_store_load_profile
 from arichds.acquisition.locks import EndpointLocks
 from arichds.config import Settings
 from arichds.constants import LOAD_PROFILE_BACKFILL_DAYS, LOAD_PROFILE_CHUNK_HOURS, SOURCE_DLMS
@@ -371,6 +371,124 @@ class TestTheBudget:
         assert fake_meter.load_profile_windows[0][1] == NOW - timedelta(hours=50)
         assert second.budget_exhausted is False
         assert max_read_at(device_id) == NOW - timedelta(hours=20)
+
+
+class TestHistoryRemains:
+    """D9, issue #44 — `history_remains` is `budget_exhausted and advanced`,
+    where `advanced` means the watermark itself moved — **not**
+    `budget_exhausted and stored > 0`.
+
+    Review round 1 found the `stored > 0` version does not actually close the
+    hazard: the driver's window is inclusive on both bounds (module
+    docstring), so the boundary row is re-read and re-upserted on every call.
+    A meter whose entire remaining buffer is that one boundary row (a
+    recording gap starting at our watermark — powered down or relocated for
+    months while keeping its buffer) reports `stored=1` on every call
+    forever, with the watermark never moving. `stored > 0` cannot see that;
+    `advanced` — computed by comparing the per-logger watermark before the
+    call to after it — can.
+    """
+
+    @pytest.mark.parametrize(
+        ("budget_exhausted", "advanced", "expected"),
+        [
+            (True, True, True),
+            (True, False, False),
+            (False, True, False),
+            (False, False, False),
+        ],
+    )
+    def test_it_is_budget_exhausted_and_advanced(self, budget_exhausted: bool, advanced: bool, expected: bool) -> None:
+        result = LoadProfileReadResult(
+            supported=True,
+            stored=1,
+            through=None,
+            budget_exhausted=budget_exhausted,
+            error=None,
+            advanced=advanced,
+        )
+        assert result.history_remains is expected
+
+    def test_stored_plays_no_part_in_the_formula(self) -> None:
+        """The boundary-row hazard itself: a call can report a large
+        ``stored`` count (something was written — the boundary row, possibly
+        several times over several loggers) while ``advanced=False`` (every
+        watermark is exactly where it was before). ``stored`` must not leak
+        back into the answer through any path."""
+        result = LoadProfileReadResult(
+            supported=True, stored=5, through=None, budget_exhausted=True, error=None, advanced=False
+        )
+        assert result.history_remains is False
+
+
+class TestHistoryRemainsTerminatesOnABoundaryOnlyBuffer:
+    """The blocker, review round 1 — the reviewer's own reproduction.
+
+    A meter with a recording gap starting exactly at our watermark answers
+    every chunk request with only the boundary row (inclusive-both-bounds
+    filtering, ``FakeSmw110Driver.read_load_profile``'s own docstring mirrors
+    ``smw110.py``). Before the fix, four consecutive calls each reported
+    ``(stored=1, budget_exhausted=True, history_remains=True)`` with the
+    watermark never advancing — a Manual Read that would press itself forever,
+    each one outranking background work on that Transport Endpoint (ADR 0006).
+    """
+
+    def test_history_remains_is_false_when_only_the_boundary_row_comes_back(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        watermark = NOW - timedelta(hours=60)
+        store(device_id, synthesized_rows(watermark))
+        # The buffer holds exactly the boundary row and nothing newer.
+        fake_meter.load_profile_rows = synthesized_rows(watermark)
+
+        for attempt in range(4):
+            result = read_and_store_load_profile(device_id, now=NOW, budget_sec=0.0)
+            assert result.stored == 1, f"attempt {attempt}: the boundary row was not re-read"
+            assert result.budget_exhausted is True, f"attempt {attempt}: expected the budget to be exhausted"
+            assert result.history_remains is False, (
+                f"attempt {attempt}: history_remains stayed true on a call that re-stored the same boundary "
+                "row without the watermark moving — pressing again cannot make progress"
+            )
+
+        assert max_read_at(device_id) == watermark, "the watermark moved even though nothing new was ever stored"
+
+
+class TestHistoryRemainsAdvancesFromNoWatermark:
+    """Round 2 review — the never-read-logger branch of ``_advanced``.
+
+    ``_advanced``'s ``before.get(logger_id) is None`` clause is what lets a
+    logger with **no** watermark at all count as advanced the moment it
+    gains any row. Nothing had pinned it: the blocker's own reproduction
+    (``TestHistoryRemainsTerminatesOnABoundaryOnlyBuffer``, above) starts
+    from an *existing* watermark, so it only ever exercises the
+    ``mark_after > before[logger_id]`` half of the ``or``.
+
+    This is the branch the feature exists for — ``create_device`` queues
+    ``_read_initial_load_profile`` for a device with no watermark at all
+    (issue #44's own D1/D4/D5), and an operator's first press on the Load
+    Profile page for any device that has never been read hits the same
+    path. A device with no stored rows backfills from
+    ``NOW - LOAD_PROFILE_BACKFILL_DAYS`` (``_backfill_start``, since
+    ``FakeSmw110Driver.load_profile_oldest_reading`` answers ``None``, the
+    base-class "cannot say" default) — the first row seeded here sits inside
+    that floor's own first chunk, so budget exhaustion after chunk one still
+    genuinely advances the watermark from ``None``.
+    """
+
+    def test_a_first_ever_read_with_budget_left_over_reports_it_can_continue(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        floor = NOW - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
+        fake_meter.load_profile_rows = synthesized_rows(
+            floor + timedelta(hours=1), floor + timedelta(hours=2), NOW - timedelta(days=10)
+        )
+
+        result = read_and_store_load_profile(device_id, now=NOW, budget_sec=0.0)
+
+        assert result.stored == 2
+        assert result.budget_exhausted is True
+        assert result.advanced is True
+        assert result.history_remains is True
 
 
 class TestADriverWithoutALoadProfile:
