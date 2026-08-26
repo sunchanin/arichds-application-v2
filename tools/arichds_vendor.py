@@ -23,6 +23,13 @@ Commands
     Prints the one-line Activation Code on stdout. That single line is what the
     customer pastes into the first-run Activation page.
 
+    ``--features`` is validated against ``SELLABLE_FEATURE_KEYS``, imported
+    from the app: an unrecognised name — a misspelling, or the ops-only
+    ``app_log``, which no license ever governs — refuses the run before
+    anything is signed rather than producing a valid code for a feature that
+    does not exist. Omit the flag entirely to grandfather every sellable
+    feature; that is not the same as passing an empty list.
+
 ``sign-meter``
     Sign a Meter Activation Code for one meter on one machine (ADR 0019)::
 
@@ -76,6 +83,10 @@ PRODUCT = "arichds"
 #: Default lease length for a leased license (SPEC §3.9 — a kill-switch, not a
 #: subscription). Offline licenses default to no expiry at all.
 DEFAULT_LEASE_DAYS = 45
+#: In ``FEATURE_KEYS`` but deliberately outside ``SELLABLE_FEATURE_KEYS`` — the
+#: customer's ``.env`` governs it and no license ever does, so it must not be
+#: signed into one.
+OPS_ONLY_FEATURE_KEY = "app_log"
 
 
 # ─── Signature agreement (duplicated verbatim from the app) ───────────────────
@@ -207,6 +218,42 @@ def cmd_keygen(args: argparse.Namespace) -> int:
     return 0
 
 
+def sellable_feature_keys() -> frozenset[str]:
+    """The feature names ``--features`` accepts, from the app's own constant.
+
+    Imported rather than restated: a second copy of the list in ``tools/`` goes
+    stale the next time a key is added, which is exactly what
+    ``database_destination`` did to a nine-key world. The ``sys.path`` insert is
+    lazy, matching :func:`cmd_fingerprint` — importing app code at module scope
+    would make every use of this tool depend on the app package resolving.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "app" / "src"))
+    from arichds.constants import SELLABLE_FEATURE_KEYS
+
+    return SELLABLE_FEATURE_KEYS
+
+
+def _feature_errors(names: list[str], valid: frozenset[str]) -> list[str]:
+    """Every problem with *names*, as stderr lines — or empty when all are sellable."""
+    unrecognised = [name for name in names if name and name not in valid and name != OPS_ONLY_FEATURE_KEY]
+    errors: list[str] = []
+    if unrecognised:
+        errors.append(f"ERROR: unrecognised feature name(s): {', '.join(unrecognised)}")
+    if OPS_ONLY_FEATURE_KEY in names:
+        errors.append(
+            f"ERROR: {OPS_ONLY_FEATURE_KEY!r} is ops-only and not sellable. It is governed by"
+            " the customer's .env, never by a license."
+        )
+    if any(not name for name in names):
+        errors.append(
+            "ERROR: empty feature name in --features (an entry between two commas, or a"
+            " trailing comma). Nothing is guessed here; type the list again."
+        )
+    if errors:
+        errors.append(f"       Valid feature names: {', '.join(sorted(valid))}")
+    return errors
+
+
 def cmd_sign(args: argparse.Namespace) -> int:
     """Sign an Activation Code for one machine."""
     private_path = Path(args.private_key)
@@ -233,13 +280,24 @@ def cmd_sign(args: argparse.Namespace) -> int:
         # makes it a kill-switch rather than a perpetual grant.
         expires_at = datetime.now(UTC) + timedelta(days=args.lease_days)
 
+    features: list[str] | None = None
+    if args.features:
+        # Stripped: a space after a comma is shell quoting, not a typo. An entry
+        # that is *empty* after stripping still fails below — we do not guess.
+        features = [name.strip() for name in args.features.split(",")]
+        errors = _feature_errors(features, sellable_feature_keys())
+        if errors:
+            for line in errors:
+                print(line, file=sys.stderr)
+            return 1
+
     payload = build_payload(
         customer=args.customer,
         machine_id=machine_id,
         mode=args.mode,
         expires_at=expires_at,
         max_meters=args.max_meters,
-        features=args.features.split(",") if args.features else None,
+        features=features,
     )
     code = sign_payload(private_path.read_bytes(), payload)
 
@@ -351,7 +409,12 @@ Examples:
         help=f"Lease length when --mode leased and no --expires (default {DEFAULT_LEASE_DAYS}).",
     )
     sign.add_argument("--max-meters", type=int, default=None, help="Device quota. Omit for unlimited.")
-    sign.add_argument("--features", default=None, help="Comma-separated licensed feature names.")
+    sign.add_argument(
+        "--features",
+        default=None,
+        help="Comma-separated licensed feature names, validated against the sellable set "
+        "(an unrecognised name is refused, not signed). Omit for every sellable feature.",
+    )
     sign.add_argument("--private-key", default=str(DEFAULT_PRIVATE_KEY_PATH), help="Signing private key path.")
     sign.add_argument("--out", default=None, help="Also write the code to this file.")
     sign.set_defaults(func=cmd_sign)
