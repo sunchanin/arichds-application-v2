@@ -208,6 +208,13 @@ upgrade.
    page appears with no service restart.
 6. Run the checks under **The service account** above.
 
+**Renewing or replacing a license later** is done on **Settings → License**, not on the
+Activation page — that page is a first-run/Limited Mode gate and disappears once the machine is
+licensed. The card shows the current customer, mode, expiry and meter limit next to this
+machine's Machine ID, and an administrator pastes the new code there. It applies immediately, a
+rejected code changes nothing, and `C:\ProgramData\ARICHDS\license\license.lic` is never
+deleted or edited by hand.
+
 ## Troubleshooting
 
 | Symptom | Check |

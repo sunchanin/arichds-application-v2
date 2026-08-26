@@ -78,7 +78,10 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
 - **หน้าเว็บ first-run**: โปรแกรมเริ่มใน limited mode → หน้า Activation โชว์ Machine ID
   (ปุ่ม copy) + ช่องวาง activation code → verify แล้ว**มีผลทันที ไม่ต้อง restart**
   (enforcement ออกแบบให้ re-evaluate ใน process — ต่างจาก v1 ที่ต้อง restart) —
-  หน้าเดียวกันใช้ซ้ำตอนต่อ/เปลี่ยน license และเป็นที่อยู่ของ online activation ใน M9
+  หน้านี้เป็น **gate** สำหรับ first-run กับ Limited Mode เท่านั้น (App.tsx เลิก render ทันทีที่ active)
+  และเป็นที่อยู่ของ online activation ใน M9 — ส่วนการ**ต่อ/เปลี่ยน license ที่ยังใช้งานได้อยู่**
+  ทำที่ **Settings → License** (การ์ดเดียวกันโชว์ customer/mode/expiry/max_meters + Machine ID,
+  admin เท่านั้นที่กรอกโค้ดได้)
 - Machine fingerprint คำนวณใน Python — **พอร์ตสูตรเดิมจาก Go** (`modbus-logger/internal/license/fingerprint.go`:
   collect → combine → SHA-256; ฝั่ง Windows องค์ประกอบเดียวคือ registry `MachineGuid`)
   เปลี่ยนเฉพาะ salt/ชื่อเป็น ARICHDS แล้ว**แช่แข็งตั้งแต่วันแรก** (เปลี่ยนสูตรทีหลัง = license ทุกใบพัง)

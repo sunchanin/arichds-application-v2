@@ -3,19 +3,9 @@ import { Alert, App, Button, Card, Flex, Input, Space, theme, Typography } from 
 import { useState } from "react";
 
 import { ApiRequestError, api, type LicenseStatus } from "../api";
+import { REASON_TEXT } from "../licenseReasons";
 
 const { Paragraph, Text, Title } = Typography;
-
-/** Why the machine is limited, in words a site engineer can act on. */
-const REASON_TEXT: Record<string, string> = {
-  NO_LICENSE: "This machine has not been activated yet.",
-  MALFORMED: "That code could not be read. Copy the whole line and try again.",
-  INVALID_SIGNATURE: "That code failed its signature check. It may have been altered in transit.",
-  WRONG_MACHINE: "That code was issued for a different machine. Check the Machine ID you sent the vendor.",
-  EXPIRED: "That license has expired. Ask the vendor for a renewal.",
-  WRONG_PRODUCT: "That code is not an ARICHDS Activation Code.",
-  MACHINE_ID_UNAVAILABLE: "This machine's ID could not be read, so no license can be verified.",
-};
 
 function reasonText(reason: string | null): string {
   if (!reason) return "This machine is in Limited Mode.";
@@ -34,8 +24,14 @@ function reasonText(reason: string | null): string {
  * is exactly what someone on site needs to do — but the form is disabled rather
  * than left live to fail with a 403 on submit.
  *
- * The same page is reused later for renewing or replacing a license, and is
- * where online activation lands in M9.
+ * This page is the **gate**, not a settings page: `App.tsx` renders it only
+ * while the machine is not active, so it covers first run and Limited Mode
+ * (a lapsed lease, a tampered file), and it is where online activation lands
+ * in M9. Replacing a license that **still works** happens on Settings →
+ * License (`components/LicenseCard.tsx`, issue 011). Both screens share the
+ * `REASON_TEXT` map in `../licenseReasons`, but only this one wraps it in
+ * `reasonText()` below — those Limited-Mode fallbacks are false on an active
+ * machine, so the card supplies its own.
  */
 export function Activation({
   status,
@@ -47,8 +43,9 @@ export function Activation({
   onActivated: () => void;
 }) {
   const { message } = App.useApp();
-  // This page is permanent — reused for renewal and the home of M9's online
-  // activation — so its backdrop tracks the theme, not a literal. `colorBgLayout`
+  // This page is permanent — the first-run/Limited Mode gate and the home of
+  // M9's online activation — so its backdrop tracks the theme, not a literal.
+  // (Replacing a working license lives on Settings → License.) `colorBgLayout`
   // is the same token AntD's own Layout uses for its body background.
   const { token } = theme.useToken();
   const [code, setCode] = useState("");

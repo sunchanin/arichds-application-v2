@@ -87,10 +87,12 @@ const { Header, Sider, Content } = Layout;
  * is not this shell's business to know in advance.
  *
  * A later CR (display-unit setting, kW/kWh vs W/Wh) lights up **Settings**
- * for every role too — the one control on it is disabled for a `user`
- * rather than the entry being absent, because reading the current setting
- * is not admin-only, only changing it is (mirrors the Billing page's own
- * `capture_dir` form).
+ * for every role too — its controls are disabled for a `user` rather than
+ * the entry being absent, because reading the current settings is not
+ * admin-only, only changing them is (mirrors the Billing page's own
+ * `capture_dir` form). Issue 011 adds a second card there, **License**,
+ * under the same split: every role reads what the machine is licensed to,
+ * only an admin can paste a replacement Activation Code.
  *
  * Issue #37 adds the **Data-out Destination** group — Database and File
  * Upload — after Settings. **Admin-only, for the same reason App Log is**:

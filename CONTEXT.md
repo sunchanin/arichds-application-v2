@@ -15,8 +15,10 @@ _Avoid_: fingerprint (in UI text), hardware ID
 
 **Activation Code**:
 A one-line base64 string containing the signed license, issued by the vendor (CLI now, portal
-later). Pasting it into the first-run page activates the machine — effective immediately, no
-service restart.
+later). Pasting it activates the machine — effective immediately, no service restart. There are
+**two surfaces that take one**: the first-run / Limited Mode Activation page (the gate, shown
+only while the machine is not active) and the **License card on Settings**, which is how a
+license that still works is renewed or replaced without deleting the license file by hand.
 _Avoid_: license key, serial number
 
 **Meter Activation Code**:

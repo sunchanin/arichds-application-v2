@@ -56,6 +56,12 @@ first.
 
 5. **Paste the code** into the Activation page. It applies **immediately** — no service
    restart (ADR 0001). The Devices page appears and the Poller starts.
+
+   Later, **renewing or replacing a license on a machine that is already active** happens on
+   **Settings → License**, not here — the Activation page is a gate and stops being rendered the
+   moment the machine is licensed. That card shows the current customer, mode, expiry and
+   `max_meters` plus this machine's Machine ID, and takes a new code (admin only). A rejected
+   code changes nothing; the license file is never edited by hand.
 6. **Add a meter** on the Devices page — a real CEWE Prometer100 over TCP. The form is
    in four groups: **Identity** (device name, site name, and the record-only labels),
    **Meter** (brand and model), **Connection** (IP address, port — default 4059 — and

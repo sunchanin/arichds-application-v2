@@ -263,7 +263,7 @@ export default function App() {
       ) : active === "app-log" ? (
         <AppLog />
       ) : active === "settings" ? (
-        <Settings role={session.role} />
+        <Settings role={session.role} status={status} onActivated={() => void refreshStatus()} />
       ) : active === "database-destination" ? (
         <DatabaseDestination />
       ) : active === "file-upload-destination" ? (
