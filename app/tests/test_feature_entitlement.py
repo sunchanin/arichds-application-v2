@@ -13,10 +13,11 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from arichds.config import Settings
+from arichds.config import Settings, get_settings
 from arichds.constants import FEATURE_KEYS, SELLABLE_FEATURE_KEYS
 from arichds.licensing.features import effective_features, feature_enabled
 from arichds.licensing.service import LicenseState
+from tests.conftest import ADMIN_CREDENTIALS, bearer_client, login_token
 
 #: The routers M6b/M7-1/M7-2 gate (decision 6, issue #22; decision 18, issue
 #: #28; D6, issue #29) and the feature key each one requires. `/api/devices`
@@ -260,3 +261,144 @@ class TestLimitedModeOutranksFeatureGating:
         # client never reaches the feature gate at all.
         if response.status_code == 403:
             assert response.json()["error"]["code"] == "LICENSE_INVALID"
+
+
+class TestStatusExposesTheEffectiveFeatureSet:
+    """`GET /api/license/status` carries the **effective** set (issue 012, D1/D2).
+
+    The menu in `web/` is filtered from this list, so what it must never do is
+    disagree with `require_feature`: it is resolved through the very same
+    `effective_features()` + `state.valid` pair the gate uses, rather than
+    shipping the licence's raw `features` (which ignores `.env FEATURES`) or
+    shipping `null` (which would move `TestEffectiveFeatures`' own footgun onto
+    the wire and into a second language).
+    """
+
+    def test_a_licence_with_no_feature_list_reports_every_sellable_key(
+        self, admin_client: TestClient, relicense
+    ) -> None:
+        """`features=None` grandfathers every sellable key — the shape of the
+        licence on the reference machine today."""
+        relicense(admin_client, features=None)
+
+        payload = admin_client.get("/api/license/status").json()["data"]
+
+        assert set(payload["enabled_features"]) >= SELLABLE_FEATURE_KEYS
+
+    def test_a_licence_with_an_empty_feature_list_reports_no_sellable_key(
+        self, admin_client: TestClient, relicense
+    ) -> None:
+        """The other direction of `None` vs `[]` (D4), asserted by **name**:
+        a length check would pass on a payload that listed the wrong ten."""
+        relicense(admin_client, features=[])
+
+        enabled = set(admin_client.get("/api/license/status").json()["data"]["enabled_features"])
+
+        assert enabled & SELLABLE_FEATURE_KEYS == set()
+        for key in sorted(SELLABLE_FEATURE_KEYS):
+            assert key not in enabled, key
+        # The ops-only key is not licence-governed, so it survives — the same
+        # asymmetry `TestEffectiveFeatures` pins at the pure-function level.
+        assert "app_log" in enabled
+
+    def test_the_set_is_sorted(self, admin_client: TestClient, relicense) -> None:
+        """Ordering is pinned: `web/` renders these as Tags in payload order
+        (`LicenseCard`), and a `frozenset` iterates in hash order, which would
+        reshuffle the card between runs."""
+        relicense(admin_client, features=["records", "billing", "auto_capture"])
+
+        enabled = admin_client.get("/api/license/status").json()["data"]["enabled_features"]
+
+        assert enabled == sorted(enabled)
+        assert isinstance(enabled, list)
+
+    def test_a_machine_that_is_not_active_reports_nothing_enabled(self, unlicensed_client: TestClient) -> None:
+        """The validity guard (D2), through the SPA's own path.
+
+        A Limited Mode state is built with `features` left at its `None`
+        default (`LicenseService._limited`), and `effective_features(env,
+        None)` grandfathers every sellable key — so without the explicit
+        `state.valid` check this endpoint would advertise a full feature set
+        to a machine that owns no licence at all.
+        """
+        assert unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS).status_code == 201
+        admin = bearer_client(unlicensed_client, login_token(unlicensed_client, ADMIN_CREDENTIALS))
+
+        payload = admin.get("/api/license/status").json()["data"]
+        assert payload["state"] == "limited", payload
+        assert payload["enabled_features"] == []
+
+    def test_a_key_the_licence_grants_is_hidden_when_env_omits_it(
+        self, admin_client: TestClient, relicense, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `.env FEATURES` half of the intersection — the whole reason the
+        payload carries the *effective* set rather than the licence's raw list
+        (issue 012, D1 reason (c)).
+
+        A machine whose `.env` omits a key the licence sold must not advertise
+        that page: the API refuses it, so a menu entry pointing at it would be
+        exactly the "shows a page and then refuses it" behaviour this CR exists
+        to remove. Without this test, deleting
+        `get_settings().enabled_feature_keys()` from the resolution — shipping
+        the licence ceiling alone — leaves the whole suite green.
+
+        `ARICHDS_FEATURES` is re-read the way `conftest.data_dir` does it:
+        `monkeypatch.setenv` plus `get_settings.cache_clear()` on **both**
+        sides, because `get_settings` is `lru_cache`d for the life of the
+        process and would otherwise hand back the Settings built at startup.
+        """
+        relicense(admin_client, features=["billing", "records"])
+
+        granted = admin_client.get("/api/license/status").json()["data"]["enabled_features"]
+        assert "billing" in granted, "precondition: the licence sells billing"
+
+        monkeypatch.setenv("ARICHDS_FEATURES", "records")
+        get_settings.cache_clear()
+        try:
+            enabled = admin_client.get("/api/license/status").json()["data"]["enabled_features"]
+            refused = admin_client.get("/api/billing", params={"status": "closed"})
+        finally:
+            get_settings.cache_clear()
+
+        assert "records" in enabled
+        assert "billing" not in enabled
+        # ...and the server agrees, on the same machine at the same instant:
+        # the menu hides exactly what `require_feature` would have refused.
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["error"]["reason"] == "billing"
+
+
+class TestTheMenuIsNotTheEnforcement:
+    """Hiding a menu entry is cosmetic; the entitlement lives on the server
+    (issue 012, "Two things that must not change" #1).
+
+    The pairing is the point: this asserts a refusal and an omission **for the
+    same key on the same client at the same time**, so the next reader cannot
+    conclude that filtering the nav is what stops an unlicensed page from
+    being served. Nothing in issue 012 touches `require_feature`.
+    """
+
+    def test_an_omitted_feature_still_refuses_while_the_status_payload_omits_it(
+        self, admin_client: TestClient, relicense
+    ) -> None:
+        relicense(admin_client, features=["load_profile"])
+
+        enabled = admin_client.get("/api/license/status").json()["data"]["enabled_features"]
+
+        assert "load_profile" in enabled
+        assert "billing" not in enabled
+
+        refused = admin_client.get("/api/billing", params={"status": "closed"})
+
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["error"]["code"] == "FEATURE_DISABLED"
+        assert refused.json()["error"]["reason"] == "billing"
+
+    def test_the_granted_feature_is_not_refused(self, admin_client: TestClient, relicense) -> None:
+        """The control — otherwise a resolution that returned `[]` for
+        everything would pass the test above while hiding the whole nav."""
+        relicense(admin_client, features=["load_profile"])
+
+        response = admin_client.get("/api/load-profile", params={"device_id": 1})
+
+        assert response.status_code != 403, response.text

@@ -38,7 +38,12 @@ const LEVEL_COLOR: Record<string, string> = {
  * the error through a toast — the one exception is `FEATURE_DISABLED`, shown
  * as an inline `Result` instead (D13), because "off" is the normal state for
  * this ops-only key on a customer machine, not something a toast should
- * interrupt every visit with.
+ * interrupt a visit with. **Since issue 012 that is a backstop, not the
+ * routine path**: the menu entry itself is now hidden when `app_log` is not
+ * in the licence's effective set, so this `Result` is what a stale `page`, a
+ * licence changed while the page was open, or a bookmark lands on — rarely,
+ * rather than on every visit. Keep it: the server is still the authority, and
+ * removing it would turn those into a blank page.
  */
 export function AppLog() {
   const { message } = App.useApp();

@@ -531,6 +531,17 @@ async def _wait_for_rows(transport: CdpTransport, expected_ids: list[str], deadl
     ids exactly match *expected_ids* (decision 6) — the readiness signal and
     the correctness gate in one comparison.
 
+    One failure mode worth naming, because it reads like a browser fault and
+    is not: on a machine whose licence omits ``billing``, ``App.tsx`` renders
+    issue 012's shared "not enabled" ``Result`` in place of the Billing page,
+    so ``mounted`` stays true (the ``Result`` is a *child* of ``AppShell``,
+    so ``.ant-layout`` is still there) and ``observed`` stays empty until the
+    deadline. **A :class:`BrowserCaptureError` from here with ``mounted=True``
+    and no rows is a licence symptom, not a browser one.** Not a regression
+    and not reachable in practice — before issue 012 an unlicensed Billing
+    page rendered zero rows after a 403 toast, the same outcome, and the
+    eager capture path checks ``auto_capture`` before it gets here.
+
     Raises:
         BrowserCaptureError: Naming both lists, if the match never happens
             before *deadline*.

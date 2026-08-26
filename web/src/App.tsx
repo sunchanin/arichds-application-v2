@@ -5,6 +5,7 @@ import { api, type LicenseStatus } from "./api";
 import { type Session, clearSession, getSession, onSessionChange, setSession } from "./auth";
 import { captureRequest } from "./capture";
 import { AppShell } from "./components/AppShell";
+import { type Page, pageFeatureKey, toPage } from "./features";
 import { Activation } from "./pages/Activation";
 import { AppLog } from "./pages/AppLog";
 import { Battery } from "./pages/Battery";
@@ -23,45 +24,6 @@ import { Setup } from "./pages/Setup";
 import { SpecialDays } from "./pages/SpecialDays";
 import { Users } from "./pages/Users";
 import { LICENSE_POLL_MS } from "./theme";
-
-/** The in-shell pages. Every other menu key belongs to a milestone that has not shipped. */
-type Page =
-  | "devices"
-  | "load-profile"
-  | "records"
-  | "billing"
-  | "energy-summary"
-  | "holidays"
-  | "special-days"
-  | "battery"
-  | "export-format"
-  | "app-log"
-  | "users"
-  | "settings"
-  | "database-destination"
-  | "file-upload-destination";
-
-const PAGES: readonly Page[] = [
-  "devices",
-  "load-profile",
-  "records",
-  "billing",
-  "energy-summary",
-  "holidays",
-  "special-days",
-  "battery",
-  "export-format",
-  "app-log",
-  "users",
-  "settings",
-  "database-destination",
-  "file-upload-destination",
-];
-
-/** Read a menu key as a page, falling back to Devices for anything unrecognised. */
-function toPage(key: string): Page {
-  return PAGES.includes(key as Page) ? (key as Page) : "devices";
-}
 
 /**
  * Routes on state, not on a URL — and from M2-1 the first question is auth.
@@ -233,16 +195,35 @@ export default function App() {
       ? "devices"
       : page;
 
+  // Issue 012 — the same mapping that hides a menu entry decides what is
+  // rendered when the page is reached anyway (a stale `page`, a licence
+  // replaced while it was open, a capture request), so the hide rule and the
+  // fallback rule cannot disagree. Deliberately **not** a redirect the way the
+  // role guard above is: a role demotion means "this is not yours", where an
+  // unlicensed feature means "this machine does not have this" — and silently
+  // landing on Devices would leave the operator wondering what happened.
+  // A "never advertised" page (File Upload) has no feature key, so it renders
+  // normally; only a `feature` entitlement can produce this message.
+  const requiredFeature = pageFeatureKey(active);
+  const featureMissing = requiredFeature !== null && !status.enabled_features.includes(requiredFeature);
+
   return (
     <AppShell
       licensedTo={status.customer}
+      enabledFeatures={status.enabled_features}
       username={session.username}
       role={session.role}
       activeKey={active}
       onNavigate={(key) => setPage(toPage(key))}
       onSignOut={() => void signOut()}
     >
-      {active === "users" ? (
+      {featureMissing ? (
+        <Result
+          status="info"
+          title="That feature is not enabled on this installation"
+          subTitle="Open Settings → License to see what this machine is licensed for, or contact your vendor."
+        />
+      ) : active === "users" ? (
         <Users currentUserId={session.id} />
       ) : active === "load-profile" ? (
         <LoadProfile role={session.role} />

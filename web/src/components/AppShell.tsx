@@ -22,10 +22,17 @@ import { Button, Layout, Menu, Space, Tag, theme, Typography } from "antd";
 import type { ItemType, MenuItemType } from "antd/es/menu/interface";
 import { type ReactNode, useState } from "react";
 
+import { type Page, isPageAdvertised } from "../features";
 import { HEADER_HEIGHT } from "../theme";
 import { ChangePasswordModal } from "./ChangePasswordModal";
 
 const { Header, Sider, Content } = Layout;
+
+/** One menu entry, keyed by the page it opens so the mapping can be applied to it. */
+type NavEntry = { key: Page; icon: ReactNode; label: string };
+
+/** A labelled group of entries — the only nesting this menu has. */
+type NavGroup = { type: "group"; label: string; children: NavEntry[] };
 
 /**
  * The app shell: slim header plus the sidebar the finished product will have.
@@ -81,10 +88,36 @@ const { Header, Sider, Content } = Layout;
  * read-only tail viewer for the rotating application log. **Admin-only**,
  * like User Management: the log's content is machine-internal (usernames,
  * Transport Endpoints, file paths, tracebacks), unlike the meter data every
- * other page in this group shows. The API answers `FEATURE_DISABLED` on a
- * machine whose `.env` omits the ops-only `app_log` key; the page shows that
- * inline rather than hiding the menu entry, since whether the feature is on
- * is not this shell's business to know in advance.
+ * other page in this group shows.
+ *
+ * **Issue 012 reverses this shell's own rule about what it may know.** It used
+ * to say: the API answers `FEATURE_DISABLED` and the page shows that inline
+ * rather than hiding the menu entry, since whether a feature is on is not this
+ * shell's business to know in advance. It now is — `GET /api/license/status`
+ * carries `enabled_features`, the resolved `.env FEATURES ∩ licence` set, and
+ * this shell advertises only what that set allows. The owner's reason: a
+ * customer who sees six pages that refuse them reads the product as broken or
+ * as nagging them to buy; a customer who sees only what they bought reads it
+ * as theirs. The mapping is `features.ts`'s `PAGE_ENTITLEMENT`, exhaustive
+ * over `Page` so a new page with no entry fails the build. Three consequences
+ * worth stating, because each was decided rather than fallen into:
+ *
+ * - **App Log takes the same rule as everything else** (D6) — no ops-only
+ *   exception to remember. An empty/unset `.env FEATURES` expands to every
+ *   key, so its entry is present on every default install and disappears only
+ *   where an operator deliberately excluded it, on a machine where the page
+ *   403s anyway. `AppLog.tsx`'s inline `Result` stays as the backstop.
+ * - **File Upload is never advertised** (D7) until M8 gives it a transport
+ *   (SPEC §3.8): it is a presentation-only shell with no transport and no
+ *   feature key, so there is nothing a customer can do with it. The page
+ *   component is untouched and still renders normally if reached.
+ * - **Hiding is total** (D9): no "show what else ARICHDS can do" affordance,
+ *   which would re-introduce exactly the nagging this removes. Settings is
+ *   never hidden, so support can always say "open Settings → License" — the
+ *   card there lists what this machine has.
+ *
+ * Enforcement did **not** move. `require_feature` on the server is unchanged
+ * and is still what refuses an unlicensed page; this filter is cosmetic.
  *
  * A later CR (display-unit setting, kW/kWh vs W/Wh) lights up **Settings**
  * for every role too — its controls are disabled for a `user` rather than
@@ -101,7 +134,10 @@ const { Header, Sider, Content } = Layout;
  * differ**: Database carries a real transport since issue #46 (SPEC §3.10 —
  * the `dbdest_sync` job writes into the customer's own MariaDB every fifteen
  * minutes), while File Upload is still presentation-only, waiting on the
- * Data-out module (SPEC §3.8) that is a later milestone.
+ * Data-out module (SPEC §3.8) that is a later milestone — and since issue 012
+ * that is why File Upload is not advertised to anyone, admin included, which
+ * in turn is what lets the group header disappear entirely when the licence
+ * omits `database_destination`.
  *
  * The header carries who is signed in, the way to change your own password
  * (every role — the modal is owned here, so no page has to pass a prop for it),
@@ -110,6 +146,7 @@ const { Header, Sider, Content } = Layout;
 export function AppShell({
   children,
   licensedTo,
+  enabledFeatures,
   username,
   role,
   activeKey,
@@ -118,6 +155,12 @@ export function AppShell({
 }: {
   children: ReactNode;
   licensedTo?: string | null;
+  /**
+   * `LicenseStatus.enabled_features` — a prop, never state, so replacing the
+   * licence re-renders the menu with no reload (ADR 0001: never cache
+   * licence-derived state). Nothing here may snapshot it.
+   */
+  enabledFeatures: readonly string[];
   username: string;
   role: "admin" | "user";
   activeKey: string;
@@ -134,7 +177,10 @@ export function AppShell({
   // strands the header text at whatever white looked right in M1.
   const { token } = theme.useToken();
 
-  const items: ItemType<MenuItemType>[] = [
+  // Role first, licence second — two independent questions, kept apart. The
+  // role conditionals below decide what this *account* may see; the filter
+  // underneath decides what this *machine* is licensed to (issue 012).
+  const entries: (NavEntry | NavGroup)[] = [
     { key: "devices", icon: <DatabaseOutlined />, label: "Devices" },
     { key: "load-profile", icon: <AreaChartOutlined />, label: "Load Profile" },
     { key: "records", icon: <TableOutlined />, label: "Records" },
@@ -151,27 +197,46 @@ export function AppShell({
     // Admin-only, like User Management: the log's content is machine-internal
     // (usernames, Transport Endpoints, file paths, tracebacks), unlike the
     // meter data every other page in this group shows.
-    ...(role === "admin" ? [{ key: "app-log", icon: <FileSearchOutlined />, label: "App Log" }] : []),
     ...(role === "admin"
-      ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]
+      ? ([{ key: "app-log", icon: <FileSearchOutlined />, label: "App Log" }] satisfies NavEntry[])
+      : []),
+    ...(role === "admin"
+      ? ([{ key: "users", icon: <TeamOutlined />, label: "User Management" }] satisfies NavEntry[])
       : []),
     { key: "settings", icon: <SettingOutlined />, label: "Settings" },
     // Issue #37 — admin-only, like App Log/User Management above: these two
     // pages carry no transport yet (SPEC §3.8 is a later milestone), and
     // their fields are machine-internal credentials, not meter data.
     ...(role === "admin"
-      ? [
+      ? ([
           {
-            type: "group" as const,
+            type: "group",
             label: "Data-out Destination",
             children: [
               { key: "database-destination", icon: <CloudServerOutlined />, label: "Database" },
               { key: "file-upload-destination", icon: <CloudUploadOutlined />, label: "File Upload" },
             ],
           },
-        ]
+        ] satisfies NavGroup[])
       : []),
   ];
+
+  // One pass over the whole tree rather than a special case for the Data-out
+  // group: a group is kept only when something is left under it, so any future
+  // group inherits the rule instead of re-deciding it. A label with nothing
+  // beneath it is worse than either showing or hiding the pages (issue 012).
+  const items: ItemType<MenuItemType>[] = entries
+    .map((entry) =>
+      "children" in entry
+        ? {
+            ...entry,
+            children: entry.children.filter((child) => isPageAdvertised(child.key, enabledFeatures)),
+          }
+        : entry,
+    )
+    .filter((entry) =>
+      "children" in entry ? entry.children.length > 0 : isPageAdvertised(entry.key, enabledFeatures),
+    );
 
   return (
     <Layout style={{ minHeight: "100vh" }}>

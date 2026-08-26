@@ -1075,6 +1075,12 @@ one header.
   — ⚠️ **`auto_read_billing` และ `auto_backfill` ถูกถอดออกจาก ops-only**: `auto_backfill` ตายไปกับ
   ADR 0009 (ไม่มี backfill เป็นแนวคิดอีกแล้ว) และ `auto_read_billing` ไม่มีอะไรให้คุม — job billing
   เป็นรายการหนึ่งใน registry ที่ `ARICHDS_POLL_ENABLED` กับ Limited Mode คุมอยู่แล้วเหมือนทุก job
+  — 🔄 **`GET /api/license/status` ส่ง effective set ออกมาเป็น `enabled_features`** (issue 012,
+  CR ของเจ้าของ): เป็น `.env FEATURES ∩ license` ที่ resolve เสร็จแล้ว · sorted · **ไม่เคยเป็น
+  `null`** และเป็น `[]` เมื่อเครื่องไม่ active · เมนูซ้ายจึง **ซ่อน** หน้าที่ license ไม่ให้แทน
+  ที่จะโชว์แล้วให้หน้ากดเข้าไปเจอ `FEATURE_DISABLED` (mapping อยู่ที่ `web/src/features.ts`) ·
+  **gate ฝั่ง server ไม่เปลี่ยนแม้แต่บรรทัดเดียว** — `require_feature` ยังเป็นตัวบังคับ
+  การซ่อนเมนูเป็นเรื่องความสวยงามล้วน ๆ · Settings/Devices/User Management ไม่เคยถูกซ่อน
 - ชื่อเชิง cryptographic ทั้งหมดเปลี่ยนเป็น ARICHDS (fingerprint salt, signing version, keypair ใหม่)
   — ทำได้เพราะไม่มี license v1 ในสนาม · **v2 คือผู้นิยาม contract แล้ว portal v2 ทำตาม**
 

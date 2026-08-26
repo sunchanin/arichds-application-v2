@@ -1,10 +1,11 @@
 import { CopyOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Card, Descriptions, Input, Space, Typography } from "antd";
+import { Alert, App, Button, Card, Descriptions, Input, Space, Tag, Typography } from "antd";
 import type { DescriptionsItemType } from "antd/es/descriptions";
 import dayjs from "dayjs";
 import { useState } from "react";
 
 import { ApiRequestError, api, type LicenseStatus } from "../api";
+import { FEATURE_LABELS } from "../features";
 import { REASON_TEXT } from "../licenseReasons";
 
 const { Paragraph, Text } = Typography;
@@ -46,7 +47,11 @@ function rejectionText(reason: string | null): string {
  * - `LicenseStatus` carries no feature list at all, so a client-side check
  *   could only compare `max_meters` — and would therefore miss exactly the
  *   accident `docs/issues/010` describes, a typo'd *feature* name that signs
- *   cleanly.
+ *   cleanly. **Issue 012 added `enabled_features` and this reasoning still
+ *   holds**: that field describes the licence already installed, so it makes
+ *   an accidental downgrade *visible after the fact* — which is what the last
+ *   bullet asks for — but says nothing about what a code sitting in the
+ *   textarea grants. Only installing it can answer that.
  * - What is affordable instead: a `modal.confirm` naming the currently
  *   licensed customer and expiry, so a stray paste onto a working machine
  *   costs a deliberate second click whether or not it is a downgrade; and on
@@ -84,14 +89,32 @@ export function LicenseCard({
   const expiryText = status.expires_at ? dayjs(status.expires_at).format("YYYY-MM-DD HH:mm") : "No expiry";
   const maxMetersText = status.max_meters === null ? "Unlimited" : String(status.max_meters);
 
-  // The licensed feature list belongs on this card too, once `docs/issues/012`
-  // adds `features` to `GET /api/license/status`. This is its home — 012 need
-  // not invent a second one.
+  // Issue 012 landed the feature list here, as this comment reserved. It is the
+  // **effective** set the server resolved (`.env FEATURES ∩ licence`), not the
+  // licence's raw list, so what it shows is exactly what the machine will let
+  // you do. This card is also the only place that list is readable — the left
+  // nav now hides what is not enabled (D9), so support says "open Settings →
+  // License", which is why this card is never itself hidden.
   const items: DescriptionsItemType[] = [
     { key: "customer", label: "Licensed to", children: customerText },
     { key: "mode", label: "Mode", children: modeText },
     { key: "expiry", label: "Expiry", children: expiryText },
     { key: "max_meters", label: "Max meters", children: maxMetersText },
+    {
+      key: "enabled_features",
+      label: "Enabled features",
+      children: status.enabled_features.length ? (
+        <Space size={[4, 4]} wrap>
+          {status.enabled_features.map((key) => (
+            <Tag key={key} style={{ marginInlineEnd: 0 }}>
+              {FEATURE_LABELS[key] ?? key}
+            </Tag>
+          ))}
+        </Space>
+      ) : (
+        "None"
+      ),
+    },
   ];
 
   const copyMachineId = async () => {
