@@ -1062,11 +1062,26 @@ one header.
 - **Meter Key** (โมเดลเดิม v1 #145): 1 key = 1 device slot ผูก serial มิเตอร์ผ่าน probe-first redeem ·
   ลบ device แล้ว slot ไม่คืน · เกิน `max_meters` ต้องใช้ key — **ทั้งย่อหน้านี้เริ่มมีผลที่ M9**
   (redeem ต้องมี portal) · **M3 บังคับด้วยการนับจำนวนอย่างเดียว ไม่มีช่อง Meter Key ในฟอร์ม** (§3.3)
-- **Feature entitlement**: enabled = `.env FEATURES ∩ license features` · sellable 10 ตัว (M7 slice 4,
-  issue #35 เพิ่ม `billing_image_export`; §3.10 เพิ่ม `database_destination`; เดิม 8 ตัวเท่า v1):
+- **Feature entitlement**: enabled = `.env FEATURES ∩ license features` · sellable 11 ตัว (M7 slice 4,
+  issue #35 เพิ่ม `billing_image_export`; §3.10 เพิ่ม `database_destination`;
+  issue 013 เพิ่ม `file_upload_destination`; เดิม 8 ตัวเท่า v1):
   `billing` `load_profile` `energy_summary` `special_days` **`records`** `battery` `auto_capture`
-  `billing_excel_export` `billing_image_export` **`database_destination`** ·
+  `billing_excel_export` `billing_image_export` **`database_destination`**
+  **`file_upload_destination`** ·
   ops-only (ใน .env เท่านั้น): `app_log`
+  — ⚠️ **`file_upload_destination` เป็นคีย์ที่ "จอง" ไว้ ยังไม่ขาย** (issue 013): ยังไม่มีอะไรอยู่หลังหน้า
+  File Upload Destination เลย — ไม่มี endpoint ไม่มีแถวใน `settings` ไม่มี job และตัวหน้าเองยังบอกว่า
+  สิ่งที่พิมพ์ลงไปไม่ถูกบันทึกหรือส่งที่ไหน · **ห้ามเสนอราคาคีย์นี้ให้ลูกค้าและห้ามใส่ในใบแจ้งหนี้**
+  จนกว่า M8/§3.8 จะให้ transport กับหน้านี้ · จองไว้ตอนนี้เพราะยังไม่มี license ใบไหนออก — คีย์ที่เพิ่ม
+  ทีหลังจะไปถึงเฉพาะใบที่เซ็นด้วย `features: null` เท่านั้น ใบที่ระบุรายการชัดเจนจะขาดคีย์ใหม่เงียบ ๆ
+  ตลอดไป · เมนูซ้าย **ยังซ่อนหน้านี้อยู่แม้ license จะให้คีย์นี้ก็ตาม** (`features.ts` คงไว้ที่
+  `kind: "never"`) — การจองคีย์ไม่ใช่การส่งมอบฟีเจอร์ · ผลข้างเคียงที่ยอมรับแล้ว: license ที่เซ็นโดย
+  ไม่ระบุ `--features` จะโชว์แท็ก **File Upload Destination** บนการ์ด License ใน Settings ·
+  ไม่มีตัวกรองใด ๆ มาซ่อนโดยตั้งใจ — ฝั่งผู้ขายคุมด้วยการระบุคีย์ใน `--features` เอง · และ
+  **`arichds_vendor.py sign` เตือนเมื่อมีการระบุคีย์ที่จองไว้** (เตือนอย่างเดียว ยัง sign ให้ปกติ —
+  ต้อง sign ได้ ไม่งั้นการจองก็ไม่มีความหมาย) และรายการชื่อคีย์ที่ถูกต้องจะกำกับว่าตัวไหนยังไม่ขาย ·
+  รายชื่อคีย์ที่จองอยู่ที่ `RESERVED_FEATURE_KEYS` ใน `constants.py` — `tools/` **import** ไปใช้
+  ไม่ได้เขียนซ้ำ (กฎของ issue 010) วันที่ M8 ปล่อยฟีเจอร์จริงจึงแก้ที่เดียว
   (`api_config` ของ v1 ตายไปกับหน้า ApiConfig)
   — ✅ **`instantaneous` → `records` (เจ้าของตัดสิน grill M6, 2026-08-09)**: หน้าที่คีย์นี้คุมชื่อ
   **Records** ตั้งแต่ grill M3 · คีย์ชื่อเดิมขัด `CONTEXT.md` (ซึ่ง `_Avoid_: instantaneous records`

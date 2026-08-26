@@ -32,9 +32,15 @@ from arichds.logging_config import CredentialRedactionFilter
 class TestFeatureKey:
     def test_database_destination_is_a_sellable_feature_key(self) -> None:
         """The tenth sellable key (SPEC §3.9/§3.10, issue #46) — a licence
-        that omits it must be able to withhold the whole module."""
+        that omits it must be able to withhold the whole module.
+
+        The size assertion is pinned on purpose rather than brittle: it is the
+        tripwire that forces a repo-wide sweep of everything enumerating or
+        counting the keys each time one is added. Eleven since issue 013
+        reserved `file_upload_destination`.
+        """
         assert "database_destination" in SELLABLE_FEATURE_KEYS
-        assert len(SELLABLE_FEATURE_KEYS) == 10
+        assert len(SELLABLE_FEATURE_KEYS) == 11
 
 
 class TestGet:

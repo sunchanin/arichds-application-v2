@@ -26,10 +26,13 @@ from cryptography.hazmat.primitives.serialization import (
     PrivateFormat,
 )
 
-from arichds.constants import SELLABLE_FEATURE_KEYS
+from arichds.constants import RESERVED_FEATURE_KEYS, SELLABLE_FEATURE_KEYS
 from arichds.licensing import activation_code as ac
 
 TEST_MACHINE_ID = "c" * 64
+
+#: The CLI's own source, for the "never restate the list" guard below.
+VENDOR_CLI_PATH = Path(__file__).resolve().parents[2] / "tools" / "arichds_vendor.py"
 
 
 @pytest.fixture
@@ -206,6 +209,89 @@ class TestCaseSensitivity:
         assert exit_code == 1
         assert captured.out == ""
         assert "Billing" in captured.err
+
+
+class TestAReservedKeyIsSignableButAnnounced:
+    """A reserved key signs, and says so — issue 013, fix round.
+
+    `file_upload_destination` **must stay signable** (criterion 3): a refusal
+    here would break the thing the reservation is for, which is that a licence
+    signed today can already carry it. But nothing implements it, and this CLI
+    is the only path by which a customer can come to own it. The product side
+    of *"a customer who bought this key would be buying a form that discards
+    what they type"* has five guards; without this the purchase side had none,
+    and the CLI presented the key as an ordinary thing to sell.
+
+    So: warn, never refuse, and warn at the moment the name is typed rather
+    than in a source comment the person making the sale does not open.
+    """
+
+    def test_a_reserved_key_still_signs_and_reaches_the_payload(self, vendor_cli, key_path: Path, capsys) -> None:
+        exit_code = sign(vendor_cli, key_path, "--features", "file_upload_destination")
+
+        captured = capsys.readouterr()
+        assert exit_code == 0
+        assert payload_of(captured.out.strip())["features"] == ["file_upload_destination"]
+
+    def test_naming_a_reserved_key_warns_on_stderr(self, vendor_cli, key_path: Path, capsys) -> None:
+        """stderr, so the Activation Code on stdout still pipes cleanly."""
+        sign(vendor_cli, key_path, "--features", "file_upload_destination")
+
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "file_upload_destination" in captured.err
+        assert "reserved" in captured.err.lower()
+        assert "invoice" in captured.err.lower()
+        # The warning must not contaminate the one line the customer pastes.
+        assert "WARNING" not in captured.out
+
+    def test_selling_only_implemented_keys_is_not_warned_about(self, vendor_cli, key_path: Path, capsys) -> None:
+        """Otherwise the warning is noise on every sale, and the next person
+        learns to ignore it — which is the failure mode, not the guard."""
+        exit_code = sign(vendor_cli, key_path, "--features", "billing,records")
+
+        assert exit_code == 0
+        assert "reserved" not in capsys.readouterr().err.lower()
+
+    def test_the_valid_name_list_marks_which_key_is_reserved(self, vendor_cli, key_path: Path, capsys) -> None:
+        """The refusal path prints every sellable name as a menu to choose
+        from. A reader choosing off that menu must be able to see which entry
+        is not actually for sale."""
+        sign(vendor_cli, key_path, "--features", "nope")
+
+        captured = capsys.readouterr()
+        assert "file_upload_destination" in captured.err
+        assert "reserved" in captured.err.lower()
+
+    def test_the_features_help_mentions_the_reserved_set(self, vendor_cli, capsys) -> None:
+        """`--help` is read before the name is typed, the error only after."""
+        with pytest.raises(SystemExit):
+            vendor_cli.main(["sign", "--help"])
+
+        assert "reserved" in capsys.readouterr().out.lower()
+
+
+class TestWhereTheReservedSetLives:
+    """Issue 010's rule, applied to the second set: `tools/` imports it and
+    never restates it, so un-reserving the key at M8 is one edit, not two."""
+
+    def test_the_reserved_set_is_the_apps_own_object_not_a_copy(self, vendor_cli) -> None:
+        """Identity, not equality — as for the sellable set above."""
+        assert vendor_cli.reserved_feature_keys() is RESERVED_FEATURE_KEYS
+
+    def test_every_reserved_key_is_also_sellable(self) -> None:
+        """A reserved key outside the sellable set could never be signed at
+        all, so the warning would guard a path that does not exist and would
+        rot unnoticed."""
+        assert RESERVED_FEATURE_KEYS <= SELLABLE_FEATURE_KEYS, sorted(RESERVED_FEATURE_KEYS - SELLABLE_FEATURE_KEYS)
+
+    def test_the_cli_never_restates_a_reserved_key_name(self) -> None:
+        """A literal in `tools/` is a second copy someone must remember to
+        delete at M8 — exactly what issue 010 removed for the sellable list."""
+        source = VENDOR_CLI_PATH.read_text(encoding="utf-8")
+
+        for key in sorted(RESERVED_FEATURE_KEYS):
+            assert key not in source, f"{VENDOR_CLI_PATH.name} hand-copies the reserved key {key!r}"
 
 
 class TestWhereTheCheckLives:

@@ -108,9 +108,13 @@ type NavGroup = { type: "group"; label: string; children: NavEntry[] };
  *   where an operator deliberately excluded it, on a machine where the page
  *   403s anyway. `AppLog.tsx`'s inline `Result` stays as the backstop.
  * - **File Upload is never advertised** (D7) until M8 gives it a transport
- *   (SPEC §3.8): it is a presentation-only shell with no transport and no
- *   feature key, so there is nothing a customer can do with it. The page
- *   component is untouched and still renders normally if reached.
+ *   (SPEC §3.8): it is a presentation-only shell, so there is nothing a
+ *   customer can do with it. It *does* have a feature key since issue 013 —
+ *   `file_upload_destination`, **reserved** ahead of the first licence rather
+ *   than sold — and the entry stays unadvertised anyway, including on a
+ *   licence that grants that key, because reserving a key is not shipping a
+ *   feature. The page component is untouched and still renders normally if
+ *   reached.
  * - **Hiding is total** (D9): no "show what else ARICHDS can do" affordance,
  *   which would re-introduce exactly the nagging this removes. Settings is
  *   never hidden, so support can always say "open Settings → License" — the

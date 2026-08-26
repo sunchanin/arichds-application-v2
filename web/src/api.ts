@@ -35,7 +35,7 @@ export interface LicenseStatus {
   /**
    * The **effective** feature set — `.env FEATURES ∩ licence` — resolved by the
    * server, sorted, and never null (issue 012). `[]` means nothing is enabled,
-   * which is also what a non-active machine reports; the ten sellable keys are
+   * which is also what a non-active machine reports; the sellable keys are
    * deliberately not duplicated in TypeScript, so adding one is a backend-only
    * edit. Read it through `features.ts`, never by comparing strings inline.
    */

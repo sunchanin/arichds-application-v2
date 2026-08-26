@@ -30,6 +30,12 @@ Commands
     does not exist. Omit the flag entirely to grandfather every sellable
     feature; that is not the same as passing an empty list.
 
+    Some sellable names are **reserved** (``RESERVED_FEATURE_KEYS``, also
+    imported): signable, so a license cut today already carries them, but
+    nothing implements them yet. Naming one *warns* and keeps signing — it is
+    never refused, because being signable early is the entire point of
+    reserving it. **Do not put a reserved name on an invoice.**
+
 ``sign-meter``
     Sign a Meter Activation Code for one meter on one machine (ADR 0019)::
 
@@ -233,7 +239,41 @@ def sellable_feature_keys() -> frozenset[str]:
     return SELLABLE_FEATURE_KEYS
 
 
-def _feature_errors(names: list[str], valid: frozenset[str]) -> list[str]:
+def reserved_feature_keys() -> frozenset[str]:
+    """Sellable names that are not actually for sale yet, from the app's constant.
+
+    Imported, never restated, for exactly the reason
+    :func:`sellable_feature_keys` is: a literal here is a second copy that
+    someone has to remember to delete the day the feature ships, and nothing
+    would fail if they forgot. Emptying the set in ``constants.py`` is then the
+    single edit that un-reserves a key.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "app" / "src"))
+    from arichds.constants import RESERVED_FEATURE_KEYS
+
+    return RESERVED_FEATURE_KEYS
+
+
+def _reserved_warning(names: list[str], reserved: frozenset[str]) -> list[str]:
+    """Stderr lines for any *names* that are reserved — or empty when none are.
+
+    A warning, not an error: the code still signs. Refusing would break the
+    thing reserving a key is for, which is that a license signed before the
+    feature exists already carries it.
+    """
+    named = sorted({name for name in names if name in reserved})
+    if not named:
+        return []
+    return [
+        f"WARNING: reserved feature name(s): {', '.join(named)}",
+        "         Signable, and signed. But nothing implements them yet, so a",
+        "         customer who pays for one gets nothing. Do NOT put them on an",
+        "         invoice or quote them. (See RESERVED_FEATURE_KEYS in the app's",
+        "         constants.py for when each becomes real.)",
+    ]
+
+
+def _feature_errors(names: list[str], valid: frozenset[str], reserved: frozenset[str]) -> list[str]:
     """Every problem with *names*, as stderr lines — or empty when all are sellable."""
     unrecognised = [name for name in names if name and name not in valid and name != OPS_ONLY_FEATURE_KEY]
     errors: list[str] = []
@@ -251,6 +291,12 @@ def _feature_errors(names: list[str], valid: frozenset[str]) -> list[str]:
         )
     if errors:
         errors.append(f"       Valid feature names: {', '.join(sorted(valid))}")
+        # The line above is a menu to choose from, so it has to say which
+        # entries are not on sale. Appended rather than annotated inline: the
+        # plain sorted list is asserted verbatim by two tests that are still
+        # right — every sellable name *is* offered.
+        if reserved:
+            errors.append(f"       Of those, reserved and NOT for sale: {', '.join(sorted(reserved))}")
     return errors
 
 
@@ -285,11 +331,18 @@ def cmd_sign(args: argparse.Namespace) -> int:
         # Stripped: a space after a comma is shell quoting, not a typo. An entry
         # that is *empty* after stripping still fails below — we do not guess.
         features = [name.strip() for name in args.features.split(",")]
-        errors = _feature_errors(features, sellable_feature_keys())
+        reserved = reserved_feature_keys()
+        errors = _feature_errors(features, sellable_feature_keys(), reserved)
         if errors:
             for line in errors:
                 print(line, file=sys.stderr)
             return 1
+        # Only when a name was *typed*. Omitting --features grandfathers every
+        # sellable key including the reserved ones, and that path is accepted
+        # deliberately (issue 013, D2) — warning there would fire on every
+        # default sale and teach the reader to ignore the warning.
+        for line in _reserved_warning(features, reserved):
+            print(line, file=sys.stderr)
 
     payload = build_payload(
         customer=args.customer,
@@ -413,7 +466,9 @@ Examples:
         "--features",
         default=None,
         help="Comma-separated licensed feature names, validated against the sellable set "
-        "(an unrecognised name is refused, not signed). Omit for every sellable feature.",
+        "(an unrecognised name is refused, not signed). Some sellable names are reserved "
+        "and not for sale yet: naming one warns but still signs. Omit for every sellable "
+        "feature.",
     )
     sign.add_argument("--private-key", default=str(DEFAULT_PRIVATE_KEY_PATH), help="Signing private key path.")
     sign.add_argument("--out", default=None, help="Also write the code to this file.")

@@ -110,9 +110,16 @@ export const PAGE_ENTITLEMENT: Record<Page, PageEntitlement> = {
   // wrong, and its License card is how support says "read what you have" (D9).
   settings: { kind: "always" },
   "database-destination": { kind: "feature", key: "database_destination" },
-  // Presentation-only, no transport and no feature key (ADR 0016, issue #37),
-  // so there is nothing a customer can do with it (D7, issue 012). Unhide it
-  // when M8 / SPEC §3.8 gives it a transport — and give it a key then.
+  // Presentation-only, with no transport, so there is nothing a customer can
+  // do with it (D7, issue 012; ADR 0016, issue #37). A `file_upload_destination`
+  // key *does* exist now (issue 013) — and this row stays `never` anyway, on
+  // purpose. The key was **reserved** before the first licence is signed, not
+  // sold: there is no endpoint, no settings row and no job behind the page, and
+  // the page still says nothing typed on it is saved. `feature` would mean
+  // *advertised while the key is enabled*, putting a menu entry in front of a
+  // paying customer that leads to a form which discards their input. Flip it
+  // when M8 / SPEC §3.8 gives the page a transport, not before —
+  // `app/tests/test_nav_feature_contract.py` fails if you flip it sooner.
   "file-upload-destination": { kind: "never" },
 };
 
@@ -145,7 +152,7 @@ export function isPageAdvertised(page: Page, enabledFeatures: readonly string[])
  * English names for every key in the backend's `FEATURE_KEYS`, for the License
  * card's "Enabled features" row (D12).
  *
- * All eleven, `app_log` included: the row says what this machine has, and
+ * All twelve, `app_log` included: the row says what this machine has, and
  * omitting the ops-only key would make it quietly incomplete.
  * `app/tests/test_nav_feature_contract.py` is the tripwire that keeps this list
  * and `FEATURE_KEYS` from drifting.
@@ -159,6 +166,7 @@ export const FEATURE_LABELS: Record<string, string> = {
   billing_image_export: "Billing Image Export",
   database_destination: "Database Destination",
   energy_summary: "Energy Summary",
+  file_upload_destination: "File Upload Destination",
   load_profile: "Load Profile",
   records: "Records",
   special_days: "Special Days",

@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from arichds.constants import FEATURE_KEYS
+from arichds.constants import FEATURE_KEYS, SELLABLE_FEATURE_KEYS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FEATURES_TS = REPO_ROOT / "web" / "src" / "features.ts"
@@ -88,9 +88,11 @@ UNSWEPT_PAGES: frozenset[str] = frozenset({"app-log"})
 #: sweep. Pinned for the same reason: flipping a page to `always` would
 #: silently drop it out of every assertion below.
 #:
-#: `file-upload-destination` is here because it has no transport and no feature
-#: key yet (D7, issue 012). Issue 013 reserves a `file_upload_destination` key
-#: and revisits this row — **013's edit, not 012's**.
+#: `file-upload-destination` is here because it has no transport (D7, issue
+#: 012). Issue 013 revisited this row, as 012 asked it to, and **left the
+#: membership unchanged**: the `file_upload_destination` key now exists, but it
+#: is reserved rather than sold, so the page stays `kind: "never"` and therefore
+#: stays ungoverned. See `TestTheReservedFileUploadKeyGatesNothing` below.
 UNGOVERNED_PAGES: frozenset[str] = frozenset({"devices", "users", "settings", "file-upload-destination"})
 
 
@@ -213,10 +215,49 @@ class TestThePagesALicenceMayNeverHide:
         assert page_entitlement_kinds().get(page) == "always", page_entitlement_kinds()
 
     def test_file_upload_is_marked_never_rather_than_gated_on_a_key(self) -> None:
-        """D7 — it has no transport and no feature key (ADR 0016, issue #37),
-        so it is *unadvertised*, which is a different thing from *unlicensed*:
-        `never` keeps the page rendering normally when reached."""
+        """D7 — it has no transport (ADR 0016, issue #37), so it is
+        *unadvertised*, which is a different thing from *unlicensed*: `never`
+        keeps the page rendering normally when reached.
+
+        A `file_upload_destination` key exists since issue 013, which removed
+        D7's *other* stated reason ("no feature key") without touching this
+        conclusion — the key is reserved, not sold.
+        """
         assert page_entitlement_kinds().get("file-upload-destination") == "never"
+
+
+class TestTheReservedFileUploadKeyGatesNothing:
+    """`file_upload_destination` is a **reserved** sellable key (issue 013): it
+    exists so a licence signed today can carry it, and it gates nothing at all.
+
+    Reserved rather than sold because `licensing/features.py`'s ceiling
+    grandfathers a late-added key only onto licences signed with
+    `features: null` — a licence with an explicit list would silently lack it
+    forever — so the window in which adding a key is free closes at the first
+    customer licence, not at M8.
+
+    Both directions are asserted and the second carries the weight. A test that
+    only checked the key exists would stay green through exactly the edit issue
+    013 forbids (issue 010's lesson: assert the *wrong* thing is absent, not
+    only that the right thing is present). And nothing can prove this
+    reservation is the *right* key until M8 picks a transport (issue 012's
+    lesson), so the negative assertion is the only real guard available here.
+    """
+
+    def test_the_key_is_reserved_in_the_sellable_set(self) -> None:
+        assert "file_upload_destination" in SELLABLE_FEATURE_KEYS
+
+    def test_the_reserved_key_gates_no_page(self) -> None:
+        assert "file_upload_destination" not in mapped_feature_keys(), (
+            "features.ts gates a page on 'file_upload_destination'. Reserving the key did "
+            "not build the feature (D1, issue 013): there is no endpoint, no settings row "
+            "and no job behind the File Upload Destination page, and the page itself still "
+            "says nothing typed on it is saved, sent, or stored. Gating on the key means "
+            "*advertised while the key is enabled*, so this would put a menu entry in front "
+            "of a paying customer that leads to a form which discards what they type. Leave "
+            'PAGE_ENTITLEMENT["file-upload-destination"] at { kind: "never" } until M8 / '
+            "SPEC §3.8 gives the page a transport, and give it a key then."
+        )
 
 
 class TestThePageToApiTableIsNotStale:

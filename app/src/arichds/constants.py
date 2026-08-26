@@ -299,15 +299,20 @@ TOU_PEAK_START_UTC: Final[int] = 2
 TOU_PEAK_END_UTC: Final[int] = 15
 
 # ─── Feature entitlement (SPEC §3.9, M6b issue #22) ───────────────────────────
-# Enabled = `.env FEATURES ∩ license features`. Ten sellable keys (M7 slice 4,
-# issue #35, added `billing_image_export` — D1; issue #46 added
-# `database_destination`, SPEC §3.10) plus one ops-only key that `.env` alone
-# controls and the license never governs. `records` (not `instantaneous`) is
-# the key that gates the Records page — owner decision 2026-08-09, SPEC §3.9.
-# No licence has been issued yet (SPEC.md:1050-1053), so this key set is still
-# free to change — which is why `database_destination` was added the moment the
+# Enabled = `.env FEATURES ∩ license features`. Eleven sellable keys (M7 slice
+# 4, issue #35, added `billing_image_export` — D1; issue #46 added
+# `database_destination`, SPEC §3.10; issue 013 added `file_upload_destination`)
+# plus one ops-only key that `.env` alone controls and the license never
+# governs. `records` (not `instantaneous`) is the key that gates the Records
+# page — owner decision 2026-08-09, SPEC §3.9.
+# No licence has been issued yet (SPEC.md §3.9), so this key set is still free
+# to change — which is why `database_destination` was added the moment the
 # module was designed rather than when it shipped: adding it now is free and
-# adding it after the first licence is issued is not.
+# adding it after the first licence is issued is not. The mechanism is
+# `licensing/features.py`'s ceiling: a licence signed with `features: null`
+# grandfathers keys added later, one signed with an explicit list never does,
+# silently and with no warning anywhere.
+# Not every sellable key is for sale — see `RESERVED_FEATURE_KEYS` below.
 SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "billing",
@@ -320,9 +325,34 @@ SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
         "billing_excel_export",
         "billing_image_export",
         "database_destination",
+        "file_upload_destination",
     }
 )
 FEATURE_KEYS: Final[frozenset[str]] = SELLABLE_FEATURE_KEYS | frozenset({"app_log"})
+
+#: Sellable keys that are **reserved, not for sale** (issue 013). Signable, so
+#: a licence cut today already carries them — but nothing implements them yet.
+#: Do not quote one to a customer and do not put one on an invoice.
+#:
+#: `file_upload_destination`: there is no endpoint, no settings row and no job
+#: behind the File Upload Destination page, and the page still tells the
+#: operator that nothing typed on it is saved. It stays unadvertised in the nav
+#: (`web/src/features.ts` keeps it at `kind: "never"`) until M8 / SPEC §3.8
+#: gives it a transport. Empty this set when that lands; the key itself stays.
+#:
+#: Read by ``tools/arichds_vendor.py``, which **imports** it rather than
+#: restating it (issue 010's rule) and warns — never refuses — when
+#: ``sign --features`` names one. The seller is the only person who can put a
+#: key on an invoice, so the warning has to reach them where they type it
+#: rather than only here, in a file they never open.
+#:
+#: What this deliberately is *not* (D2): machinery to hide the key from the
+#: customer. A licence signed **without** ``--features`` grants every sellable
+#: key, so Settings → License lists a **File Upload Destination** tag for a
+#: page the nav does not show. Nothing filters that out. The control is the
+#: vendor naming keys explicitly, and this set is what makes that choice an
+#: informed one.
+RESERVED_FEATURE_KEYS: Final[frozenset[str]] = frozenset({"file_upload_destination"})
 
 # ─── Capture write hardening (ADR 0010, M6b issue #22; v1 constants.py:13-21) ─
 # Windows lacks O_NOFOLLOW (the symlink-open guard) — it degrades to 0 there.

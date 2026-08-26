@@ -289,7 +289,7 @@ class TestStatusExposesTheEffectiveFeatureSet:
         self, admin_client: TestClient, relicense
     ) -> None:
         """The other direction of `None` vs `[]` (D4), asserted by **name**:
-        a length check would pass on a payload that listed the wrong ten."""
+        a length check would pass on a payload that listed the wrong keys."""
         relicense(admin_client, features=[])
 
         enabled = set(admin_client.get("/api/license/status").json()["data"]["enabled_features"])
