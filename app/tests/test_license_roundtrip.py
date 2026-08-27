@@ -190,6 +190,33 @@ class TestLicenseService:
     def test_machine_id_is_exposed_for_the_activation_page(self, settings: Settings, this_machine: str) -> None:
         assert LicenseService(settings.license_path).machine_id == TEST_MACHINE_ID
 
+    def test_models_survives_into_the_valid_state(
+        self, settings: Settings, this_machine: str, vendor_keys: Path, vendor_cli
+    ) -> None:
+        """Issue 015 — ``LicenseState.models`` is carried through the valid
+        branch of ``_from_verification``, exactly as ``features`` is."""
+        service = LicenseService(settings.license_path)
+        code = issue_code(vendor_cli, vendor_keys, machine_id=TEST_MACHINE_ID, models=["prometer100"])
+
+        state = service.activate(code)
+
+        assert state.valid
+        assert state.models == ["prometer100"]
+
+    def test_an_invalid_state_carries_no_models(
+        self, settings: Settings, this_machine: str, vendor_keys: Path, vendor_cli
+    ) -> None:
+        """A rejected code's state carries none of the entitlement fields —
+        grandfathering, harmless because Limited Mode blocks ``/api/*``
+        wholesale before any device handler runs."""
+        service = LicenseService(settings.license_path)
+        code = issue_code(vendor_cli, vendor_keys, machine_id=OTHER_MACHINE_ID, models=["prometer100"])
+
+        state = service.activate(code)
+
+        assert not state.valid
+        assert state.models is None
+
 
 # ─── End-to-end through the real app ──────────────────────────────────────────
 
@@ -473,3 +500,55 @@ class TestReplacingALiveLicense:
         # ...while the machine itself never moved.
         assert client.get("/api/license/status").json()["data"]["state"] == "active"
         assert client.get("/api/license/status").json()["data"]["customer"] == "Acme Co"
+
+
+class TestStatusExposesLicensedModels:
+    """``GET /api/license/status`` carries ``licensed_models`` (issue 015, D-C).
+
+    Raw, not resolved: unlike ``enabled_features`` (``.env FEATURES ∩
+    licence``), a model has no second source to intersect against, so the
+    licence's own list is exposed as-is — sorted, and ``null`` reaches the
+    client as ``null`` so the three states (``null`` / ``[]`` / a list) stay
+    distinguishable, which is the entire point of D2.
+
+    Uses ``issue_code``/``vendor_keys`` rather than the shared ``relicense``
+    fixture: this module's own ``client`` fixture trusts a vendor key local
+    to this file (``vendor_keys``), not ``conftest``'s process-wide one, so a
+    code signed through ``relicense`` (which always uses the latter) would
+    verify as ``INVALID_SIGNATURE`` here.
+    """
+
+    def _status(self, client: TestClient, vendor_cli, vendor_keys: Path, **kwargs) -> dict:
+        code = issue_code(vendor_cli, vendor_keys, machine_id=TEST_MACHINE_ID, **kwargs)
+        assert client.post("/api/license/activate", json={"code": code}).json()["success"] is True
+        return client.get("/api/license/status").json()["data"]
+
+    def test_a_licence_with_no_models_list_reports_null(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        body = self._status(client, vendor_cli, vendor_keys, models=None)
+        assert body["licensed_models"] is None
+
+    def test_a_licence_with_an_empty_models_list_reports_an_empty_list(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        body = self._status(client, vendor_cli, vendor_keys, models=[])
+        assert body["licensed_models"] == []
+
+    def test_a_models_list_is_sorted(self, client: TestClient, vendor_cli, vendor_keys: Path) -> None:
+        body = self._status(client, vendor_cli, vendor_keys, models=["saral305", "premier550", "prometer100"])
+        assert body["licensed_models"] == ["premier550", "prometer100", "saral305"]
+
+    def test_a_machine_that_is_not_active_reports_null(self, unlicensed_client: TestClient) -> None:
+        """A Limited Mode state carries ``models=None`` (``LicenseService._limited``);
+        this must not be confused with a licence that explicitly grants every
+        model — the field simply is not meaningful off an invalid state."""
+        assert unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS).status_code == 201
+        token = login_token(unlicensed_client, ADMIN_CREDENTIALS)
+
+        payload = unlicensed_client.get("/api/license/status", headers={"Authorization": f"Bearer {token}"}).json()[
+            "data"
+        ]
+
+        assert payload["state"] == "limited"
+        assert payload["licensed_models"] is None

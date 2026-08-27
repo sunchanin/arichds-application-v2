@@ -36,6 +36,16 @@ Commands
     never refused, because being signable early is the entire point of
     reserving it. **Do not put a reserved name on an invoice.**
 
+    ``--models``/``--brands`` (issue 015) lock which meter models the
+    machine may add. Both are validated against the app's own catalog,
+    imported the same way ``--features`` is: an unrecognised model or brand
+    name refuses the run before anything is signed. They may be combined;
+    the result is the union, deduplicated and sorted (unlike ``--features``,
+    deliberately — naming a brand and naming every one of its models must
+    produce byte-identical payloads). Omitting **both** grandfathers every
+    catalogued model; that is not the same as either resolving to an empty
+    set.
+
 ``sign-meter``
     Sign a Meter Activation Code for one meter on one machine (ADR 0019)::
 
@@ -120,6 +130,7 @@ def build_payload(
     expires_at: datetime | None = None,
     max_meters: int | None = None,
     features: list[str] | None = None,
+    models: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the v2 payload. Mirrors the app's ``build_payload`` field-for-field."""
     return {
@@ -132,6 +143,7 @@ def build_payload(
         "expires_at": _to_iso(expires_at),
         "max_meters": max_meters,
         "features": features,
+        "models": models,
     }
 
 
@@ -273,6 +285,96 @@ def _reserved_warning(names: list[str], reserved: frozenset[str]) -> list[str]:
     ]
 
 
+def model_catalog() -> dict[str, Any]:
+    """The app's own meter-model catalog, from its own object (issue 015, D8/H).
+
+    Imported rather than restated — the same reason :func:`sellable_feature_keys`
+    is: a literal model list or brand table in ``tools/`` goes stale the day a
+    tenth model is added. ``CATALOG`` (not ``supported_models()``): only the
+    catalog carries brands, which ``--brands`` needs to expand, and it is the
+    cheap import — ``acquisition/catalog.py`` imports nothing from
+    ``drivers/`` (its own module docstring), while the driver factory's
+    registry imports every driver and drags the Gurux stack into a tool that
+    only signs. The ``sys.path`` insert is lazy, matching
+    :func:`sellable_feature_keys` — importing app code at module scope would
+    make every use of this tool depend on the app package resolving.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "app" / "src"))
+    from arichds.acquisition.catalog import CATALOG
+
+    return CATALOG
+
+
+def _resolve_models(models_arg: str | None, brands_arg: str | None) -> tuple[list[str] | None, list[str]]:
+    """Resolve ``--models``/``--brands`` into a sorted, deduped model list.
+
+    Neither flag named → ``(None, [])``: omitting both grandfathers every
+    catalogued model (D2), which this function must not be able to confuse
+    with "the union happened to be empty" — that state is unreachable from
+    valid input, since a name that resolves to nothing is caught as
+    unrecognised below.
+
+    Gated on **presence**, not truthiness, by the caller (``cmd_sign``) —
+    ``--models ""``/``--brands ""`` must be hard errors, exactly the
+    ``--features ""`` trap issue 014 records for the sibling flag (D13).
+
+    Returns:
+        A ``(resolved, errors)`` pair. ``errors`` is empty iff *resolved* is
+        usable; when non-empty, the run must be refused before signing.
+    """
+    if models_arg is None and brands_arg is None:
+        return None, []
+
+    catalog = model_catalog()
+    valid_models = frozenset(catalog)
+    valid_brands = frozenset(spec.brand.value for spec in catalog.values())
+
+    named_models = [name.strip() for name in models_arg.split(",")] if models_arg is not None else []
+    named_brands = [name.strip() for name in brands_arg.split(",")] if brands_arg is not None else []
+
+    errors: list[str] = []
+    if any(not name for name in named_models):
+        errors.append(
+            "ERROR: empty model name in --models (an entry between two commas, or a"
+            " trailing comma). Nothing is guessed here; type the list again."
+        )
+    if any(not name for name in named_brands):
+        errors.append(
+            "ERROR: empty brand name in --brands (an entry between two commas, or a"
+            " trailing comma). Nothing is guessed here; type the list again."
+        )
+    unrecognised_models = sorted({name for name in named_models if name and name not in valid_models})
+    if unrecognised_models:
+        errors.append(f"ERROR: unrecognised model name(s): {', '.join(unrecognised_models)}")
+    unrecognised_brands = sorted({name for name in named_brands if name and name not in valid_brands})
+    if unrecognised_brands:
+        errors.append(f"ERROR: unrecognised brand name(s): {', '.join(unrecognised_brands)}")
+
+    if errors:
+        errors.append(f"       Valid model names: {', '.join(sorted(valid_models))}")
+        errors.append(f"       Valid brand names: {', '.join(sorted(valid_brands))}")
+        return None, errors
+
+    resolved = {name for name in named_models if name}
+    for brand in named_brands:
+        resolved.update(model for model, spec in catalog.items() if spec.brand.value == brand)
+    return sorted(resolved), []
+
+
+def models_summary_text(models: list[str] | None) -> str:
+    """The stderr summary phrase for a resolved model list (issue 015, D8).
+
+    Prints what was **signed**, never the flags as typed — a seller reading
+    the summary must see the outcome of ``--brands`` expanding, not the
+    brand name they happened to type.
+    """
+    if models is None:
+        return "every catalogued model"
+    if not models:
+        return "none"
+    return ", ".join(models)
+
+
 def _feature_errors(names: list[str], valid: frozenset[str], reserved: frozenset[str]) -> list[str]:
     """Every problem with *names*, as stderr lines — or empty when all are sellable."""
     unrecognised = [name for name in names if name and name not in valid and name != OPS_ONLY_FEATURE_KEY]
@@ -344,6 +446,20 @@ def cmd_sign(args: argparse.Namespace) -> int:
         for line in _reserved_warning(features, reserved):
             print(line, file=sys.stderr)
 
+    # Gated on presence (`is not None`), not truthiness — `--models ""` and
+    # `--brands ""` must be hard errors, exactly the `--features ""` trap
+    # issue 014 records for the sibling flag (D13). Do NOT change the
+    # `--features` branch above to match: 014 is a separate open issue and
+    # its own test asserts the current (different) behaviour stays put.
+    models: list[str] | None = None
+    if args.models is not None or args.brands is not None:
+        resolved, errors = _resolve_models(args.models, args.brands)
+        if errors:
+            for line in errors:
+                print(line, file=sys.stderr)
+            return 1
+        models = resolved
+
     payload = build_payload(
         customer=args.customer,
         machine_id=machine_id,
@@ -351,6 +467,7 @@ def cmd_sign(args: argparse.Namespace) -> int:
         expires_at=expires_at,
         max_meters=args.max_meters,
         features=features,
+        models=models,
     )
     code = sign_payload(private_path.read_bytes(), payload)
 
@@ -359,6 +476,7 @@ def cmd_sign(args: argparse.Namespace) -> int:
     print(f"Mode       : {payload['mode']}", file=sys.stderr)
     print(f"Expires    : {payload['expires_at'] or 'never'}", file=sys.stderr)
     print(f"Max meters : {payload['max_meters'] if payload['max_meters'] is not None else 'unlimited'}", file=sys.stderr)
+    print(f"Models     : {models_summary_text(payload['models'])}", file=sys.stderr)
     print("\nACTIVATION CODE (send this single line to the customer):\n", file=sys.stderr)
     print(code)
 
@@ -469,6 +587,22 @@ Examples:
         "(an unrecognised name is refused, not signed). Some sellable names are reserved "
         "and not for sale yet: naming one warns but still signs. Omit for every sellable "
         "feature.",
+    )
+    sign.add_argument(
+        "--models",
+        default=None,
+        help="Comma-separated licensed meter model keys, validated against the app's own "
+        "catalog (an unrecognised name is refused, not signed). May be combined with "
+        "--brands; the result is the union, deduplicated and sorted. Omitting both "
+        "--models and --brands grandfathers every catalogued model.",
+    )
+    sign.add_argument(
+        "--brands",
+        default=None,
+        help="Comma-separated meter brand names, expanded to every catalogued model of "
+        "that brand, validated against the app's own catalog. May be combined with "
+        "--models. Omitting both --models and --brands grandfathers every catalogued "
+        "model.",
     )
     sign.add_argument("--private-key", default=str(DEFAULT_PRIVATE_KEY_PATH), help="Signing private key path.")
     sign.add_argument("--out", default=None, help="Also write the code to this file.")

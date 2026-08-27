@@ -776,6 +776,146 @@ class TestQuota:
         assert add_device(admin_client, fake_meter, name="Second", serial="SN-2").status_code == 201
 
 
+class TestLicensedModelGate:
+    """Issue 015 — a licence names which meter models a machine may add.
+
+    D2: ``models: null`` (the default every ``relicense(...)`` call not
+    passing ``models=`` produces) grants every catalogued model — already
+    exercised by every other test in this file, which adds ``prometer100``
+    with no special licence. D3: Create **and** Update both refuse. D4: the
+    refusal precedes the probe, and answers 422 — the same convention
+    ``_require_known_model`` already uses for "is this model string
+    acceptable here?"; 409 is spoken for by a state conflict, and 403 by the
+    role guard and Limited Mode.
+    """
+
+    def test_an_empty_models_list_refuses_every_create(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        relicense(admin_client, models=[])
+        response = add_device(admin_client, fake_meter)
+        assert response.status_code == 422
+
+    def test_a_models_list_naming_other_models_refuses_this_one(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        relicense(admin_client, models=["saral305", "premier550"])
+        response = add_device(admin_client, fake_meter)  # DEVICE's model is prometer100
+        assert response.status_code == 422
+
+    def test_a_models_list_naming_this_model_is_accepted(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        relicense(admin_client, models=["prometer100", "saral305"])
+        response = add_device(admin_client, fake_meter)
+        assert response.status_code == 201
+
+    def test_a_mixed_case_model_is_accepted_against_a_lowercase_licence(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        """Code review, fix round 1 — the gate's own docstring promises
+        ``payload.model.lower()`` is what Create and Update store and compare
+        against, and nothing pinned it. Create stores lowercased regardless
+        (``devices.py:1000``), so a mixed-case submission must not be refused
+        as unlicensed just because the operator typed ``Prometer100``."""
+        relicense(admin_client, models=["prometer100"])
+        response = add_device(admin_client, fake_meter, model="Prometer100")
+        assert response.status_code == 201
+
+    def test_null_models_grants_every_catalogued_model(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        """A licence restricted, then replaced by one carrying ``models: null``
+        (the default of a bare ``relicense(...)`` call), grants access again."""
+        relicense(admin_client, models=[])
+        relicense(admin_client)  # models=None — every catalogued model
+
+        response = add_device(admin_client, fake_meter)
+        assert response.status_code == 201
+
+    def test_the_refusal_precedes_the_probe(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        """The probe would fail with a distinct, recognisable error if reached
+        — proving the licence refusal happens before any socket is opened."""
+        fake_meter.connect_error = ConnectionRefusedError("must not be reached")
+        relicense(admin_client, models=["saral305"])
+
+        response = add_device(admin_client, fake_meter)
+
+        assert response.status_code == 422
+        assert fake_meter.connects == 0
+
+    def test_the_message_names_the_model_and_the_licensed_models(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        # Three entries, deliberately not in sorted OR reverse-sorted order,
+        # so a `reversed()` regression (code review, fix round 1) cannot pass
+        # by coincidence the way a two-entry reverse-sorted list did.
+        relicense(admin_client, models=["saral305", "st3c", "premier550"])
+        detail = add_device(admin_client, fake_meter).json()["detail"]  # model prometer100
+        assert "prometer100" in detail
+        assert "saral305" in detail
+        assert "premier550" in detail
+        assert "st3c" in detail
+        # The allowed list is sorted, not the order the licence named them in.
+        assert "premier550, saral305, st3c" in detail
+
+    def test_the_message_says_the_licence_permits_none_when_the_list_is_empty(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        relicense(admin_client, models=[])
+        detail = add_device(admin_client, fake_meter).json()["detail"]
+        assert "prometer100" in detail
+        assert "none" in detail.lower()
+
+    def test_update_refuses_an_unlicensed_model(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter, serial="SN-1").json()["data"]["id"]
+        relicense(admin_client, models=["saral305"])
+
+        response = admin_client.put(f"/api/devices/{device_id}", json=with_transport_overrides(DEVICE, {}))
+
+        assert response.status_code == 422
+
+    def test_update_refusal_also_precedes_the_probe(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter, serial="SN-1").json()["data"]["id"]
+        relicense(admin_client, models=["saral305"])
+        connects_before = fake_meter.connects
+        fake_meter.connect_error = ConnectionRefusedError("must not be reached")
+
+        response = admin_client.put(f"/api/devices/{device_id}", json=with_transport_overrides(DEVICE, {}))
+
+        assert response.status_code == 422
+        assert fake_meter.connects == connects_before
+
+    def test_update_still_accepts_a_licensed_model(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter, serial="SN-1").json()["data"]["id"]
+        relicense(admin_client, models=["prometer100"])
+
+        response = admin_client.put(
+            f"/api/devices/{device_id}", json=with_transport_overrides(DEVICE, {"name": "Renamed"})
+        )
+
+        assert response.status_code == 200
+
+    def test_an_existing_device_of_a_now_unlicensed_model_is_unaffected(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        """D6 — the lock governs Create and Update, never reading. A device
+        added while licensed keeps listing after the licence narrows."""
+        device_id = add_device(admin_client, fake_meter, serial="SN-1").json()["data"]["id"]
+        relicense(admin_client, models=["saral305"])
+
+        listed = admin_client.get("/api/devices").json()["data"]
+        assert any(device["id"] == device_id for device in listed)
+
+
 class TestMeterActivationCode:
     """ADR 0019, issue #42 — the per-meter licensing gate.
 

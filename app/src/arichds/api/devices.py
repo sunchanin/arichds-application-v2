@@ -658,6 +658,48 @@ def _require_known_model(model: str) -> None:
         )
 
 
+def _require_licensed_model(model: str, licensed: list[str] | None) -> None:
+    """Refuse a model this machine's licence does not name (issue 015).
+
+    ``licensed is None`` grants every catalogued model — the same ceiling
+    shape ``licensing/features.py``'s ``effective_features`` already uses for
+    features (D2): every licence issued before this landed carries no
+    ``models`` key at all and must keep working exactly as it does today.
+    An **empty list** is meaningfully different: it means the licence
+    permits no model at all.
+
+    A form error, not a meter failure or a state conflict, so it answers 422
+    — the same convention :func:`_require_known_model` already answers to
+    the same question about the same field ("is this model string
+    acceptable here?") — and never opens a socket. 409 is spoken for by a
+    conflict with state that exists (a full quota, a taken name); nothing
+    the operator deletes makes an unlicensed model licensed. 403 is spoken
+    for by the role guard and Limited Mode.
+
+    Compared lowercased: ``payload.model.lower()`` is what Create and Update
+    both store. *licensed* itself is trusted to already be lowercase model
+    keys — the only real issuer, ``tools/arichds_vendor.py``, validates every
+    named model against the app's own catalog, whose keys are all lowercase,
+    so a mixed-case entry cannot reach a licence through that path (fix
+    round 1, code review).
+
+    Raises:
+        HTTPException: 422 naming the model that was rejected and every
+            model the licence allows (or that it allows none, when the list
+            is empty) — a bare "not licensed" would make the operator phone
+            the vendor to learn what they bought.
+    """
+    if licensed is None:
+        return
+    if model.lower() in licensed:
+        return
+    allowed_text = ", ".join(sorted(licensed)) if licensed else "none"
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=(f"This machine's licence does not permit meter model {model!r}. Licensed models: {allowed_text}."),
+    )
+
+
 def _probe_failure(response: Response, exc: ProbeError) -> ApiResponse[DeviceOut]:
     """Turn a :class:`ProbeError` into a 502 failure envelope (D7)."""
     response.status_code = status.HTTP_502_BAD_GATEWAY
@@ -929,16 +971,25 @@ def create_device(
     Manual path.
 
     Raises:
-        HTTPException: 403 for a non-admin · 422 for an unknown model · 409 for
-            a full quota, a taken name, a serial another device holds, or a
-            Meter Activation Code that does not verify (ADR 0019).
+        HTTPException: 403 for a non-admin · 422 for an unknown or unlicensed
+            model (issue 015) · 409 for a full quota, a taken name, a serial
+            another device holds, or a Meter Activation Code that does not
+            verify (ADR 0019).
 
     Returns:
         The created device, or a 502 failure envelope naming why the meter
         refused — in which case **nothing was written**.
     """
     _require_known_model(payload.model)
-    _enforce_quota(session, license_service.current_state().max_meters)
+    # One read, reused by both gates below (code review, fix round 1) — two
+    # separate `current_state()` calls are two separate `RLock` acquisitions
+    # that can straddle a staleness-TTL re-evaluation, so the model gate and
+    # the quota gate could in principle judge against two different licences.
+    # A local, never a default argument or a cache (ADR 0001): the read
+    # itself still happens exactly once per request.
+    license_state = license_service.current_state()
+    _require_licensed_model(payload.model, license_state.models)
+    _enforce_quota(session, license_state.max_meters)
     _reject_duplicate_name(session, payload.name)
 
     transport = payload.transport.model_dump()
@@ -1049,6 +1100,7 @@ def update_device(
     response: Response,
     session: SessionDep,
     poller: PollerDep,
+    license_service: LicenseServiceDep,
     admin: AdminDep,
 ) -> ApiResponse[DeviceOut]:
     """Re-probe a meter, then save every edited field.
@@ -1059,13 +1111,21 @@ def update_device(
     meters' history into one row. A row whose serial is still NULL — created
     before M3 — is identified here, which is that row's only way out.
 
+    **The licence gate applies here too** (issue 015, D3) — a gate on Create
+    alone would be bypassable by adding a licensed model, then editing the row
+    onto an unlicensed one. Read per request through ``LicenseServiceDep``
+    (ADR 0001), never cached, exactly as :func:`create_device` reads it for
+    ``max_meters``. Deliberately **not** relying on
+    :func:`_reject_changed_serial` for this: that guard is a side effect of
+    ADR 0005, depends on a successful probe, and says nothing about licensing.
+
     Nothing is assigned until the probe has succeeded and both serial checks
     have passed, so a refusal leaves every column exactly as it was.
 
     Raises:
-        HTTPException: 403 for a non-admin · 404 for an unknown device · 422 for
-            an unknown model · 409 for a taken name, a changed serial, or a
-            serial another device holds.
+        HTTPException: 403 for a non-admin · 404 for an unknown device · 422
+            for an unknown or unlicensed model (issue 015) · 409 for a taken
+            name, a changed serial, or a serial another device holds.
 
     Returns:
         The updated device, or a 502 failure envelope naming why the meter
@@ -1076,6 +1136,7 @@ def update_device(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No device with id {device_id}")
 
     _require_known_model(payload.model)
+    _require_licensed_model(payload.model, license_service.current_state().models)
     _reject_duplicate_name(session, payload.name, exclude_id=device_id)
 
     # The effective secrets: blank means keep (D10). The re-probe has to use the

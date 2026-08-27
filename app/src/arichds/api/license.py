@@ -51,6 +51,15 @@ class LicenseStatus(BaseModel):
             (issue 012, D1/D3). ``[]`` whenever the machine is not active,
             because a Limited Mode state carries ``features=None`` and that
             grandfathers everything (issue 012, D2).
+        licensed_models: The licensed meter model keys (issue 015), **raw**
+            rather than resolved — unlike ``enabled_features``, a model has
+            no second source (no ``.env`` equivalent) to intersect against,
+            so there is nothing to resolve and pretending otherwise would
+            invent a concept. Sorted when it is a list. ``None`` means every
+            catalogued model may be added (including on a Limited Mode
+            state, whose ``models`` is always ``None`` — meaningless there,
+            since Limited Mode blocks ``/api/*`` wholesale before any device
+            handler runs); ``[]`` means none may be added.
     """
 
     machine_id: str
@@ -61,6 +70,7 @@ class LicenseStatus(BaseModel):
     expires_at: datetime | None = None
     max_meters: int | None = None
     enabled_features: list[str] = Field(default_factory=list)
+    licensed_models: list[str] | None = None
 
 
 class ActivateRequest(BaseModel):
@@ -95,6 +105,19 @@ def _enabled_features(state: LicenseState) -> list[str]:
     return sorted(effective_features(get_settings().enabled_feature_keys(), state.features))
 
 
+def _licensed_models(state: LicenseState) -> list[str] | None:
+    """The raw licensed model list for *state*, sorted — or ``None`` (decision C).
+
+    Not gated on ``state.valid``: an invalid state's ``models`` is already
+    ``None`` (``_from_verification``'s invalid branch carries none of the
+    entitlement fields), so this needs no separate validity check the way
+    :func:`_enabled_features` does — there is no "grandfather everything"
+    risk to guard against, because ``None`` is already the correct answer
+    for an inactive machine.
+    """
+    return sorted(state.models) if state.models is not None else None
+
+
 def _to_status(machine_id: str, state: LicenseState) -> LicenseStatus:
     """Project a :class:`LicenseState` onto the API shape."""
     return LicenseStatus(
@@ -106,6 +129,7 @@ def _to_status(machine_id: str, state: LicenseState) -> LicenseStatus:
         expires_at=state.expires_at,
         max_meters=state.max_meters,
         enabled_features=_enabled_features(state),
+        licensed_models=_licensed_models(state),
     )
 
 

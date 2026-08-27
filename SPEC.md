@@ -80,8 +80,8 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
   (enforcement ออกแบบให้ re-evaluate ใน process — ต่างจาก v1 ที่ต้อง restart) —
   หน้านี้เป็น **gate** สำหรับ first-run กับ Limited Mode เท่านั้น (App.tsx เลิก render ทันทีที่ active)
   และเป็นที่อยู่ของ online activation ใน M9 — ส่วนการ**ต่อ/เปลี่ยน license ที่ยังใช้งานได้อยู่**
-  ทำที่ **Settings → License** (การ์ดเดียวกันโชว์ customer/mode/expiry/max_meters + Machine ID,
-  admin เท่านั้นที่กรอกโค้ดได้)
+  ทำที่ **Settings → License** (การ์ดเดียวกันโชว์ customer/mode/expiry/max_meters/licensed models/
+  enabled features + Machine ID, admin เท่านั้นที่กรอกโค้ดได้)
 - Machine fingerprint คำนวณใน Python — **พอร์ตสูตรเดิมจาก Go** (`modbus-logger/internal/license/fingerprint.go`:
   collect → combine → SHA-256; ฝั่ง Windows องค์ประกอบเดียวคือ registry `MachineGuid`)
   เปลี่ยนเฉพาะ salt/ชื่อเป็น ARICHDS แล้ว**แช่แข็งตั้งแต่วันแรก** (เปลี่ยนสูตรทีหลัง = license ทุกใบพัง)
@@ -1098,6 +1098,27 @@ one header.
   การซ่อนเมนูเป็นเรื่องความสวยงามล้วน ๆ · Settings/Devices/User Management ไม่เคยถูกซ่อน
 - ชื่อเชิง cryptographic ทั้งหมดเปลี่ยนเป็น ARICHDS (fingerprint salt, signing version, keypair ใหม่)
   — ทำได้เพราะไม่มี license v1 ในสนาม · **v2 คือผู้นิยาม contract แล้ว portal v2 ทำตาม**
+- **Licensed Model — ล็อกรุ่นมิเตอร์ที่เครื่องนี้เพิ่มได้ (issue 015)**: payload เพิ่มคีย์
+  `models: list[str] | None` — เก็บ **model key ของแต่ละรุ่น** (`prometer100`, `st3cl`, …)
+  ไม่ใช่ brand เพราะ `devices.brand` เป็น free text ที่ operator พิมพ์เอง (`devices.py`) แก้ไขได้
+  โดยไม่ผ่านการตรวจใด ๆ — ล็อกที่ brand จึงหลบง่ายด้วยการพิมพ์ผิด ส่วน `model` ผ่าน
+  `_require_known_model` ตรวจกับ driver registry อยู่แล้วทุกครั้ง · `models: null` (ค่าเริ่มต้นของ
+  license ทุกใบที่ออกก่อนหน้านี้ ซึ่งไม่มีคีย์นี้เลย) = อนุญาตทุกรุ่นในแคตตาล็อก · `models: []` =
+  ไม่อนุญาตรุ่นใดเลย ความหมายต่างจาก `null` โดยเจตนา · `--models ""`/`--brands ""` ที่ CLI ต้องถูก
+  ปฏิเสธเสมอ ไม่ตีความเป็น "ทุกรุ่น" — ซ้ำรอยกับดัก `--features ""` ที่ issue 014 บันทึกไว้กับคีย์พี่น้อง
+  (issue 014 ยังไม่ถูกแก้ในตอนนี้ และ issue นี้ไม่ต้องพึ่งการแก้นั้น) · **บังคับที่ Create และ Update
+  เท่านั้น ไม่บังคับตอน poll (D6)**: เครื่องที่ poll มิเตอร์รุ่นที่ license ไม่อนุญาตอยู่แล้วก่อนหน้านี้
+  ยังอ่านต่อได้ตามปกติ ตัด Create/Update ครั้งถัดไปเท่านั้น เหตุผลเดียวกับที่ ADR 0019 ให้
+  grandfathering กับมิเตอร์ที่มาก่อน Meter Activation Code —
+  ทางเลือกอื่นคือหยุดเก็บข้อมูลลูกค้าเงียบ ๆ ซึ่งไม่ใช่กลไกของ licensing · **ขายเป็น brand ได้ผ่าน CLI
+  เท่านั้น** — `arichds_vendor.py sign --brands cewe` คือ convenience ที่ขยายเป็นรายชื่อ model key ของ
+  แบรนด์นั้น**ก่อน sign** ผลลัพธ์คือ payload เดียวกันกับพิมพ์ `--models` ครบทุกรุ่นของแบรนด์นั้นเอง
+  ทีละตัว — ไม่มีคีย์ `brands` ในตัว payload · **ผลข้างเคียงเดียวกับ D5 ของ `max_meters`**: เพราะ
+  `models` ไม่อยู่ใน `_REQUIRED_FIELDS` และ `PAYLOAD_VERSION` ไม่ขยับ license ทุกใบก่อนหน้ายัง verify
+  ผ่านเหมือนเดิม แต่ก็แปลว่า **คีย์เกินในตัว payload verify ผ่านเฉยบน build เก่า** (build เก่าเช็คแค่ว่า
+  required fields ครบ ไม่เช็คว่ามีคีย์เกินหรือไม่) — build เก่ารับ license ได้ปกติแต่เพิกเฉยต่อการล็อกรุ่น
+  แบบเงียบ ๆ **Licensed Model จึงเป็น contractual control เหมือน `max_meters` ไม่ใช่ security
+  boundary** — exe รุ่นเก่าทำให้ทั้งสองอย่างนี้ไร้ผลเหมือนกัน
 
 ### 3.10 Data-out: Database Destination (โมดูลใหม่ — grill แล้ว 2026-08-24)
 

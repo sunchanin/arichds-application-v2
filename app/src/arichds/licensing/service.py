@@ -59,6 +59,12 @@ class LicenseState:
         expires_at: Lease end (UTC), or ``None``.
         max_meters: Device quota, or ``None`` for unlimited.
         features: Licensed feature names, or ``None``.
+        models: Licensed meter model keys (issue 015), or ``None`` for every
+            catalogued model. Carried through the **valid** branch only —
+            an invalid state leaves it ``None``, which grandfathers; that is
+            harmless because ``LimitedModeMiddleware`` blocks ``/api/*``
+            wholesale before any device handler runs, so nothing ever reads
+            this field off an invalid state.
         evaluated_at: Monotonic timestamp of the evaluation that produced this.
     """
 
@@ -69,6 +75,7 @@ class LicenseState:
     expires_at: datetime | None = None
     max_meters: int | None = None
     features: list[str] | None = None
+    models: list[str] | None = None
     evaluated_at: float = field(default_factory=time.monotonic)
 
     @property
@@ -100,6 +107,7 @@ def _from_verification(result: ActivationVerification) -> LicenseState:
         expires_at=result.expires_at,
         max_meters=result.max_meters,
         features=result.features,
+        models=result.models,
     )
 
 

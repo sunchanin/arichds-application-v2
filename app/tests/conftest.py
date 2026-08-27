@@ -254,9 +254,15 @@ def sign_activation_code(vendor_cli) -> Callable[..., str]:
     the next request must see it.
     """
 
-    def issue(*, max_meters: int | None = None, features: list[str] | None = None) -> str:
+    def issue(
+        *, max_meters: int | None = None, features: list[str] | None = None, models: list[str] | None = None
+    ) -> str:
         payload = vendor_cli.build_payload(
-            customer="Acme Co", machine_id=TEST_MACHINE_ID, max_meters=max_meters, features=features
+            customer="Acme Co",
+            machine_id=TEST_MACHINE_ID,
+            max_meters=max_meters,
+            features=features,
+            models=models,
         )
         return vendor_cli.sign_payload(VENDOR_PRIVATE_KEY_PEM, payload)
 
@@ -274,10 +280,16 @@ def relicense(sign_activation_code: Callable[..., str]) -> Callable[..., None]:
     """Activate a fresh license on a running app, e.g. to change ``max_meters``
     or ``features`` (M6b, issue #22)."""
 
-    def apply(client: TestClient, *, max_meters: int | None = None, features: list[str] | None = None) -> None:
+    def apply(
+        client: TestClient,
+        *,
+        max_meters: int | None = None,
+        features: list[str] | None = None,
+        models: list[str] | None = None,
+    ) -> None:
         response = client.post(
             "/api/license/activate",
-            json={"code": sign_activation_code(max_meters=max_meters, features=features)},
+            json={"code": sign_activation_code(max_meters=max_meters, features=features, models=models)},
         )
         assert response.status_code == 200, response.text
         assert response.json()["success"] is True, response.text

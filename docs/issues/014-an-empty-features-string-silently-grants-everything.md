@@ -84,3 +84,16 @@ This issue is only about the empty **string**.
 ## Blocked by
 
 Nothing.
+
+## Added 2026-08-27 — a sibling flag already decided this
+
+Issue 015 shipped `--models` / `--brands` on the same `sign` command, and had to answer the same
+question. It picked **hard error**: both flags are gated on the flag being *present*
+(`is not None`), not on the string being truthy, so `--models ""` and `--brands ""` refuse the run
+before anything is signed. 015's Out-of-scope forbade touching the `--features` branch, so the two
+flags on one command now disagree — deliberately, and only until this issue lands.
+
+That is not a ruling on this issue: `--features ""` may still resolve differently if there is a
+reason. But if it does, the `sign` command will hold two spellings of an empty list that mean
+opposite things, and that needs saying out loud rather than discovering. `_resolve_models` in
+`tools/arichds_vendor.py` is the worked example either way.

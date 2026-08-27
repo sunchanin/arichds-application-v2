@@ -42,6 +42,17 @@ subscription — sites survive offline up to the lease length.
 A vendor-issued key for one additional device slot beyond `max_meters`, serial-bound at redeem
 time. Slots are not returned when a device is deleted.
 
+**Licensed Model**:
+A catalogued meter model key (`prometer100`, `st3cl`, …) a machine's licence permits *adding*
+(issue 015) — not a synonym for `model`, which is the meter's own identity; this names the
+entitlement over it. `null` means every catalogued model (every licence issued before this
+landed carries no `models` key at all); `[]` means none. The lock governs Create and Update
+only — a device added before the licence narrows keeps being read, exactly as `max_meters` and
+the Meter Activation Code (ADR 0019) both grandfather what predates them.
+_Avoid_: model (that's the meter's identity, not the entitlement over it), licensed brand
+(the payload carries model keys; brand-level selling is a vendor-CLI convenience that expands
+to model keys before signing, never a payload field)
+
 **Setup**:
 The one-time first-run step that creates the bootstrap admin account — open only while zero
 users exist, then permanently closed. Precedes Login, which precedes Activation. Re-running

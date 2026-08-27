@@ -40,6 +40,18 @@ export interface LicenseStatus {
    * edit. Read it through `features.ts`, never by comparing strings inline.
    */
   enabled_features: string[];
+  /**
+   * The licensed meter model keys (issue 015) — **raw**, never resolved: a
+   * model has no `.env` equivalent to intersect against, unlike
+   * `enabled_features`, so there is nothing to resolve. Three states, all
+   * meaningful: `null` means every catalogued model may be added (including
+   * on a non-active machine, whose value is always `null` but meaningless —
+   * Limited Mode blocks every device handler first); `[]` means none may be
+   * added; a list names exactly which. Rendered as raw model keys — no
+   * label map in TypeScript (issue 015, decision D), matching what the
+   * vendor CLI's `--models` and the Create/Update 422 both name.
+   */
+  licensed_models: string[] | null;
 }
 
 /**

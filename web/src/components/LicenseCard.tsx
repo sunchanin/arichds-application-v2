@@ -88,6 +88,16 @@ export function LicenseCard({
   const modeText = status.mode ? (MODE_TEXT[status.mode] ?? status.mode) : "—";
   const expiryText = status.expires_at ? dayjs(status.expires_at).format("YYYY-MM-DD HH:mm") : "No expiry";
   const maxMetersText = status.max_meters === null ? "Unlimited" : String(status.max_meters);
+  // Three states, all meaningful (issue 015, D2): `null` grants every
+  // catalogued model, `[]` grants none, a list names exactly which. Raw
+  // model keys, joined for the confirm text — no label map in TypeScript
+  // (decision D), matching the vendor CLI and the Create/Update 422.
+  const licensedModelsText =
+    status.licensed_models === null
+      ? "All models"
+      : status.licensed_models.length
+        ? status.licensed_models.join(", ")
+        : "None";
 
   // Issue 012 landed the feature list here, as this comment reserved. It is the
   // **effective** set the server resolved (`.env FEATURES ∩ licence`), not the
@@ -100,6 +110,24 @@ export function LicenseCard({
     { key: "mode", label: "Mode", children: modeText },
     { key: "expiry", label: "Expiry", children: expiryText },
     { key: "max_meters", label: "Max meters", children: maxMetersText },
+    {
+      key: "licensed_models",
+      label: "Licensed models",
+      children:
+        status.licensed_models === null ? (
+          "All models"
+        ) : status.licensed_models.length ? (
+          <Space size={[4, 4]} wrap>
+            {status.licensed_models.map((model) => (
+              <Tag key={model} style={{ marginInlineEnd: 0 }}>
+                {model}
+              </Tag>
+            ))}
+          </Space>
+        ) : (
+          "None"
+        ),
+    },
     {
       key: "enabled_features",
       label: "Enabled features",
@@ -162,7 +190,7 @@ export function LicenseCard({
     }
     modal.confirm({
       title: "Replace this machine's license?",
-      content: `Licensed to: ${customerText} · Mode: ${modeText} · Expiry: ${expiryText} · Max meters: ${maxMetersText}. The pasted code replaces that license immediately, even if it licenses less. Nothing can check what a code grants until it is installed, so make sure it is the right one.`,
+      content: `Licensed to: ${customerText} · Mode: ${modeText} · Expiry: ${expiryText} · Max meters: ${maxMetersText} · Licensed models: ${licensedModelsText}. The pasted code replaces that license immediately, even if it licenses less. Nothing can check what a code grants until it is installed, so make sure it is the right one.`,
       okText: "Replace license",
       onOk: submit,
     });
