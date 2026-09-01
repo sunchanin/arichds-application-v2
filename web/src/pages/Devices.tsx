@@ -125,6 +125,13 @@ const NOTHING = "—";
  * The five parity names the backend's ``-S`` argv parser resolves (issue #9).
  * Sent case-insensitively; the API normalizes to this exact casing.
  */
+/**
+ * What the Brand and Model pickers say when the licence names an empty model
+ * list (issue 015) — distinct from AntD's default "No data", which would read
+ * as a failed catalog load rather than a licence that permits nothing.
+ */
+const NO_LICENSED_MODELS = "This machine's licence permits no meter models. Ask the vendor for a new Activation Code.";
+
 const PARITY_OPTIONS = [
   { value: "None", label: "None" },
   { value: "Odd", label: "Odd" },
@@ -325,7 +332,18 @@ function toInput(values: DeviceFormValues, mode: "create" | "edit"): DeviceInput
  * is never shown a control it may not use — discovering a permission by
  * collecting a 403 is not a design (SPEC §3.2).
  */
-export function Devices({ role }: { role: "admin" | "user" }) {
+export function Devices({
+  role,
+  licensedModels,
+}: {
+  role: "admin" | "user";
+  /**
+   * The model keys this machine's licence permits **adding** (issue 015), or
+   * `null` for no restriction — which is what every licence issued before the
+   * model lock carries. `[]` means none may be added.
+   */
+  licensedModels: string[] | null;
+}) {
   const { message, modal } = App.useApp();
   const isAdmin = role === "admin";
 
@@ -448,22 +466,55 @@ export function Devices({ role }: { role: "admin" | "user" }) {
 
   // ─── Catalog ────────────────────────────────────────────────────────────────
 
+  /**
+   * The catalog narrowed to what the licence permits adding (issue 015).
+   *
+   * **Only the Brand and Model pickers read this** — `applyModelDefaults` and
+   * `modelFilterOptions` keep reading the full `catalog`, because a device that
+   * predates a narrowed licence is still polled and still listed (issue 015 D6),
+   * and it must keep its label and its password default. Narrowing those too
+   * would blank a grandfathered row's own name in its own tree.
+   *
+   * `null` means no restriction — every licence issued before the model lock
+   * carries no `models` key at all — so the pickers behave exactly as before.
+   *
+   * This is a **convenience, never the gate**: `POST`/`PUT /api/devices` refuse
+   * an unlicensed model with 422 whatever the dropdown offered.
+   */
+  const licensedCatalog = useMemo(() => {
+    if (licensedModels === null) return catalog;
+    const allowed = new Set(licensedModels);
+    return catalog.filter((entry) => allowed.has(entry.model));
+  }, [catalog, licensedModels]);
+
+  /** A licence that names an empty model list forbids adding anything at all. */
+  const noLicensedModels = licensedModels !== null && licensedModels.length === 0;
+
   const brandOptions = useMemo(() => {
-    const brands = new Set(catalog.map((entry) => entry.brand));
-    // A row created before this build's catalog (SPEC §3.3) keeps its own brand
-    // selectable, or opening it would silently blank the field.
+    const brands = new Set(licensedCatalog.map((entry) => entry.brand));
+    // A row created before this build's catalog (SPEC §3.3) — or before the
+    // licence narrowed — keeps its own brand selectable, or opening it would
+    // silently blank the field.
     if (watchedBrand) brands.add(watchedBrand);
     return [...brands].sort().map((brand) => ({ value: brand, label: brand }));
-  }, [catalog, watchedBrand]);
+  }, [licensedCatalog, watchedBrand]);
 
   const modelOptions = useMemo(() => {
-    const forBrand = catalog.filter((entry) => entry.brand === watchedBrand);
+    const forBrand = licensedCatalog.filter((entry) => entry.brand === watchedBrand);
     const options = forBrand.map((entry) => ({ value: entry.model, label: entry.ui_label }));
     if (watchedModel && !forBrand.some((entry) => entry.model === watchedModel)) {
-      options.push({ value: watchedModel, label: `${watchedModel} (no driver in this build)` });
+      // Two different reasons a stored model is missing from the list, and the
+      // operator needs to be told which: the build has no driver for it, or it
+      // has one and the licence does not cover it. Either way the value stays
+      // selectable so editing an existing row cannot blank its own model.
+      const known = catalog.some((entry) => entry.model === watchedModel);
+      options.push({
+        value: watchedModel,
+        label: known ? `${watchedModel} (not licensed on this machine)` : `${watchedModel} (no driver in this build)`,
+      });
     }
     return options;
-  }, [catalog, watchedBrand, watchedModel]);
+  }, [catalog, licensedCatalog, watchedBrand, watchedModel]);
 
   /**
    * Apply what the catalog knows about a model: on create, its password.
@@ -485,7 +536,7 @@ export function Devices({ role }: { role: "admin" | "user" }) {
 
   /** Choosing a brand narrows the models — and picks the only one when there is only one. */
   const onBrandChange = (brand: string) => {
-    const forBrand = catalog.filter((entry) => entry.brand === brand);
+    const forBrand = licensedCatalog.filter((entry) => entry.brand === brand);
     if (forBrand.length === 1) {
       form.setFieldsValue({ model: forBrand[0].model });
       applyModelDefaults(forBrand[0].model, mode);
@@ -985,7 +1036,12 @@ export function Devices({ role }: { role: "admin" | "user" }) {
                   <Row gutter={12}>
                     <Col xs={24} md={8}>
                       <Form.Item name="brand" label="Brand" rules={[{ required: true, message: "Pick a brand." }]}>
-                        <Select placeholder="Select" options={brandOptions} onChange={onBrandChange} />
+                        <Select
+                          placeholder="Select"
+                          options={brandOptions}
+                          onChange={onBrandChange}
+                          notFoundContent={noLicensedModels ? NO_LICENSED_MODELS : undefined}
+                        />
                       </Form.Item>
                     </Col>
                     <Col xs={24} md={8}>
@@ -994,6 +1050,7 @@ export function Devices({ role }: { role: "admin" | "user" }) {
                           placeholder="Select"
                           options={modelOptions}
                           onChange={(model: string) => applyModelDefaults(model, mode)}
+                          notFoundContent={noLicensedModels ? NO_LICENSED_MODELS : undefined}
                         />
                       </Form.Item>
                     </Col>
