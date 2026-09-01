@@ -154,6 +154,9 @@ because its Bill Date is the meter's live clock and advances on every read: keye
 would write one junk row per read, which is exactly what it did in v1 until ADR 0018. It is
 provisional by definition, and it is the one place billing shows a number that is not yet a
 bill.
+**Not every meter family has one** (issue 016): SMART TCC's billing profile was measured to hold
+closed cuts only, so its driver declares `BILLING_PROFILE_HAS_OPEN_PERIOD = False` and its Current
+tab is legitimately empty. "At most one per device" means nought or one, not always one.
 _Avoid_: current billing, running row, latest reading (that's whichever period is newest)
 
 **Billing Change Check**:

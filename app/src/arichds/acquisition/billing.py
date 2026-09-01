@@ -216,7 +216,19 @@ def _read_while_holding(
         # than an unhandled exception reaching the API or `billing_cycle`'s
         # per-device guard.
         readings = driver.read_billing()
-        stored, open_updated, new_closed_ids = _store(device_id, device_name, readings, read_at)
+        # `getattr` with a True default, not a direct attribute read: the
+        # declaration lives on `DlmsProfileDriver` (issue 016 D1), and
+        # `Smw110Driver` extends `DlmsDriver` instead, so it genuinely does
+        # not have the attribute -- and must not be given one it cannot
+        # honour. A driver that does not declare is one with an Open Period,
+        # which is the behaviour every driver had before this.
+        stored, open_updated, new_closed_ids = _store(
+            device_id,
+            device_name,
+            readings,
+            read_at,
+            profile_has_open_period=getattr(driver, "BILLING_PROFILE_HAS_OPEN_PERIOD", True),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Billing read of %s at %s failed", device_name, endpoint)
         return 0, False, [], f"The read of {endpoint} stopped after a {type(exc).__name__}."
@@ -418,7 +430,12 @@ def billing_cycle() -> None:
 
 
 def _store(
-    device_id: int, device_name: str, readings: list[BillingReading], read_at: datetime
+    device_id: int,
+    device_name: str,
+    readings: list[BillingReading],
+    read_at: datetime,
+    *,
+    profile_has_open_period: bool = True,
 ) -> tuple[int, bool, list[int]]:
     """Write the whole buffer in one unit of work: closed periods first, then
     the Open Period slot — the newly closed period must exist before the slot
@@ -448,6 +465,18 @@ def _store(
         open_updated = False
         if open_reading is not None:
             open_updated = _upsert_open(session, device_id, open_reading, read_at)
+        elif not profile_has_open_period:
+            # Issue 016 — this family's profile cannot produce an Open Period,
+            # so a slot holding one is a leftover from before the driver said
+            # so, and nothing will ever overwrite it. Clearing it here is what
+            # makes the fix self-healing on the next read: no migration, no
+            # repair script, the same shape ADR 0008 chose for the watermark.
+            #
+            # Deliberately NOT unconditional. A driver that *does* have an Open
+            # Period and momentarily returns none is a different situation, and
+            # deleting there would be a behaviour change with no evidence
+            # behind it.
+            open_updated = _clear_open(session, device_id, device_name)
 
     return stored, open_updated, new_closed_ids
 
@@ -522,6 +551,41 @@ def _upsert_closed(
             reading.bill_date.isoformat(),
         )
     return None
+
+
+def _clear_open(
+    session,  # noqa: ANN001 — a Session, typed by its only caller.
+    device_id: int,
+    device_name: str,
+) -> bool:
+    """Delete the device's Open Period slot, if it has one (issue 016).
+
+    Only ever called for a driver that declares its billing profile holds no
+    Open Period, so any row found here predates that declaration. Logged at
+    INFO rather than deleted in silence: a row disappearing from the Current
+    tab is exactly the kind of thing an operator will otherwise report as a
+    second bug.
+
+    Returns:
+        True if a row was deleted -- the caller reports it as the open slot
+        having changed, which it has.
+    """
+    row = session.scalars(
+        select(BillingReadingRow).where(
+            BillingReadingRow.device_id == device_id,
+            BillingReadingRow.record_status == "open",
+        )
+    ).first()
+    if row is None:
+        return False
+
+    logger.info(
+        "Billing: %s's meter family has no Open Period, so the stale open row for %s was removed",
+        device_name,
+        row.bill_date,
+    )
+    session.delete(row)
+    return True
 
 
 def _upsert_open(

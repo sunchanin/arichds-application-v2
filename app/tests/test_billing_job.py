@@ -10,10 +10,11 @@ by ``record_status``, never by ``bill_date``.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fakes import FakeMeterState
+from fakes import FakeMeterState, FakeSmw110Driver
 from sqlalchemy import select
 
 from arichds.acquisition.billing import billing_change_check, billing_cycle, read_and_store_billing
@@ -664,3 +665,46 @@ class TestBillingCycle:
         assert fake_meter.billing_reads == 1
         assert len(closed_rows(working_id)) == 0
         assert open_row(working_id) is not None
+
+
+class TestAProfileWithNoOpenPeriodClearsAStaleSlot:
+    """Issue 016 — a customer's SMART TCC had a closed cut sitting in the Open
+    Period slot, put there by ``_classify_open``'s positional fallback. Fixing
+    the classifier alone would have left that row where it is forever (nothing
+    overwrites a slot a read never fills), so the same period would have shown
+    in **both** tabs. The read clears it instead.
+    """
+
+    def test_a_declared_no_open_period_driver_removes_the_stale_row(
+        self, device_id: int, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange the exact broken state: one open row, no history.
+        fake_meter.billing_rows = [ENTRY_1]
+        read_and_store_billing(device_id, now=NOW)
+        assert open_row(device_id) is not None, "arrange failed: no open row to clear"
+
+        # The driver now declares what the real SmartTccDriver declares, and
+        # returns the same period as a CLOSED cut, which is what the fixed
+        # classifier produces.
+        monkeypatch.setattr(FakeSmw110Driver, "BILLING_PROFILE_HAS_OPEN_PERIOD", False, raising=False)
+        fake_meter.billing_rows = [replace(ENTRY_1, is_open=False)]
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert open_row(device_id) is None, "the stale open row survived -- it would show in both tabs"
+        assert [row.bill_date for row in closed_rows(device_id)] == [ENTRY_1.bill_date.replace(tzinfo=None)]
+
+    def test_a_driver_that_does_not_declare_keeps_its_open_row(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """The clearing is NOT unconditional. A driver with a real Open Period
+        that momentarily returns none must keep the slot it already has --
+        deleting there would be a behaviour change with nothing behind it."""
+        fake_meter.billing_rows = [ENTRY_1]
+        read_and_store_billing(device_id, now=NOW)
+        assert open_row(device_id) is not None
+
+        fake_meter.billing_rows = [replace(ENTRY_1, is_open=False)]
+        read_and_store_billing(device_id, now=NOW)
+
+        assert open_row(device_id) is not None, "an undeclared driver's open slot must survive"

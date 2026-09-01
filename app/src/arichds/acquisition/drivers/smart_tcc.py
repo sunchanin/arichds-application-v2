@@ -166,6 +166,17 @@ class SmartTccDriver(DlmsProfileDriver):
     #: state, not a fault.
     RESET_REASON_KEY: tuple[str, int] | None = None
 
+    #: Issue 016 — this family's Scheme 1 buffer holds **closed cuts only**, so
+    #: no row it returns is ever the Open Period. Measured on a real 3CL on
+    #: 2026-07-24: 148 capture columns holding one real cut
+    #: (``docs/meter-notes/tcc-obis-scan.md:597``), and the same note's line 605
+    #: records that open/closed must come from the bill date rather than from
+    #: entry position. Without this, :meth:`_classify_open`'s positional
+    #: fallback labelled a customer's closed August cut as the Open Period: it
+    #: filled the Current tab, left History empty, and — because the open slot
+    #: is overwritten in place — would have been erased by the next cut.
+    BILLING_PROFILE_HAS_OPEN_PERIOD: bool = False
+
     #: D5/F9 — Register, not ExtendedRegister: the one COSEM-class difference
     #: this family has from CEWE. Max demand (``D=6``) stays ExtendedRegister
     #: on both, unaffected by this declaration.

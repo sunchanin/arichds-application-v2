@@ -414,6 +414,26 @@ class DlmsProfileDriver(DlmsDriver):
     #: model that lacks the register overrides this to ``None``.
     RESET_REASON_KEY: tuple[str, int] | None = _RESET_REASON_KEY
 
+    #: Whether this family's billing profile can contain an Open Period at all
+    #: (issue 016). ``True`` everywhere except SMART TCC, whose Scheme 1 buffer
+    #: was measured to hold **closed cuts only**
+    #: (``docs/meter-notes/tcc-obis-scan.md:597,605``).
+    #:
+    #: It exists because :attr:`RESET_REASON_KEY` being ``None`` says only
+    #: "cannot ask the meter", and the positional fallback that answers instead
+    #: calls entry 1 open whatever it holds. On a profile with no open period
+    #: that is always wrong, and it cost a customer's August cut the Current
+    #: slot while their History stayed empty.
+    #:
+    #: Declared **here** rather than on
+    #: :class:`~arichds.acquisition.drivers.base.MeterDriver` on purpose:
+    #: :class:`~arichds.acquisition.drivers.smw110.Smw110Driver` extends
+    #: ``DlmsDriver``, not this class, and has its own positional logic — a
+    #: flag on the base would be one this class honours and that driver
+    #: silently ignores, which is the defect ``docs/issues/005`` exists to
+    #: complain about.
+    BILLING_PROFILE_HAS_OPEN_PERIOD: bool = True
+
     #: D5 (issue #25) — COSEM class of the ``D=2`` Cumulative Demand group.
     #: ``GXDLMSExtendedRegister`` on every CEWE model (the default); SMART TCC
     #: is ``GXDLMSRegister`` instead (F9) — the one COSEM-class difference
@@ -850,6 +870,14 @@ class DlmsProfileDriver(DlmsDriver):
             ``True`` per call (D9): a later row that would also classify open
             is kept closed and WARNs instead.
         """
+        # Checked before the reset-reason branch, not inside the positional
+        # fallback (issue 016): the claim is that this family's profile holds
+        # no open period at all, which is stronger than "we cannot ask the
+        # meter which row it is". Asking would be meaningless, and the
+        # fallback's answer is wrong by construction.
+        if not self.BILLING_PROFILE_HAS_OPEN_PERIOD:
+            return False, already_assigned
+
         if reset_reason_key is not None:
             raw = row[positions[reset_reason_key]]
             if raw is None or not isinstance(raw, (int, float, Decimal)):

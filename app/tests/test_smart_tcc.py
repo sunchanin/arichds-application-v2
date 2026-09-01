@@ -283,12 +283,19 @@ class TestBillDateComesFromClockNotTheNearMiss:
         assert readings[0].bill_date == datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
 
 
-class TestOpenClosedPositionalFallbackIsSilent:
-    """D5/F7 — TCC declares no reset-reason register; entry 0 is open by
-    position, and no "reset-reason" WARNing fires (unlike a CEWE model whose
-    declared key is merely absent from one read)."""
+class TestThisFamilyHasNoOpenPeriod:
+    """Issue 016 — Scheme 1 holds closed cuts only, so no row a TCC read
+    returns is ever the Open Period, and no "reset-reason" WARNing fires
+    (unlike a CEWE model whose declared key is merely absent from one read).
 
-    def test_entry_zero_is_open_with_no_reset_reason_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    This class replaces one that asserted the opposite. The old assertion
+    (`readings[0].is_open is True`) was the defect written down: it pinned
+    `_classify_open`'s positional fallback, which on a profile with no open
+    period is wrong by construction. A customer's closed August cut took the
+    Current slot because of it, with History left empty.
+    """
+
+    def test_the_only_entry_is_closed_with_no_reset_reason_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         columns = _minimal_billing_capture_list()
         reader = FakeTccBillingReader(
             columns,
@@ -300,8 +307,44 @@ class TestOpenClosedPositionalFallbackIsSilent:
         with caplog.at_level("WARNING"):
             readings = driver.read_billing()
 
-        assert readings[0].is_open is True
+        assert readings[0].is_open is False
         assert not any("reset-reason" in record.message.lower() for record in caplog.records)
+
+    def test_no_row_is_open_even_when_the_buffer_holds_several(self) -> None:
+        """The real shape of the customer's meter, generalised: every entry is
+        a cut, so every entry must come back closed -- not merely "not the
+        first one"."""
+        columns = _minimal_billing_capture_list()
+        reader = FakeTccBillingReader(
+            columns,
+            entries_in_use=3,
+            buffer=[
+                [datetime(2026, 9, 1, 0, 0), None, 3, datetime(2000, 1, 1, 0, 0)],
+                [datetime(2026, 8, 1, 0, 0), None, 2, datetime(2000, 1, 1, 0, 0)],
+                [datetime(2026, 7, 14, 16, 0), None, 1, datetime(2000, 1, 1, 0, 0)],
+            ],
+        )
+        driver = _build_driver(reader)
+
+        readings = driver.read_billing()
+
+        assert len(readings) == 3
+        assert [reading.is_open for reading in readings] == [False, False, False]
+
+    def test_the_declaration_is_what_decides_it(self) -> None:
+        """Not an accident of this buffer: flipping the declaration on a
+        subclass brings the positional fallback back, which is what makes the
+        assertions above about the declaration rather than about the data."""
+        columns = _minimal_billing_capture_list()
+        reader = FakeTccBillingReader(
+            columns,
+            entries_in_use=1,
+            buffer=[[datetime(2026, 7, 14, 16, 0), None, 1, datetime(2000, 1, 1, 0, 0)]],
+        )
+        driver = _build_driver(reader)
+        driver.BILLING_PROFILE_HAS_OPEN_PERIOD = True
+
+        assert driver.read_billing()[0].is_open is True
 
 
 class TestScheme2IsNeverRead:
