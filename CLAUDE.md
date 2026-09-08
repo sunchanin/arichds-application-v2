@@ -248,8 +248,8 @@ MySQL, and ~30 tables.
 .venv\Scripts\activate            # Windows venv
 fastapi dev                        # dev server (entrypoint in pyproject [tool.fastapi])
 ruff format . && ruff check . --fix
-pytest -n auto                     # full suite in parallel (~17s across 16 cores)
-pytest tests/<file>::<test>        # one file/test — plain, NEVER -n auto (workers cost 4s, the run costs 0.05s)
+pytest -n auto                     # full suite in parallel — 87s across 16 cores (1910 tests, measured 2026-09-08)
+pytest tests/<file>::<test>        # one file/test — plain, NEVER -n auto (workers cost 6.4s, the run costs 0.1s)
 python -m alembic upgrade head     # manual; app also auto-migrates at startup
 
 # Frontend (web/)
@@ -334,8 +334,13 @@ Do NOT create issues for modules that have not been grilled. "เทสผ่า
 The full suite is the gate — **never narrow it to "the tests for what I changed"**, because the
 party choosing the subset is the one with an incentive to under-scope, and this codebase's changes
 cross layers routinely (a base-class rename touched 7 files; an `endpoint` fix broke a lock key two
-modules away). It costs ~17s, so there is nothing to buy by skipping it. Use plain scoped runs
-inside the red→green loop and `-n auto` for the gate.
+modules away). It costs 87s with `-n auto`, so there is nothing to buy by skipping it. Use plain
+scoped runs inside the red→green loop and `-n auto` for the gate — **and never the bare `pytest`
+for the gate**, which is 428s for the same 1910 tests. That has happened repeatedly (`634 passed in
+407.27s`, `659 passed in 299.09s` in the run logs), and it is ~5.7 minutes of the owner's wall clock
+per occurrence, spent proving nothing the parallel run does not prove. The split is why there is no
+`addopts` in `pyproject.toml`: a config default would fix the gate and tax every scoped run in the
+loop by 6.4s, so the command has to be chosen per run, not baked in.
 
 Two rules that keep the pipeline honest — apply them when running `/to-issues`, not inside
 `/run-issue` (fixing it there is the wrong layer):
