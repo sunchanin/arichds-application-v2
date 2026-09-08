@@ -132,6 +132,29 @@ The one thing `NT AUTHORITY\LOCAL SERVICE` needs write access to is Edge's
 own reused profile directory, `C:\ProgramData\ARICHDS\tmp` — the *only*
 `[Dirs]` entry in `arichds.iss` that still carries a `Permissions:` grant.
 
+#### Capture folders created before 0.5.3 are unreadable — repair once
+
+Builds before 0.5.3 created each `<capture_dir>\<meter serial>\` folder with
+`os.mkdir(..., 0o700)` (issue 017). On Windows that is the one mode CPython
+does **not** ignore: it replaces inheritance with an ACL granting only SYSTEM,
+Administrators and OWNER RIGHTS. The service is LocalSystem, so the operator's
+own account was left off, and a Syncthing agent running as a user reported
+`scan: open …\billing\<serial>: Access is denied.`
+
+0.5.3 creates them with no mode, so they inherit whatever the operator granted
+on `capture_dir` itself — the same thing the Load Profile CSV export has always
+done. Folders that already exist keep the old ACL, because `mkdir` never runs
+for a directory that is already there. Repair them once, elevated:
+
+```powershell
+icacls "<capture_dir>" /inheritance:e /T
+icacls "<capture_dir>" /grant "<user>:(OI)(CI)F" /T
+```
+
+where `<user>` is the account the sync agent runs as. The app never rewrites
+ACLs itself: a service silently re-permissioning a directory under someone's
+Desktop is a worse surprise than the bug it would fix.
+
 ### What the owner must verify after installing or upgrading
 
 ```powershell

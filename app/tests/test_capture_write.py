@@ -1,8 +1,9 @@
 """``capture.write`` — the hardened write (decision 3c, ADR 0010, issue #22).
 
 Ported from v1 ``billing/service.py:1089-1291``'s ordered sequence: validate
-the constructed path -> render bytes -> stepwise `mkdir(0o700)` -> `lstat`
-the parent -> atomic `O_EXCL|O_NOFOLLOW|O_BINARY` write. The orphan-prevention
+the constructed path -> render bytes -> stepwise `mkdir` -> `lstat`
+the parent -> atomic `O_EXCL|O_NOFOLLOW|O_BINARY` write. The mkdir carries
+no mode since issue 017 -- see `TestTheOperatorCanReadWhatWasWrittenForThem`. The orphan-prevention
 invariant this whole module exists for: a render failure or a write failure
 must leave **nothing** on disk.
 
@@ -11,7 +12,10 @@ Every test writes under `tmp_path` — none may touch a real `capture_dir`.
 
 from __future__ import annotations
 
+import getpass
+import os
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -139,3 +143,71 @@ class TestSymlinkedParentIsRejected:
             write_capture(target, lambda: b"data", [tmp_path.resolve()])
 
         assert not target.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL semantics are the entire subject")
+class TestTheOperatorCanReadWhatWasWrittenForThem:
+    """Issue 017 -- a customer's Syncthing could not scan a capture folder:
+    ``Access is denied``. ``os.mkdir``'s own docstring says the mode is ignored
+    on Windows, but ``0o700`` is the one value CPython special-cases: it
+    replaces inheritance with an ACL granting SYSTEM, Administrators and OWNER
+    RIGHTS. The service runs as LocalSystem (ADR 0017), so the operator whose
+    folder it is was not on that list.
+
+    The assertion is on the ACL of a directory the code really created, never
+    on the argument handed to ``os.mkdir`` -- an argument assertion restates
+    the implementation and would pass just as happily if Windows behaved the
+    way the docstring claims.
+
+    **The parent is built with an explicit grant rather than used as pytest
+    supplies it.** ``tmp_path`` lives under ``pytest-of-<user>``, which pytest
+    itself creates with ``0o700``, so a child inheriting it correctly still
+    shows the restrictive ACL and the test could not tell the two cases apart.
+    """
+
+    @staticmethod
+    def _acl(path: Path) -> str:
+        return subprocess.run(["icacls", str(path)], capture_output=True, text=True, check=True, timeout=30).stdout
+
+    def test_a_created_capture_folder_still_grants_the_operator(self, tmp_path: Path) -> None:
+        user = getpass.getuser()
+        capture_dir = tmp_path / "capture_dir"
+        os.mkdir(capture_dir)
+        subprocess.run(
+            ["icacls", str(capture_dir), "/grant", f"{user}:(OI)(CI)F"],
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+        granted = "\\" + user.lower() + ":"
+        assert granted in self._acl(capture_dir).lower(), "arrange failed: parent does not grant the user"
+
+        target = capture_dir / "SN-ACL" / "2026-08-31_170000.pdf"
+        write_capture(target, lambda: b"x", [tmp_path.resolve()])
+
+        acl = self._acl(target.parent)
+        assert granted in acl.lower(), (
+            f"{user} is not on the created folder's ACL -- a sync agent or the operator's own "
+            f"login is denied it:\n{acl}"
+        )
+
+    def test_the_written_file_is_readable_too(self, tmp_path: Path) -> None:
+        """The folder is what the scan opens, but the file is what gets shipped.
+        On Windows a file's ACL comes from its directory, so this passes once
+        the directory does -- pinned because that is the claim the ``0o600`` in
+        ``_atomic_write`` is allowed to stay on."""
+        user = getpass.getuser()
+        capture_dir = tmp_path / "capture_dir"
+        os.mkdir(capture_dir)
+        subprocess.run(
+            ["icacls", str(capture_dir), "/grant", f"{user}:(OI)(CI)F"],
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+
+        target = capture_dir / "SN-FILE" / "2026-08-31_170000.pdf"
+        write_capture(target, lambda: b"payload", [tmp_path.resolve()])
+
+        assert "\\" + user.lower() + ":" in self._acl(target).lower(), self._acl(target)
+        assert target.read_bytes() == b"payload"
