@@ -1,0 +1,1356 @@
+{
+  "kind": "xlsx",
+  "sheets": [
+    {
+      "index": 1,
+      "name": "Log in",
+      "state": "visible",
+      "dimension": "A1:P22",
+      "text_cells": 12,
+      "non_empty_cells": 12,
+      "images": [
+        {
+          "file": "images/01-log-in-1.png",
+          "anchor": "A1",
+          "format": "png"
+        }
+      ],
+      "blocks": [
+        {
+          "range": "P8:P18",
+          "rows": 11,
+          "cols": 1,
+          "cells": 11,
+          "preview": [
+            [
+              "1.ไม่ log license"
+            ],
+            [
+              "2.เพิ่มได้ไม่จำกัด มีรุ่นที่ใช้ดึงตามนี้"
+            ],
+            [
+              "1.CEWE "
+            ],
+            [
+              "1.1 prometer 100."
+            ]
+          ]
+        },
+        {
+          "range": "P22:P22",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "*** เป็น version ดึงข้อมูลเต็ม"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "P8",
+          "value": "1.ไม่ log license"
+        },
+        {
+          "ref": "P9",
+          "value": "2.เพิ่มได้ไม่จำกัด มีรุ่นที่ใช้ดึงตามนี้"
+        },
+        {
+          "ref": "P10",
+          "value": "1.CEWE "
+        },
+        {
+          "ref": "P11",
+          "value": "1.1 prometer 100."
+        },
+        {
+          "ref": "P12",
+          "value": "1.2 saral 350 "
+        },
+        {
+          "ref": "P13",
+          "value": "2.Samart TTC "
+        },
+        {
+          "ref": "P14",
+          "value": "2.1.ST- 3CL ดึงได้แล้ว"
+        },
+        {
+          "ref": "P15",
+          "value": "2.2 ST-3DH "
+        },
+        {
+          "ref": "P16",
+          "value": "2.3 ST-1DH"
+        },
+        {
+          "ref": "P17",
+          "value": "2.4 ST-3TL"
+        },
+        {
+          "ref": "P18",
+          "value": "2.5 ST-33TL"
+        },
+        {
+          "ref": "P22",
+          "value": "*** เป็น version ดึงข้อมูลเต็ม"
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "name": "Devices",
+      "state": "visible",
+      "dimension": "A1:P49",
+      "text_cells": 12,
+      "non_empty_cells": 12,
+      "images": [
+        {
+          "file": "images/02-devices-1.png",
+          "anchor": "A7",
+          "format": "png"
+        },
+        {
+          "file": "images/02-devices-2.png",
+          "anchor": "A31",
+          "format": "png"
+        }
+      ],
+      "blocks": [
+        {
+          "range": "P17:P26",
+          "rows": 10,
+          "cols": 1,
+          "cells": 10,
+          "preview": [
+            [
+              "2.เพิ่มได้ไม่จำกัด มีรุ่นที่ใช้ดึงตามนี้"
+            ],
+            [
+              "1.CEWE "
+            ],
+            [
+              "1.1 prometer 100."
+            ],
+            [
+              "1.2 saral 350 "
+            ]
+          ]
+        },
+        {
+          "range": "F45:F45",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "Pro100"
+            ]
+          ]
+        },
+        {
+          "range": "F49:F49",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "Saral 350"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "P17",
+          "value": "2.เพิ่มได้ไม่จำกัด มีรุ่นที่ใช้ดึงตามนี้"
+        },
+        {
+          "ref": "P18",
+          "value": "1.CEWE "
+        },
+        {
+          "ref": "P19",
+          "value": "1.1 prometer 100."
+        },
+        {
+          "ref": "P20",
+          "value": "1.2 saral 350 "
+        },
+        {
+          "ref": "P21",
+          "value": "2.Samart TTC "
+        },
+        {
+          "ref": "P22",
+          "value": "2.1.ST- 3CL ดึงได้แล้ว"
+        },
+        {
+          "ref": "P23",
+          "value": "2.2 ST-3DH "
+        },
+        {
+          "ref": "P24",
+          "value": "2.3 ST-1DH"
+        },
+        {
+          "ref": "P25",
+          "value": "2.4 ST-3TL"
+        },
+        {
+          "ref": "P26",
+          "value": "2.5 ST-33TL"
+        },
+        {
+          "ref": "F45",
+          "value": "Pro100"
+        },
+        {
+          "ref": "F49",
+          "value": "Saral 350"
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "name": "Load Profile",
+      "state": "visible",
+      "dimension": "A1:R36",
+      "text_cells": 28,
+      "non_empty_cells": 32,
+      "images": [
+        {
+          "file": "images/03-load-profile-1.png",
+          "anchor": "A1",
+          "format": "png"
+        }
+      ],
+      "blocks": [
+        {
+          "range": "P11:P11",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "ดึงแบบนี้ได้เลย"
+            ]
+          ]
+        },
+        {
+          "range": "I25:I25",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "ตัวอย่าง"
+            ]
+          ]
+        },
+        {
+          "range": "A27:B31",
+          "rows": 5,
+          "cols": 2,
+          "cells": 9,
+          "preview": [
+            [
+              "Customer :",
+              "LPH"
+            ],
+            [
+              "Site Name :",
+              "LPH Days1"
+            ],
+            [
+              "Serial Meter :",
+              "WP076996"
+            ],
+            [
+              "Setting :",
+              1
+            ]
+          ]
+        },
+        {
+          "range": "A33:R36",
+          "rows": 4,
+          "cols": 18,
+          "cells": 21,
+          "preview": [
+            [
+              "Name",
+              "Date/Time",
+              "Import kWh Active",
+              "Import kWh Reactive",
+              "Export kWh Active",
+              "Export kWh Reactive",
+              "(Average Power Factor Avg",
+              "Voltage L1 (V)",
+              "Voltage L2 (V)",
+              "Voltage L3 (V)",
+              "Current L1 (A)",
+              "Current L2(B)",
+              "Current L3 (C)",
+              "Avg Phase Angle Ph-A",
+              "Avg Phase Angle Ph-B",
+              "Avg Phase Angle Ph-C",
+              "Frequency (Hz)",
+              "Record Status"
+            ],
+            [
+              null,
+              "2025-04-01 00:00:00",
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            [
+              null,
+              "2025-04-01 00:15:00",
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            [
+              null,
+              "2025-04-01 00:30:00",
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "P11",
+          "value": "ดึงแบบนี้ได้เลย"
+        },
+        {
+          "ref": "I25",
+          "value": "ตัวอย่าง"
+        },
+        {
+          "ref": "A27",
+          "value": "Customer :"
+        },
+        {
+          "ref": "B27",
+          "value": "LPH"
+        },
+        {
+          "ref": "A28",
+          "value": "Site Name :"
+        },
+        {
+          "ref": "B28",
+          "value": "LPH Days1"
+        },
+        {
+          "ref": "A29",
+          "value": "Serial Meter :"
+        },
+        {
+          "ref": "B29",
+          "value": "WP076996"
+        },
+        {
+          "ref": "A30",
+          "value": "Setting :"
+        },
+        {
+          "ref": "B30",
+          "value": 1
+        },
+        {
+          "ref": "A31",
+          "value": "Load Profile :"
+        },
+        {
+          "ref": "A33",
+          "value": "Name"
+        },
+        {
+          "ref": "B33",
+          "value": "Date/Time"
+        },
+        {
+          "ref": "C33",
+          "value": "Import kWh Active"
+        },
+        {
+          "ref": "D33",
+          "value": "Import kWh Reactive"
+        },
+        {
+          "ref": "E33",
+          "value": "Export kWh Active"
+        },
+        {
+          "ref": "F33",
+          "value": "Export kWh Reactive"
+        },
+        {
+          "ref": "G33",
+          "value": "(Average Power Factor Avg"
+        },
+        {
+          "ref": "H33",
+          "value": "Voltage L1 (V)"
+        },
+        {
+          "ref": "I33",
+          "value": "Voltage L2 (V)"
+        },
+        {
+          "ref": "J33",
+          "value": "Voltage L3 (V)"
+        },
+        {
+          "ref": "K33",
+          "value": "Current L1 (A)"
+        },
+        {
+          "ref": "L33",
+          "value": "Current L2(B)"
+        },
+        {
+          "ref": "M33",
+          "value": "Current L3 (C)"
+        },
+        {
+          "ref": "N33",
+          "value": "Avg Phase Angle Ph-A"
+        },
+        {
+          "ref": "O33",
+          "value": "Avg Phase Angle Ph-B"
+        },
+        {
+          "ref": "P33",
+          "value": "Avg Phase Angle Ph-C"
+        },
+        {
+          "ref": "Q33",
+          "value": "Frequency (Hz)"
+        },
+        {
+          "ref": "R33",
+          "value": "Record Status"
+        },
+        {
+          "ref": "B34",
+          "value": {
+            "iso": "2025-04-01 00:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "B35",
+          "value": {
+            "iso": "2025-04-01 00:15:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "B36",
+          "value": {
+            "iso": "2025-04-01 00:30:00",
+            "type": "datetime"
+          }
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "name": "RECORD",
+      "state": "visible",
+      "dimension": "A1:A1",
+      "text_cells": 0,
+      "non_empty_cells": 0,
+      "images": [
+        {
+          "file": "images/04-record-1.png",
+          "anchor": "A1",
+          "format": "png"
+        }
+      ],
+      "blocks": [],
+      "cells": []
+    },
+    {
+      "index": 5,
+      "name": "Billing",
+      "state": "visible",
+      "dimension": "A1:T37",
+      "text_cells": 55,
+      "non_empty_cells": 112,
+      "images": [
+        {
+          "file": "images/05-billing-1.png",
+          "anchor": "A1",
+          "format": "png"
+        }
+      ],
+      "blocks": [
+        {
+          "range": "P13:P14",
+          "rows": 2,
+          "cols": 1,
+          "cells": 2,
+          "preview": [
+            [
+              "ใช้แบบนี้ได้เลย"
+            ],
+            [
+              "แต่ไฟล์ออกมาให้เหมือนที่ส่งออกแบบใหม่นะ  แต่ไม่มี export"
+            ]
+          ]
+        },
+        {
+          "range": "I26:I26",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "ตัวอย่าง"
+            ]
+          ]
+        },
+        {
+          "range": "A27:B31",
+          "rows": 5,
+          "cols": 2,
+          "cells": 9,
+          "preview": [
+            [
+              "Customer :",
+              "LPH"
+            ],
+            [
+              "Site Name :",
+              "LPH Days1"
+            ],
+            [
+              "Serial Meter :",
+              "WP076996"
+            ],
+            [
+              "Setting :",
+              1
+            ]
+          ]
+        },
+        {
+          "range": "A33:T37",
+          "rows": 5,
+          "cols": 20,
+          "cells": 100,
+          "preview": [
+            [
+              "Record No",
+              "Time",
+              "111 Billing total kWh Total",
+              "010 Billing total kWh Rate A",
+              "020 Billing total kWh Rate B",
+              "030 Billing total kWh Rate C",
+              "050 Previous kW demand Rate A",
+              "050T Previous Time of kW deman",
+              "060 Previous kW demand Rate B",
+              "060T Previous Time of kW deman",
+              "070 Previous kW demand Rate C",
+              "070T Previous Time of kW deman",
+              "015 Cumul kW demand Rate A",
+              "016 Cumul kW demand Rate B",
+              "017 Cumul kW demand Rate C",
+              "222 Billing total Varh Total",
+              "280 Previous Var demand Total",
+              "280T Previous Time of Var dem",
+              "118 Cumul Var demand Total",
+              "Record Status"
+            ],
+            [
+              1,
+              "5/1/2025 00:00",
+              9587.1515,
+              6205.1097,
+              652.9037,
+              2729.1381,
+              33.5685,
+              "4/13/2025 12:45",
+              19.7535,
+              "4/2/2025 19:00",
+              32.5495,
+              "4/2/2025 19:00",
+              62.6183,
+              35.3778,
+              60.7051,
+              132.4406,
+              0.8198,
+              "4/4/2025 06:30",
+              1633.5832,
+              ".........."
+            ],
+            [
+              2,
+              "6/1/2025 00:00",
+              14336.9229,
+              8961.9877,
+              997.4511,
+              4377.4841,
+              33.153,
+              "5/18/2025 11:45",
+              22.7075,
+              "5/9/2025 19:15",
+              32.8489,
+              "5/9/2025 19:15",
+              95.7713,
+              58.0853,
+              93.554,
+              204.9894,
+              0.8168,
+              "5/20/2025 06:15",
+              2450.3736,
+              ".........."
+            ],
+            [
+              3,
+              "7/1/2025 00:00",
+              19046.5419,
+              11701.5162,
+              1388.6437,
+              5956.382,
+              32.4089,
+              "6/3/2025 12:15",
+              21.7453,
+              "6/28/2025 19:30",
+              31.3578,
+              "6/19/2025 19:30",
+              128.1802,
+              79.8305,
+              124.9118,
+              271.6662,
+              0.8106,
+              "6/27/2025 06:15",
+              3261.0236,
+              ".........."
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "P13",
+          "value": "ใช้แบบนี้ได้เลย"
+        },
+        {
+          "ref": "P14",
+          "value": "แต่ไฟล์ออกมาให้เหมือนที่ส่งออกแบบใหม่นะ  แต่ไม่มี export"
+        },
+        {
+          "ref": "I26",
+          "value": "ตัวอย่าง"
+        },
+        {
+          "ref": "A27",
+          "value": "Customer :"
+        },
+        {
+          "ref": "B27",
+          "value": "LPH"
+        },
+        {
+          "ref": "A28",
+          "value": "Site Name :"
+        },
+        {
+          "ref": "B28",
+          "value": "LPH Days1"
+        },
+        {
+          "ref": "A29",
+          "value": "Serial Meter :"
+        },
+        {
+          "ref": "B29",
+          "value": "WP076996"
+        },
+        {
+          "ref": "A30",
+          "value": "Setting :"
+        },
+        {
+          "ref": "B30",
+          "value": 1
+        },
+        {
+          "ref": "A31",
+          "value": "Billing :"
+        },
+        {
+          "ref": "A33",
+          "value": "Record No"
+        },
+        {
+          "ref": "B33",
+          "value": "Time"
+        },
+        {
+          "ref": "C33",
+          "value": "111 Billing total kWh Total"
+        },
+        {
+          "ref": "D33",
+          "value": "010 Billing total kWh Rate A"
+        },
+        {
+          "ref": "E33",
+          "value": "020 Billing total kWh Rate B"
+        },
+        {
+          "ref": "F33",
+          "value": "030 Billing total kWh Rate C"
+        },
+        {
+          "ref": "G33",
+          "value": "050 Previous kW demand Rate A"
+        },
+        {
+          "ref": "H33",
+          "value": "050T Previous Time of kW deman"
+        },
+        {
+          "ref": "I33",
+          "value": "060 Previous kW demand Rate B"
+        },
+        {
+          "ref": "J33",
+          "value": "060T Previous Time of kW deman"
+        },
+        {
+          "ref": "K33",
+          "value": "070 Previous kW demand Rate C"
+        },
+        {
+          "ref": "L33",
+          "value": "070T Previous Time of kW deman"
+        },
+        {
+          "ref": "M33",
+          "value": "015 Cumul kW demand Rate A"
+        },
+        {
+          "ref": "N33",
+          "value": "016 Cumul kW demand Rate B"
+        },
+        {
+          "ref": "O33",
+          "value": "017 Cumul kW demand Rate C"
+        },
+        {
+          "ref": "P33",
+          "value": "222 Billing total Varh Total"
+        },
+        {
+          "ref": "Q33",
+          "value": "280 Previous Var demand Total"
+        },
+        {
+          "ref": "R33",
+          "value": "280T Previous Time of Var dem"
+        },
+        {
+          "ref": "S33",
+          "value": "118 Cumul Var demand Total"
+        },
+        {
+          "ref": "T33",
+          "value": "Record Status"
+        },
+        {
+          "ref": "A34",
+          "value": 1
+        },
+        {
+          "ref": "B34",
+          "value": "5/1/2025 00:00"
+        },
+        {
+          "ref": "C34",
+          "value": 9587.1515
+        },
+        {
+          "ref": "D34",
+          "value": 6205.1097
+        },
+        {
+          "ref": "E34",
+          "value": 652.9037
+        },
+        {
+          "ref": "F34",
+          "value": 2729.1381
+        },
+        {
+          "ref": "G34",
+          "value": 33.5685
+        },
+        {
+          "ref": "H34",
+          "value": "4/13/2025 12:45"
+        },
+        {
+          "ref": "I34",
+          "value": 19.7535
+        },
+        {
+          "ref": "J34",
+          "value": "4/2/2025 19:00"
+        },
+        {
+          "ref": "K34",
+          "value": 32.5495
+        },
+        {
+          "ref": "L34",
+          "value": "4/2/2025 19:00"
+        },
+        {
+          "ref": "M34",
+          "value": 62.6183
+        },
+        {
+          "ref": "N34",
+          "value": 35.3778
+        },
+        {
+          "ref": "O34",
+          "value": 60.7051
+        },
+        {
+          "ref": "P34",
+          "value": 132.4406
+        },
+        {
+          "ref": "Q34",
+          "value": 0.8198
+        },
+        {
+          "ref": "R34",
+          "value": "4/4/2025 06:30"
+        },
+        {
+          "ref": "S34",
+          "value": 1633.5832
+        },
+        {
+          "ref": "T34",
+          "value": ".........."
+        },
+        {
+          "ref": "A35",
+          "value": 2
+        },
+        {
+          "ref": "B35",
+          "value": "6/1/2025 00:00"
+        },
+        {
+          "ref": "C35",
+          "value": 14336.9229
+        },
+        {
+          "ref": "D35",
+          "value": 8961.9877
+        },
+        {
+          "ref": "E35",
+          "value": 997.4511
+        },
+        {
+          "ref": "F35",
+          "value": 4377.4841
+        },
+        {
+          "ref": "G35",
+          "value": 33.153
+        },
+        {
+          "ref": "H35",
+          "value": "5/18/2025 11:45"
+        },
+        {
+          "ref": "I35",
+          "value": 22.7075
+        },
+        {
+          "ref": "J35",
+          "value": "5/9/2025 19:15"
+        },
+        {
+          "ref": "K35",
+          "value": 32.8489
+        },
+        {
+          "ref": "L35",
+          "value": "5/9/2025 19:15"
+        },
+        {
+          "ref": "M35",
+          "value": 95.7713
+        },
+        {
+          "ref": "N35",
+          "value": 58.0853
+        },
+        {
+          "ref": "O35",
+          "value": 93.554
+        },
+        {
+          "ref": "P35",
+          "value": 204.9894
+        },
+        {
+          "ref": "Q35",
+          "value": 0.8168
+        },
+        {
+          "ref": "R35",
+          "value": "5/20/2025 06:15"
+        },
+        {
+          "ref": "S35",
+          "value": 2450.3736
+        },
+        {
+          "ref": "T35",
+          "value": ".........."
+        },
+        {
+          "ref": "A36",
+          "value": 3
+        },
+        {
+          "ref": "B36",
+          "value": "7/1/2025 00:00"
+        },
+        {
+          "ref": "C36",
+          "value": 19046.5419
+        },
+        {
+          "ref": "D36",
+          "value": 11701.5162
+        },
+        {
+          "ref": "E36",
+          "value": 1388.6437
+        },
+        {
+          "ref": "F36",
+          "value": 5956.382
+        },
+        {
+          "ref": "G36",
+          "value": 32.4089
+        },
+        {
+          "ref": "H36",
+          "value": "6/3/2025 12:15"
+        },
+        {
+          "ref": "I36",
+          "value": 21.7453
+        },
+        {
+          "ref": "J36",
+          "value": "6/28/2025 19:30"
+        },
+        {
+          "ref": "K36",
+          "value": 31.3578
+        },
+        {
+          "ref": "L36",
+          "value": "6/19/2025 19:30"
+        },
+        {
+          "ref": "M36",
+          "value": 128.1802
+        },
+        {
+          "ref": "N36",
+          "value": 79.8305
+        },
+        {
+          "ref": "O36",
+          "value": 124.9118
+        },
+        {
+          "ref": "P36",
+          "value": 271.6662
+        },
+        {
+          "ref": "Q36",
+          "value": 0.8106
+        },
+        {
+          "ref": "R36",
+          "value": "6/27/2025 06:15"
+        },
+        {
+          "ref": "S36",
+          "value": 3261.0236
+        },
+        {
+          "ref": "T36",
+          "value": ".........."
+        },
+        {
+          "ref": "A37",
+          "value": 4
+        },
+        {
+          "ref": "B37",
+          "value": "8/1/2025 00:00"
+        },
+        {
+          "ref": "C37",
+          "value": 23040.8535
+        },
+        {
+          "ref": "D37",
+          "value": 14067.8637
+        },
+        {
+          "ref": "E37",
+          "value": 1665.4875
+        },
+        {
+          "ref": "F37",
+          "value": 7307.5023
+        },
+        {
+          "ref": "G37",
+          "value": 32.7831
+        },
+        {
+          "ref": "H37",
+          "value": "7/12/2025 13:00"
+        },
+        {
+          "ref": "I37",
+          "value": 20.5917
+        },
+        {
+          "ref": "J37",
+          "value": "7/27/2025 19:15"
+        },
+        {
+          "ref": "K37",
+          "value": 32.709
+        },
+        {
+          "ref": "L37",
+          "value": "7/22/2025 19:15"
+        },
+        {
+          "ref": "M37",
+          "value": 160.9633
+        },
+        {
+          "ref": "N37",
+          "value": 100.4222
+        },
+        {
+          "ref": "O37",
+          "value": 157.6209
+        },
+        {
+          "ref": "P37",
+          "value": 347.8208
+        },
+        {
+          "ref": "Q37",
+          "value": 0.8143
+        },
+        {
+          "ref": "R37",
+          "value": "7/1/2025 06:30"
+        },
+        {
+          "ref": "S37",
+          "value": 4075.3136
+        },
+        {
+          "ref": "T37",
+          "value": ".........."
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "name": "Energy Summary",
+      "state": "visible",
+      "dimension": "A1:A1",
+      "text_cells": 0,
+      "non_empty_cells": 0,
+      "images": [
+        {
+          "file": "images/06-energy-summary-1.png",
+          "anchor": "A1",
+          "format": "png"
+        }
+      ],
+      "blocks": [],
+      "cells": []
+    },
+    {
+      "index": 7,
+      "name": "Special Day",
+      "state": "visible",
+      "dimension": "A1:L11",
+      "text_cells": 1,
+      "non_empty_cells": 1,
+      "images": [
+        {
+          "file": "images/07-special-day-1.png",
+          "anchor": "A1",
+          "format": "png"
+        }
+      ],
+      "blocks": [
+        {
+          "range": "L11:L11",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "ถ้าของ samart TCC ดึงมาได้ก็ดึงมาด้วยนะซัน ส่วนของยี่ห้อ CEWE อิงตามได้ แต่ถ้าไม่มีเพิ่มเอาได้"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "L11",
+          "value": "ถ้าของ samart TCC ดึงมาได้ก็ดึงมาด้วยนะซัน ส่วนของยี่ห้อ CEWE อิงตามได้ แต่ถ้าไม่มีเพิ่มเอาได้"
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "name": "Battery",
+      "state": "visible",
+      "dimension": "A1:A1",
+      "text_cells": 0,
+      "non_empty_cells": 0,
+      "images": [
+        {
+          "file": "images/08-battery-1.png",
+          "anchor": "A2",
+          "format": "png"
+        }
+      ],
+      "blocks": [],
+      "cells": []
+    },
+    {
+      "index": 9,
+      "name": "Export format",
+      "state": "visible",
+      "dimension": "A1:A1",
+      "text_cells": 0,
+      "non_empty_cells": 0,
+      "images": [
+        {
+          "file": "images/09-export-format-1.png",
+          "anchor": "A1",
+          "format": "png"
+        }
+      ],
+      "blocks": [],
+      "cells": []
+    },
+    {
+      "index": 10,
+      "name": "Event log",
+      "state": "visible",
+      "dimension": "A1:A1",
+      "text_cells": 0,
+      "non_empty_cells": 0,
+      "images": [
+        {
+          "file": "images/10-event-log-1.png",
+          "anchor": "A1",
+          "format": "png"
+        }
+      ],
+      "blocks": [],
+      "cells": []
+    },
+    {
+      "index": 11,
+      "name": "User",
+      "state": "visible",
+      "dimension": "A1:A1",
+      "text_cells": 0,
+      "non_empty_cells": 0,
+      "images": [
+        {
+          "file": "images/11-user-1.png",
+          "anchor": "A7",
+          "format": "png"
+        }
+      ],
+      "blocks": [],
+      "cells": []
+    },
+    {
+      "index": 12,
+      "name": "Setting",
+      "state": "visible",
+      "dimension": "A1:P13",
+      "text_cells": 2,
+      "non_empty_cells": 2,
+      "images": [
+        {
+          "file": "images/12-setting-1.png",
+          "anchor": "A1",
+          "format": "png"
+        }
+      ],
+      "blocks": [
+        {
+          "range": "P12:P13",
+          "rows": 2,
+          "cols": 1,
+          "cells": 2,
+          "preview": [
+            [
+              "1.ไม่ log license"
+            ],
+            [
+              "2.เพิ่มได้ไม่จำกัด มีรุ่นที่ใช้ดึงตามนี้"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "P12",
+          "value": "1.ไม่ log license"
+        },
+        {
+          "ref": "P13",
+          "value": "2.เพิ่มได้ไม่จำกัด มีรุ่นที่ใช้ดึงตามนี้"
+        }
+      ]
+    },
+    {
+      "index": 13,
+      "name": "Data base",
+      "state": "visible",
+      "dimension": "A1:P17",
+      "text_cells": 3,
+      "non_empty_cells": 3,
+      "images": [
+        {
+          "file": "images/13-data-base-1.png",
+          "anchor": "A10",
+          "format": "png"
+        }
+      ],
+      "blocks": [
+        {
+          "range": "P15:P17",
+          "rows": 3,
+          "cols": 1,
+          "cells": 3,
+          "preview": [
+            [
+              "DATA Base"
+            ],
+            [
+              "FTP"
+            ],
+            [
+              "API"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "P15",
+          "value": "DATA Base"
+        },
+        {
+          "ref": "P16",
+          "value": "FTP"
+        },
+        {
+          "ref": "P17",
+          "value": "API"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "sheets": 13,
+    "text_cells": 113,
+    "images": 14
+  },
+  "source": {
+    "original_path": "C:\\Users\\HP\\Downloads\\โปรแกรมดึงข้อมูล  ARICHDS Version full..xlsx",
+    "copied_to": ".scratch\\arichds-full-version\\source\\โปรแกรมดึงข้อมูล  ARICHDS Version full..xlsx",
+    "sha256": "0b27904489083f83d48bc55685b22f3dd5617a6c27bcc91d935ad85451042cc2",
+    "size_bytes": 2699040,
+    "extracted_at": "2026-09-08T11:48:58"
+  }
+}
