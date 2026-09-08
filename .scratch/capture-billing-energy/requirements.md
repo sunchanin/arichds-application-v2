@@ -466,3 +466,39 @@ leaves the box only through a Data-out Destination we drive outbound.
 This is SPEC §3.8's central-server push (JSON + JWT + an ACK-driven watermark),
 still M8 and unbuilt, on its own queue. **E4 closes as a scoping answer**, and
 the work itself is the already-planned M8, not something new.
+
+---
+
+## B1 — checked, 2026-09-08
+
+**v2 already tracks the data. It just never shows it.**
+
+| | |
+|---|---|
+| `db/models.py:154` | `devices.consecutive_failures`, default 0 |
+| `acquisition/status.py:190` | incremented on every failed read |
+| `acquisition/status.py:192` | writes `status_detail` from the streak |
+| `acquisition/status.py:194` | at `OFFLINE_AFTER_CONSECUTIVE_FAILURES` the device goes offline (ADR 0004) |
+| `api/devices.py:383-384` | the API returns `status` and `status_detail` |
+| `web/src/pages/Devices.tsx:956` | `status_detail` is shown — but **only in the detail drawer of one selected device** |
+| `grep consecutive_failures web/src/` | **no match** — the count itself never reaches the UI |
+
+So AF10 (*"see which ones did not get pulled in the latest bill-pull cycle"*) is a
+**display gap, not a data gap**. v1's `Devices with Issues: 2` counter has no
+equivalent on any v2 screen; the underlying number has existed since ADR 0004.
+
+That makes it much smaller than it looked — a count and a filtered list over data
+already on the row, not new tracking. It belongs in the same Billing grill as
+B3/B4, since that is the screen the customer was looking at when they wrote the
+note.
+
+### Other answers, round 4
+
+- **B5** — build the recommendation as written: a capture-time column, a toast on
+  the manual path only, a recent-captures list for the automatic one, and **no
+  real-time push**.
+- **E3** — unblocked. The import path (meter Special Days → Holiday rows) is
+  cleared to be specified.
+- **E2** — the catalog unlock is approved **and needs its own ADR** recording that
+  four model keys were added deliberately, with capability flags still coming
+  from real meters rather than datasheets (ADR 0011).

@@ -445,3 +445,189 @@ column at all. Ask instead:
 
 A person who does not know the bitmap can answer that. Nobody can answer the
 first version.
+
+---
+
+## Answers — round 4, 2026-09-08 (owner) + the SMART TCC evidence
+
+### Answered
+
+- **Record Status: render it as words, v1's way** — `OK` / `ALL_INVALID` /
+  `DISTURBED` / `POWER_LOSS`, not the customer's `..........`. **With one
+  correction the owner could not have known, below.**
+- **Header names: keep v2's corrected ones** (`Import Reactive (kvarh)`), and
+  tell the customer rather than ask.
+
+### The model that actually matters was missing from every table so far
+
+The customer database the owner supplied (`C:\Users\HP\Downloads\data`) holds
+**exactly one device**:
+
+```
+id=1  name='3CL'  model='st3cl'  meter_serial='002607000049'  consecutive_failures=0
+```
+
+Not a CEWE at all — a **SMART TCC 3CL**. Every model comparison in this brief
+until now covered only the three CEWE meters, because the SMART TCC test meter
+is unreachable (`203.170.148.103:4059`, timeout on 4059 and 50001). Its capture
+objects were read on **2026-07-18** and are recorded in
+`docs/meter-notes/tcc-obis-scan.md:648`.
+
+Reading that list against the eleven requested columns:
+
+| requested | Prometer 100 | Premier 550 | Saral 305 | **SMART TCC 3CL** |
+|---|---|---|---|---|
+| phase angle ×3 | `1.0.81.27.4/15/26` | — | — | **`1.0.81.7.40/51/62`** |
+| Record Status | `1.0.96.5.4` | `1.0.96.5.4` | — | **`0.0.96.10.1`** |
+| line-to-line ×3 | `1.0.157/177/197.27` | — | — | — |
+| power kW/kvar ×4 | `1.0.1/2/3/4.5.0` | — | — | — |
+| **total** | **11 / 11** | **1 / 11** | **0 / 11** | **4 / 11** |
+
+The scan file's own summary line (`tcc-obis-scan.md:639`) calls the TCC load
+profile *"โครงตรง requirement ของลูกค้า"* — the structure matches what the
+customer asked for. That is consistent: the customer's notes mark **only ST-3CL**
+as `ดึงได้แล้ว`.
+
+### This also explains v1's phase-angle bug
+
+v1 maps phase angle as `1.0.81.**7**.40/51/62.255` — which is **exactly what the
+SMART TCC captures**. It is wrong only for the Prometer 100, which uses
+`1.0.81.**27**.4/15/26.255`. v1's map was written against the TCC family and
+silently produced NULL on the CEWE meter. Not a typo: a map built for one family
+and reused for another.
+
+### Correction to the Record Status answer, which the owner could not have known
+
+v1's `_decode_status_flag` decodes **`1.0.96.5.4.255`** — the CEWE bitmap, bits
+0 / 4 / 11. **The SMART TCC's status word is a different object,
+`0.0.96.10.1.255`**, and v1 deliberately refused to map it
+(`load_profile_reader.py:343`):
+
+> *"record-status `0.0.96.10.1.255` — bitmap semantics unverified vs
+> `_decode_status_flag` (live-verification item; do NOT map)."*
+
+So "use v1's wording" is right **for the CEWE bitmap** and cannot be extended to
+the TCC one without verifying it first. Running the CEWE decoder over the TCC
+word would print `DISTURBED` and `POWER_LOSS` from bit positions nobody has
+checked — confident, wrong, and unfalsifiable from the CSV.
+
+**Recommendation:** implement the decode for `1.0.96.5.4.255` only; leave the
+TCC column blank until the bitmap is verified on hardware, exactly as v1 chose.
+The verification needs the TCC meter to be reachable, which it currently is not.
+
+### What this does to the size of the work
+
+The columns split cleanly into two groups by cost:
+
+- **Phase angle + Record Status** — captured by **three of the four families**
+  (Prometer 100, SMART TCC, and Record Status also on Premier 550). This is the
+  half worth building.
+- **Line-to-line voltage + the four power columns** — **Prometer 100 only**, and
+  the machine we have data from does not own one. This is the half to defer
+  until the customer confirms a Prometer 100 exists somewhere.
+
+---
+
+## The owner's own machine has two Prometer 100s — 2026-09-08
+
+Read from a copy of `C:\ProgramData\ARICHDS\arichds.db` (copied out, opened
+read-only; nothing under `%ProgramData%` was touched):
+
+```
+1  Prometer100_4059  CEWE  prometer100  WP079074  online
+2  Phase 2           cewe  premier550   SS18197374  online
+3  saral             cewe  saral305     SS21996979  online
+4  OTC2              cewe  prometer100  WP080652  online
+```
+
+**So the blocking question is answered for development purposes**: there are two
+Prometer 100s online to build and verify against. The remaining customer question
+is narrower — *which model is installed at the site the sample files came from*
+(`WP076996`, `WP080672`), since those serials belong to neither this machine nor
+the SMART TCC machine.
+
+### The line-to-line data is already in the database, and already wasted
+
+Counting non-NULL values per stored row:
+
+| | rows | data columns with any value |
+|---|---|---|
+| Prometer 100 · Logger 2 (300 s) | **26,128** | **2 of 13** — `freq`, `interval_sec` |
+| Prometer 100 · Logger 1 (900 s) | 8,709 | 12 of 13 |
+| Premier 550 · Logger 2 | 8,706 | 7 of 13 |
+
+Logger 2 on a Prometer 100 carries the three line-to-line voltages every 300
+seconds. **26,128 rows are being written per device to keep two useful values**,
+because there is no column for the other three — issue #24's decision D17, stated
+plainly and now measured. Two devices are doing this, at 288 rows/device/day.
+
+**Adding three columns does not add a read, a poll, or a row.** It gives the rows
+we already pay for something to hold. That moves the largest item in group A from
+"expensive and unverifiable" to "cheap, and testable against hardware on the
+desk".
+
+### Defect found while checking: `avg_geo_pf` is NULL on every row of every meter
+
+| model | rows | `avg_geo_pf` non-null |
+|---|---|---|
+| prometer100 (dev 1) | 8,709 | **0** |
+| premier550 (dev 2) | 8,706 | 0 |
+| saral305 (dev 3) | 8,709 | 0 |
+| prometer100 (dev 4) | 8,709 | **0** |
+
+Zero out of **87,000+ rows across four meters.** For the Premier 550 and the
+Saral 305 that is expected — neither captures `1.0.13.24.0.255`, and
+`saral305.py:46` says so. **For the Prometer 100 it is not**: the probe run today
+shows `1.0.13.24.0.255 attr=2 class=3` in its Logger 1, and
+`prometer100.py:77` maps `("1.0.13.24.0.255", 2) -> avg_geo_pf`. Capture object
+present, mapping present, value absent.
+
+**This corrects an argument used earlier in this brief.** The claim was that
+*"the customer already receives a CSV with two permanently empty columns and has
+never raised it, so an empty column is accepted behaviour"*. That is true of
+`Frequency (Hz)`, which is genuinely absent from two models. It is **not** true of
+`Avg Geo PF`, which is empty on the model that does provide it. That column is
+empty because of a defect, not because of the meter — so it cannot be cited as
+precedent for shipping empty columns.
+
+Root cause not traced. Needs its own issue and a `/diagnosing-bugs` pass; the
+candidates are the scaler/unit path for `Unit.NONE`, the `(OBIS, attribute)` key
+match, and the meter returning a null value. **Do not guess in the issue body.**
+
+### One earlier observation resolved
+
+`C:\Users\HP\Documents\test-cewe\Billing` holds `SS18197374`, `SS21996979` and
+`WP079074` — devices 2, 3 and 1 of **this machine**. It is the owner's own capture
+output, not the customer's. The missing `.xlsx` on one meter and missing `.png` on
+another are most likely licence churn on the development box across the months
+those captures span, which is a far less alarming explanation than the one
+recorded earlier. Still unconfirmed, but no longer customer-facing.
+
+### Question withdrawn: which model is at the sample-file site
+
+Asked, then challenged by the owner, then checked. **It changes nothing we would
+build**, so it is dropped rather than carried:
+
+- *Deciding whether to build it* — already answered. Two Prometer 100s are online
+  on the owner's machine and the Logger 2 data is already being stored and
+  discarded. Adding columns costs no read, no poll and no row, so the work is
+  justified whatever the customer's site holds.
+- *Finding hardware to verify against* — already answered by the same two meters.
+- *Output Parity* — judged against v1's numbers, not against a site.
+
+The code is identical either way; only whether that customer's file has values in
+those columns differs, and that is an outcome, not an input to the decision.
+
+The one thing the answer would have served — stopping the customer opening the
+file, seeing three empty columns and reporting a bug — needs no answer either.
+The sentence to send is the same in every case: **"these three columns carry
+values on Prometer 100 only."**
+
+**A coherence signal, recorded but not relied on.** On the owner's machine the
+serial prefixes split cleanly by model — `WP079074` and `WP080652` are Prometer
+100s, `SS18197374` is a Premier 550, `SS21996979` a Saral 305. The customer's
+sample files are `WP076996` and `WP080672`. Two `WP` observations is not enough
+to assert a rule. But it sits alongside a stronger observation: **the eleven
+columns the customer asked for are exactly the Prometer 100's capability set,
+neither short nor over.** Somebody did not pick eleven columns at random and
+happen to land on the one model of four that provides all of them.
