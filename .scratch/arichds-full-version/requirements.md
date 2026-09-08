@@ -376,3 +376,103 @@ Sheets that carry a screenshot but no note:
 - 11. User — User Management, one `admin` account
 
 No sheet is empty; every sheet has at least one image.
+
+---
+
+## Answers — 2026-09-08 (owner)
+
+### Answered
+
+- **Sheet 01 P8 / sheet 12 P12 — "ไม่ log license" resolved.** It is neither
+  *log* nor a general *lock*. The customer means the **Meter Activation Code**
+  (ADR 0019): on the machines we ship today, adding a meter requires typing a
+  code per meter. On the **full version they want that step gone** — add a meter
+  without a Meter Activation Code.
+- **Owner's proposal**: make it a property of the **machine's own licence** —
+  the Activation Code decides whether the Add-device form asks for a Meter
+  Activation Code at all.
+
+### Code check (approved by the owner, run 2026-09-08)
+
+The mechanism already exists and this fits it. `constants.py:316`
+`SELLABLE_FEATURE_KEYS` is the set of keys an Activation Code may grant, and
+`licensing/features.py:47` is the ceiling that applies them.
+
+**One hazard, and it is stated in the repo already** (`constants.py`, just above
+that set): a licence signed with an **explicit** features list *never*
+grandfathers a key added later — "silently and with no warning anywhere". Only a
+licence signed with `features: null` picks up new keys.
+
+Both licences issued to this customer were signed with explicit lists
+(`load_profile, billing, database_destination`). So:
+
+> **The key must be shaped so that its ABSENCE means today's behaviour.**
+> A key that grants *"add meters without an activation code"* is safe — every
+> existing licence lacks it and keeps requiring the code, which is what they do
+> now. A key meaning *"activation codes are required"* would be exactly backwards
+> and would silently unlock every machine already in the field.
+
+`api/devices.py:1003` is where the gate sits today (`_verify_meter_activation_code`,
+between the duplicate-serial check and the row write), so there is one place to
+put the condition. The Add-device form field would follow the same flag.
+
+### Still open — need the customer
+
+- **The model list.** ST-3DH, ST-1DH, ST-3TL, ST-33TL — the owner asked for this
+  question to be put more precisely. Restated: *is that list complete for the
+  full version, and does each of those four already have a working driver, or
+  are they models we would have to build support for?* Only ST-3CL carries
+  `ดึงได้แล้ว` in the customer's own notes.
+- Everything else in this brief's consolidated list.
+
+---
+
+## Answers — round 2, 2026-09-08 (owner)
+
+### E2 — the model list
+
+**Only ST-3CL has a working driver today.** The owner's instruction: lay the
+structure out for the other four (ST-3DH, ST-1DH, ST-3TL, ST-33TL) ahead of time.
+
+**This needs an explicit decision, because the catalog is a locked artefact.**
+CLAUDE.md: *"OBIS/register maps and the catalog are copied from v1 verbatim —
+never improve, rename or reformat"*, and ADR 0011 reverses that lock for the
+three capability booleans **only**, keeping "keys, brands, order and fixed
+passwords" frozen. Adding four model keys is a change to the locked part.
+
+There is precedent that makes it workable: the Add-device form already
+distinguishes *"(not licensed on this machine)"* from *"(no driver in this
+build)"*, so a catalog entry with no driver is a state the UI can already say out
+loud. What is missing is the decision to create such entries deliberately.
+
+ADR 0011's own rule is the thing to hold on to: **a capability flag turns on from
+a meter, never a datasheet.** Scaffolding a model key is fine; declaring what it
+supports before anyone has read one is not.
+
+### E3 — Special Days, resolved
+
+The customer's answer is **"add it into the database"**. That is what the glossary
+already anticipates: a Holiday is ours and lives in our database; a Special Day is
+the meter's and is never written. `db/models.py:474` `Holiday` already exists,
+machine-wide, with `kind` of `public` (one exact date) or `annual` (month + day).
+
+So **the invariant is not challenged at all.** The work is the *import* path the
+glossary already describes — read a meter's Special Days, offer them as the
+starting set of Holidays — not a write to the meter.
+
+### It does NOT follow that the Energy Summary must be stored
+
+The owner asked whether adding Holidays to the database means the Energy Summary
+must be stored too. **No — the opposite.** ADR 0012 makes the Energy Summary
+derived on every request *precisely so that* adding a Holiday today changes what
+last January reports. Holidays are the input a human enters late; the summary is
+arithmetic over rows we already hold.
+
+Store the summary and the Holiday table stops being able to correct the past:
+you would have saved numbers that contradict the rules they were computed from,
+with nothing to say which is right. **Adding Holidays to the database is the
+reason not to store the summary, not a reason to.**
+
+The owner's earlier answer stands unchanged: the Energy Summary is **saved as a
+file** when an operator asks for one. A file is a snapshot somebody chose to take,
+not a cache the application reads back — ADR 0012 is untouched by it.

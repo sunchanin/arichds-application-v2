@@ -1,0 +1,958 @@
+{
+  "kind": "xlsx",
+  "sheets": [
+    {
+      "index": 1,
+      "name": "LP",
+      "state": "visible",
+      "dimension": "A1:Y17",
+      "text_cells": 34,
+      "non_empty_cells": 38,
+      "images": [],
+      "blocks": [
+        {
+          "range": "A1:B5",
+          "rows": 5,
+          "cols": 2,
+          "cells": 9,
+          "preview": [
+            [
+              "Customer :",
+              "LPH"
+            ],
+            [
+              "Site Name :",
+              "LPH Days1"
+            ],
+            [
+              "Serial Meter :",
+              "WP076996"
+            ],
+            [
+              "Setting :",
+              1
+            ]
+          ]
+        },
+        {
+          "range": "A7:Y10",
+          "rows": 4,
+          "cols": 25,
+          "cells": 28,
+          "preview": [
+            [
+              "Name",
+              "Date/Time",
+              "Import kWh Active",
+              "Import kWh Reactive",
+              "Export kWh Active",
+              "Export kWh Reactive",
+              "(Average Power Factor Avg",
+              "Voltage L1 (V)",
+              "Voltage L2 (V)",
+              "Voltage L3 (V)",
+              "Current L1 (A)",
+              "Current L2(B)",
+              "Current L3 (C)",
+              "Avg Phase Angle Ph-A",
+              "Avg Phase Angle Ph-B",
+              "Avg Phase Angle Ph-C",
+              "Frequency (Hz)",
+              "Record Status",
+              "Import kW Active",
+              "Import kVar Reactive",
+              "Export kW Active",
+              "Export kVar Reactive",
+              "Voltage L1-L2 ",
+              "Voltage L2-L3",
+              "Voltage L3-L1"
+            ],
+            [
+              null,
+              "2025-04-01 00:00:00",
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            [
+              null,
+              "2025-04-01 00:15:00",
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            [
+              null,
+              "2025-04-01 00:30:00",
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          ]
+        },
+        {
+          "range": "B17:B17",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "**** เพิ่มดึงคือสีแดงด้านหลัง"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "A1",
+          "value": "Customer :"
+        },
+        {
+          "ref": "B1",
+          "value": "LPH"
+        },
+        {
+          "ref": "A2",
+          "value": "Site Name :"
+        },
+        {
+          "ref": "B2",
+          "value": "LPH Days1"
+        },
+        {
+          "ref": "A3",
+          "value": "Serial Meter :"
+        },
+        {
+          "ref": "B3",
+          "value": "WP076996"
+        },
+        {
+          "ref": "A4",
+          "value": "Setting :"
+        },
+        {
+          "ref": "B4",
+          "value": 1
+        },
+        {
+          "ref": "A5",
+          "value": "Load Profile :"
+        },
+        {
+          "ref": "A7",
+          "value": "Name"
+        },
+        {
+          "ref": "B7",
+          "value": "Date/Time"
+        },
+        {
+          "ref": "C7",
+          "value": "Import kWh Active"
+        },
+        {
+          "ref": "D7",
+          "value": "Import kWh Reactive"
+        },
+        {
+          "ref": "E7",
+          "value": "Export kWh Active"
+        },
+        {
+          "ref": "F7",
+          "value": "Export kWh Reactive"
+        },
+        {
+          "ref": "G7",
+          "value": "(Average Power Factor Avg"
+        },
+        {
+          "ref": "H7",
+          "value": "Voltage L1 (V)"
+        },
+        {
+          "ref": "I7",
+          "value": "Voltage L2 (V)"
+        },
+        {
+          "ref": "J7",
+          "value": "Voltage L3 (V)"
+        },
+        {
+          "ref": "K7",
+          "value": "Current L1 (A)"
+        },
+        {
+          "ref": "L7",
+          "value": "Current L2(B)"
+        },
+        {
+          "ref": "M7",
+          "value": "Current L3 (C)"
+        },
+        {
+          "ref": "N7",
+          "value": "Avg Phase Angle Ph-A"
+        },
+        {
+          "ref": "O7",
+          "value": "Avg Phase Angle Ph-B"
+        },
+        {
+          "ref": "P7",
+          "value": "Avg Phase Angle Ph-C"
+        },
+        {
+          "ref": "Q7",
+          "value": "Frequency (Hz)"
+        },
+        {
+          "ref": "R7",
+          "value": "Record Status"
+        },
+        {
+          "ref": "S7",
+          "value": "Import kW Active"
+        },
+        {
+          "ref": "T7",
+          "value": "Import kVar Reactive"
+        },
+        {
+          "ref": "U7",
+          "value": "Export kW Active"
+        },
+        {
+          "ref": "V7",
+          "value": "Export kVar Reactive"
+        },
+        {
+          "ref": "W7",
+          "value": "Voltage L1-L2 "
+        },
+        {
+          "ref": "X7",
+          "value": "Voltage L2-L3"
+        },
+        {
+          "ref": "Y7",
+          "value": "Voltage L3-L1"
+        },
+        {
+          "ref": "B8",
+          "value": {
+            "iso": "2025-04-01 00:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "B9",
+          "value": {
+            "iso": "2025-04-01 00:15:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "B10",
+          "value": {
+            "iso": "2025-04-01 00:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "B17",
+          "value": "**** เพิ่มดึงคือสีแดงด้านหลัง"
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "name": "BL",
+      "state": "visible",
+      "dimension": "A1:X16",
+      "text_cells": 57,
+      "non_empty_cells": 114,
+      "images": [],
+      "blocks": [
+        {
+          "range": "A2:B6",
+          "rows": 5,
+          "cols": 2,
+          "cells": 9,
+          "preview": [
+            [
+              "Customer :",
+              "LPH"
+            ],
+            [
+              "Site Name :",
+              "LPH Days1"
+            ],
+            [
+              "Serial Meter :",
+              "WP076996"
+            ],
+            [
+              "Setting :",
+              1
+            ]
+          ]
+        },
+        {
+          "range": "A8:X12",
+          "rows": 5,
+          "cols": 24,
+          "cells": 104,
+          "preview": [
+            [
+              "Record No",
+              "Time",
+              "111 Billing total kWh Total",
+              "010 Billing total kWh Rate A",
+              "020 Billing total kWh Rate B",
+              "030 Billing total kWh Rate C",
+              "Billing total Export kWh Total",
+              "Billing total Export  kWh Rate A",
+              "Billing total  Export  kWh Rate B",
+              "Billing total  Export  kWh Rate C",
+              "050 Previous kW demand Rate A",
+              "050T Previous Time of kW deman",
+              "060 Previous kW demand Rate B",
+              "060T Previous Time of kW deman",
+              "070 Previous kW demand Rate C",
+              "070T Previous Time of kW deman",
+              "015 Cumul kW demand Rate A",
+              "016 Cumul kW demand Rate B",
+              "017 Cumul kW demand Rate C",
+              "222 Billing total Varh Total",
+              "280 Previous Var demand Total",
+              "280T Previous Time of Var dem",
+              "118 Cumul Var demand Total",
+              "Record Status"
+            ],
+            [
+              1,
+              "5/1/2025 00:00",
+              9587.1515,
+              6205.1097,
+              652.9037,
+              2729.1381,
+              null,
+              null,
+              null,
+              null,
+              33.5685,
+              "4/13/2025 12:45",
+              19.7535,
+              "4/2/2025 19:00",
+              32.5495,
+              "4/2/2025 19:00",
+              62.6183,
+              35.3778,
+              60.7051,
+              132.4406,
+              0.8198,
+              "4/4/2025 06:30",
+              1633.5832,
+              ".........."
+            ],
+            [
+              2,
+              "6/1/2025 00:00",
+              14336.9229,
+              8961.9877,
+              997.4511,
+              4377.4841,
+              null,
+              null,
+              null,
+              null,
+              33.153,
+              "5/18/2025 11:45",
+              22.7075,
+              "5/9/2025 19:15",
+              32.8489,
+              "5/9/2025 19:15",
+              95.7713,
+              58.0853,
+              93.554,
+              204.9894,
+              0.8168,
+              "5/20/2025 06:15",
+              2450.3736,
+              ".........."
+            ],
+            [
+              3,
+              "7/1/2025 00:00",
+              19046.5419,
+              11701.5162,
+              1388.6437,
+              5956.382,
+              null,
+              null,
+              null,
+              null,
+              32.4089,
+              "6/3/2025 12:15",
+              21.7453,
+              "6/28/2025 19:30",
+              31.3578,
+              "6/19/2025 19:30",
+              128.1802,
+              79.8305,
+              124.9118,
+              271.6662,
+              0.8106,
+              "6/27/2025 06:15",
+              3261.0236,
+              ".........."
+            ]
+          ]
+        },
+        {
+          "range": "G16:G16",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "**** เพิ่มดึงคือสีแดง"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "A2",
+          "value": "Customer :"
+        },
+        {
+          "ref": "B2",
+          "value": "LPH"
+        },
+        {
+          "ref": "A3",
+          "value": "Site Name :"
+        },
+        {
+          "ref": "B3",
+          "value": "LPH Days1"
+        },
+        {
+          "ref": "A4",
+          "value": "Serial Meter :"
+        },
+        {
+          "ref": "B4",
+          "value": "WP076996"
+        },
+        {
+          "ref": "A5",
+          "value": "Setting :"
+        },
+        {
+          "ref": "B5",
+          "value": 1
+        },
+        {
+          "ref": "A6",
+          "value": "Billing :"
+        },
+        {
+          "ref": "A8",
+          "value": "Record No"
+        },
+        {
+          "ref": "B8",
+          "value": "Time"
+        },
+        {
+          "ref": "C8",
+          "value": "111 Billing total kWh Total"
+        },
+        {
+          "ref": "D8",
+          "value": "010 Billing total kWh Rate A"
+        },
+        {
+          "ref": "E8",
+          "value": "020 Billing total kWh Rate B"
+        },
+        {
+          "ref": "F8",
+          "value": "030 Billing total kWh Rate C"
+        },
+        {
+          "ref": "G8",
+          "value": "Billing total Export kWh Total"
+        },
+        {
+          "ref": "H8",
+          "value": "Billing total Export  kWh Rate A"
+        },
+        {
+          "ref": "I8",
+          "value": "Billing total  Export  kWh Rate B"
+        },
+        {
+          "ref": "J8",
+          "value": "Billing total  Export  kWh Rate C"
+        },
+        {
+          "ref": "K8",
+          "value": "050 Previous kW demand Rate A"
+        },
+        {
+          "ref": "L8",
+          "value": "050T Previous Time of kW deman"
+        },
+        {
+          "ref": "M8",
+          "value": "060 Previous kW demand Rate B"
+        },
+        {
+          "ref": "N8",
+          "value": "060T Previous Time of kW deman"
+        },
+        {
+          "ref": "O8",
+          "value": "070 Previous kW demand Rate C"
+        },
+        {
+          "ref": "P8",
+          "value": "070T Previous Time of kW deman"
+        },
+        {
+          "ref": "Q8",
+          "value": "015 Cumul kW demand Rate A"
+        },
+        {
+          "ref": "R8",
+          "value": "016 Cumul kW demand Rate B"
+        },
+        {
+          "ref": "S8",
+          "value": "017 Cumul kW demand Rate C"
+        },
+        {
+          "ref": "T8",
+          "value": "222 Billing total Varh Total"
+        },
+        {
+          "ref": "U8",
+          "value": "280 Previous Var demand Total"
+        },
+        {
+          "ref": "V8",
+          "value": "280T Previous Time of Var dem"
+        },
+        {
+          "ref": "W8",
+          "value": "118 Cumul Var demand Total"
+        },
+        {
+          "ref": "X8",
+          "value": "Record Status"
+        },
+        {
+          "ref": "A9",
+          "value": 1
+        },
+        {
+          "ref": "B9",
+          "value": "5/1/2025 00:00"
+        },
+        {
+          "ref": "C9",
+          "value": 9587.1515
+        },
+        {
+          "ref": "D9",
+          "value": 6205.1097
+        },
+        {
+          "ref": "E9",
+          "value": 652.9037
+        },
+        {
+          "ref": "F9",
+          "value": 2729.1381
+        },
+        {
+          "ref": "K9",
+          "value": 33.5685
+        },
+        {
+          "ref": "L9",
+          "value": "4/13/2025 12:45"
+        },
+        {
+          "ref": "M9",
+          "value": 19.7535
+        },
+        {
+          "ref": "N9",
+          "value": "4/2/2025 19:00"
+        },
+        {
+          "ref": "O9",
+          "value": 32.5495
+        },
+        {
+          "ref": "P9",
+          "value": "4/2/2025 19:00"
+        },
+        {
+          "ref": "Q9",
+          "value": 62.6183
+        },
+        {
+          "ref": "R9",
+          "value": 35.3778
+        },
+        {
+          "ref": "S9",
+          "value": 60.7051
+        },
+        {
+          "ref": "T9",
+          "value": 132.4406
+        },
+        {
+          "ref": "U9",
+          "value": 0.8198
+        },
+        {
+          "ref": "V9",
+          "value": "4/4/2025 06:30"
+        },
+        {
+          "ref": "W9",
+          "value": 1633.5832
+        },
+        {
+          "ref": "X9",
+          "value": ".........."
+        },
+        {
+          "ref": "A10",
+          "value": 2
+        },
+        {
+          "ref": "B10",
+          "value": "6/1/2025 00:00"
+        },
+        {
+          "ref": "C10",
+          "value": 14336.9229
+        },
+        {
+          "ref": "D10",
+          "value": 8961.9877
+        },
+        {
+          "ref": "E10",
+          "value": 997.4511
+        },
+        {
+          "ref": "F10",
+          "value": 4377.4841
+        },
+        {
+          "ref": "K10",
+          "value": 33.153
+        },
+        {
+          "ref": "L10",
+          "value": "5/18/2025 11:45"
+        },
+        {
+          "ref": "M10",
+          "value": 22.7075
+        },
+        {
+          "ref": "N10",
+          "value": "5/9/2025 19:15"
+        },
+        {
+          "ref": "O10",
+          "value": 32.8489
+        },
+        {
+          "ref": "P10",
+          "value": "5/9/2025 19:15"
+        },
+        {
+          "ref": "Q10",
+          "value": 95.7713
+        },
+        {
+          "ref": "R10",
+          "value": 58.0853
+        },
+        {
+          "ref": "S10",
+          "value": 93.554
+        },
+        {
+          "ref": "T10",
+          "value": 204.9894
+        },
+        {
+          "ref": "U10",
+          "value": 0.8168
+        },
+        {
+          "ref": "V10",
+          "value": "5/20/2025 06:15"
+        },
+        {
+          "ref": "W10",
+          "value": 2450.3736
+        },
+        {
+          "ref": "X10",
+          "value": ".........."
+        },
+        {
+          "ref": "A11",
+          "value": 3
+        },
+        {
+          "ref": "B11",
+          "value": "7/1/2025 00:00"
+        },
+        {
+          "ref": "C11",
+          "value": 19046.5419
+        },
+        {
+          "ref": "D11",
+          "value": 11701.5162
+        },
+        {
+          "ref": "E11",
+          "value": 1388.6437
+        },
+        {
+          "ref": "F11",
+          "value": 5956.382
+        },
+        {
+          "ref": "K11",
+          "value": 32.4089
+        },
+        {
+          "ref": "L11",
+          "value": "6/3/2025 12:15"
+        },
+        {
+          "ref": "M11",
+          "value": 21.7453
+        },
+        {
+          "ref": "N11",
+          "value": "6/28/2025 19:30"
+        },
+        {
+          "ref": "O11",
+          "value": 31.3578
+        },
+        {
+          "ref": "P11",
+          "value": "6/19/2025 19:30"
+        },
+        {
+          "ref": "Q11",
+          "value": 128.1802
+        },
+        {
+          "ref": "R11",
+          "value": 79.8305
+        },
+        {
+          "ref": "S11",
+          "value": 124.9118
+        },
+        {
+          "ref": "T11",
+          "value": 271.6662
+        },
+        {
+          "ref": "U11",
+          "value": 0.8106
+        },
+        {
+          "ref": "V11",
+          "value": "6/27/2025 06:15"
+        },
+        {
+          "ref": "W11",
+          "value": 3261.0236
+        },
+        {
+          "ref": "X11",
+          "value": ".........."
+        },
+        {
+          "ref": "A12",
+          "value": 4
+        },
+        {
+          "ref": "B12",
+          "value": "8/1/2025 00:00"
+        },
+        {
+          "ref": "C12",
+          "value": 23040.8535
+        },
+        {
+          "ref": "D12",
+          "value": 14067.8637
+        },
+        {
+          "ref": "E12",
+          "value": 1665.4875
+        },
+        {
+          "ref": "F12",
+          "value": 7307.5023
+        },
+        {
+          "ref": "K12",
+          "value": 32.7831
+        },
+        {
+          "ref": "L12",
+          "value": "7/12/2025 13:00"
+        },
+        {
+          "ref": "M12",
+          "value": 20.5917
+        },
+        {
+          "ref": "N12",
+          "value": "7/27/2025 19:15"
+        },
+        {
+          "ref": "O12",
+          "value": 32.709
+        },
+        {
+          "ref": "P12",
+          "value": "7/22/2025 19:15"
+        },
+        {
+          "ref": "Q12",
+          "value": 160.9633
+        },
+        {
+          "ref": "R12",
+          "value": 100.4222
+        },
+        {
+          "ref": "S12",
+          "value": 157.6209
+        },
+        {
+          "ref": "T12",
+          "value": 347.8208
+        },
+        {
+          "ref": "U12",
+          "value": 0.8143
+        },
+        {
+          "ref": "V12",
+          "value": "7/1/2025 06:30"
+        },
+        {
+          "ref": "W12",
+          "value": 4075.3136
+        },
+        {
+          "ref": "X12",
+          "value": ".........."
+        },
+        {
+          "ref": "G16",
+          "value": "**** เพิ่มดึงคือสีแดง"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "sheets": 2,
+    "text_cells": 91,
+    "images": 0
+  },
+  "source": {
+    "original_path": "C:\\Users\\HP\\Downloads\\ตัวอย่างไฟล์.xlsx",
+    "copied_to": ".scratch\\export-file-samples\\source\\ตัวอย่างไฟล์.xlsx",
+    "sha256": "1b2bc79d14eaca76a176c4191c74ceeeb786061eaee4634b34d09ebefdfe8968",
+    "size_bytes": 12134,
+    "extracted_at": "2026-09-08T12:42:45"
+  }
+}
