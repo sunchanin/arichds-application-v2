@@ -74,6 +74,13 @@ class BillingReadResult:
         open_updated: Whether the device's Open Period slot was inserted or
             changed by this read.
         error: An operator-facing sentence, or None. Never contains a password.
+        captured: How many **captures** this read wrote — one per newly
+            inserted closed period that produced a document (issue 02).
+            Deliberately not derivable from :attr:`stored`: with captures
+            switched off (no capture folder, or no ``auto_capture``
+            entitlement) periods are stored and nothing is written at all,
+            and a capture that fails is logged and swallowed rather than
+            failing the read. Always ``0`` when nothing was written.
         skipped: True when a **background** read gave the Transport Endpoint
             up rather than queue for it (ADR 0006). Not a failure and never an
             ``error``. Only the background path can set it.
@@ -83,6 +90,7 @@ class BillingReadResult:
     stored: int
     open_updated: bool
     error: str | None
+    captured: int = 0
     skipped: bool = False
 
 
@@ -181,10 +189,9 @@ def read_and_store_billing(
     # §3.6, decision 11) — capture is eager but must never make a meter read
     # wait on a network share, and must never hold the endpoint a moment
     # longer than the read itself needs it.
-    if new_closed_ids:
-        _capture_new_closed_periods(new_closed_ids, device_name)
+    captured = _capture_new_closed_periods(new_closed_ids, device_name) if new_closed_ids else 0
 
-    return BillingReadResult(supported=True, stored=stored, open_updated=open_updated, error=error)
+    return BillingReadResult(supported=True, stored=stored, open_updated=open_updated, error=error, captured=captured)
 
 
 def _read_while_holding(
@@ -238,7 +245,7 @@ def _read_while_holding(
     return stored, open_updated, new_closed_ids, None
 
 
-def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> None:
+def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> int:
     """Render and write captures for newly-inserted closed periods (decision
     11, SPEC §3.6, issue #22).
 
@@ -255,23 +262,30 @@ def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> Non
     A capture failure is logged and never propagates: a meter read that
     succeeded must not be reported as failed because a network share was
     unavailable or a row went missing between commit and this call.
+
+    Returns:
+        How many captures were actually written (issue 02) — ``0`` from every
+        early return below, and one short of the total for each period whose
+        render raised. This is what the operator's confirmation reports, so it
+        must never count a document that does not exist.
     """
     settings = get_settings()
     license_service = current_license_service()
     if not feature_enabled("auto_capture", license_service=license_service, settings=settings):
-        return
+        return 0
 
     with session_scope() as session:
         capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
         display_unit_scale = get_setting(session, DISPLAY_UNIT_SCALE_KEY, DISPLAY_UNIT_SCALE_DEFAULT)
     if not capture_dir_str.strip():
         logger.debug("Capture skipped for %s — capture_dir is not configured", device_name)
-        return
+        return 0
 
     capture_dir = Path(capture_dir_str)
     write_excel = feature_enabled("billing_excel_export", license_service=license_service, settings=settings)
     write_image = feature_enabled("billing_image_export", license_service=license_service, settings=settings)
 
+    written = 0
     for reading_id in reading_ids:
         try:
             with session_scope() as session:
@@ -286,8 +300,10 @@ def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> Non
                     write_image=write_image,
                     scale=display_unit_scale,
                 )
+                written += 1
         except Exception:  # noqa: BLE001 — capture must never fail the read that produced the row.
             logger.exception("Capture failed for %s reading id %s", device_name, reading_id)
+    return written
 
 
 def billing_change_check(driver: MeterDriver, device_id: int) -> bool:

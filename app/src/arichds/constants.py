@@ -95,6 +95,21 @@ LOAD_PROFILE_INTERVAL_SEC: Final[int] = 900
 # once, not to make this interval redundant with it.
 BILLING_INTERVAL_SEC: Final[int] = 86400
 
+# How stale a device's latest **closed** Bill Date may be before the
+# All-Meters View reports it as `Behind` (issue 01, spec "Status").
+#
+# **The assumption this number encodes: no customer runs a billing cycle
+# longer than a month.** 35 days is one month plus the slack a 31-day month
+# and a late read need; a quarterly cycle would report every healthy meter as
+# Behind, and this constant is the one place that breaks.
+#
+# Deliberately NOT derived from the per-device `bill_day_*` configuration that
+# already exists on the device row. That path is more precise, but it depends
+# on the configuration being correct — and when the configuration is wrong it
+# would *hide* the problem, while wrong configuration is itself a cause worth
+# seeing.
+BILLING_BEHIND_DAYS: Final[int] = 35
+
 # ─── Battery (SPEC §3.7, M7-2, issue #29) ──────────────────────────────────────
 # How often the Scheduler runs the battery cycle over every device. D1: the
 # interval is one hour, not one day, because of `locks.py::try_acquire_background`

@@ -490,3 +490,44 @@ class TestReadNow:
             assert device is not None
             after = (device.status, device.status_checked_at, device.consecutive_failures)
         assert after == before
+
+
+class TestReadNowReportsCaptures:
+    """The manual read's confirmation carries the **captures written**
+    alongside the periods stored (issue 02).
+
+    The two are not the same number: with no capture folder configured
+    captures are switched off, so periods are stored and no documents are
+    produced at all — and the message read as though they were.
+    """
+
+    def test_the_response_carries_a_capture_count(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        from arichds.acquisition.drivers.base import BillingReading
+
+        device_id = add_device(admin_client, fake_meter)
+        fake_meter.billing_rows = [
+            BillingReading(bill_date=BASE, source="dlms", is_open=False, meter_serial="1232002893")
+        ]
+
+        response = admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["captured"] == 0, "no capture folder is configured in this fixture"
+
+    def test_the_count_is_carried_through_from_the_read_path(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The endpoint reports what the read path counted — it must not
+        re-derive the number from ``stored`` or from the capture setting,
+        which is not loaded for non-admin roles at all."""
+        from arichds.acquisition.billing import BillingReadResult
+
+        def spy(device_id: int, **kwargs: object) -> BillingReadResult:
+            return BillingReadResult(supported=True, stored=3, open_updated=False, error=None, captured=2)
+
+        monkeypatch.setattr("arichds.api.billing.read_and_store_billing", spy)
+        device_id = add_device(admin_client, fake_meter)
+
+        body = admin_client.post(f"/api/billing/read?device_id={device_id}").json()["data"]
+
+        assert (body["stored"], body["captured"]) == (3, 2)

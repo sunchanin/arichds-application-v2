@@ -1,4 +1,4 @@
-import { App, Button, Card, DatePicker, Empty, Flex, Form, Input, Select, Space, Table, Tabs, Tooltip } from "antd";
+import { App, Badge, Button, Card, DatePicker, Empty, Flex, Form, Input, Select, Space, Table, Tabs, Tag, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { TabsProps } from "antd/es/tabs";
 import dayjs, { type Dayjs } from "dayjs";
@@ -9,6 +9,9 @@ import {
   api,
   downloadBillingImage,
   isLicenseLapsed,
+  type AllMetersRow,
+  type AllMetersStatus,
+  type AllMetersView,
   type BillingPage as BillingPageData,
   type BillingRow,
   type BillingSettings,
@@ -152,17 +155,101 @@ function buildColumns(scale: DisplayUnitScale, showIdentityColumns: boolean): Co
 /** Sum every **leaf** column's width — a grouped header column has no width
  * of its own, only its `children` do (D20's `scroll={{ x: tableWidth }}`
  * still needs the true total so the page body never scrolls sideways). */
-function totalLeafWidth(columns: ColumnsType<BillingRow>): number {
+function totalLeafWidth<Row>(columns: ColumnsType<Row>): number {
   return columns.reduce((sum, column) => {
-    if ("children" in column && column.children) return sum + totalLeafWidth(column.children as ColumnsType<BillingRow>);
+    if ("children" in column && column.children) return sum + totalLeafWidth(column.children as ColumnsType<Row>);
     return sum + (Number(column.width) || 0);
   }, 0);
 }
 
-const TAB_ITEMS: TabsProps["items"] = [
-  { key: "closed", label: "History" },
-  { key: "open", label: "Current" },
-];
+/** Which tab is showing. The first two are `GET /api/billing`'s own `status`
+ * values; `all` is the All-Meters View, which is a different endpoint with no
+ * parameters at all (issue 01). */
+type BillingTab = BillingStatus | typeof ALL_METERS;
+
+const ALL_METERS = "all";
+
+/** How each All-Meters status renders (issue 01).
+ *
+ * Uncoloured for the two that need no alarm, matching `Battery.tsx`'s rule
+ * that a Tag carries colour only when the colour means something. `Paused` is
+ * deliberately as quiet as `OK`: it is a state an operator chose, not a fault,
+ * and it is excluded from the attention counter for the same reason. */
+const STATUS_PRESENTATION: Record<AllMetersStatus, { color?: string; label: string }> = {
+  not_answering: { color: "error", label: "Not answering" },
+  never_billed: { color: "warning", label: "Never billed" },
+  behind: { color: "warning", label: "Behind" },
+  ok: { label: "OK" },
+  paused: { label: "Paused" },
+};
+
+/** The chip for one row — the label plus the number the status carries, if
+ * it carries one (consecutive failures, or whole days behind). */
+function statusChip(row: AllMetersRow) {
+  const { color, label } = STATUS_PRESENTATION[row.status];
+  const suffix =
+    row.status === "not_answering"
+      ? ` · ${row.status_value} failed read${row.status_value === 1 ? "" : "s"}`
+      : row.status === "behind"
+        ? ` · ${row.status_value} days`
+        : "";
+  return <Tag color={color}>{`${label}${suffix}`}</Tag>;
+}
+
+/** Format an instant, or an em dash where there is none. */
+const stamp = (value: string | null): string => (value == null ? NOTHING : dayjs(value).format("YYYY-MM-DD HH:mm"));
+
+/** The All-Meters View's seven columns (issue 01).
+ *
+ * `scale` reaches the two measurement columns for the same reason it reaches
+ * every other rendered number (ADR 0013): a value and its unit label must
+ * never move independently. */
+function allMetersColumns(scale: DisplayUnitScale): ColumnsType<AllMetersRow> {
+  return [
+    { title: "Device", dataIndex: "device_name", key: "device_name", width: 200 },
+    {
+      title: "Meter Serial",
+      dataIndex: "meter_serial",
+      key: "meter_serial",
+      width: 150,
+      render: (value: string | null) => value ?? NOTHING,
+    },
+    {
+      title: "Bill Date",
+      dataIndex: "bill_date",
+      key: "bill_date",
+      width: 170,
+      render: stamp,
+    },
+    {
+      title: `Import Active (${unitLabel("energy", scale)})`,
+      dataIndex: "import_active_kwh_total",
+      key: "import_active_kwh_total",
+      width: 150,
+      render: (value: number | null) => num3(scaleValue(value, scale) ?? null),
+    },
+    {
+      title: `Export Active (${unitLabel("energy", scale)})`,
+      dataIndex: "export_active_kwh_total",
+      key: "export_active_kwh_total",
+      width: 150,
+      render: (value: number | null) => num3(scaleValue(value, scale) ?? null),
+    },
+    {
+      title: "Captured",
+      dataIndex: "captured_at",
+      key: "captured_at",
+      width: 170,
+      render: stamp,
+    },
+    {
+      title: "Status",
+      key: "status",
+      width: 190,
+      render: (_: unknown, row: AllMetersRow) => statusChip(row),
+    },
+  ];
+}
 
 /**
  * Admin-only `capture_dir` form (M6b, issue #22).
@@ -280,7 +367,7 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   const scale = useDisplayUnitScale();
 
   const [devices, setDevices] = useState<Device[]>([]);
-  const [tab, setTab] = useState<BillingStatus>("closed");
+  const [tab, setTab] = useState<BillingTab>("closed");
   // Seeded from the capture request (ADR 0017, issue #38, decision 4) when
   // present — the page is driven by seeded state, not by clicking, because
   // exactly ten periods is unreachable through the UI and the `bill_date`
@@ -313,6 +400,17 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   useEffect(() => {
     api.listDevices().then(setDevices).catch((err: unknown) => surface(err, "Could not load the device list."));
   }, [surface]);
+
+  // The All-Meters View (issue 01). Loaded whichever tab is showing, because
+  // its `needs_attention` count lives on the *tab header* — it is what tells
+  // an operator whether to open the tab at all, so fetching it only once the
+  // tab is open would make the count useless.
+  //
+  // Not loaded in capture mode: the headless renderer photographs one
+  // device's History (ADR 0017), and a fleet-wide request has nothing to do
+  // with the document it is producing.
+  const [allMeters, setAllMeters] = useState<AllMetersView | null>(null);
+  const [allMetersLoading, setAllMetersLoading] = useState(false);
 
   const deviceOptions = useMemo(
     () => [
@@ -372,7 +470,16 @@ export function Billing({ role }: { role: "admin" | "user" }) {
           parts.push(`${result.stored} closed billing period${result.stored === 1 ? "" : "s"}`);
         }
         if (result.open_updated) parts.push("the Open Period");
-        message.success(parts.length > 0 ? `Stored ${parts.join(" and ")}.` : "No new billing periods to store.");
+        // The capture count comes from the read path (issue 02), never from
+        // `stored` and never inferred here from the capture-folder setting —
+        // that setting is not loaded for non-admin roles at all. Saying
+        // "and 0 captures" out loud is the point: with no capture folder set,
+        // periods store and no documents are written, and the old message
+        // read as though they had been.
+        const captures = `${result.captured} capture${result.captured === 1 ? "" : "s"} written`;
+        message.success(
+          parts.length > 0 ? `Stored ${parts.join(" and ")} — ${captures}.` : "No new billing periods to store.",
+        );
         setRefreshTick((tick) => tick + 1);
       })
       .catch((err: unknown) => surface(err, "Could not read the billing buffer."))
@@ -380,9 +487,17 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   }, [deviceId, message, surface]);
 
   const onTabChange = (key: string) => {
-    setTab(key as BillingStatus);
+    setTab(key as BillingTab);
     setPage(1);
   };
+
+  /** Clicking a row opens that meter's History — what keeps this table
+   * narrow enough to scan (issue 01). */
+  const onAllMetersRowClick = useCallback((row: AllMetersRow) => {
+    setDeviceId(row.device_id);
+    setTab("closed");
+    setPage(1);
+  }, []);
 
   const onDeviceChange = (value: number | typeof ALL) => {
     setDeviceId(value === ALL ? undefined : value);
@@ -416,6 +531,9 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   const shown = loaded?.scope === scope ? loaded.page : null;
 
   useEffect(() => {
+    // The All-Meters tab is a different endpoint with no parameters — its own
+    // effect below owns it, and this paged list has nothing to fetch for it.
+    if (tab === ALL_METERS) return;
     let current = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
@@ -444,72 +562,144 @@ export function Billing({ role }: { role: "admin" | "user" }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, deviceId, startIso, endIso, meterSerial, page, pageSize, surface, refreshTick]);
 
+  useEffect(() => {
+    if (captureRequest) return;
+    let current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAllMetersLoading(true);
+    void api
+      .billingAllMeters()
+      .then((result) => {
+        if (current) setAllMeters(result);
+      })
+      .catch((err: unknown) => {
+        if (current) {
+          setAllMeters(null);
+          surface(err, "Could not load the All-Meters View.");
+        }
+      })
+      .finally(() => {
+        if (current) setAllMetersLoading(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [surface, refreshTick]);
+
+  const allMetersCols = useMemo(() => allMetersColumns(scale), [scale]);
+
+  // The All-Meters tab is hidden in capture mode for the same reason the
+  // capture-folder form and Read now are (issues #38/#44): the headless
+  // renderer photographs one device's History, and a fleet-wide tab has no
+  // place in a document a human carries to one customer.
+  const tabItems: TabsProps["items"] = [
+    { key: "closed", label: "History" },
+    { key: "open", label: "Current" },
+    ...(captureRequest
+      ? []
+      : [
+          {
+            key: ALL_METERS,
+            label: (
+              <Space size="small">
+                All Meters
+                <Badge count={allMeters?.needs_attention ?? 0} />
+              </Space>
+            ),
+          },
+        ]),
+  ];
+
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       {/* Hidden in capture mode (decision 8, issue #38): the folder path is
           for a human admin, not for what the headless renderer photographs. */}
       {role === "admin" && !captureRequest ? <CaptureSettingsCard surface={surface} /> : null}
-      <Tabs activeKey={tab} onChange={onTabChange} items={TAB_ITEMS} />
-      <Card size="small">
-        <Flex gap="small" wrap align="center">
-          <Select
-            value={deviceId ?? ALL}
-            onChange={onDeviceChange}
-            options={deviceOptions}
-            style={{ minWidth: 260 }}
-            aria-label="Device"
-          />
-          <RangePicker
-            value={range}
-            onChange={onRangeChange}
-            allowClear
-            placeholder={["Bill date from", "Bill date to"]}
-            disabledDate={(current) => current.isAfter(dayjs().endOf("day"))}
-            aria-label="Bill date range"
-          />
-          <Tooltip title="Saves the ten most recent closed periods to the capture folder and downloads a copy.">
-            <Button onClick={onDownloadImage} disabled={deviceId === undefined} loading={imageDownloading}>
-              Capture image
-            </Button>
-          </Tooltip>
-          {/* Hidden in capture mode (D13, issue #44) — a button offering to
-              talk to a meter has no place in a headless screenshot a human
-              carries to a customer (ADR 0015/0017). */}
-          {captureRequest ? null : (
-            <Button type="primary" onClick={onReadNow} loading={reading} disabled={deviceId === undefined}>
-              Read now
-            </Button>
-          )}
+      <Tabs activeKey={tab} onChange={onTabChange} items={tabItems} />
+      {/* The whole filter card is **hidden** on the All-Meters tab (issue
+          01): the device picker, the date range and the per-meter capture
+          control all contradict a tab that is every device, the latest
+          period, and no range. Hidden rather than disabled — a greyed
+          control invites the question, an absent one does not. */}
+      {tab === ALL_METERS ? null : (
+        <Card size="small">
+          <Flex gap="small" wrap align="center">
+            <Select
+              value={deviceId ?? ALL}
+              onChange={onDeviceChange}
+              options={deviceOptions}
+              style={{ minWidth: 260 }}
+              aria-label="Device"
+            />
+            <RangePicker
+              value={range}
+              onChange={onRangeChange}
+              allowClear
+              placeholder={["Bill date from", "Bill date to"]}
+              disabledDate={(current) => current.isAfter(dayjs().endOf("day"))}
+              aria-label="Bill date range"
+            />
+            <Tooltip title="Saves the ten most recent closed periods to the capture folder and downloads a copy.">
+              <Button onClick={onDownloadImage} disabled={deviceId === undefined} loading={imageDownloading}>
+                Capture image
+              </Button>
+            </Tooltip>
+            {/* Hidden in capture mode (D13, issue #44) — a button offering to
+                talk to a meter has no place in a headless screenshot a human
+                carries to a customer (ADR 0015/0017). */}
+            {captureRequest ? null : (
+              <Button type="primary" onClick={onReadNow} loading={reading} disabled={deviceId === undefined}>
+                Read now
+              </Button>
+      )}
         </Flex>
       </Card>
+      )}
       <Card size="small">
-        <Table<BillingRow>
-          size="small"
-          rowKey={(row) => row.id}
-          loading={loading}
-          dataSource={shown?.items ?? []}
-          columns={columns}
-          scroll={{ x: tableWidth }}
-          locale={{
-            emptyText: (
-              <Empty
-                description={tab === "closed" ? "No closed billing periods" : "No device has an Open Period"}
-              />
-            ),
-          }}
-          pagination={{
-            current: page,
-            pageSize,
-            total: shown?.total ?? 0,
-            showSizeChanger: true,
-            pageSizeOptions: PAGE_SIZE_OPTIONS,
-            showTotal: (total) => `${total} rows`,
-            onChange: (nextPage, nextSize) => {
-              setPage(nextPage);
-              setPageSize(nextSize);
-            },
-          }}
-        />
+        {tab === ALL_METERS ? (
+          <Table<AllMetersRow>
+            size="small"
+            rowKey={(row) => row.device_id}
+            loading={allMetersLoading}
+            dataSource={allMeters?.items ?? []}
+            columns={allMetersCols}
+            scroll={{ x: totalLeafWidth(allMetersCols) }}
+            onRow={(row) => ({
+              onClick: () => onAllMetersRowClick(row),
+              style: { cursor: "pointer" },
+            })}
+            locale={{ emptyText: <Empty description="No meters configured" /> }}
+            pagination={false}
+          />
+        ) : (
+          <Table<BillingRow>
+            size="small"
+            rowKey={(row) => row.id}
+            loading={loading}
+            dataSource={shown?.items ?? []}
+            columns={columns}
+            scroll={{ x: tableWidth }}
+            locale={{
+              emptyText: (
+                <Empty
+                  description={tab === "closed" ? "No closed billing periods" : "No device has an Open Period"}
+                />
+              ),
+            }}
+            pagination={{
+              current: page,
+              pageSize,
+              total: shown?.total ?? 0,
+              showSizeChanger: true,
+              pageSizeOptions: PAGE_SIZE_OPTIONS,
+              showTotal: (total) => `${total} rows`,
+              onChange: (nextPage, nextSize) => {
+                setPage(nextPage);
+                setPageSize(nextSize);
+              },
+            }}
+          />
+        )}
       </Card>
     </Space>
   );

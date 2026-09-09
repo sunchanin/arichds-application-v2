@@ -832,11 +832,28 @@ implementer เลือกเอง จึงต้องปิดก่อน�
 > ไม่เคยมี" เลย · M6 มีสาม: กลไกอ่านแบบ span · ตาราง `settings` · `require_feature` — บวก capture
 > อีก ~400 บรรทัดที่พอร์ตมา `/to-issues` ต้องรู้ก่อนตัดสไลซ์
 
-**หน้า Billing — สองแท็บแบบ v1** · History = รอบปิดเท่านั้น · Current = open slot เท่านั้น
+**หน้า Billing — ~~สองแท็บ~~ [สามแท็บ — ดูบรรทัดถัดจากย่อหน้านี้] แบบ v1** · History = รอบปิดเท่านั้น · Current = open slot เท่านั้น
 (แยกด้วย `record_status` ตาม ADR 0018) · แบ่งหน้าฝั่งเซิร์ฟเวอร์ · ปุ่มดาวน์โหลด capture ต่อแถว ·
 ฟอร์ม `capture_dir` (admin) · ~~**ไม่มีปุ่มคุยกับมิเตอร์บนหน้านี้** — Read now อยู่ที่หน้า Devices และ~~
 [แก้โดย issue #44 — หน้านี้มีปุ่ม Read now ของตัวเองแล้ว อ่านเฉพาะ billing buffer ทั้งก้อน (ADR
 0009) หนึ่งรอบ ไม่แตะ load profile — ซ่อนปุ่มนี้ตอนอยู่ใน capture mode]
+**แท็บที่สาม — All-Meters View** (issue 01, ticket `.scratch/capture-billing-energy/issues/`) ·
+หนึ่งแถวต่อ **device** ถือรอบ **ปิดล่าสุด** ของ device นั้น · **ไม่มีตัวกรองวันที่** และ
+**Open Period ไม่โผล่เลย** เพราะ `bill_date` ของมันขยับทุกครั้งที่อ่าน (ADR 0018) ซึ่งจะทำลาย
+สัญญาณความเก่าที่คอลัมน์ Status ยืนอยู่ · แถวมาจากตาราง devices ไม่ใช่จาก readings ⇒
+มิเตอร์ที่**ยังไม่เคยออกบิลเลย ก็ยังมีแถว** ซึ่งเป็นเคสที่แท็บนี้มีไว้เพื่อเปิดโปงพอดี ·
+Status หนึ่งชิปต่อแถว ตัดสินฝั่งเซิร์ฟเวอร์ ลำดับ `Paused` › `Not answering` ›
+(`Never billed` | `Behind`) › `OK` โดย **Behind = ค่าคงที่ `BILLING_BEHIND_DAYS` (35 วัน)**
+ไม่ใช่ `bill_day_*` ต่อ device · ตัวนับบนหัวแท็บนับแถวที่ไม่ใช่ `OK` และไม่ใช่ `Paused` ·
+**endpoint ใหม่** `GET /api/billing/all-meters` ไม่ใช่โหมดใหม่ของ `GET /api/billing` และหน่วยที่
+เอากลับมาใช้ซ้ำคือ **query ใน `db/billing_query.py`** ที่ billing export เฟสหน้าจะเรียกตรง ·
+การ์ดตัวกรอง (device · ช่วงวัน · Capture image · Read now) **ซ่อนทั้งใบ**บนแท็บนี้ ·
+แท็บนี้ถูกซ่อนตอนอยู่ใน capture mode ด้วยเหตุผลเดียวกับปุ่ม Read now
+
+**Read now บนหน้านี้บอกจำนวน capture ที่เขียนจริง** (issue 02) — `BillingReadResult.captured`
+มาจากเส้นทางอ่านเอง ไม่ใช่ `stored` และไม่ใช่การเดาจากค่า `capture_dir` ฝั่ง browser
+(non-admin ไม่ได้โหลดค่านั้น) · ไม่ตั้ง `capture_dir` = เก็บรอบได้แต่ไม่มีเอกสารออกมาเลย
+
 M6 เติม job `billing` เข้า list เดิม (§3.3) โดย **billing ที่ล้มไม่นับ strike** (มีแต่ `liveness`
 ที่แตะสถานะ device)
 

@@ -339,8 +339,63 @@ export interface BillingSettings {
 export interface BillingReadNowResult {
   /** How many closed periods this call newly inserted. */
   stored: number;
+  /**
+   * How many **captures** this call wrote (issue 02).
+   *
+   * Deliberately not derivable from `stored`: with no capture folder set (or
+   * no `auto_capture` entitlement) periods are stored and no documents are
+   * written at all. It comes from the read path rather than being inferred
+   * here from the capture-folder setting, which non-admin roles never load.
+   */
+  captured: number;
   open_updated: boolean;
   error: string | null;
+}
+
+/**
+ * What the All-Meters View says about one meter (issue 01), resolved
+ * server-side — the threshold constant lives in the backend and the planned
+ * billing export needs the same rule, so computing it here would put one rule
+ * in two languages.
+ */
+export type AllMetersStatus = "paused" | "not_answering" | "never_billed" | "behind" | "ok";
+
+/**
+ * One meter's latest **closed** period, from `GET /api/billing/all-meters`.
+ *
+ * Deliberately narrow against `BillingRow`'s sixty measurements: History is
+ * shaped for one meter across time, and that shape is unreadable across every
+ * meter at once. Clicking a row opens History for that meter instead.
+ *
+ * `bill_date` is null for a meter that has never produced a closed period —
+ * the row still exists, because the row set comes from devices, not readings.
+ * `captured_at` is null when there is no reading **and** whenever captures are
+ * switched off, since the read time would otherwise name a document nobody
+ * wrote. `status_value` is the number the chip carries: consecutive failures
+ * for `not_answering`, whole days behind for `behind`, null otherwise.
+ */
+export interface AllMetersRow {
+  device_id: number;
+  device_name: string;
+  meter_serial: string | null;
+  bill_date: string | null;
+  captured_at: string | null;
+  import_active_kwh_total: number | null;
+  export_active_kwh_total: number | null;
+  status: AllMetersStatus;
+  status_value: number | null;
+}
+
+/**
+ * The whole All-Meters View. Not paged, unlike `BillingPage` — it is bounded
+ * by device count, not by reading volume.
+ *
+ * `needs_attention` counts every row that is neither `ok` nor `paused`, and is
+ * what the tab header shows so an operator knows whether to open the tab.
+ */
+export interface AllMetersView {
+  items: AllMetersRow[];
+  needs_attention: number;
 }
 
 /**
@@ -1117,6 +1172,15 @@ export const api = {
     if (meterSerial !== undefined) params.set("meter_serial", meterSerial);
     return request<BillingPage>(`/api/billing?${params.toString()}`);
   },
+
+  /**
+   * The All-Meters View — every meter's latest closed period, one row each
+   * (issue 01). Any authenticated role, gated by the billing entitlement.
+   *
+   * No parameters at all: no device, no range, no paging. The tab is every
+   * device and the latest period, and it is bounded by device count.
+   */
+  billingAllMeters: () => request<AllMetersView>("/api/billing/all-meters"),
 
   /** The current `capture_dir` and how many closed periods exist (M6b, issue #22). */
   billingSettings: () => request<BillingSettings>("/api/billing/settings"),

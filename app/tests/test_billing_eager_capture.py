@@ -632,3 +632,112 @@ class TestPngRowSelectionD4:
         assert dates == sorted(dates, reverse=True)
         assert dates[0] == ENTRY_CLOSED.bill_date
         assert dates[-1] == min(older_dates)
+
+
+class TestTheCapturedCount:
+    """``BillingReadResult.captured`` — how many captures the read actually
+    wrote (issue 02).
+
+    Exercised through the real store path, never asserted off a fake: the
+    ``fake_meter`` fixture is autouse, so a test that took this number from a
+    stub would stay green while proving nothing. Every case below ties the
+    reported number to files on disk or to the reason none were written.
+    """
+
+    def test_it_counts_the_closed_periods_that_produced_a_capture(
+        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features
+    ) -> None:
+        license_features(["billing", "auto_capture"])
+        set_capture_dir(capture_dir)
+        second_closed = BillingReading(
+            bill_date=datetime(2026, 6, 30, 17, 0, 0, tzinfo=UTC),
+            source=SOURCE_DLMS,
+            is_open=False,
+            meter_serial="1232002893",
+            import_active_kwh_total=190000.0,
+        )
+        fake_meter.billing_rows = [second_closed, ENTRY_CLOSED]
+
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 2
+        assert result.captured == 2
+        # One capture is one document per period, whatever formats it has —
+        # tied to the files actually on disk, not to `stored`.
+        assert len({f.stem for f in captured_files(capture_dir)}) == result.captured
+
+    def test_the_open_period_is_not_counted(
+        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features
+    ) -> None:
+        license_features(["billing", "auto_capture"])
+        set_capture_dir(capture_dir)
+        fake_meter.billing_rows = [ENTRY_OPEN, ENTRY_CLOSED]
+
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.open_updated is True
+        assert result.captured == 1
+
+    def test_it_is_zero_when_the_capture_folder_is_unset_while_periods_still_store(
+        self, device_id: int, fake_meter: FakeMeterState, license_features
+    ) -> None:
+        """The case the operator gets wrong: periods stored, no documents
+        written, and the old message read as though there were."""
+        license_features(["billing", "auto_capture", "billing_excel_export"])
+        # capture_dir left at its default ("") — never configured.
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 1
+        assert result.captured == 0
+
+    def test_it_is_zero_when_auto_capture_is_not_licensed(
+        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features
+    ) -> None:
+        license_features(["billing"])  # no auto_capture
+        set_capture_dir(capture_dir)
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 1
+        assert result.captured == 0
+        assert captured_files(capture_dir) == []
+
+    def test_a_capture_that_raises_is_not_counted_and_does_not_fail_the_read(
+        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features, monkeypatch
+    ) -> None:
+        """A capture failure is already logged and swallowed — the count must
+        not claim a document that was never written."""
+        license_features(["billing", "auto_capture"])
+        set_capture_dir(capture_dir)
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise OSError("the share went away")
+
+        monkeypatch.setattr("arichds.acquisition.billing.capture_reading", boom)
+
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.error is None
+        assert result.stored == 1
+        assert result.captured == 0
+
+    def test_re_reading_an_already_stored_period_captures_nothing(
+        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features
+    ) -> None:
+        """Only *newly inserted* closed periods are captured, so a second read
+        of the same buffer must report zero rather than re-announcing the
+        documents the first read wrote."""
+        license_features(["billing", "auto_capture"])
+        set_capture_dir(capture_dir)
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+        first = read_and_store_billing(device_id, now=NOW)
+
+        second = read_and_store_billing(device_id, now=NOW)
+
+        assert first.captured == 1
+        assert second.stored == 0
+        assert second.captured == 0

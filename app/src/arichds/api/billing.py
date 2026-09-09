@@ -25,7 +25,8 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -36,6 +37,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from arichds.acquisition.billing import read_and_store_billing
+from arichds.acquisition.status import DeviceStatus, display_status
 from arichds.api.deps import (
     AdminDep,
     FeatureDisabledError,
@@ -49,7 +51,7 @@ from arichds.capture.paths import validate_capture_dir_setting
 from arichds.capture.screenshot import BrowserCaptureError
 from arichds.capture.service import capture_target_paths, write_pdf_capture, write_png_capture, write_xlsx_capture
 from arichds.config import get_settings
-from arichds.constants import O_BINARY, O_NOFOLLOW
+from arichds.constants import BILLING_BEHIND_DAYS, O_BINARY, O_NOFOLLOW
 from arichds.db.app_settings import (
     CAPTURE_DIR_DEFAULT,
     CAPTURE_DIR_KEY,
@@ -58,6 +60,7 @@ from arichds.db.app_settings import (
     get_setting,
     set_setting,
 )
+from arichds.db.billing_query import latest_closed_per_device
 from arichds.db.models import BillingReading, Device
 from arichds.licensing.features import feature_enabled
 
@@ -329,6 +332,206 @@ def list_billing_readings(
     return ApiResponse.ok(BillingPage(items=items, total=total, limit=limit, offset=offset))
 
 
+class AllMetersStatus(StrEnum):
+    """What the All-Meters View says about one meter, resolved server-side.
+
+    The precedence, highest first, is
+    ``PAUSED`` › ``NOT_ANSWERING`` › (``NEVER_BILLED`` | ``BEHIND``) › ``OK``.
+    Cause outranks symptom: an unreachable meter is also a behind meter, and
+    the operator's action is to fix the connection, not to chase the bill.
+    ``NEVER_BILLED`` and ``BEHIND`` cannot co-occur — a meter with no Bill
+    Date has nothing to be behind against.
+
+    Resolved here, not in the browser: the threshold constant lives in the
+    backend, the attention counter needs the same rule, and the billing
+    export planned next cannot call frontend code. Computing it in the
+    browser would put one rule in two languages.
+    """
+
+    PAUSED = "paused"
+    NOT_ANSWERING = "not_answering"
+    NEVER_BILLED = "never_billed"
+    BEHIND = "behind"
+    OK = "ok"
+
+
+#: Sort weight per status — **not** the precedence above, which answers a
+#: different question (which chip a row gets when several apply).
+#:
+#: ``PAUSED`` sorts *last*, below ``OK``. It is not a problem: it is a
+#: deliberate operator state, and :data:`_ATTENTION_STATUSES` excludes it from
+#: the counter for that reason. Sorting it to the top would push the very rows
+#: the counter is pointing at below rows nobody needs to act on.
+_STATUS_SORT_RANK: dict[AllMetersStatus, int] = {
+    AllMetersStatus.NOT_ANSWERING: 0,
+    AllMetersStatus.NEVER_BILLED: 1,
+    AllMetersStatus.BEHIND: 2,
+    AllMetersStatus.OK: 3,
+    AllMetersStatus.PAUSED: 4,
+}
+
+#: The statuses the tab header's counter counts — every row that is neither
+#: ``OK`` nor ``PAUSED``, matching the counter v1 showed.
+_ATTENTION_STATUSES = frozenset({AllMetersStatus.NOT_ANSWERING, AllMetersStatus.NEVER_BILLED, AllMetersStatus.BEHIND})
+
+
+class AllMetersRowOut(BaseModel):
+    """One meter's latest closed period, as the All-Meters View renders it.
+
+    Deliberately narrow — seven fields, against ``BillingRowOut``'s sixty.
+    History is shaped for one meter across time; that shape is unreadable
+    across every meter at once, and clicking a row opens History anyway.
+
+    Attributes:
+        device_id: Which meter. Also what a row click filters History by.
+        device_name: The operator-facing label.
+        meter_serial: The device's own serial (ADR 0005), or None if it has
+            never been probed. Read off the **device**, not off the reading,
+            so a meter that has never billed still shows one.
+        bill_date: The latest **closed** period's Bill Date — UTC — or None
+            when this meter has never produced one.
+        captured_at: When the Capture for that period was written, or None.
+            Sourced from the reading's existing ``read_at``: a Capture is
+            written eagerly and synchronously at insert, so the read time is
+            the capture time to within milliseconds, and no new column or
+            migration is needed. **None whenever captures are switched off**
+            — no capture folder or no ``auto_capture`` entitlement — because
+            the read time would otherwise name a document nobody wrote.
+        import_active_kwh_total: The period's Import Active total, unscaled.
+        export_active_kwh_total: The period's Export Active total, unscaled.
+        status: The resolved chip.
+        status_value: The number the chip carries — consecutive failures for
+            ``NOT_ANSWERING``, whole days behind for ``BEHIND``, None for the
+            three statuses that have no number to show.
+    """
+
+    device_id: int
+    device_name: str
+    meter_serial: str | None
+    bill_date: datetime | None
+    captured_at: datetime | None
+    import_active_kwh_total: float | None
+    export_active_kwh_total: float | None
+    status: AllMetersStatus
+    status_value: int | None
+
+    @field_validator("bill_date", "captured_at")
+    @classmethod
+    def _ensure_utc_or_none(cls, value: datetime | None) -> datetime | None:
+        """Re-attach UTC, ``None``-safe — both fields are absent for a meter
+        that has never billed.
+
+        Delegates to the module's own :func:`_as_utc` rather than repeating
+        its one-line branch a third time in this file."""
+        return None if value is None else _as_utc(value)
+
+
+class AllMetersOut(BaseModel):
+    """The whole All-Meters View — every device, plus the tab header's count.
+
+    Attributes:
+        items: One row per device, worst status first, then device name.
+        needs_attention: How many rows are neither ``OK`` nor ``PAUSED``.
+
+    **Not paged**, unlike :class:`BillingPage`. This view is bounded by the
+    device count (10–30 meters on a machine), not by reading volume, so
+    paging would add a control the operator has no reason to touch.
+    """
+
+    items: list[AllMetersRowOut]
+    needs_attention: int
+
+
+def _resolve_status(
+    device: Device, reading: BillingReading | None, now: datetime
+) -> tuple[AllMetersStatus, int | None]:
+    """Resolve one row's chip and the number it carries.
+
+    ``display_status`` is what makes ``PAUSED`` outrank everything: it is
+    computed from ``enabled``, never stored, so a paused device cannot be
+    reported as online by a caller that forgot to check
+    (``acquisition/status.py``).
+
+    ``OFFLINE`` is the only stored status that becomes ``NOT_ANSWERING``.
+    ``UNKNOWN`` means *nothing has read this device yet*, which is not the
+    claim "it did not answer" — a freshly added meter must not be reported as
+    a connection fault.
+    """
+    shown = display_status(device)
+    if shown is DeviceStatus.PAUSED:
+        return AllMetersStatus.PAUSED, None
+    if shown is DeviceStatus.OFFLINE:
+        return AllMetersStatus.NOT_ANSWERING, device.consecutive_failures
+    if reading is None:
+        return AllMetersStatus.NEVER_BILLED, None
+
+    # `_as_utc` because SQLite has no timezone type: a `DateTime(timezone=True)`
+    # column comes back naive, and this comparison happens *before* the response
+    # model's own validator would have re-attached it.
+    bill_date = _as_utc(reading.bill_date)
+    # Compared as a duration, not as `.days`: `.days` truncates toward zero,
+    # so a period 35 days and 1 hour old would come back as 35 and read as
+    # inside the threshold. The chip's own number still rounds down — "35
+    # days behind" is what an operator wants to read — but the *decision* is
+    # made at full precision.
+    age = now - bill_date
+    if age > timedelta(days=BILLING_BEHIND_DAYS):
+        return AllMetersStatus.BEHIND, age.days
+    return AllMetersStatus.OK, None
+
+
+@router.get("/all-meters")
+def list_all_meters(
+    session: SessionDep,
+    license_service: LicenseServiceDep,
+) -> ApiResponse[AllMetersOut]:
+    """The All-Meters View — every meter's latest closed period, one row each.
+
+    Any authenticated role, gated by the router's existing ``billing``
+    entitlement — matching every other read surface in this product.
+
+    **A new endpoint rather than a mode on** :func:`list_billing_readings`:
+    that endpoint's ``status`` parameter already says which tab, and making it
+    also carry which *aggregation* would give one parameter two jobs. The two
+    also page differently — that list is paged by reading volume, this one is
+    bounded by device count.
+
+    The row set, the "latest closed" rule and the Open Period exclusion all
+    live in :func:`~arichds.db.billing_query.latest_closed_per_device`, which
+    the planned billing export calls directly.
+    """
+    now = datetime.now(UTC)
+    # One setting read and one entitlement check for the whole view, not per
+    # row: `captured_at` answers "was a document written", and with captures
+    # switched off the answer is no for every row at once. Mirrors the same
+    # two gates `acquisition/billing.py::_capture_new_closed_periods` applies
+    # before it writes anything.
+    captures_on = bool(get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT).strip()) and feature_enabled(
+        "auto_capture", license_service=license_service, settings=get_settings()
+    )
+
+    items: list[AllMetersRowOut] = []
+    for device, reading in session.execute(latest_closed_per_device()).all():
+        resolved, value = _resolve_status(device, reading, now)
+        items.append(
+            AllMetersRowOut(
+                device_id=device.id,
+                device_name=device.name,
+                meter_serial=device.meter_serial,
+                bill_date=reading.bill_date if reading is not None else None,
+                captured_at=reading.read_at if reading is not None and captures_on else None,
+                import_active_kwh_total=reading.import_active_kwh_total if reading is not None else None,
+                export_active_kwh_total=reading.export_active_kwh_total if reading is not None else None,
+                status=resolved,
+                status_value=value,
+            )
+        )
+
+    items.sort(key=lambda row: (_STATUS_SORT_RANK[row.status], row.device_name))
+    needs_attention = sum(1 for row in items if row.status in _ATTENTION_STATUSES)
+    return ApiResponse.ok(AllMetersOut(items=items, needs_attention=needs_attention))
+
+
 class BillingReadOut(BaseModel):
     """What ``POST /api/billing/read`` did (issue #44).
 
@@ -339,12 +542,20 @@ class BillingReadOut(BaseModel):
     Attributes:
         stored: How many **closed** periods this call newly inserted —
             mirrors ``BillingReadResult.stored``.
+        captured: How many **captures** this call wrote (issue 02) — mirrors
+            ``BillingReadResult.captured``. Carried separately from
+            :attr:`stored` because the two differ whenever captures are
+            switched off, and it comes from the read path rather than being
+            inferred in the browser from the capture-folder setting: that
+            setting is not loaded for non-admin roles, so an inferred count
+            would be wrong for exactly the people who read this message most.
         open_updated: Whether the device's Open Period slot was inserted or
             changed by this call.
         error: An operator-facing sentence, or ``None`` on success.
     """
 
     stored: int
+    captured: int
     open_updated: bool
     error: str | None
 
@@ -386,7 +597,14 @@ def trigger_billing_read(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=result.error or "This device has no billing profile."
         )
-    return ApiResponse.ok(BillingReadOut(stored=result.stored, open_updated=result.open_updated, error=result.error))
+    return ApiResponse.ok(
+        BillingReadOut(
+            stored=result.stored,
+            captured=result.captured,
+            open_updated=result.open_updated,
+            error=result.error,
+        )
+    )
 
 
 #: Every ``billing_readings`` column that is not part of a row's identity —
