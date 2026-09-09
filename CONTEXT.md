@@ -23,10 +23,22 @@ _Avoid_: license key, serial number
 
 **Meter Activation Code**:
 A one-line signed string the vendor issues for **one meter on one machine** — bound to both the
-Meter Serial and the Machine ID — which an operator must supply to add that meter. Separate from
-the Activation Code, which licenses the machine; both are enforced, and so is the machine
-license's meter quota.
+Meter Serial and the Machine ID — which an operator must supply to add that meter **when the
+machine's Meter Activation Requirement says so**. Separate from the Activation Code, which
+licenses the machine; and separate again from the machine license's meter quota, which bounds
+how many meters may exist regardless.
 _Avoid_: meter licence, device key, per-meter Activation Code
+
+**Meter Activation Requirement**:
+Whether this machine demands a **Meter Activation Code** for each meter added. It is a property
+of the machine's own **Activation Code**, sitting beside the meter quota and the model list —
+**a constraint on scope, never a feature**: `features` names what the product may do, this names
+what the operator must supply. **Not stated means not required**, matching every other constraint
+in a signed license, so the machine a customer bought "full" needs no per-meter code and one sold
+against a named feature list still does. It is decided once, when a meter is added
+(ADR 0019) — turning it off later never disturbs meters already present, and turning it on later
+never reaches back for a code the operator was not asked for.
+_Avoid_: meter activation feature, full version, licence mode, activation lock
 
 **Limited Mode**:
 The state when no valid license is present: API returns 403 `LICENSE_INVALID` (health + SPA
