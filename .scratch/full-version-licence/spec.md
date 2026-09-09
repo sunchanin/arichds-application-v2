@@ -46,7 +46,8 @@ requirement is later switched off.
 6. As a vendor, I want a machine's Meter Activation Requirement to be carried on the signed Activation Code, so that it cannot be changed on the machine by anyone holding it.
 7. As a vendor, I want to sign a full-version Activation Code by leaving the requirement unstated, so that the simplest signing command produces the product I sell most.
 8. As a vendor, I want to state the requirement explicitly when I sell against a feature list, so that a customer who bought a subset still buys meters one at a time.
-9. As a vendor, I want the signing tool to warn me when I name a feature list and say nothing about the requirement, so that the one combination that gives entitlement away by accident is the one combination that speaks up.
+9. As a vendor, I want to be asked before signing when I name a feature list and say nothing about the requirement, so that the one combination that gives entitlement away by accident is stopped while it is still a question rather than a code in someone's hands.
+9a. As a vendor, I want the code I just issued to report its Meter Activation Requirement back to me, so that I can see what I sold rather than infer it from what I typed.
 10. As a vendor, I want every Activation Code already issued to keep verifying after this change, so that shipping the next build does not strand a machine in Limited Mode.
 11. As a vendor, I want an Activation Code issued before this change to read as "not required", so that the rule is one sentence rather than a special case about when the code was signed.
 12. As an operator whose machine already has meters, I want those meters to keep working whichever way the requirement is set, so that a licence renewal never costs me data.
@@ -141,12 +142,26 @@ requirement is later switched off.
 
 - One flag that states the requirement. Its absence is the full version, so the flag is
   present only on the codes we sell against a feature list.
-- **When a feature list is named and the requirement is not stated, warn.** That single
-  combination is the one that gives per-meter entitlement away by accident: a restricted
-  licence signed the easy way silently stops demanding Meter Activation Codes. The signing
-  tool already warns rather than refuses when a reserved feature key is named — the same
-  shape, at the same point. It must warn, never refuse; refusing would make an intentional
-  "everything on, no gate" licence unsignable.
+- **The signing tool itself gains no warning.** A warning there was considered and dropped
+  in favour of the command below, which sits one layer above it — see Out of Scope.
+
+**The command a human signs through**
+
+- The project's own issue-an-Activation-Code command is **the one place a person decides
+  what a licence says**. It passes extra flags through verbatim, so nothing in it becomes
+  false — but the omission it already had now has a consequence, and this is where the
+  mistake the whole risk rests on actually happens.
+- Its **report names the Meter Activation Requirement** of the code just issued, beside the
+  customer, machine, mode and expiry it already reports. Whoever signed it should see what
+  they sold, not infer it from what they typed.
+- When a **feature list is named and the requirement is not stated, it asks before
+  signing.** It asks, it never refuses — an Activation Code granting every feature while
+  still demanding Meter Activation Codes is a licence we may want to sell. And it stays
+  silent when no feature list is named, because that is the full version signed exactly as
+  intended; asking there would train the seller to click through the question.
+- **This is strictly better than a warning inside the signing tool**, which is why that was
+  dropped: it fires before the code exists rather than after, and it can put the question to
+  a human, which a CLI printing to stderr cannot.
 
 **The Add-device form and the License card**
 
@@ -238,6 +253,16 @@ serial as it always has.
   code.** That behaviour exists today, is unchanged by this work, and is neither improved
   nor worsened by it. Recorded here because it was found while reading the gate, not
   because this change touches it.
+- **A warning inside the signing tool** when a feature list is named without stating the
+  requirement. It was specced, drafted as its own ticket, and dropped: the
+  issue-an-Activation-Code command catches the same mistake one layer higher, before the
+  code is generated, and can ask rather than only print. Two gates on one mistake is worth
+  having only if the tool is driven directly by someone not using that command — nobody
+  does today.
+- **Warning when a Meter Activation Code is issued for a machine that does not demand one.**
+  It would be useful and it is not possible: the signing tool works from a Machine ID alone
+  and never reads that machine's own Activation Code, so it cannot know. It becomes possible
+  only with the licence registry below, which is itself out of scope.
 - **A licence registry in the repository.** Two rounds of this grill were spent on "which
   Activation Codes are in the field", answered from a screenshot in the end. Keeping a
   record would have answered it in seconds, and it will be asked again — but it is a
@@ -259,8 +284,9 @@ asking for codes and nobody is told. The opposite polarity would have failed lou
 (a customer calling to ask why they still have to type codes). The owner chose this
 direction because unstated-means-unrestricted is how every other constraint on the
 Activation Code already reads, and because nothing currently in the field is a paying
-install. The CLI warning above exists to give that silent failure a voice at the one moment
-it can be caught. If a future reader is weighing this again, the trade is: consistency of
+install. The question the issue-an-Activation-Code command now asks exists to give that
+silent failure a voice at the one moment it can be caught — before the code exists, put to a
+person rather than printed past them. If a future reader is weighing this again, the trade is: consistency of
 the payload's own philosophy, against a default that is safe when someone forgets.
 
 **Why the customer's own words are not the design.** The customer asked for a "full
