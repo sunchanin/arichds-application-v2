@@ -42,6 +42,15 @@ EXPORT_DATE_FORMAT_DEFAULT = "yyyy-mm-dd HH:MM:SS"
 EXPORT_CSV_FILENAME_TMPL_KEY = "export_csv_filename_tmpl"
 EXPORT_CSV_FILENAME_TMPL_DEFAULT = "[meter].csv"
 
+#: M13, issue 01 — the billing export file's own filename template. A separate
+#: key rather than a suffix on the one above: the two files land in the same
+#: folder, so one template rendering to one name would have them overwrite each
+#: other. `export_date_format`, `export_auto_save_enabled` and
+#: `export_output_dir` are deliberately NOT duplicated — one folder, one switch,
+#: one date format across every export file.
+EXPORT_BILLING_FILENAME_TMPL_KEY = "export_billing_filename_tmpl"
+EXPORT_BILLING_FILENAME_TMPL_DEFAULT = "[meter]-billing.csv"
+
 #: Stored as the literal lowercase string `"true"`/`"false"` — anything else
 #: (including an absent key, via EXPORT_AUTO_SAVE_ENABLED_DEFAULT) reads as
 #: False. Compared with `== "true"` at every read site, never truthy-tested.

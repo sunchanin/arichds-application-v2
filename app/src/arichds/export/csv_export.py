@@ -8,7 +8,10 @@ Two entry points:
   job call this; the ``require_auto_save`` parameter is the one thing that
   differs between them (D-11).
 * :func:`csv_export_cycle` — the Scheduler's ``csv_export`` job (D-10),
-  walking every device once.
+  walking every device once and writing **every** export file for that device
+  before moving to the next (M13, issue 01): the Load Profile CSV here and the
+  billing CSV in :mod:`arichds.export.billing_csv`, each inside its own error
+  boundary.
 
 **The watermark is ``devices.csv_exported_through``, a column, not a table**
 (D-8) — ``None`` means nothing has been exported yet, so everything stored
@@ -40,6 +43,7 @@ import csv
 import logging
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -64,6 +68,7 @@ from arichds.db.app_settings import (
 from arichds.db.load_profile_query import merged_rows_select
 from arichds.db.models import Device, LoadProfileReading
 from arichds.db.session import session_scope
+from arichds.export.billing_csv import export_device_billing
 from arichds.export.format import _EXPORT_HEADERS, format_rows, render_filename
 
 logger = logging.getLogger(__name__)
@@ -295,6 +300,16 @@ def _append_rows(final_path: Path, rows: list[list[str]], allowlist: list[Path],
         return False
 
 
+#: What :func:`csv_export_cycle` writes for each device, in order, each inside
+#: its own error boundary (M13, issue 01). A tuple rather than two calls in the
+#: loop body so adding the next export file is one line here and not another
+#: try/except nested in a loop.
+_PER_DEVICE_EXPORTS: tuple[tuple[str, Callable[..., object]], ...] = (
+    ("Load Profile CSV export", export_device),
+    ("Billing export", export_device_billing),
+)
+
+
 def csv_export_cycle() -> None:
     """Export every device that should be exported, once (D-10, issue #30).
 
@@ -322,12 +337,24 @@ def csv_export_cycle() -> None:
     reads should not stall on a filter that buys this job nothing.
 
     Sequential, one device's failure never stops the next.
+
+    **It writes every export file for one device before moving on** (M13,
+    issue 01) — the Load Profile CSV and the billing CSV today. One job, one
+    interval, one output folder, one switch: a second interval for the billing
+    file would be a value somebody has to keep in step with this one by hand,
+    which is the reasoning D-10 already used to tie this job's cadence to the
+    load-profile cycle rather than give it its own.
+
+    **Each file sits in its own error boundary.** A billing file that cannot
+    be written — a locked file, a full disk, a head that cannot be rolled —
+    must not cost that same device its Load Profile rows.
     """
     with session_scope() as session:
         device_ids = list(session.scalars(select(Device.id).where(Device.enabled.is_(True)).order_by(Device.id)))
 
     for device_id in device_ids:
-        try:
-            export_device(device_id, require_auto_save=True)
-        except Exception:  # noqa: BLE001 — one device must never strand the rest of the site.
-            logger.exception("CSV export cycle failed for device id %s", device_id)
+        for label, export in _PER_DEVICE_EXPORTS:
+            try:
+                export(device_id, require_auto_save=True)
+            except Exception:  # noqa: BLE001 — one file, one device must never strand the rest.
+                logger.exception("%s cycle failed for device id %s", label, device_id)

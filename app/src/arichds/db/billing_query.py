@@ -70,3 +70,43 @@ def latest_closed_per_device() -> Select:
             & BillingReading.record_status.is_(None),
         )
     )
+
+
+def closed_periods_with_record_no(device_id: int) -> Select:
+    """Every closed Billing Reading for *device_id*, oldest first, each with the
+    ``record_no`` the billing export file writes (M13, issue 01).
+
+    ``record_no`` is the row's **ordinal among all of that device's closed
+    periods**, counted from the oldest — not a count of lines already in the
+    file. A line count would need the file read on every append and would reset
+    the moment the file rolls to a new edition
+    (:mod:`arichds.export.writer`); this number is a property of the data, so
+    it survives both. Billing Readings are not subject to Retention, so it is
+    stable for the life of the device.
+
+    The numbering happens in a subquery over *every* closed period, so a caller
+    narrowing the result to what it has not exported yet still gets the
+    ordinals those rows have in the whole series.
+
+    The Open Period is excluded for the same reason
+    :func:`latest_closed_per_device` excludes it: its ``bill_date`` advances on
+    every read (ADR 0018), and a file that appends cannot hold a row whose key
+    moves.
+
+    Returns:
+        A :class:`~sqlalchemy.Select` yielding ``(BillingReading, record_no)``,
+        ordered oldest first. The caller adds its own ``bill_date`` lower bound.
+    """
+    numbered = (
+        select(
+            BillingReading.id.label("id"),
+            func.row_number().over(order_by=BillingReading.bill_date.asc()).label("record_no"),
+        )
+        .where(BillingReading.device_id == device_id, BillingReading.record_status.is_(None))
+        .subquery()
+    )
+    return (
+        select(BillingReading, numbered.c.record_no)
+        .join(numbered, numbered.c.id == BillingReading.id)
+        .order_by(BillingReading.bill_date.asc())
+    )

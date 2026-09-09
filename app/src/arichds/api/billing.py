@@ -57,11 +57,14 @@ from arichds.db.app_settings import (
     CAPTURE_DIR_KEY,
     DISPLAY_UNIT_SCALE_DEFAULT,
     DISPLAY_UNIT_SCALE_KEY,
+    EXPORT_OUTPUT_DIR_DEFAULT,
+    EXPORT_OUTPUT_DIR_KEY,
     get_setting,
     set_setting,
 )
 from arichds.db.billing_query import latest_closed_per_device
 from arichds.db.models import BillingReading, Device
+from arichds.export.billing_csv import export_device_billing
 from arichds.licensing.features import feature_enabled
 
 router = APIRouter(
@@ -604,6 +607,58 @@ def trigger_billing_read(
             open_updated=result.open_updated,
             error=result.error,
         )
+    )
+
+
+class BillingExportOut(BaseModel):
+    """What "Save billing file now" did (M13, issue 01).
+
+    Mirrors ``api/load_profile.py``'s ``LoadProfileExportResult`` field for
+    field — two export files an operator drives the same way should not report
+    what they did in two different shapes.
+
+    Attributes:
+        rows_written: How many closed periods were appended this call. Zero is
+            a normal answer: every closed period may already be in the file.
+        path: The file written, or ``None`` when nothing was written.
+    """
+
+    rows_written: int
+    path: str | None
+
+
+@router.post("/export")
+def export_billing_now(session: SessionDep, device_id: Annotated[int, Query(ge=1)]) -> ApiResponse[BillingExportOut]:
+    """ "Save billing file now" — append *device_id*'s unexported closed periods.
+
+    Any authenticated role, the same as every other read/export surface on this
+    router: exporting stored device data is not an admin act.
+
+    **Ignores ``export_auto_save_enabled``**, exactly as "Save CSV now" does —
+    an operator pressing this has already expressed intent, and making them
+    flip a *background* switch first would be a trap. It runs the same function
+    under the same per-device lock and advances the same watermark as the
+    scheduler job; two writers to one file that did not share a watermark would
+    duplicate rows.
+
+    **``export_output_dir`` is still required.** The scheduler job no-ops
+    quietly when it is empty; this is a person pressing a button, so an
+    unconfigured destination is a 422 with an actionable sentence rather than a
+    silent "0 rows written" 200. This is also the check that makes the button
+    worth having: it is how an installer proves the folder is right without
+    waiting a cycle to find out.
+    """
+    _require_device_exists(session, device_id)
+    output_dir = get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT).strip()
+    if not output_dir:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="export_output_dir is not configured — nothing to export to. Set it on the Export Format page.",
+        )
+
+    result = export_device_billing(device_id, require_auto_save=False)
+    return ApiResponse.ok(
+        BillingExportOut(rows_written=result.rows_written, path=str(result.path) if result.path else None)
     )
 
 

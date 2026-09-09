@@ -50,6 +50,8 @@ from arichds.db.app_settings import (
     DISPLAY_UNIT_SCALE_KEY,
     EXPORT_AUTO_SAVE_ENABLED_DEFAULT,
     EXPORT_AUTO_SAVE_ENABLED_KEY,
+    EXPORT_BILLING_FILENAME_TMPL_DEFAULT,
+    EXPORT_BILLING_FILENAME_TMPL_KEY,
     EXPORT_CSV_FILENAME_TMPL_DEFAULT,
     EXPORT_CSV_FILENAME_TMPL_KEY,
     EXPORT_DATE_FORMAT_DEFAULT,
@@ -120,7 +122,11 @@ class ExportFormatSettingsOut(BaseModel):
             non-emptiness (an empty format would silently blank the
             Date/Time column of every future export).
         export_csv_filename_tmpl: The ``[meter]``/``[serial]``/``[date]``
-            filename template (F4).
+            filename template for the Load Profile CSV (F4).
+        export_billing_filename_tmpl: The same template shape for the billing
+            export file (M13, issue 01). Its own key rather than a suffix on
+            the one above: both files land in the same folder, so one template
+            would have them overwrite each other.
         export_auto_save_enabled: The scheduler job's own switch (D-11) —
             "Save CSV now" ignores it.
         export_output_dir: ``""`` means "not configured" — same convention
@@ -129,16 +135,18 @@ class ExportFormatSettingsOut(BaseModel):
 
     export_date_format: str
     export_csv_filename_tmpl: str
+    export_billing_filename_tmpl: str
     export_auto_save_enabled: bool
     export_output_dir: str
 
 
 class ExportFormatSettingsIn(BaseModel):
     """The body ``PUT /api/settings/export-format`` takes — a full replace
-    of all four values."""
+    of all five values."""
 
     export_date_format: str
     export_csv_filename_tmpl: str
+    export_billing_filename_tmpl: str
     export_auto_save_enabled: bool
     export_output_dir: str
 
@@ -148,21 +156,28 @@ class ExportFormatSettingsIn(BaseModel):
 _FILENAME_UNSAFE_RE = re.compile(r"[/\\\x00]")
 
 
-def _validate_filename_template(template: str) -> str:
-    """Reject an ``export_csv_filename_tmpl`` that could escape
-    ``export_output_dir`` once rendered (D-13).
+def _validate_filename_template(template: str, *, setting_name: str = "export_csv_filename_tmpl") -> str:
+    """Reject a filename template that could escape ``export_output_dir`` once
+    rendered (D-13).
+
+    Args:
+        template: The template to check.
+        setting_name: Which key is being checked, so the 422 names the field
+            the operator actually typed in (M13, issue 01 — there are two
+            filename templates now, and a message naming the wrong one sends
+            them to the wrong box).
 
     Raises:
         ValueError: On any rejection, with an operator-actionable sentence
             naming the offending character.
     """
     if not template or not template.strip():
-        raise ValueError("export_csv_filename_tmpl must not be empty")
+        raise ValueError(f"{setting_name} must not be empty")
     if ".." in template:
-        raise ValueError("export_csv_filename_tmpl must not contain '..'")
+        raise ValueError(f"{setting_name} must not contain '..'")
     match = _FILENAME_UNSAFE_RE.search(template)
     if match:
-        raise ValueError(f"export_csv_filename_tmpl must not contain {match.group()!r}")
+        raise ValueError(f"{setting_name} must not contain {match.group()!r}")
     return template
 
 
@@ -184,10 +199,13 @@ def _validate_date_format(token_format: str) -> str:
 
 
 def _current_export_format_settings(session: Session) -> ExportFormatSettingsOut:
-    """Read all four Export Format keys, defaulted for a fresh database."""
+    """Read all five Export Format keys, defaulted for a fresh database."""
     return ExportFormatSettingsOut(
         export_date_format=get_setting(session, EXPORT_DATE_FORMAT_KEY, EXPORT_DATE_FORMAT_DEFAULT),
         export_csv_filename_tmpl=get_setting(session, EXPORT_CSV_FILENAME_TMPL_KEY, EXPORT_CSV_FILENAME_TMPL_DEFAULT),
+        export_billing_filename_tmpl=get_setting(
+            session, EXPORT_BILLING_FILENAME_TMPL_KEY, EXPORT_BILLING_FILENAME_TMPL_DEFAULT
+        ),
         export_auto_save_enabled=get_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, EXPORT_AUTO_SAVE_ENABLED_DEFAULT)
         == "true",
         export_output_dir=get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT),
@@ -207,7 +225,7 @@ def get_export_format_settings(session: SessionDep) -> ApiResponse[ExportFormatS
 def put_export_format_settings(
     body: ExportFormatSettingsIn, session: SessionDep, _admin: AdminDep
 ) -> ApiResponse[ExportFormatSettingsOut]:
-    """Save all four Export Format settings — admin-only, a full replace.
+    """Save all five Export Format settings — admin-only, a full replace.
 
     ``export_csv_filename_tmpl`` is validated at save time (D-13) — a
     rejection is a 422 and never reaches disk. ``export_date_format`` is
@@ -222,6 +240,9 @@ def put_export_format_settings(
     try:
         date_format = _validate_date_format(body.export_date_format)
         filename_tmpl = _validate_filename_template(body.export_csv_filename_tmpl)
+        billing_filename_tmpl = _validate_filename_template(
+            body.export_billing_filename_tmpl, setting_name="export_billing_filename_tmpl"
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
@@ -243,6 +264,7 @@ def put_export_format_settings(
 
     set_setting(session, EXPORT_DATE_FORMAT_KEY, date_format)
     set_setting(session, EXPORT_CSV_FILENAME_TMPL_KEY, filename_tmpl)
+    set_setting(session, EXPORT_BILLING_FILENAME_TMPL_KEY, billing_filename_tmpl)
     set_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, "true" if body.export_auto_save_enabled else "false")
     set_setting(session, EXPORT_OUTPUT_DIR_KEY, output_dir_value)
     session.commit()

@@ -444,6 +444,31 @@ export function Billing({ role }: { role: "admin" | "user" }) {
       .finally(() => setImageDownloading(false));
   }, [deviceId, surface]);
 
+  // "Save billing file now" (M13, issue 01) — the same shape "Save CSV now"
+  // has on the Load Profile page, and for the same reason it is worth having:
+  // it is how an installer proves the output folder is right without waiting
+  // a whole cycle to find out. An unconfigured folder comes back as a 422 with
+  // an actionable sentence, which `surface` renders.
+  const [exporting, setExporting] = useState(false);
+
+  const onSaveFile = useCallback(() => {
+    if (deviceId === undefined) return;
+    setExporting(true);
+    api
+      .exportBillingNow(deviceId)
+      .then((result) => {
+        if (result.rows_written === 0) {
+          message.info("No new billing periods to export.");
+          return;
+        }
+        message.success(
+          `Exported ${result.rows_written} period(s) to ${result.path ?? "the billing file"}.`,
+        );
+      })
+      .catch((err: unknown) => surface(err, "Could not save the billing file now."))
+      .finally(() => setExporting(false));
+  }, [deviceId, message, surface]);
+
   // Read now (issue #44, D11) — one whole-buffer round trip (ADR 0009), one
   // toast, one refresh. `refreshTick` is the minimal trigger the fetch
   // effect below needed added to it — neither this page nor LoadProfile.tsx
@@ -647,6 +672,13 @@ export function Billing({ role }: { role: "admin" | "user" }) {
             {/* Hidden in capture mode (D13, issue #44) — a button offering to
                 talk to a meter has no place in a headless screenshot a human
                 carries to a customer (ADR 0015/0017). */}
+            {captureRequest ? null : (
+              <Tooltip title="Appends this meter's closed periods to its billing file in the export folder.">
+                <Button onClick={onSaveFile} loading={exporting} disabled={deviceId === undefined}>
+                  Save billing file now
+                </Button>
+              </Tooltip>
+            )}
             {captureRequest ? null : (
               <Button type="primary" onClick={onReadNow} loading={reading} disabled={deviceId === undefined}>
                 Read now

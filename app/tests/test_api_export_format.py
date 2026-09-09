@@ -17,6 +17,7 @@ pytestmark = pytest.mark.usefixtures("fake_meter")
 DEFAULTS = {
     "export_date_format": "yyyy-mm-dd HH:MM:SS",
     "export_csv_filename_tmpl": "[meter].csv",
+    "export_billing_filename_tmpl": "[meter]-billing.csv",
     "export_auto_save_enabled": False,
     "export_output_dir": "",
 }
@@ -41,10 +42,11 @@ class TestPutIsAdminOnly:
         response = user_client.put("/api/settings/export-format", json=DEFAULTS)
         assert response.status_code == 403
 
-    def test_an_admin_may_save_all_four_values(self, admin_client: TestClient, tmp_path) -> None:
+    def test_an_admin_may_save_every_value(self, admin_client: TestClient, tmp_path) -> None:
         body = {
             "export_date_format": "dd/mm/yyyy",
             "export_csv_filename_tmpl": "[serial]-[date].csv",
+            "export_billing_filename_tmpl": "[serial]-bl.csv",
             "export_auto_save_enabled": True,
             "export_output_dir": str(tmp_path),
         }
@@ -55,6 +57,7 @@ class TestPutIsAdminOnly:
         data = response.json()["data"]
         assert data["export_date_format"] == "dd/mm/yyyy"
         assert data["export_csv_filename_tmpl"] == "[serial]-[date].csv"
+        assert data["export_billing_filename_tmpl"] == "[serial]-bl.csv"
         assert data["export_auto_save_enabled"] is True
         assert data["export_output_dir"] == str(tmp_path.resolve())
 
@@ -163,3 +166,40 @@ class TestFeatureGating:
         relicense(admin_client, features=["billing"])
         response = admin_client.put("/api/settings/export-format", json=DEFAULTS)
         assert response.status_code == 403, response.text
+
+
+class TestTheBillingFilenameTemplateIsValidatedToo:
+    """M13, issue 01 — a second template reached this endpoint, and the checks
+    that protect the first are worth nothing if they do not protect it."""
+
+    def test_a_path_separator_is_refused(self, admin_client: TestClient) -> None:
+        body = {**DEFAULTS, "export_billing_filename_tmpl": "sub/dir.csv"}
+        assert admin_client.put("/api/settings/export-format", json=body).status_code == 422
+
+    def test_a_parent_traversal_is_refused(self, admin_client: TestClient) -> None:
+        body = {**DEFAULTS, "export_billing_filename_tmpl": "../escape.csv"}
+        assert admin_client.put("/api/settings/export-format", json=body).status_code == 422
+
+    def test_an_empty_template_is_refused(self, admin_client: TestClient) -> None:
+        body = {**DEFAULTS, "export_billing_filename_tmpl": "   "}
+        assert admin_client.put("/api/settings/export-format", json=body).status_code == 422
+
+    def test_the_rejection_names_the_field_the_operator_typed_in(self, admin_client: TestClient) -> None:
+        """Two filename templates now share one endpoint. A message naming the
+        wrong one sends the operator to the wrong box."""
+        body = {**DEFAULTS, "export_billing_filename_tmpl": "../escape.csv"}
+
+        payload = admin_client.put("/api/settings/export-format", json=body).text
+
+        assert "export_billing_filename_tmpl" in payload
+
+    def test_a_rejected_billing_template_saves_nothing_at_all(self, admin_client: TestClient) -> None:
+        """The PUT is a full replace, so a 422 must leave every value alone —
+        not just the one that failed."""
+        body = {**DEFAULTS, "export_date_format": "dd/mm/yyyy", "export_billing_filename_tmpl": "../escape.csv"}
+
+        assert admin_client.put("/api/settings/export-format", json=body).status_code == 422
+
+        data = admin_client.get("/api/settings/export-format").json()["data"]
+        assert data["export_date_format"] == "yyyy-mm-dd HH:MM:SS"
+        assert data["export_billing_filename_tmpl"] == "[meter]-billing.csv"

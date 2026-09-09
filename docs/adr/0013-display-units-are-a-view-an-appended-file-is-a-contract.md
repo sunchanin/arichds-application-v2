@@ -69,6 +69,45 @@ Apply this rule to every new destination. M8's push payload is the next one — 
 a server across time, so it is base-unit-fixed by the same test, and the unit belongs in the
 contract rather than in a setting the site can change.
 
+## Amendment (M13, issue 01) — what happens when the contract itself changes
+
+The rule above says an appended file has a fixed unit because its past is on disk and cannot
+be revised. That answered *may this artifact follow a setting?* It did not answer the question
+M13 forced: **what do we do when the header we are appending under has to change at all?**
+
+The Load Profile CSV grew from fourteen columns to twenty-five, and the customer's own column
+order puts three of the new ones *before* an existing one. Every operator already has files on
+disk with the old header at the top and months of rows below it.
+
+**The answer is that a contract does not change. It is replaced.**
+
+> When a file's head — its file header block **or** its column header row — no longer matches
+> what we would write today, the file is **closed** and a new one opens beside it. The closed
+> edition keeps its rows under a name with the date appended before the extension
+> (`<name>.2026-09-15.csv`). It is never rewritten, and it never receives another row.
+
+Three consequences worth stating, because each one is a thing a later reader might try to
+"fix":
+
+- **Dated files appearing in an export folder are correct**, not clutter and not a bug. Deleting
+  them deletes history the live file does not contain.
+- **Nothing rewrites an old file's header.** Rewriting would put rows under a header that did
+  not describe them when they were written — the exact failure this prevents — and would also
+  mean reading and rewriting a file that has grown for months.
+- **The block is part of the head, not decoration.** It carries the Customer, Site Name and
+  Meter Serial off the device row, all editable at any time. Comparing only the column row
+  would leave a file claiming a site name that was not in effect when its rows were written,
+  for as long as the columns happened not to change — possibly for ever.
+
+The alternative considered and rejected was appending the new columns at the end of the
+existing header and hoping consumers tolerate it. They would not, and worse, nothing would
+have told them: a fourteen-column header with twenty-five-column rows beneath it raises no
+error in Excel or in a parser — it silently puts every value under the wrong name.
+
+**Scope**: this governs every export file, which since M13 is three — the Load Profile CSV, the
+billing CSV and the Energy Summary file. All three go through one writer so the rule cannot
+hold in one place and not another.
+
 ## Outstanding: the capture folder is a half-case
 
 Captures sit on the wrong side of their own row above, and this ADR records it rather than

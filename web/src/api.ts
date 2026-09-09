@@ -662,19 +662,25 @@ export interface DisplaySettings {
  * 2026-08-11) — one customer's site runs meters set up identically, so a
  * per-device column would solve a problem nobody has hit.
  *
- * **The CSV these govern is always kWh/kvarh** — it never follows
- * `display_unit_scale` (ADR 0013). `export_date_format` and
- * `export_csv_filename_tmpl` are owned by the ExportFormat page;
- * `export_auto_save_enabled` and `export_output_dir` are owned by the
- * matching controls on the Load Profile page (D-16) — one `PUT` replaces
- * all four, so either page's save must carry the other pair's current
- * values through unchanged.
+ * **The CSVs these govern are always kWh/kvarh** — they never follow
+ * `display_unit_scale` (ADR 0013). `export_date_format`,
+ * `export_csv_filename_tmpl` and `export_billing_filename_tmpl` are owned by
+ * the ExportFormat page; `export_auto_save_enabled` and `export_output_dir`
+ * are owned by the matching controls on the Load Profile page (D-16) — one
+ * `PUT` replaces all five, so either page's save must carry the other side's
+ * current values through unchanged.
  */
 export interface ExportFormatSettings {
   /** An Excel-style token string, e.g. `"yyyy-mm-dd HH:MM:SS"` — `yyyy`/`mm`/`dd`/`HH`/`MM`/`SS`. */
   export_date_format: string;
-  /** `[meter]`/`[serial]`/`[date]` filename tokens, e.g. `"[meter].csv"`. */
+  /** `[meter]`/`[serial]`/`[date]` filename tokens for the Load Profile CSV, e.g. `"[meter].csv"`. */
   export_csv_filename_tmpl: string;
+  /**
+   * The same token shape for the billing export file (M13, issue 01). Its own
+   * key rather than a suffix on the one above: both files land in
+   * `export_output_dir`, so one template would have them overwrite each other.
+   */
+  export_billing_filename_tmpl: string;
   /** The scheduler job's own switch — "Save CSV now" ignores it. */
   export_auto_save_enabled: boolean;
   /** `""` means "not configured" — same convention as `capture_dir`. */
@@ -763,6 +769,18 @@ export interface DatabaseDestinationTest {
 export interface LoadProfileExportResult {
   rows_written: number;
   /** The resolved target CSV file path, or `null` when nothing was written. */
+  path: string | null;
+}
+
+/**
+ * What "Save billing file now" did (M13, issue 01) — the same shape
+ * `LoadProfileExportResult` has, because two export files an operator drives
+ * the same way should not report what they did in two different shapes.
+ */
+export interface BillingExportResult {
+  /** Closed periods appended. Zero is normal: they may all already be in the file. */
+  rows_written: number;
+  /** The resolved target file path, or `null` when nothing was written. */
   path: string | null;
 }
 
@@ -1204,6 +1222,16 @@ export const api = {
    */
   readBillingNow: (deviceId: number) =>
     request<BillingReadNowResult>(`/api/billing/read?device_id=${deviceId}`, { method: "POST" }),
+
+  /**
+   * "Save billing file now" — append one device's unexported closed periods,
+   * ignoring `export_auto_save_enabled` the way "Save CSV now" does. Any
+   * authenticated role. `422` when `export_output_dir` is not configured,
+   * which is what makes this the check an installer uses to prove the folder
+   * is right without waiting a cycle.
+   */
+  exportBillingNow: (deviceId: number) =>
+    request<BillingExportResult>(`/api/billing/export?device_id=${deviceId}`, { method: "POST" }),
 
   /**
    * Save `capture_dir` — admin-only. An empty string disables capture; a

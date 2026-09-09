@@ -334,20 +334,32 @@ outside `%ProgramData%\ARICHDS` (the mistake issue #38 first shipped, and #40 co
 _Avoid_: report, export (that's a different feature), snapshot
 
 **Export Format**:
-The four machine-wide settings that govern the Load Profile CSV auto-export (M7 slice 3, issue
-#30) — the timestamp token format, the filename template, the auto-save switch, and the output
-folder. **Machine-wide, not per-meter**: one customer's site runs meters set up identically, so
-a per-device value would solve a problem nobody has hit (grill M7, 2026-08-11). The timestamp
-format and the filename template live on their own ExportFormat page; the auto-save switch and
-the output folder sit on the Load Profile page instead, next to "Save CSV now" and the table
-they export.
+The machine-wide settings that govern the **export files** (M7 slice 3, issue #30; extended at
+M13, issue 01) — the timestamp token format, one filename template per file, the auto-save
+switch, and the output folder. **Machine-wide, not per-meter**: one customer's site runs meters
+set up identically, so a per-device value would solve a problem nobody has hit (grill M7,
+2026-08-11). The timestamp formats and the filename templates live on their own ExportFormat
+page; the auto-save switch and the output folder sit on the Load Profile page instead, next to
+"Save CSV now" and the table they export.
 
-**The CSV they govern is always kWh/kvarh — it never follows the Display unit setting**
-(ADR 0013). The file is a contract an operator's downstream tooling appends to for months; the
+**One folder, one switch, one cadence, one date format — several files.** Since M13 the same
+job writes a **Load Profile CSV** and a **billing file** per meter, and each file has its own
+filename template only because they share a folder and one template would have them overwrite
+each other. A second output folder or a second auto-save switch would be a value somebody has
+to keep in step with the first by hand.
+
+**The files they govern are always kWh/kvarh — they never follow the Display unit setting**
+(ADR 0013). A file is a contract an operator's downstream tooling appends to for months; the
 Display unit setting is a view, re-rendered on every request. A destination with a past on disk
 cannot retroactively agree with a switch flipped today.
+
+**A file whose head changes is closed, not rewritten** (ADR 0013, amendment): when the file
+header block or the column header row no longer matches what would be written today, the file
+is renamed with the date appended and a new one opens beside it. **Dated files in an export
+folder are correct, not clutter** — they hold rows the live file does not.
 _Avoid_: divide by 1000 (v1's setting; not ported — write-time normalization already made it
-vacuous), per-meter format (rejected — see above)
+vacuous), per-meter format (rejected — see above), a second output folder (rejected — see
+above)
 
 **Output Parity**:
 The acceptance rule for domain modules: numbers shown by v2 must equal v1's output at v1's

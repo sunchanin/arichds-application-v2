@@ -8,6 +8,7 @@ const { Text } = Typography;
 interface FormValues {
   export_date_format: string;
   export_csv_filename_tmpl: string;
+  export_billing_filename_tmpl: string;
 }
 
 /**
@@ -57,6 +58,7 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
         form.setFieldsValue({
           export_date_format: data.export_date_format,
           export_csv_filename_tmpl: data.export_csv_filename_tmpl,
+          export_billing_filename_tmpl: data.export_billing_filename_tmpl,
         });
       })
       .catch((err: unknown) => surface(err, "Could not load the Export Format settings."));
@@ -75,6 +77,7 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
         form.setFieldsValue({
           export_date_format: data.export_date_format,
           export_csv_filename_tmpl: data.export_csv_filename_tmpl,
+          export_billing_filename_tmpl: data.export_billing_filename_tmpl,
         });
         message.success("Export Format settings saved.");
       })
@@ -87,9 +90,12 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
       <Card size="small" title="Export Format">
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           <Text type="secondary">
-            The Load Profile CSV is always exported in kWh/kvarh — it does not follow the Display unit setting on
-            the Settings page. The header is written once when a meter's file is created, and rows append to it for
-            months, so its unit can never change.
+            These settings govern every export file — the Load Profile CSV and the billing file — and all of them
+            are written to the output folder set on the Load Profile page. Energy values are always exported in
+            kWh/kvarh: they do not follow the Display unit setting on the Settings page. A file's header is written
+            once when it is created and rows append to it for months, so its units can never change. If a header
+            ever does change, the file is closed under a dated name and a new one is started beside it, so no row is
+            ever written under a header that does not describe it.
           </Text>
           <Form
             form={form}
@@ -112,6 +118,14 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
               rules={[{ required: true, whitespace: true, message: "A filename template is required." }]}
             >
               <Input placeholder="[meter].csv" />
+            </Form.Item>
+            <Form.Item
+              name="export_billing_filename_tmpl"
+              label="Billing filename template"
+              extra="The same tokens. Must differ from the CSV filename template — both files are written to the same folder."
+              rules={[{ required: true, whitespace: true, message: "A filename template is required." }]}
+            >
+              <Input placeholder="[meter]-billing.csv" />
             </Form.Item>
             <Button type="primary" htmlType="submit" loading={saving}>
               Save

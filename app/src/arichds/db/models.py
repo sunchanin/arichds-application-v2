@@ -91,6 +91,9 @@ class Device(Base):
         consecutive_failures: How many failed reads in a row (ADR 0004's
             3-strikes rule).
         created_at: Row creation time (UTC).
+        billing_exported_through: The newest ``bill_date`` already appended to
+            this device's billing export file (M13, issue 01). ``None`` means
+            nothing has been exported yet.
         csv_exported_through: The newest ``read_at`` already appended to this
             device's Load Profile CSV (M7 slice 3, issue #30, D-8) — the
             watermark the CSV export job and "Save CSV now" both advance.
@@ -154,6 +157,11 @@ class Device(Base):
     consecutive_failures: Mapped[int] = mapped_column(default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     csv_exported_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # M13, issue 01 — the newest Bill Date already appended to this device's
+    # billing export file. Same shape and same reasoning as
+    # `csv_exported_through` above: a column, not a table (ADR 0008). `None`
+    # means nothing has been exported yet, so every stored closed period goes.
+    billing_exported_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     readings: Mapped[list[LoadProfileReading]] = relationship(
         back_populates="device",
