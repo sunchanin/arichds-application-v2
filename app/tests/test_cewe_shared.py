@@ -506,3 +506,57 @@ class TestLoadProfileScalerCaching:
 
         assert reader.calls.count("1.0.1.29.0.255") == 1
         assert reader.calls.count("1.0.1.8.0.255") == 1
+
+
+class TestTotalPowerFactorResolvesAgainstTheUnitTheMeterReports:
+    """M13, issue 05 — ``avg_geo_pf`` was NULL on all 87,000+ stored rows.
+
+    The column declared ``Unit.NONE`` (0); the sibling the scaler is borrowed
+    from answers with ``Unit.NO_UNIT`` (255). Both are members of the same
+    enumeration and neither is wrong in the abstract — but a multiplier read
+    under a unit other than the declared one is refused, so the resolution
+    failed, ``build_fields`` stored ``None``, and nothing logged an error a
+    reader of the data would ever see.
+
+    The units below are what a read-only probe measured on the development
+    Prometer 100 (``WP079074``, 2026-09-09), and the column comes from the
+    **live driver map** rather than a literal repeated here — a test that
+    restated the declaration would pass under either value and prove nothing.
+    """
+
+    #: The Logger 1 key the total power factor is captured at.
+    KEY = ("1.0.13.24.0.255", 2)
+
+    def _column(self) -> LpColumn:
+        return Prometer100Driver.LOAD_PROFILE_COLUMN_MAP[1][self.KEY]
+
+    def test_the_sibling_answering_no_unit_resolves_a_multiplier(self) -> None:
+        column = self._column()
+        capture_obis, _attr = self.KEY
+        reader = _FakeScalerReader(
+            scalers={"1.0.13.7.0.255": (1.0, Unit.NO_UNIT)},
+            unreadable={capture_obis},
+        )
+
+        multiplier = resolve_load_profile_multiplier(
+            reader, _FakeScalerClient(), {}, capture_obis, column, "prometer100"
+        )
+
+        assert multiplier == pytest.approx(1.0)
+
+    def test_a_sibling_of_a_different_quantity_is_still_refused(self) -> None:
+        """The fix is one enumeration value, not a widened check: a sibling
+        reporting some *other* real unit must still resolve to nothing, or the
+        empty column would have been traded for a wrong one."""
+        column = self._column()
+        capture_obis, _attr = self.KEY
+        reader = _FakeScalerReader(
+            scalers={"1.0.13.7.0.255": (1000.0, Unit.ACTIVE_POWER)},
+            unreadable={capture_obis},
+        )
+
+        multiplier = resolve_load_profile_multiplier(
+            reader, _FakeScalerClient(), {}, capture_obis, column, "prometer100"
+        )
+
+        assert multiplier is None

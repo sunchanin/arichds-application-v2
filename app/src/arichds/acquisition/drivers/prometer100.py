@@ -83,7 +83,13 @@ _LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
     # Total power factor — Prometer 100 only (SPEC §3.5:477-481); Saral 305
     # and Premier 550 read only per-phase PF, which v1 discards, so NULL on
     # those two models is parity, not a gap (D16).
-    ("1.0.13.24.0.255", 2): LpColumn("avg_geo_pf", Unit.NONE, scaler_siblings=(("1.0.13.7.0.255", GXDLMSRegister),)),
+    #
+    # The unit is NO_UNIT (255), not NONE (0) — measured on WP079074,
+    # 2026-09-09 (M13, issue 05). Declaring NONE made the sibling's multiplier
+    # fail the unit check, so this column was NULL on all 87,000+ stored rows
+    # with nothing logged. The two are different members of one enumeration;
+    # only the meter can say which it uses.
+    ("1.0.13.24.0.255", 2): LpColumn("avg_geo_pf", Unit.NO_UNIT, scaler_siblings=(("1.0.13.7.0.255", GXDLMSRegister),)),
 }
 
 #: Logger 2 (F7, meter-notes:102-107) — only frequency maps to a stored

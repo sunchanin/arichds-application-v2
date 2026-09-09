@@ -47,3 +47,28 @@ Nothing logs an error. Nothing fails. The column has simply been empty since it 
       automatically and answers with whatever the fake declares, regardless of whether a
       scaler would resolve against real hardware. That is exactly how this defect passed
       every gate for 87,000 rows.
+
+## Real-meter result — 2026-09-09, read-only
+
+Development Prometer 100 `WP079074` at `203.170.151.152:4059`. One association,
+attribute reads only, through the **shipped driver's own `read_load_profile()`** —
+not an isolated scaler probe, because the defect was never in reading the scaler
+but in the declaration the read was checked against.
+
+Logger 1, a three-hour window, twelve rows:
+
+```
+avg_geo_pf              12/ 12 non-NULL   0.07599999755620956, ... , -0.9989999532699585
+import_active_kwh       12/ 12 non-NULL   0.008524200000000001
+volt_l1                 12/ 12 non-NULL   237.7141571044922
+current_l1              12/ 12 non-NULL   0.6092000007629395
+freq                    12/ 12 non-NULL   49.98400115966797
+```
+
+Before this change the same read returned `None` for `avg_geo_pf` on every one of
+those twelve rows, and for all 87,000+ rows already stored.
+
+The value is also consistent with the other columns rather than merely present:
+0.0085242 kWh over a 900 s interval is 34 W, against 237.7 V × 0.6092 A × 3 ≈ 434 VA,
+which gives a power factor of ≈ 0.079 for a declared 0.076. The last row reads
+−0.999, so the sign is carried too.
