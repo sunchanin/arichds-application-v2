@@ -631,3 +631,28 @@ to assert a rule. But it sits alongside a stronger observation: **the eleven
 columns the customer asked for are exactly the Prometer 100's capability set,
 neither short nor over.** Somebody did not pick eleven columns at random and
 happen to land on the one model of four that provides all of them.
+
+### Record Status rendering — customer approved, 2026-09-08
+
+The customer agreed to words rather than dots. **All customer questions on these
+three briefs are now closed.**
+
+What that settles, and what it does not:
+
+- **CEWE meters** — implement the decode for `1.0.96.5.4.255` and render v1's
+  wording (`OK`, `ALL_INVALID`, `DISTURBED`, `POWER_LOSS`, `STATUS_0x….`).
+  Fully specified; nothing outstanding.
+- **SMART TCC** — still blank. Its status word is `0.0.96.10.1.255`, a different
+  object whose bitmap v1 refused to decode because the semantics were never
+  verified. The approval covers *how to render a decoded flag*, not *which bits
+  mean what on a family nobody has checked*.
+
+**Worth telling the customer plainly:** on a SMART TCC machine this column will
+stay empty until that meter is reachable and its bitmap verified — and the TCC
+test meter is exactly the one that does not answer (`203.170.148.103`, timeout on
+both ports). The approval does not change that, and the gap should not arrive as
+a surprise in a delivered file.
+
+Verifying it needs one association to a reachable TCC and a comparison of the
+raw word against a known meter state. Until then, blank is the honest output —
+the same call v1 made at `load_profile_reader.py:343`.
