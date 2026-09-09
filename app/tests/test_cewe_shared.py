@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 from gurux_dlms.enums import Unit
-from gurux_dlms.objects import GXDLMSProfileGeneric
+from gurux_dlms.objects import GXDLMSProfileGeneric, GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers._dlms_profile import (
@@ -20,6 +20,7 @@ from arichds.acquisition.drivers._dlms_profile import (
     CEWE_DEMAND_TIME_COLUMNS,
     CEWE_MAPPED_BILLING_COLUMNS,
     DlmsProfileDriver,
+    LpColumn,
     meter_local_to_utc_inverse,
     resolve_billing_multiplier,
     resolve_load_profile_multiplier,
@@ -432,7 +433,16 @@ class TestLoadProfileSiblingFallback:
         client = _FakeScalerClient()
 
         multiplier = resolve_load_profile_multiplier(
-            reader, client, {}, "1.0.1.29.0.255", "1.0.1.8.0.255", Unit.ACTIVE_ENERGY, "import_active_kwh", "saral305"
+            reader,
+            client,
+            {},
+            "1.0.1.29.0.255",
+            LpColumn(
+                "import_active_kwh",
+                Unit.ACTIVE_ENERGY,
+                scaler_siblings=(("1.0.1.8.0.255", GXDLMSRegister),),
+            ),
+            "saral305",
         )
 
         assert multiplier == pytest.approx(1.0)
@@ -442,19 +452,28 @@ class TestLoadProfileSiblingFallback:
         client = _FakeScalerClient()
 
         multiplier = resolve_load_profile_multiplier(
-            reader, client, {}, "1.0.1.29.0.255", "1.0.1.8.0.255", Unit.ACTIVE_ENERGY, "import_active_kwh", "saral305"
+            reader,
+            client,
+            {},
+            "1.0.1.29.0.255",
+            LpColumn(
+                "import_active_kwh",
+                Unit.ACTIVE_ENERGY,
+                scaler_siblings=(("1.0.1.8.0.255", GXDLMSRegister),),
+            ),
+            "saral305",
         )
 
         assert multiplier is None
 
     def test_no_sibling_declared_means_own_address_only(self) -> None:
-        """A column with no sibling declared (``sibling_obis=None``) must not
-        crash and must not try a bogus second address."""
+        """A column that declares no siblings must not crash and must not try
+        a bogus second address."""
         reader = _FakeScalerReader(scalers={"1.0.14.27.0.255": (1.0, Unit.FREQUENCY)})
         client = _FakeScalerClient()
 
         multiplier = resolve_load_profile_multiplier(
-            reader, client, {}, "1.0.14.27.0.255", None, Unit.FREQUENCY, "freq", "prometer100"
+            reader, client, {}, "1.0.14.27.0.255", LpColumn("freq", Unit.FREQUENCY), "prometer100"
         )
 
         assert multiplier == pytest.approx(1.0)
@@ -477,9 +496,11 @@ class TestLoadProfileScalerCaching:
                 client,
                 cache,
                 "1.0.1.29.0.255",
-                "1.0.1.8.0.255",
-                Unit.ACTIVE_ENERGY,
-                "import_active_kwh",
+                LpColumn(
+                    "import_active_kwh",
+                    Unit.ACTIVE_ENERGY,
+                    scaler_siblings=(("1.0.1.8.0.255", GXDLMSRegister),),
+                ),
                 "saral305",
             )
 

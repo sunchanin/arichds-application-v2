@@ -45,12 +45,19 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from gurux_dlms.enums import Unit
-from gurux_dlms.objects import GXDLMSExtendedRegister, GXDLMSProfileGeneric, GXDLMSRegister
+from gurux_dlms.objects import (
+    GXDLMSDemandRegister,
+    GXDLMSExtendedRegister,
+    GXDLMSProfileGeneric,
+    GXDLMSRegister,
+)
 
 from arichds.acquisition.drivers._dlms import DlmsDriver
 from arichds.acquisition.drivers._profile import (
@@ -184,6 +191,71 @@ CEWE_DEMAND_TIME_COLUMNS: dict[tuple[str, int], str] = {
 }
 
 
+#: Which attribute carries ``scaler_unit`` on each COSEM class we read one
+#: from. Register (class 3) and Extended Register (class 4) both put it at
+#: attribute 3; a **Demand Register (class 5) puts it at attribute 4**, and
+#: reading attribute 3 there returns `last_average_value` — a number, not a
+#: scaler, which is exactly the kind of wrong answer that would be believed.
+#: A class absent from this table cannot have a scaler read from it at all.
+_SCALER_ATTRIBUTE: dict[type, int] = {
+    GXDLMSRegister: 3,
+    GXDLMSExtendedRegister: 3,
+    GXDLMSDemandRegister: 4,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class LpColumn:
+    """One load-profile capture column a driver stores (M13, issue 04).
+
+    Replaces the positional 3-tuple this map used to hold. The move was forced
+    by three things a tuple could not say, each measured on a real meter:
+
+    * a column's capture object is not always a **Register** — the average
+      power columns are a Demand Register, whose scaler sits at a different
+      attribute;
+    * a column may have **no scaler at all** — a status bitmap is a class-1
+      Data object, and asking it for one produces nothing but a denied read;
+    * a column's scaler sibling may be a **different class than the column
+      itself** — on a Prometer 100 the import power columns answer as a plain
+      Register and the export ones only as an Extended Register.
+
+    Attributes:
+        field: The :class:`~arichds.acquisition.drivers.base.IntervalReading`
+            attribute this column fills.
+        unit: The Unit the resolved scaler must report. A multiplier read
+            under any other unit is refused, which is what makes a stored
+            value trustworthy — see :func:`_read_scaler_unit`.
+        capture_class: How to read the capture object's **own address** for a
+            scaler. Defaults to Register, which every column declared before
+            this existed was read as.
+        scaler_siblings: Ordered fallbacks, each an ``(OBIS, class)`` pair,
+            tried when the own address denies ``scaler_unit`` — which on CEWE
+            meters is every measurement column, every time (measured
+            2026-08-09 and again 2026-09-09).
+        passthrough: True for a cell that is **not a scaled number** — a
+            status word, say. Skips multiplier resolution and the numeric
+            guard entirely, the same way a Demand Time cell already does on
+            the billing path. A passthrough column with a unit or siblings is
+            a contradiction, and :meth:`__post_init__` refuses it.
+    """
+
+    field: str
+    unit: Unit
+    capture_class: type = GXDLMSRegister
+    scaler_siblings: tuple[tuple[str, type], ...] = ()
+    passthrough: bool = False
+
+    def __post_init__(self) -> None:
+        if self.passthrough and self.scaler_siblings:
+            raise ValueError(f"{self.field}: a passthrough column has no scaler, so it cannot have siblings")
+        for _obis, cosem_class in self.scaler_siblings:
+            if cosem_class not in _SCALER_ATTRIBUTE:
+                raise ValueError(f"{self.field}: no scaler attribute is known for {cosem_class.__name__}")
+        if not self.passthrough and self.capture_class not in _SCALER_ATTRIBUTE:
+            raise ValueError(f"{self.field}: no scaler attribute is known for {self.capture_class.__name__}")
+
+
 def _read_scaler_unit(
     reader: Any,
     client: Any,
@@ -192,7 +264,13 @@ def _read_scaler_unit(
     cosem_class: type,
     required_unit: Unit,
 ) -> float | None:
-    """Read *obis*'s own ``scaler_unit`` (attr 3), memoized per *cache*.
+    """Read *obis*'s own ``scaler_unit``, memoized per *cache*.
+
+    **Which attribute that is depends on the class** (:data:`_SCALER_ATTRIBUTE`)
+    — 3 on a Register or Extended Register, 4 on a Demand Register. Before
+    M13 every caller passed a Register or an Extended Register, so this read
+    attribute 3 unconditionally; the table makes the same reads happen and
+    lets a class-5 column be read correctly rather than plausibly.
 
     Shared with the billing sibling-fallback below and with a load-profile
     column's own-address attempt (D6) — the read-and-check shape is identical
@@ -214,7 +292,7 @@ def _read_scaler_unit(
     obj = cosem_class(obis)
     client.objects.append(obj)
     try:
-        reader.read(obj, 3)
+        reader.read(obj, _SCALER_ATTRIBUTE[cosem_class])
     except Exception:  # noqa: BLE001 — an unreadable object degrades to None below, never guessed.
         multiplier = None
     else:
@@ -228,8 +306,7 @@ def resolve_scaler_candidates(
     reader: Any,
     client: Any,
     cache: dict[tuple[str, type, Unit], float | None],
-    candidates: list[str],
-    cosem_class: type,
+    candidates: Sequence[tuple[str, type]],
     required_unit: Unit,
     field: str,
     model_name: str,
@@ -241,9 +318,14 @@ def resolve_scaler_candidates(
     never guess" rule (D12) is enforced exactly once.
 
     Args:
-        candidates: OBIS codes to try, most-preferred first. Duplicates are
-            skipped so a column whose sibling happens to equal itself (the
-            ``E=0`` total column, say) does not read its own address twice.
+        candidates: ``(OBIS, COSEM class)`` pairs to try, most-preferred
+            first. **The class is per candidate, not per call** (M13, issue
+            04): on a Prometer 100 the import power columns resolve as a plain
+            Register and the export ones only as an Extended Register, so one
+            class for the whole chain cannot express what the meter does.
+            Duplicates are skipped so a column whose sibling happens to equal
+            itself (the ``E=0`` total column, say) does not read its own
+            address twice.
             Belt-and-braces on top of *cache*: ``_read_scaler_unit`` already
             memoizes by ``(obis, cosem_class, required_unit)``, so a repeated
             candidate would hit the cache and cost nothing measurable even
@@ -255,11 +337,11 @@ def resolve_scaler_candidates(
         The multiplier, or ``None`` if every candidate failed — a WARNING
         names *field* and the first (primary) candidate.
     """
-    tried: list[str] = []
-    for obis in candidates:
-        if obis in tried:
+    tried: list[tuple[str, type]] = []
+    for obis, cosem_class in candidates:
+        if (obis, cosem_class) in tried:
             continue
-        tried.append(obis)
+        tried.append((obis, cosem_class))
         multiplier = _read_scaler_unit(reader, client, cache, obis, cosem_class, required_unit)
         if multiplier is not None:
             return multiplier
@@ -267,7 +349,7 @@ def resolve_scaler_candidates(
     logger.warning(
         "%s: could not resolve a scaler for %s (%s) — %s stays unscaled (None) on every row",
         model_name,
-        candidates[0],
+        candidates[0][0],
         field,
         field,
     )
@@ -317,18 +399,22 @@ def resolve_billing_multiplier(
         that looks like data.
     """
     parts = capture_obis.split(".")
-    candidates = [capture_obis]
+    addresses = [capture_obis]
 
     e0_sibling = ".".join([*parts[:4], "0", parts[5]])
-    candidates.append(e0_sibling)
+    addresses.append(e0_sibling)
 
     if parts[3] == "2":  # Cumulative Demand — borrow a D=6 max-demand scaler for the same C.
         d6_same_tariff = ".".join([*parts[:3], "6", *parts[4:]])
-        candidates.append(d6_same_tariff)
+        addresses.append(d6_same_tariff)
         d6_total = ".".join([*parts[:3], "6", "0", parts[5]])
-        candidates.append(d6_total)
+        addresses.append(d6_total)
 
-    return resolve_scaler_candidates(reader, client, cache, candidates, cosem_class, required_unit, field, model_name)
+    # Every billing candidate is read as the one class the caller declared —
+    # unchanged from before candidates carried their own class (M13, issue 04);
+    # only the load-profile side needs a class per candidate.
+    candidates = [(obis, cosem_class) for obis in addresses]
+    return resolve_scaler_candidates(reader, client, cache, candidates, required_unit, field, model_name)
 
 
 def resolve_load_profile_multiplier(
@@ -336,29 +422,28 @@ def resolve_load_profile_multiplier(
     client: Any,
     cache: dict[tuple[str, type, Unit], float | None],
     capture_obis: str,
-    sibling_obis: str | None,
-    required_unit: Unit,
-    field: str,
+    column: LpColumn,
     model_name: str,
 ) -> float | None:
     """Resolve a load-profile column's multiplier: its own ``scaler_unit``
-    (attr 3, class 3 Register) first, then *sibling_obis* if that fails
-    (review finding 1) — the same denial pattern the SMW110W4 already has a
-    proven fix for (:meth:`~arichds.acquisition.drivers.smw110.Smw110Driver._resolve_multiplier`),
-    confirmed live on all three CEWE models by ``docs/meter-notes/cewe-billing-capture-objects.md``'s
-    2026-08-09 scan: every measurement column's own-address read was refused.
+    first, then each of *column*'s declared siblings in order (review finding
+    1) — the same denial pattern the SMW110W4 already has a proven fix for
+    (:meth:`~arichds.acquisition.drivers.smw110.Smw110Driver._resolve_multiplier`),
+    confirmed live on all three CEWE models by
+    ``docs/meter-notes/cewe-billing-capture-objects.md``'s 2026-08-09 scan and
+    again on 2026-09-09: **every** measurement column's own-address read was
+    refused, on all twelve addresses tried.
+
+    Each candidate carries its own COSEM class (M13, issue 04), because a
+    column and its working sibling are not always the same class.
 
     *cache* is threaded through from the caller so a chunked walk — which
     calls :meth:`DlmsProfileDriver.read_load_profile` once per 24 h chunk, up
     to 90 times for a full backfill — resolves each column's multiplier once
     per connection, not once per chunk (review finding 3).
     """
-    candidates = [capture_obis]
-    if sibling_obis is not None:
-        candidates.append(sibling_obis)
-    return resolve_scaler_candidates(
-        reader, client, cache, candidates, GXDLMSRegister, required_unit, field, model_name
-    )
+    candidates = [(capture_obis, column.capture_class), *column.scaler_siblings]
+    return resolve_scaler_candidates(reader, client, cache, candidates, column.unit, column.field, model_name)
 
 
 class DlmsProfileDriver(DlmsDriver):
@@ -367,8 +452,7 @@ class DlmsProfileDriver(DlmsDriver):
     #25, the SMART TCC family.
 
     Subclasses declare :attr:`LOAD_PROFILE_COLUMN_MAP` (``{logger_id:
-    {(obis, attr): (IntervalReading field, sibling OBIS to borrow scaler_unit
-    from or None, required Unit)}}``), the connection hooks
+    {(obis, attr): LpColumn}}``), the connection hooks
     (:meth:`~arichds.acquisition.drivers._dlms.DlmsDriver._protocol_args`,
     :meth:`~arichds.acquisition.drivers._dlms.DlmsDriver._read_timeout_ms`),
     and — since issue #25 (D5) — four billing declarations a subclass may
@@ -381,13 +465,14 @@ class DlmsProfileDriver(DlmsDriver):
     common to every model on this base.
     """
 
-    #: ``{logger_id: {(obis, attr): (field, sibling OBIS or None, required
-    #: Unit)}}``. Empty on the base — every concrete driver overrides it
-    #: (D15, issue #24). The sibling is what :func:`resolve_load_profile_multiplier`
-    #: falls back to when the column's own address denies ``scaler_unit``
-    #: (review finding 1) — ``None`` for a column with no known working
-    #: sibling.
-    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], tuple[str, str | None, Unit]]] = {}
+    #: ``{logger_id: {(obis, attr): LpColumn}}``. Empty on the base — every
+    #: concrete driver overrides it (D15, issue #24). Each
+    #: :class:`LpColumn` names the stored field, the Unit its scaler must
+    #: report, how to read the capture object's own address, and the ordered
+    #: siblings :func:`resolve_load_profile_multiplier` falls back to when
+    #: that address denies ``scaler_unit`` — which on CEWE meters is always
+    #: (review finding 1, re-measured 2026-09-09).
+    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], LpColumn]] = {}
 
     #: D5 (issue #25) — the billing ProfileGeneric this driver reads. Defaults
     #: to CEWE's shared profile (F4); :class:`~arichds.acquisition.drivers.smart_tcc.SmartTccDriver`
@@ -524,14 +609,18 @@ class DlmsProfileDriver(DlmsDriver):
         # *self._lp_scaler_cache* is threaded through so a multi-chunk walk
         # (up to 90 calls for a full backfill) resolves each column once per
         # connection, not once per chunk (review finding 3).
+        # A passthrough column is not a scaled number, so it never asks the
+        # meter for a multiplier (M13, issue 04) — the same treatment a Demand
+        # Time cell already gets on the billing path.
         multipliers = {
             key: resolve_load_profile_multiplier(
-                self._reader, self._client, self._lp_scaler_cache, key[0], sibling_obis, unit, field, self.model_name
+                self._reader, self._client, self._lp_scaler_cache, key[0], column, self.model_name
             )
-            for key, (field, sibling_obis, unit) in column_map.items()
-            if key in positions
+            for key, column in column_map.items()
+            if key in positions and not column.passthrough
         }
-        row_column_map = {key: field for key, (field, _sibling_obis, _unit) in column_map.items()}
+        row_column_map = {key: column.field for key, column in column_map.items()}
+        passthrough_keys = frozenset(key for key, column in column_map.items() if column.passthrough)
 
         start_local = meter_local_to_utc_inverse(start_utc)
         end_local = meter_local_to_utc_inverse(end_utc)
@@ -560,7 +649,14 @@ class DlmsProfileDriver(DlmsDriver):
             if read_at < start_utc or read_at > end_utc:
                 continue
 
-            fields = build_fields(row, positions, row_column_map, multipliers, scale=self._normalize)
+            fields = build_fields(
+                row,
+                positions,
+                row_column_map,
+                multipliers,
+                scale=self._normalize,
+                passthrough_keys=passthrough_keys,
+            )
 
             readings.append(
                 IntervalReading(

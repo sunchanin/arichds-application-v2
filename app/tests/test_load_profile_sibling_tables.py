@@ -84,11 +84,18 @@ def _d_transition_is_known(capture_obis: str, sibling_obis: str) -> bool:
 
 def _all_load_profile_columns():
     """Yield ``(driver_cls, logger_id, key, field, sibling_obis, unit)`` for
-    every column every CEWE driver declares."""
+    every column every CEWE driver declares — **once per declared sibling**,
+    and once with ``None`` for a column that declares none (M13, issue 04: a
+    column may now name more than one, each with its own COSEM class, and every
+    one of them has to hold this rule)."""
     for driver_cls in _DRIVERS:
         for logger_id, column_map in driver_cls.LOAD_PROFILE_COLUMN_MAP.items():
-            for key, (field, sibling_obis, unit) in column_map.items():
-                yield driver_cls, logger_id, key, field, sibling_obis, unit
+            for key, column in column_map.items():
+                if not column.scaler_siblings:
+                    yield driver_cls, logger_id, key, column.field, None, column.unit
+                    continue
+                for sibling_obis, _cosem_class in column.scaler_siblings:
+                    yield driver_cls, logger_id, key, column.field, sibling_obis, column.unit
 
 
 class TestSiblingSharesTheCaptureColumnsQuantityGroup:

@@ -45,10 +45,11 @@ from __future__ import annotations
 from typing import Any
 
 from gurux_dlms.enums import Unit
+from gurux_dlms.objects import GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers._dlms import read_battery_status_via
-from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver
+from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver, LpColumn
 from arichds.acquisition.obis import INSTANTANEOUS_OBIS
 from arichds.constants import DLMS_INTER_REQUEST_DELAY_MS, TCP_READ_TIMEOUT_SEC
 
@@ -59,22 +60,30 @@ from arichds.constants import DLMS_INTER_REQUEST_DELAY_MS, TCP_READ_TIMEOUT_SEC
 #: D=29 interval energy borrows from D=8 cumulative energy, D=27 V/I borrows
 #: from the D=7 instantaneous sibling, D=24 (total PF) borrows from D=7 too —
 #: same pattern SMW110W4's ``_MAPPED_CAPTURE_COLUMNS`` already uses.
-_LOGGER_1_COLUMNS: dict[tuple[str, int], tuple[str, str | None, Unit]] = {
-    ("1.0.1.29.0.255", 2): ("import_active_kwh", "1.0.1.8.0.255", Unit.ACTIVE_ENERGY),
-    ("1.0.2.29.0.255", 2): ("export_active_kwh", "1.0.2.8.0.255", Unit.ACTIVE_ENERGY),
-    ("1.0.3.29.0.255", 2): ("import_reactive_kvarh", "1.0.3.8.0.255", Unit.REACTIVE_ENERGY),
-    ("1.0.4.29.0.255", 2): ("export_reactive_kvarh", "1.0.4.8.0.255", Unit.REACTIVE_ENERGY),
-    ("1.0.32.27.0.255", 2): ("volt_l1", "1.0.32.7.0.255", Unit.VOLTAGE),
-    ("1.0.52.27.0.255", 2): ("volt_l2", "1.0.52.7.0.255", Unit.VOLTAGE),
-    ("1.0.72.27.0.255", 2): ("volt_l3", "1.0.72.7.0.255", Unit.VOLTAGE),
-    ("1.0.31.27.0.255", 2): ("current_l1", "1.0.31.7.0.255", Unit.CURRENT),
-    ("1.0.51.27.0.255", 2): ("current_l2", "1.0.51.7.0.255", Unit.CURRENT),
-    ("1.0.71.27.0.255", 2): ("current_l3", "1.0.71.7.0.255", Unit.CURRENT),
-    ("1.0.14.27.0.255", 2): ("freq", "1.0.14.7.0.255", Unit.FREQUENCY),
+_LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
+    ("1.0.1.29.0.255", 2): LpColumn(
+        "import_active_kwh", Unit.ACTIVE_ENERGY, scaler_siblings=(("1.0.1.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.2.29.0.255", 2): LpColumn(
+        "export_active_kwh", Unit.ACTIVE_ENERGY, scaler_siblings=(("1.0.2.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.3.29.0.255", 2): LpColumn(
+        "import_reactive_kvarh", Unit.REACTIVE_ENERGY, scaler_siblings=(("1.0.3.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.4.29.0.255", 2): LpColumn(
+        "export_reactive_kvarh", Unit.REACTIVE_ENERGY, scaler_siblings=(("1.0.4.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.32.27.0.255", 2): LpColumn("volt_l1", Unit.VOLTAGE, scaler_siblings=(("1.0.32.7.0.255", GXDLMSRegister),)),
+    ("1.0.52.27.0.255", 2): LpColumn("volt_l2", Unit.VOLTAGE, scaler_siblings=(("1.0.52.7.0.255", GXDLMSRegister),)),
+    ("1.0.72.27.0.255", 2): LpColumn("volt_l3", Unit.VOLTAGE, scaler_siblings=(("1.0.72.7.0.255", GXDLMSRegister),)),
+    ("1.0.31.27.0.255", 2): LpColumn("current_l1", Unit.CURRENT, scaler_siblings=(("1.0.31.7.0.255", GXDLMSRegister),)),
+    ("1.0.51.27.0.255", 2): LpColumn("current_l2", Unit.CURRENT, scaler_siblings=(("1.0.51.7.0.255", GXDLMSRegister),)),
+    ("1.0.71.27.0.255", 2): LpColumn("current_l3", Unit.CURRENT, scaler_siblings=(("1.0.71.7.0.255", GXDLMSRegister),)),
+    ("1.0.14.27.0.255", 2): LpColumn("freq", Unit.FREQUENCY, scaler_siblings=(("1.0.14.7.0.255", GXDLMSRegister),)),
     # Total power factor — Prometer 100 only (SPEC §3.5:477-481); Saral 305
     # and Premier 550 read only per-phase PF, which v1 discards, so NULL on
     # those two models is parity, not a gap (D16).
-    ("1.0.13.24.0.255", 2): ("avg_geo_pf", "1.0.13.7.0.255", Unit.NONE),
+    ("1.0.13.24.0.255", 2): LpColumn("avg_geo_pf", Unit.NONE, scaler_siblings=(("1.0.13.7.0.255", GXDLMSRegister),)),
 }
 
 #: Logger 2 (F7, meter-notes:102-107) — only frequency maps to a stored
@@ -82,8 +91,8 @@ _LOGGER_1_COLUMNS: dict[tuple[str, int], tuple[str, str | None, Unit]] = {
 #: structurally, the same way SMW110W4 drops its twelve unmapped columns.
 #: Stored anyway (D17) — the point is exercising per-logger watermarks and
 #: the 96-vs-288-row Records case, not the one populated column.
-_LOGGER_2_COLUMNS: dict[tuple[str, int], tuple[str, str | None, Unit]] = {
-    ("1.0.14.27.0.255", 2): ("freq", "1.0.14.7.0.255", Unit.FREQUENCY),
+_LOGGER_2_COLUMNS: dict[tuple[str, int], LpColumn] = {
+    ("1.0.14.27.0.255", 2): LpColumn("freq", Unit.FREQUENCY, scaler_siblings=(("1.0.14.7.0.255", GXDLMSRegister),)),
 }
 
 
@@ -95,7 +104,7 @@ class Prometer100Driver(DlmsProfileDriver):
     _SERVER_ADDRESS = "1"
     _AUTHENTICATION = "Low"
 
-    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], tuple[str, str | None, Unit]]] = {
+    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], LpColumn]] = {
         1: _LOGGER_1_COLUMNS,
         2: _LOGGER_2_COLUMNS,
     }

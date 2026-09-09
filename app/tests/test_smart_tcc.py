@@ -151,13 +151,13 @@ class TestLoadProfileLogger1ColumnMap:
             "current_l3",
             "avg_geo_pf",
         }
-        actual_fields = {field for field, _sibling, _unit in columns.values()}
+        actual_fields = {column.field for column in columns.values()}
         assert actual_fields == expected_fields
 
     def test_frequency_maps_to_nothing(self) -> None:
         """F3 — Logger 1 has no frequency capture column on this family."""
         columns = SmartTccDriver.LOAD_PROFILE_COLUMN_MAP[1]
-        actual_fields = {field for field, _sibling, _unit in columns.values()}
+        actual_fields = {column.field for column in columns.values()}
         assert "freq" not in actual_fields
 
     def test_supports_load_profile_is_true(self) -> None:

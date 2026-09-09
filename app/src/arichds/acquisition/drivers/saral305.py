@@ -35,10 +35,11 @@ from __future__ import annotations
 from typing import Any
 
 from gurux_dlms.enums import Unit
+from gurux_dlms.objects import GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers._dlms import read_battery_status_via
-from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver
+from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver, LpColumn
 from arichds.acquisition.obis import INSTANTANEOUS_OBIS
 from arichds.constants import TCP_READ_TIMEOUT_SEC
 
@@ -49,17 +50,25 @@ from arichds.constants import TCP_READ_TIMEOUT_SEC
 #: OBIS (review finding 1) — the live 2026-08-09 scan showed this model
 #: denies every own-address ``scaler_unit`` read, the same pattern the
 #: SMW110W4 already documents for load profile.
-_LOGGER_1_COLUMNS: dict[tuple[str, int], tuple[str, str | None, Unit]] = {
-    ("1.0.1.29.0.255", 2): ("import_active_kwh", "1.0.1.8.0.255", Unit.ACTIVE_ENERGY),
-    ("1.0.2.29.0.255", 2): ("export_active_kwh", "1.0.2.8.0.255", Unit.ACTIVE_ENERGY),
-    ("1.0.3.29.0.255", 2): ("import_reactive_kvarh", "1.0.3.8.0.255", Unit.REACTIVE_ENERGY),
-    ("1.0.4.29.0.255", 2): ("export_reactive_kvarh", "1.0.4.8.0.255", Unit.REACTIVE_ENERGY),
-    ("1.0.32.27.0.255", 2): ("volt_l1", "1.0.32.7.0.255", Unit.VOLTAGE),
-    ("1.0.52.27.0.255", 2): ("volt_l2", "1.0.52.7.0.255", Unit.VOLTAGE),
-    ("1.0.72.27.0.255", 2): ("volt_l3", "1.0.72.7.0.255", Unit.VOLTAGE),
-    ("1.0.31.27.0.255", 2): ("current_l1", "1.0.31.7.0.255", Unit.CURRENT),
-    ("1.0.51.27.0.255", 2): ("current_l2", "1.0.51.7.0.255", Unit.CURRENT),
-    ("1.0.71.27.0.255", 2): ("current_l3", "1.0.71.7.0.255", Unit.CURRENT),
+_LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
+    ("1.0.1.29.0.255", 2): LpColumn(
+        "import_active_kwh", Unit.ACTIVE_ENERGY, scaler_siblings=(("1.0.1.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.2.29.0.255", 2): LpColumn(
+        "export_active_kwh", Unit.ACTIVE_ENERGY, scaler_siblings=(("1.0.2.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.3.29.0.255", 2): LpColumn(
+        "import_reactive_kvarh", Unit.REACTIVE_ENERGY, scaler_siblings=(("1.0.3.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.4.29.0.255", 2): LpColumn(
+        "export_reactive_kvarh", Unit.REACTIVE_ENERGY, scaler_siblings=(("1.0.4.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.32.27.0.255", 2): LpColumn("volt_l1", Unit.VOLTAGE, scaler_siblings=(("1.0.32.7.0.255", GXDLMSRegister),)),
+    ("1.0.52.27.0.255", 2): LpColumn("volt_l2", Unit.VOLTAGE, scaler_siblings=(("1.0.52.7.0.255", GXDLMSRegister),)),
+    ("1.0.72.27.0.255", 2): LpColumn("volt_l3", Unit.VOLTAGE, scaler_siblings=(("1.0.72.7.0.255", GXDLMSRegister),)),
+    ("1.0.31.27.0.255", 2): LpColumn("current_l1", Unit.CURRENT, scaler_siblings=(("1.0.31.7.0.255", GXDLMSRegister),)),
+    ("1.0.51.27.0.255", 2): LpColumn("current_l2", Unit.CURRENT, scaler_siblings=(("1.0.51.7.0.255", GXDLMSRegister),)),
+    ("1.0.71.27.0.255", 2): LpColumn("current_l3", Unit.CURRENT, scaler_siblings=(("1.0.71.7.0.255", GXDLMSRegister),)),
 }
 
 
@@ -71,7 +80,7 @@ class Saral305Driver(DlmsProfileDriver):
     _SERVER_ADDRESS = "1"
     _AUTHENTICATION = "Low"
 
-    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], tuple[str, str | None, Unit]]] = {1: _LOGGER_1_COLUMNS}
+    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], LpColumn]] = {1: _LOGGER_1_COLUMNS}
 
     def __init__(self, conn: ConnectionParams, password: str, **kwargs: Any) -> None:
         """Initialise the driver.
