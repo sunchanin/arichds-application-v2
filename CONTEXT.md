@@ -116,6 +116,24 @@ capture period and is counted against the most common one). The counts are
 computed live from `load_profile_readings` on every request.
 _Avoid_: records_96, completeness table, instantaneous records
 
+**Interval Status**:
+The meter's own verdict on one Interval Reading — a status word it captures beside the
+values, setting bits when that interval was disturbed, incomplete, or lost power. It is
+**not Records**: Records answers whether a *day* is complete by counting rows we hold,
+this answers whether *one row* is trustworthy, and the answer comes from the meter
+rather than from arithmetic.
+
+The OBIS differs by family and only one of them is decoded. CEWE captures
+`1.0.96.5.4.255`, a 13-bit word rendered as words (`OK`, `ALL_INVALID`, `DISTURBED`,
+`POWER_LOSS`). SMART TCC captures `0.0.96.10.1.255` — a different object whose bit
+meanings nobody has verified on hardware, so it stays **blank rather than decoded**,
+which is the call v1 made and recorded.
+
+The customer's export file names this column `Record Status` and **that header stays**,
+because the file is a contract they wrote. The name splits at the same boundary display
+units do (ADR 0013): the file keeps their word, the product uses this one.
+_Avoid_: Record Status (the CSV header only), status flag, Records
+
 **Billing Reading**:
 One row of `billing_readings` — the register snapshot the meter itself froze when it closed a
 billing period. Like an Interval Reading it is UTC, kWh, and COSEM-named flat columns
@@ -170,6 +188,19 @@ whose Bill Date advances on every single read, which would make the check fire o
 if it were the signal. `BILLING_INTERVAL_SEC` stays the daily backstop for when this check
 itself cannot answer.
 _Avoid_: billing poll, bill_date check, watermark (billing has no watermark, ADR 0009)
+
+**All-Meters View**:
+The Billing page's third tab, beside History and Current — one row per device holding
+that device's **latest closed** period, with no date filter. It answers one question,
+*did every meter cut its bill and which one needs attention*, which is why it is a narrow
+table rather than the forty columns History shows for one meter across time.
+
+It is a view over **devices**, not over Billing Readings: a meter that has never produced
+a bill at all is exactly the case this tab exists to surface, and reading from
+`billing_readings` would hide it. The **Open Period** is excluded for the same reason it
+is excluded from the Billing Change Check — its Bill Date advances on every read, so
+including it would make every meter look freshly cut.
+_Avoid_: Bill total (the customer's word — it reads as a sum of money), overview tab, fleet view
 
 **Energy Summary**:
 Interval Readings added up into **Time-of-Use buckets** — Peak, Off-Peak and Holiday — per
