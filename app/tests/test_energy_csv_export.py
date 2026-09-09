@@ -374,3 +374,123 @@ class TestSaveToFileThroughTheApi:
         response = admin_client.post(f"/api/energy/export?device_id=999&start_date={day}&end_date={day}")
 
         assert response.status_code == 404, response.text
+
+
+class TestAHolidayChangeReportsTheEnergyFilesItMayHaveLeftBehind:
+    """M13, issue 03. The Energy Summary is derived on every request precisely
+    so a Holiday entered today changes what last January reports tomorrow
+    (ADR 0012). The daily file froze one night's answer, and nothing else in the
+    product would ever say so."""
+
+    def test_a_past_public_holiday_reports_the_meters_whose_files_passed_it(
+        self, migrated_db: Settings, admin_client
+    ) -> None:
+        device_id = make_device()
+        past = local_today() - timedelta(days=3)
+        set_watermark(device_id, local_today() - timedelta(days=1))
+
+        response = admin_client.post(
+            "/api/holidays", json={"kind": "public", "name": "Declared late", "date": past.isoformat()}
+        )
+
+        assert response.status_code == 201, response.text
+        data = response.json()["data"]
+        assert data["affected_date"] == past.isoformat()
+        assert data["energy_files_written_past"] == 1
+
+    def test_a_future_holiday_reports_nothing_at_all(self, migrated_db: Settings, admin_client) -> None:
+        """The silence is the feature: a warning that fired on every holiday
+        entered in advance would stop meaning anything."""
+        device_id = make_device()
+        set_watermark(device_id, local_today() - timedelta(days=1))
+        future = local_today() + timedelta(days=30)
+
+        response = admin_client.post(
+            "/api/holidays", json={"kind": "public", "name": "Next month", "date": future.isoformat()}
+        )
+
+        data = response.json()["data"]
+        assert data["affected_date"] is None
+        assert data["energy_files_written_past"] == 0
+
+    def test_a_machine_whose_files_have_not_reached_the_day_reports_zero(
+        self, migrated_db: Settings, admin_client
+    ) -> None:
+        device_id = make_device()
+        past = local_today() - timedelta(days=3)
+        set_watermark(device_id, past - timedelta(days=1))
+
+        response = admin_client.post(
+            "/api/holidays", json={"kind": "public", "name": "Declared late", "date": past.isoformat()}
+        )
+
+        assert response.json()["data"]["energy_files_written_past"] == 0
+
+    def test_a_device_that_has_never_exported_is_never_counted(self, migrated_db: Settings, admin_client) -> None:
+        make_device()
+        past = local_today() - timedelta(days=3)
+
+        response = admin_client.post(
+            "/api/holidays", json={"kind": "public", "name": "Declared late", "date": past.isoformat()}
+        )
+
+        assert response.json()["data"]["energy_files_written_past"] == 0
+
+    def test_an_annual_holiday_reports_its_most_recent_occurrence(self, migrated_db: Settings, admin_client) -> None:
+        """An annual holiday recurs, so the day that matters is the last one
+        that has already happened — not the abstract month and day."""
+        device_id = make_device()
+        set_watermark(device_id, local_today())
+        yesterday = local_today() - timedelta(days=1)
+
+        response = admin_client.post(
+            "/api/holidays",
+            json={"kind": "annual", "name": "Every year", "month": yesterday.month, "day": yesterday.day},
+        )
+
+        assert response.status_code == 201, response.text
+        data = response.json()["data"]
+        assert data["affected_date"] == yesterday.isoformat()
+        assert data["energy_files_written_past"] == 1
+
+    def test_deleting_a_holiday_warns_the_same_way_adding_one_does(self, migrated_db: Settings, admin_client) -> None:
+        """Removing a Holiday changes what an already-written day should say
+        exactly as much as adding one does."""
+        device_id = make_device()
+        past = local_today() - timedelta(days=3)
+        set_watermark(device_id, local_today() - timedelta(days=1))
+        created = admin_client.post(
+            "/api/holidays", json={"kind": "public", "name": "Wrong call", "date": past.isoformat()}
+        ).json()["data"]["holiday"]
+
+        response = admin_client.delete(f"/api/holidays/{created['id']}")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["holiday"] is None
+        assert data["affected_date"] == past.isoformat()
+        assert data["energy_files_written_past"] == 1
+
+    def test_editing_a_holiday_reports_against_its_new_day(self, migrated_db: Settings, admin_client) -> None:
+        device_id = make_device()
+        set_watermark(device_id, local_today() - timedelta(days=1))
+        far_past = local_today() - timedelta(days=40)
+        created = admin_client.post(
+            "/api/holidays", json={"kind": "public", "name": "Moved", "date": far_past.isoformat()}
+        ).json()["data"]["holiday"]
+        moved_to = local_today() - timedelta(days=2)
+
+        response = admin_client.patch(
+            f"/api/holidays/{created['id']}",
+            json={"kind": "public", "name": "Moved", "date": moved_to.isoformat()},
+        )
+
+        assert response.json()["data"]["affected_date"] == moved_to.isoformat()
+
+    def test_the_created_holiday_still_comes_back_on_the_response(self, migrated_db: Settings, admin_client) -> None:
+        """The count rides alongside the row; it does not replace it."""
+        response = admin_client.post("/api/holidays", json={"kind": "annual", "name": "New Year", "month": 1, "day": 1})
+
+        holiday = response.json()["data"]["holiday"]
+        assert holiday["name"] == "New Year"
+        assert holiday["kind"] == "annual"

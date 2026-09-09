@@ -27,6 +27,7 @@ import {
   type Device,
   type Holiday,
   type HolidayInput,
+  type HolidayMutation,
   type HolidayKind,
 } from "../api";
 
@@ -46,6 +47,34 @@ interface HolidayFormValues {
   day?: number;
 }
 
+/**
+ * Tell the operator when a Holiday change has left an energy file behind
+ * (M13, issue 03).
+ *
+ * A `notification`, not a `message`: this asks them to do something later, and
+ * a toast that vanishes in three seconds cannot. Silent when the change
+ * touches no already-written day — which is the usual case, a holiday entered
+ * for a date still ahead, and what makes the warning mean something when it
+ * does appear.
+ */
+function warnAboutStaleEnergyFiles(
+  notification: ReturnType<typeof App.useApp>["notification"],
+  result: HolidayMutation,
+): void {
+  if (result.affected_date === null || result.energy_files_written_past === 0) return;
+  const meters = result.energy_files_written_past;
+  notification.warning({
+    message: "Energy files may no longer match this holiday",
+    description:
+      `${meters} meter${meters === 1 ? "'s" : "s'"} daily energy file ` +
+      `${meters === 1 ? "has" : "have"} already been written past ${result.affected_date}, ` +
+      "so those rows were worked out before this change. Open Energy Summary, pick that range, " +
+      "and press Save to file to write a corrected copy.",
+    duration: 0,
+  });
+}
+
+
 function HolidayFormModal({
   open,
   editing,
@@ -59,6 +88,7 @@ function HolidayFormModal({
   onSaved: () => void;
   surface: (err: unknown, fallback: string) => void;
 }) {
+  const { notification } = App.useApp();
   const [form] = Form.useForm<HolidayFormValues>();
   const [saving, setSaving] = useState(false);
   const kind = Form.useWatch("kind", form) ?? "annual";
@@ -89,7 +119,8 @@ function HolidayFormModal({
     setSaving(true);
     const save = editing ? api.updateHoliday(editing.id, input) : api.createHoliday(input);
     save
-      .then(() => {
+      .then((result) => {
+        warnAboutStaleEnergyFiles(notification, result);
         onSaved();
         onClose();
       })
@@ -147,7 +178,7 @@ function HolidayFormModal({
  * never blocks on it.
  */
 export function Holidays({ role }: { role: "admin" | "user" }) {
-  const { message, modal } = App.useApp();
+  const { message, modal, notification } = App.useApp();
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [loading, setLoading] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
@@ -211,8 +242,9 @@ export function Holidays({ role }: { role: "admin" | "user" }) {
   const onDelete = (row: Holiday) => {
     api
       .deleteHoliday(row.id)
-      .then(() => {
+      .then((result) => {
         message.success("Holiday deleted.");
+        warnAboutStaleEnergyFiles(notification, result);
         load();
       })
       .catch((err: unknown) => surface(err, "Could not delete the holiday."));

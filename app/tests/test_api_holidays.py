@@ -44,7 +44,8 @@ class TestCreateIsAdminOnly:
     def test_admin_can_create_annual(self, admin_client: TestClient) -> None:
         response = admin_client.post("/api/holidays", json={"kind": "annual", "name": "New Year", "month": 1, "day": 1})
         assert response.status_code == 201, response.text
-        body = response.json()["data"]
+        # M13 issue 03 — the row now rides alongside the stale-file count.
+        body = response.json()["data"]["holiday"]
         assert body["kind"] == "annual"
         assert body["month"] == 1
         assert body["day"] == 1
@@ -55,7 +56,7 @@ class TestCreateIsAdminOnly:
             "/api/holidays", json={"kind": "public", "name": "Makha Bucha", "date": "2026-02-12"}
         )
         assert response.status_code == 201, response.text
-        body = response.json()["data"]
+        body = response.json()["data"]["holiday"]
         assert body["kind"] == "public"
         assert body["date"] == "2026-02-12"
         assert body["month"] is None
@@ -105,7 +106,7 @@ class TestDelete:
     def test_admin_can_delete(self, admin_client: TestClient) -> None:
         created = admin_client.post(
             "/api/holidays", json={"kind": "annual", "name": "New Year", "month": 1, "day": 1}
-        ).json()["data"]
+        ).json()["data"]["holiday"]
 
         response = admin_client.delete(f"/api/holidays/{created['id']}")
         assert response.status_code == 200

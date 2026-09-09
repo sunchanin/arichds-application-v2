@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, timedelta
 
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from arichds.constants import (
@@ -31,6 +31,7 @@ from arichds.constants import (
     TOU_PEAK_END_UTC,
     TOU_PEAK_START_UTC,
 )
+from arichds.db.models import Device
 
 #: Logger 1 carries the energy columns on every model (decision 6, `base.py`
 #: D2 module docstring) — the only correct answer, so there is no logger
@@ -138,6 +139,16 @@ class EnergySummaryReport(BaseModel):
     days: list[EnergySummaryDay]
 
 
+def local_today() -> date:
+    """Today's date in the meter's fixed local zone.
+
+    The summary's rows are local calendar days, so "which day is finished" has
+    to be asked in that zone rather than in UTC — near midnight the two
+    disagree, and asking in UTC would either skip a day or write one twice.
+    """
+    return (datetime.now(UTC) + timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)).date()
+
+
 def _local_midnight_utc(day: date) -> datetime:
     """The UTC instant at which *day* begins in the meter's fixed local zone."""
     return datetime.combine(day, time.min, UTC) - timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)
@@ -180,3 +191,62 @@ def energy_summary_rows(session: Session, device_id: int, start_date: date, end_
         )
         for row in rows
     ]
+
+
+# ─── Which Energy Summary files a Holiday change may have invalidated ─────────
+# (M13, issue 03)
+#
+# The Energy Summary is derived on every request precisely so that entering a
+# Holiday today changes what last January reports tomorrow (ADR 0012). The
+# daily export file (issue 02) froze one night's answer. Nothing else in the
+# product would ever tell the operator the two have parted company.
+
+
+def most_recent_occurrence(
+    kind: str, date_: date | None, month: int | None, day: int | None, *, today: date
+) -> date | None:
+    """The local day a Holiday row affects that is closest to *today* without
+    being after it, or ``None`` when it affects no past day.
+
+    A ``public`` Holiday names one exact date, which may be in the future — a
+    future date affects nothing already written, and that silence is what makes
+    the warning mean something when it does appear.
+
+    An ``annual`` Holiday recurs, so the day that matters is its most recent
+    occurrence: this year's if it has already passed, otherwise last year's.
+    """
+    if kind == "public":
+        return date_ if date_ is not None and date_ <= today else None
+    if month is None or day is None:
+        return None
+    try:
+        this_year = date(today.year, month, day)
+    except ValueError:  # 29 February in a non-leap year — refused as annual anyway.
+        return None
+    if this_year <= today:
+        return this_year
+    try:
+        return date(today.year - 1, month, day)
+    except ValueError:
+        return None
+
+
+def energy_files_written_past(session: Session, day: date) -> int:
+    """How many devices' daily Energy Summary files have been written past
+    *day* — the count the Holidays page reports after a change.
+
+    **"Written past", not "contains".** A device whose file only began after
+    *day* is counted too, because the watermark alone cannot tell the two
+    apart. The wording is chosen to be exactly true rather than to be
+    reassuring: over-counting sends an operator to re-save a file that was
+    already right, which costs a button press, while under-counting would leave
+    a wrong file in place with nobody told.
+    """
+    return int(
+        session.scalar(
+            select(func.count())
+            .select_from(Device)
+            .where(Device.energy_exported_through.is_not(None), Device.energy_exported_through >= day)
+        )
+        or 0
+    )

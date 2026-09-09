@@ -34,14 +34,13 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 
 from arichds.capture.paths import sanitize_meter_serial, validate_directory_setting
 from arichds.config import get_settings
-from arichds.constants import METER_LOCAL_UTC_OFFSET_HOURS
 from arichds.db.app_settings import (
     EXPORT_AUTO_SAVE_ENABLED_DEFAULT,
     EXPORT_AUTO_SAVE_ENABLED_KEY,
@@ -53,7 +52,7 @@ from arichds.db.app_settings import (
     EXPORT_OUTPUT_DIR_KEY,
     get_setting,
 )
-from arichds.db.energy_query import EnergySummaryDay, energy_summary_rows
+from arichds.db.energy_query import EnergySummaryDay, energy_summary_rows, local_today
 from arichds.db.models import Device
 from arichds.db.session import session_scope
 from arichds.export.format import (
@@ -103,16 +102,6 @@ def _device_lock(device_id: int) -> threading.Lock:
             lock = threading.Lock()
             _locks[device_id] = lock
         return lock
-
-
-def local_today() -> date:
-    """Today's date in the meter's fixed local zone.
-
-    The summary's rows are local calendar days, so "which day is finished" has
-    to be asked in that zone rather than in UTC — near midnight the two
-    disagree, and asking in UTC would either skip a day or write one twice.
-    """
-    return (datetime.now(UTC) + timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)).date()
 
 
 def _range_filename(template: str, meter_token: str, start: date, end: date) -> str:
@@ -273,5 +262,4 @@ __all__ = [
     "EnergyExportResult",
     "export_device_energy",
     "export_energy_range",
-    "local_today",
 ]

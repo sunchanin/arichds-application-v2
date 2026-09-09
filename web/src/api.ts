@@ -1098,6 +1098,32 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   throw new ApiRequestError("Unexpected response shape from the API");
 }
 
+/**
+ * What a Holiday change did, plus what it may have invalidated (M13, issue 03).
+ *
+ * The Energy Summary is derived on every request precisely so that entering a
+ * Holiday today changes what last January reports tomorrow (ADR 0012). The
+ * daily energy export file froze one night's answer, and nothing else in the
+ * product would ever say the two had parted company.
+ */
+export interface HolidayMutation {
+  /** The row as it now stands, or `null` for a delete. */
+  holiday: Holiday | null;
+  /**
+   * The local day this change touches — an exact date for a `public` holiday,
+   * the most recent occurrence for an `annual` one, `null` when it touches no
+   * past day. A holiday dated in the future is the `null` case, and that
+   * silence is what makes the warning mean something when it appears.
+   */
+  affected_date: string | null;
+  /**
+   * How many devices' daily energy files have been written past
+   * `affected_date`. Computed on the server — the page cannot see the export
+   * watermarks, and deriving it here would be guessing.
+   */
+  energy_files_written_past: number;
+}
+
 export const api = {
   checkSetup: () => request<SetupStatus>("/api/auth/check-setup"),
 
@@ -1405,16 +1431,16 @@ export const api = {
   /** Every stored Holiday, machine-wide. Any authenticated role. */
   listHolidays: () => request<Holiday[]>("/api/holidays"),
 
-  /** Add one Holiday — admin-only. */
+  /** Add one Holiday — admin-only. Reports any energy files the change may have left stale. */
   createHoliday: (input: HolidayInput) =>
-    request<Holiday>("/api/holidays", { method: "POST", body: JSON.stringify(input) }),
+    request<HolidayMutation>("/api/holidays", { method: "POST", body: JSON.stringify(input) }),
 
   /** Replace one Holiday's fields in place — admin-only. */
   updateHoliday: (id: number, input: HolidayInput) =>
-    request<Holiday>(`/api/holidays/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+    request<HolidayMutation>(`/api/holidays/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
 
-  /** Remove one Holiday — admin-only. */
-  deleteHoliday: (id: number) => request<boolean>(`/api/holidays/${id}`, { method: "DELETE" }),
+  /** Remove one Holiday — admin-only. Removing one changes an already-written day as much as adding one. */
+  deleteHoliday: (id: number) => request<HolidayMutation>(`/api/holidays/${id}`, { method: "DELETE" }),
 
   /** The whole calendar as the JSON document (decision 14) — the caller
    * saves this as a Blob download. */
