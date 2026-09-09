@@ -537,3 +537,62 @@ class TestTheCycleAsksTheMeterForNothingNew:
 
         attempted = [(obis, cls) for obis, cls, _attr in reader.scaler_reads]
         assert len(attempted) == len(set(attempted)), "a scaler was re-read on a later chunk"
+
+
+class TestTheStatusWordSurvivesTheStore:
+    """M13, issue 06 — measured, because the type is not what it looks like.
+
+    A real meter returns this cell as a **Gurux integer subclass**, not a plain
+    ``int``: a Premier 550 at ``49.229.159.44:50001`` answered with ``GXUInt8``
+    on 2026-09-09, read-only. It is a passthrough column, so whatever the meter
+    hands over is what reaches the ``INTEGER`` column — nothing coerces it on
+    the way. That works, and these tests are here so it keeps working: the
+    dependency is on ``sqlite3`` accepting an ``int`` subclass, which is not
+    something the code says anywhere.
+    """
+
+    def test_a_gurux_integer_stores_and_reads_back_as_a_plain_int(self, migrated_db) -> None:  # noqa: ANN001
+        from gurux_dlms.internal._GXCommon import GXUInt8
+
+        from arichds.db.models import Device, LoadProfileReading
+        from arichds.db.session import session_scope
+
+        with session_scope() as session:
+            device = Device(
+                name="Main Incomer",
+                brand="cewe",
+                model="premier550",
+                site_name="Plant A",
+                transport={"kind": "net", "host": "127.0.0.1", "port": 50001},
+                password="",
+                meter_serial="SS18197374",
+            )
+            session.add(device)
+            session.flush()
+            session.add(
+                LoadProfileReading(
+                    device_id=device.id,
+                    read_at=datetime(2026, 9, 9, 11, 45, tzinfo=UTC),
+                    source="dlms",
+                    logger_id=1,
+                    interval_sec=900,
+                    interval_status_flag=GXUInt8(17),
+                )
+            )
+
+        with session_scope() as session:
+            stored = session.query(LoadProfileReading).one().interval_status_flag
+
+        assert stored == 17
+        assert type(stored) is int, "the Gurux type must not survive into the row a reader gets"
+
+    def test_the_decoder_accepts_the_gurux_type_directly(self) -> None:
+        """Belt and braces: the CSV reads its rows back out of the database, so
+        it never sees the Gurux type — but the decoder is a public function and
+        a future caller might hand it one straight off a driver."""
+        from gurux_dlms.internal._GXCommon import GXUInt8
+
+        from arichds.interval_status import decode_interval_status
+
+        assert decode_interval_status(GXUInt8(0)) == "OK"
+        assert decode_interval_status(GXUInt8(17)) == "ALL_INVALID|DISTURBED"
