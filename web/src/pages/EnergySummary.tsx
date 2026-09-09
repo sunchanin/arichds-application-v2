@@ -11,6 +11,7 @@ import {
   Space,
   Table,
   Tabs,
+  Tooltip,
   Typography,
 } from "antd";
 import type { DescriptionsItemType } from "antd/es/descriptions";
@@ -117,6 +118,30 @@ function SummaryReportTab({
     };
   }, [deviceId, range, surface]);
 
+  // "Save to file" (M13, issue 02) — the corrective for a stale daily file.
+  // The scheduler writes one row per finished day and never revisits it, so a
+  // Holiday entered late, or readings that arrived through a backfill, leave
+  // the archive disagreeing with this screen. Pressing this writes a file that
+  // agrees with what is shown right now, under a name carrying the range so it
+  // can never overwrite the archive.
+  const [exporting, setExporting] = useState(false);
+
+  const onSaveFile = useCallback(() => {
+    if (deviceId === undefined) return;
+    setExporting(true);
+    api
+      .exportEnergySummary(deviceId, range[0].format("YYYY-MM-DD"), range[1].format("YYYY-MM-DD"))
+      .then((result) => {
+        if (result.rows_written === 0) {
+          message.info("No data in this range to save.");
+          return;
+        }
+        message.success(`Saved ${result.rows_written} day(s) to ${result.path ?? "the energy file"}.`);
+      })
+      .catch((err: unknown) => surface(err, "Could not save the Energy Summary to a file."))
+      .finally(() => setExporting(false));
+  }, [deviceId, message, range, surface]);
+
   const shownDays = deviceId === undefined ? [] : days;
 
   // Same function value feeds the day columns' `render` and the total row's
@@ -200,6 +225,11 @@ function SummaryReportTab({
               aria-label="Date range"
             />
           )}
+          <Tooltip title="Writes the range shown here to a file in the export folder. Use it after entering a holiday for a day the daily file already recorded.">
+            <Button onClick={onSaveFile} loading={exporting} disabled={deviceId === undefined}>
+              Save to file
+            </Button>
+          </Tooltip>
         </Flex>
       </Card>
       <Card size="small">

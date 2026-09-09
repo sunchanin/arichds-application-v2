@@ -18,6 +18,7 @@ DEFAULTS = {
     "export_date_format": "yyyy-mm-dd HH:MM:SS",
     "export_csv_filename_tmpl": "[meter].csv",
     "export_billing_filename_tmpl": "[meter]-billing.csv",
+    "export_energy_filename_tmpl": "[meter]-energy.csv",
     "export_auto_save_enabled": False,
     "export_output_dir": "",
 }
@@ -47,6 +48,7 @@ class TestPutIsAdminOnly:
             "export_date_format": "dd/mm/yyyy",
             "export_csv_filename_tmpl": "[serial]-[date].csv",
             "export_billing_filename_tmpl": "[serial]-bl.csv",
+            "export_energy_filename_tmpl": "[serial]-en.csv",
             "export_auto_save_enabled": True,
             "export_output_dir": str(tmp_path),
         }
@@ -58,6 +60,7 @@ class TestPutIsAdminOnly:
         assert data["export_date_format"] == "dd/mm/yyyy"
         assert data["export_csv_filename_tmpl"] == "[serial]-[date].csv"
         assert data["export_billing_filename_tmpl"] == "[serial]-bl.csv"
+        assert data["export_energy_filename_tmpl"] == "[serial]-en.csv"
         assert data["export_auto_save_enabled"] is True
         assert data["export_output_dir"] == str(tmp_path.resolve())
 

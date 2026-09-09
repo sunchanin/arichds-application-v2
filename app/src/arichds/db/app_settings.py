@@ -51,6 +51,13 @@ EXPORT_CSV_FILENAME_TMPL_DEFAULT = "[meter].csv"
 EXPORT_BILLING_FILENAME_TMPL_KEY = "export_billing_filename_tmpl"
 EXPORT_BILLING_FILENAME_TMPL_DEFAULT = "[meter]-billing.csv"
 
+#: M13, issue 02 — the Energy Summary file's template. Names the *daily* file;
+#: the on-demand save derives its own name from this one by inserting the range
+#: before the extension, so the two can never collide and there is still only
+#: one value to keep right.
+EXPORT_ENERGY_FILENAME_TMPL_KEY = "export_energy_filename_tmpl"
+EXPORT_ENERGY_FILENAME_TMPL_DEFAULT = "[meter]-energy.csv"
+
 #: Stored as the literal lowercase string `"true"`/`"false"` — anything else
 #: (including an absent key, via EXPORT_AUTO_SAVE_ENABLED_DEFAULT) reads as
 #: False. Compared with `== "true"` at every read site, never truthy-tested.

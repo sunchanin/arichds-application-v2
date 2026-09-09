@@ -94,6 +94,10 @@ class Device(Base):
         billing_exported_through: The newest ``bill_date`` already appended to
             this device's billing export file (M13, issue 01). ``None`` means
             nothing has been exported yet.
+        energy_exported_through: The newest local calendar day already appended
+            to this device's Energy Summary file (M13, issue 02). Advances past
+            a day with no readings, which is why it is a watermark and not a
+            count of rows written.
         csv_exported_through: The newest ``read_at`` already appended to this
             device's Load Profile CSV (M7 slice 3, issue #30, D-8) — the
             watermark the CSV export job and "Save CSV now" both advance.
@@ -162,6 +166,14 @@ class Device(Base):
     # `csv_exported_through` above: a column, not a table (ADR 0008). `None`
     # means nothing has been exported yet, so every stored closed period goes.
     billing_exported_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # M13, issue 02 — the newest **local calendar day** already appended to this
+    # device's Energy Summary file. A `Date`, not a `DateTime`: the Energy
+    # Summary's row key is a local day, not an instant, and storing it as an
+    # instant would invite a timezone conversion that has no meaning here.
+    # It advances whether or not that day produced a row — a day with no
+    # Interval Readings is genuinely empty, and holding the watermark for it
+    # would re-query the same window for ever.
+    energy_exported_through: Mapped[date | None] = mapped_column(Date, default=None)
 
     readings: Mapped[list[LoadProfileReading]] = relationship(
         back_populates="device",

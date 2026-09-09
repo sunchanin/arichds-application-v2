@@ -681,6 +681,8 @@ export interface ExportFormatSettings {
    * `export_output_dir`, so one template would have them overwrite each other.
    */
   export_billing_filename_tmpl: string;
+  /** The same for the Energy Summary file (M13, issue 02) — names the daily file. */
+  export_energy_filename_tmpl: string;
   /** The scheduler job's own switch — "Save CSV now" ignores it. */
   export_auto_save_enabled: boolean;
   /** `""` means "not configured" — same convention as `capture_dir`. */
@@ -777,6 +779,13 @@ export interface LoadProfileExportResult {
  * `LoadProfileExportResult` has, because two export files an operator drives
  * the same way should not report what they did in two different shapes.
  */
+export interface EnergyExportResult {
+  /** Local days written. Zero means the range holds no stored readings — normal, not an error. */
+  rows_written: number;
+  /** The resolved target file path, or `null` when nothing was written. */
+  path: string | null;
+}
+
 export interface BillingExportResult {
   /** Closed periods appended. Zero is normal: they may all already be in the file. */
   rows_written: number;
@@ -1232,6 +1241,19 @@ export const api = {
    */
   exportBillingNow: (deviceId: number) =>
     request<BillingExportResult>(`/api/billing/export?device_id=${deviceId}`, { method: "POST" }),
+
+  /**
+   * Save the Energy Summary for one device and range to a file (M13, issue 02).
+   * This is the corrective for a stale daily file — the archive records what
+   * was true the night it was written, and a Holiday entered later changes
+   * what those days should say. Any authenticated role. `422` when
+   * `export_output_dir` is not configured or the range is too wide.
+   */
+  exportEnergySummary: (deviceId: number, startDate: string, endDate: string) =>
+    request<EnergyExportResult>(
+      `/api/energy/export?device_id=${deviceId}&start_date=${startDate}&end_date=${endDate}`,
+      { method: "POST" },
+    ),
 
   /**
    * Save `capture_dir` — admin-only. An empty string disables capture; a

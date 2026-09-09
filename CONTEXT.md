@@ -343,10 +343,10 @@ page; the auto-save switch and the output folder sit on the Load Profile page in
 "Save CSV now" and the table they export.
 
 **One folder, one switch, one cadence, one date format — several files.** Since M13 the same
-job writes a **Load Profile CSV** and a **billing file** per meter, and each file has its own
-filename template only because they share a folder and one template would have them overwrite
-each other. A second output folder or a second auto-save switch would be a value somebody has
-to keep in step with the first by hand.
+job writes a **Load Profile CSV**, a **billing file** and an **Energy Summary file** per meter,
+and each has its own filename template only because they share a folder and one template would
+have them overwrite each other. A second output folder or a second auto-save switch would be a
+value somebody has to keep in step with the first by hand.
 
 **The files they govern are always kWh/kvarh — they never follow the Display unit setting**
 (ADR 0013). A file is a contract an operator's downstream tooling appends to for months; the

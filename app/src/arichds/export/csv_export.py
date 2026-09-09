@@ -10,8 +10,8 @@ Two entry points:
 * :func:`csv_export_cycle` — the Scheduler's ``csv_export`` job (D-10),
   walking every device once and writing **every** export file for that device
   before moving to the next (M13, issue 01): the Load Profile CSV here and the
-  billing CSV in :mod:`arichds.export.billing_csv`, each inside its own error
-  boundary.
+  billing CSV in :mod:`arichds.export.billing_csv` and the Energy Summary file
+  in :mod:`arichds.export.energy_csv`, each inside its own error boundary.
 
 **The watermark is ``devices.csv_exported_through``, a column, not a table**
 (D-8) — ``None`` means nothing has been exported yet, so everything stored
@@ -69,6 +69,7 @@ from arichds.db.load_profile_query import merged_rows_select
 from arichds.db.models import Device, LoadProfileReading
 from arichds.db.session import session_scope
 from arichds.export.billing_csv import export_device_billing
+from arichds.export.energy_csv import export_device_energy
 from arichds.export.format import _EXPORT_HEADERS, format_rows, render_filename
 
 logger = logging.getLogger(__name__)
@@ -307,6 +308,7 @@ def _append_rows(final_path: Path, rows: list[list[str]], allowlist: list[Path],
 _PER_DEVICE_EXPORTS: tuple[tuple[str, Callable[..., object]], ...] = (
     ("Load Profile CSV export", export_device),
     ("Billing export", export_device_billing),
+    ("Energy export", export_device_energy),
 )
 
 

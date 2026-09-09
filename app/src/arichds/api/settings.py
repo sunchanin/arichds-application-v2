@@ -56,6 +56,8 @@ from arichds.db.app_settings import (
     EXPORT_CSV_FILENAME_TMPL_KEY,
     EXPORT_DATE_FORMAT_DEFAULT,
     EXPORT_DATE_FORMAT_KEY,
+    EXPORT_ENERGY_FILENAME_TMPL_DEFAULT,
+    EXPORT_ENERGY_FILENAME_TMPL_KEY,
     EXPORT_OUTPUT_DIR_DEFAULT,
     EXPORT_OUTPUT_DIR_KEY,
     get_setting,
@@ -127,6 +129,10 @@ class ExportFormatSettingsOut(BaseModel):
             export file (M13, issue 01). Its own key rather than a suffix on
             the one above: both files land in the same folder, so one template
             would have them overwrite each other.
+        export_energy_filename_tmpl: The same for the Energy Summary file
+            (M13, issue 02). Names the *daily* file; the on-demand save derives
+            its own name from this one by inserting the range before the
+            extension.
         export_auto_save_enabled: The scheduler job's own switch (D-11) —
             "Save CSV now" ignores it.
         export_output_dir: ``""`` means "not configured" — same convention
@@ -136,17 +142,19 @@ class ExportFormatSettingsOut(BaseModel):
     export_date_format: str
     export_csv_filename_tmpl: str
     export_billing_filename_tmpl: str
+    export_energy_filename_tmpl: str
     export_auto_save_enabled: bool
     export_output_dir: str
 
 
 class ExportFormatSettingsIn(BaseModel):
     """The body ``PUT /api/settings/export-format`` takes — a full replace
-    of all five values."""
+    of every value."""
 
     export_date_format: str
     export_csv_filename_tmpl: str
     export_billing_filename_tmpl: str
+    export_energy_filename_tmpl: str
     export_auto_save_enabled: bool
     export_output_dir: str
 
@@ -206,6 +214,9 @@ def _current_export_format_settings(session: Session) -> ExportFormatSettingsOut
         export_billing_filename_tmpl=get_setting(
             session, EXPORT_BILLING_FILENAME_TMPL_KEY, EXPORT_BILLING_FILENAME_TMPL_DEFAULT
         ),
+        export_energy_filename_tmpl=get_setting(
+            session, EXPORT_ENERGY_FILENAME_TMPL_KEY, EXPORT_ENERGY_FILENAME_TMPL_DEFAULT
+        ),
         export_auto_save_enabled=get_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, EXPORT_AUTO_SAVE_ENABLED_DEFAULT)
         == "true",
         export_output_dir=get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT),
@@ -225,7 +236,7 @@ def get_export_format_settings(session: SessionDep) -> ApiResponse[ExportFormatS
 def put_export_format_settings(
     body: ExportFormatSettingsIn, session: SessionDep, _admin: AdminDep
 ) -> ApiResponse[ExportFormatSettingsOut]:
-    """Save all five Export Format settings — admin-only, a full replace.
+    """Save every Export Format setting — admin-only, a full replace.
 
     ``export_csv_filename_tmpl`` is validated at save time (D-13) — a
     rejection is a 422 and never reaches disk. ``export_date_format`` is
@@ -242,6 +253,9 @@ def put_export_format_settings(
         filename_tmpl = _validate_filename_template(body.export_csv_filename_tmpl)
         billing_filename_tmpl = _validate_filename_template(
             body.export_billing_filename_tmpl, setting_name="export_billing_filename_tmpl"
+        )
+        energy_filename_tmpl = _validate_filename_template(
+            body.export_energy_filename_tmpl, setting_name="export_energy_filename_tmpl"
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
@@ -265,6 +279,7 @@ def put_export_format_settings(
     set_setting(session, EXPORT_DATE_FORMAT_KEY, date_format)
     set_setting(session, EXPORT_CSV_FILENAME_TMPL_KEY, filename_tmpl)
     set_setting(session, EXPORT_BILLING_FILENAME_TMPL_KEY, billing_filename_tmpl)
+    set_setting(session, EXPORT_ENERGY_FILENAME_TMPL_KEY, energy_filename_tmpl)
     set_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, "true" if body.export_auto_save_enabled else "false")
     set_setting(session, EXPORT_OUTPUT_DIR_KEY, output_dir_value)
     session.commit()

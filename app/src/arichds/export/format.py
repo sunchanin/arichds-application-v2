@@ -1,5 +1,6 @@
 """Pure row/filename formatting for the export files — the Load Profile CSV
-(M7 slice 3, issue #30) and, since M13 (issue 01), the billing CSV. No I/O, no
+(M7 slice 3, issue #30) and, since M13, the billing CSV (issue 01) and the
+Energy Summary file (issue 02). No I/O, no
 DB access — given the same rows and settings this always produces the same
 output; :mod:`arichds.export.writer` adds the UTF-8 BOM, the head-comparison
 rule and the actual file write, none of which belong here.
@@ -365,11 +366,79 @@ def format_billing_rows(rows: Sequence[Mapping[str, Any]], *, date_format: str) 
     return output
 
 
+# ─── The Energy Summary file (M13, issue 02) ──────────────────────────────────
+# The same eight Time-of-Use columns the Summary Report tab shows, and a Date.
+# **No total row**, in either the daily file or the on-demand one: a total row
+# cannot exist in a file that appends, and giving only the on-demand file one
+# would leave two shapes to maintain for one concept. The total belongs to the
+# screen.
+
+
+#: ``(header, field)`` per column, in file order — the screen's own order.
+_ENERGY_COLUMNS_OUT: tuple[tuple[str, str], ...] = (
+    ("Date", "date"),
+    ("Peak Import (kWh)", "peak_import_kwh"),
+    ("Off-Peak Import (kWh)", "offpeak_import_kwh"),
+    ("Holiday Import (kWh)", "holiday_import_kwh"),
+    ("Total Import (kWh)", "total_import_kwh"),
+    ("Peak Export (kWh)", "peak_export_kwh"),
+    ("Off-Peak Export (kWh)", "offpeak_export_kwh"),
+    ("Holiday Export (kWh)", "holiday_export_kwh"),
+    ("Total Export (kWh)", "total_export_kwh"),
+)
+
+#: The nine headers, order frozen.
+ENERGY_EXPORT_HEADERS: tuple[str, ...] = tuple(header for header, _field in _ENERGY_COLUMNS_OUT)
+
+#: The date-only part of the operator's token format — the Energy Summary's row
+#: key is a local calendar day, not an instant, so writing a time of day beside
+#: it would invent a precision the number does not have.
+_DATE_ONLY_TOKENS = ("yyyy", "mm", "dd")
+
+
+def _date_only_format(token_format: str) -> str:
+    """Strip everything after the last date token, so a format carrying a time
+    still yields a date-only pattern.
+
+    Falls back to ISO when the operator's format names no date token at all,
+    rather than emitting an empty cell.
+    """
+    last = max((token_format.rfind(token) + len(token) for token in _DATE_ONLY_TOKENS), default=-1)
+    date_part = token_format[:last].strip() if last > 0 else ""
+    return _translate_date_format(date_part) if date_part else "%Y-%m-%d"
+
+
+def format_energy_rows(days: Sequence[Any], *, date_format: str) -> list[list[str]]:
+    """Format Energy Summary days into export cells (no header row).
+
+    Args:
+        days: One object per local day carrying ``date`` plus the eight
+            Time-of-Use attributes — the same objects
+            :func:`arichds.api.energy.energy_summary_rows` returns, passed
+            straight through rather than re-shaped, so the file and the screen
+            can never disagree about what a day's numbers are.
+        date_format: The operator's ``export_date_format`` token string, of
+            which only the date part is used.
+
+    Returns:
+        One list of nine string cells per day, in input order.
+    """
+    strftime_fmt = _date_only_format(date_format)
+    output: list[list[str]] = []
+    for day in days:
+        cells = [day.date.strftime(strftime_fmt)]
+        cells.extend(_decimal(getattr(day, field)) for _header, field in _ENERGY_COLUMNS_OUT[1:])
+        output.append(cells)
+    return output
+
+
 __all__ = [
     "BILLING_EXPORT_HEADERS",
     "BILLING_FIELDS",
+    "ENERGY_EXPORT_HEADERS",
     "file_header_block",
     "format_billing_rows",
+    "format_energy_rows",
     "format_rows",
     "render_filename",
 ]

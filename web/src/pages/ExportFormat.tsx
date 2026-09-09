@@ -9,6 +9,7 @@ interface FormValues {
   export_date_format: string;
   export_csv_filename_tmpl: string;
   export_billing_filename_tmpl: string;
+  export_energy_filename_tmpl: string;
 }
 
 /**
@@ -59,6 +60,7 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
           export_date_format: data.export_date_format,
           export_csv_filename_tmpl: data.export_csv_filename_tmpl,
           export_billing_filename_tmpl: data.export_billing_filename_tmpl,
+          export_energy_filename_tmpl: data.export_energy_filename_tmpl,
         });
       })
       .catch((err: unknown) => surface(err, "Could not load the Export Format settings."));
@@ -78,6 +80,7 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
           export_date_format: data.export_date_format,
           export_csv_filename_tmpl: data.export_csv_filename_tmpl,
           export_billing_filename_tmpl: data.export_billing_filename_tmpl,
+          export_energy_filename_tmpl: data.export_energy_filename_tmpl,
         });
         message.success("Export Format settings saved.");
       })
@@ -126,6 +129,14 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
               rules={[{ required: true, whitespace: true, message: "A filename template is required." }]}
             >
               <Input placeholder="[meter]-billing.csv" />
+            </Form.Item>
+            <Form.Item
+              name="export_energy_filename_tmpl"
+              label="Energy filename template"
+              extra="Names the daily Energy Summary file. A save from the Energy Summary page adds the date range to this name, so the two never collide."
+              rules={[{ required: true, whitespace: true, message: "A filename template is required." }]}
+            >
+              <Input placeholder="[meter]-energy.csv" />
             </Form.Item>
             <Button type="primary" htmlType="submit" loading={saving}>
               Save
