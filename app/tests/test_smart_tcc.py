@@ -130,13 +130,14 @@ class TestGetObisMapReturnsTheInstantaneousSet:
 
 
 class TestLoadProfileLogger1ColumnMap:
-    """D7/D8 — Logger 1 only, 11 mapped columns out of the 35 the scan
-    recorded."""
+    """D7/D8 — Logger 1 only, 14 mapped columns out of the 35 the scan
+    recorded (11 at M4c issue #25, plus the three phase angles at M13 issue
+    06)."""
 
     def test_only_logger_1_is_declared(self) -> None:
         assert set(SmartTccDriver.LOAD_PROFILE_COLUMN_MAP) == {1}
 
-    def test_logger_1_has_exactly_the_eleven_documented_columns(self) -> None:
+    def test_logger_1_has_exactly_the_documented_columns(self) -> None:
         columns = SmartTccDriver.LOAD_PROFILE_COLUMN_MAP[1]
         expected_fields = {
             "import_active_kwh",
@@ -150,9 +151,25 @@ class TestLoadProfileLogger1ColumnMap:
             "current_l2",
             "current_l3",
             "avg_geo_pf",
+            # M13, issue 06 — this family's own E=40/51/62 addresses at D=7,
+            # from the 2026-07-18 scan and NOT hardware-verified since (the
+            # meter answers on neither port). See the driver's own note.
+            "phase_angle_a",
+            "phase_angle_b",
+            "phase_angle_c",
         }
         actual_fields = {column.field for column in columns.values()}
         assert actual_fields == expected_fields
+
+    def test_the_interval_status_word_stays_unmapped(self) -> None:
+        """This family captures ``0.0.96.10.1.255``, a different object from
+        CEWE's ``1.0.96.5.4.255`` and one whose bit meanings nobody has
+        verified on hardware. v1 refused to map it and recorded why; mapping it
+        would store a number nothing can decode (CONTEXT.md — Interval
+        Status)."""
+        columns = SmartTccDriver.LOAD_PROFILE_COLUMN_MAP[1]
+        assert "interval_status_flag" not in {column.field for column in columns.values()}
+        assert not [obis for obis, _attr in columns if obis == "0.0.96.10.1.255"]
 
     def test_frequency_maps_to_nothing(self) -> None:
         """F3 — Logger 1 has no frequency capture column on this family."""

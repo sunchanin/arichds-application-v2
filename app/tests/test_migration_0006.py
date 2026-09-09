@@ -56,6 +56,29 @@ COLUMNS_AT_0006 = {
     "created_at",
 }
 
+#: What later migrations have added to the same table since. The fixture below
+#: upgrades to **head**, not to 0006 — deliberately, because that is the
+#: sequence a real customer machine performs — so the equality assertion has to
+#: name them. Kept as a separate set rather than folded into the one above so
+#: that constant keeps meaning what its name says, and so a reader can see at a
+#: glance which columns 0006 itself established.
+#:
+#: 0016 (M13, issue 06) — the three phase angles, the three line-to-line
+#: voltages, the four average powers and the Interval Status word.
+COLUMNS_ADDED_AFTER_0006 = {
+    "phase_angle_a",
+    "phase_angle_b",
+    "phase_angle_c",
+    "volt_l1_l2",
+    "volt_l2_l3",
+    "volt_l3_l1",
+    "import_active_kw",
+    "import_reactive_kvar",
+    "export_active_kw",
+    "export_reactive_kvar",
+    "interval_status_flag",
+}
+
 
 @pytest.fixture
 def db_at_0005(settings: Settings) -> Iterator[str]:
@@ -116,9 +139,9 @@ class TestAnEmptyTable:
         upgrade_to_head(db_at_0005)
         return db_at_0005
 
-    def test_the_column_set_is_exactly_the_m5_shape(self, upgraded: str) -> None:
+    def test_the_column_set_is_exactly_the_m5_shape_plus_what_came_after(self, upgraded: str) -> None:
         columns = {row["name"] for row in rows(upgraded, "PRAGMA table_info(load_profile_readings)")}
-        assert columns == COLUMNS_AT_0006
+        assert columns == COLUMNS_AT_0006 | COLUMNS_ADDED_AFTER_0006
 
     def test_the_interval_label_column_is_gone(self, upgraded: str) -> None:
         columns = {row["name"] for row in rows(upgraded, "PRAGMA table_info(load_profile_readings)")}

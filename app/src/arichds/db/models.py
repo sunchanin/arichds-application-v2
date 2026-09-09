@@ -243,6 +243,23 @@ class LoadProfileReading(Base):
             The rest of the twelve-column set the v1 Load Profile page shows
             (SPEC §3.5). **Empty until M4c** — the SMW110W4 does not capture
             them; all three CEWE models do.
+        phase_angle_a/phase_angle_b/phase_angle_c: Average phase angle per
+            phase (degrees) — M13, issue 06. Prometer 100 and SMART TCC only.
+        volt_l1_l2/volt_l2_l3/volt_l3_l1: Line-to-line voltage (V) —
+            Prometer 100 only, and from its **Logger 2**.
+        import_active_kw/import_reactive_kvar/export_active_kw/export_reactive_kvar:
+            Average power over the interval — kW/kvar, normalized down from
+            the meter's W/var at write time. Prometer 100 only. Deliberately
+            **not** the same quantity as the ``_kwh``/``_kvarh`` columns one
+            character away: those are energy accumulated over the interval,
+            these are the average power during it.
+        interval_status_flag: The meter's own Interval Status word, stored as
+            **the raw integer** and decoded at render time (CONTEXT.md —
+            Interval Status). Named for the glossary term, not the customer's
+            ``Record Status`` header — ``billing_readings.record_status``
+            already carries that name with a different meaning. Prometer 100
+            and Premier 550; the SMART TCC's word is a different object whose
+            bits nobody has verified, so it stays unmapped.
         created_at: When this row was written (UTC).
     """
 
@@ -271,6 +288,21 @@ class LoadProfileReading(Base):
     export_active_kwh: Mapped[float | None] = mapped_column(default=None)
     export_reactive_kvarh: Mapped[float | None] = mapped_column(default=None)
     avg_geo_pf: Mapped[float | None] = mapped_column(default=None)
+
+    # ── M13, issue 06 (migration 0016) — the eleven the customer's sample
+    # asks for. Every one of them already arrived in the buffer the product
+    # reads each cycle and was discarded for want of a column.
+    phase_angle_a: Mapped[float | None] = mapped_column(default=None)
+    phase_angle_b: Mapped[float | None] = mapped_column(default=None)
+    phase_angle_c: Mapped[float | None] = mapped_column(default=None)
+    volt_l1_l2: Mapped[float | None] = mapped_column(default=None)
+    volt_l2_l3: Mapped[float | None] = mapped_column(default=None)
+    volt_l3_l1: Mapped[float | None] = mapped_column(default=None)
+    import_active_kw: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvar: Mapped[float | None] = mapped_column(default=None)
+    export_active_kw: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvar: Mapped[float | None] = mapped_column(default=None)
+    interval_status_flag: Mapped[int | None] = mapped_column(Integer, default=None)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

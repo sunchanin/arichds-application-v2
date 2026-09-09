@@ -133,6 +133,34 @@ _LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
     ("1.0.51.27.0.255", 2): LpColumn("current_l2", Unit.CURRENT, scaler_siblings=(("1.0.51.7.0.255", GXDLMSRegister),)),
     ("1.0.71.27.0.255", 2): LpColumn("current_l3", Unit.CURRENT, scaler_siblings=(("1.0.71.7.0.255", GXDLMSRegister),)),
     ("1.0.13.27.0.255", 2): LpColumn("avg_geo_pf", Unit.NONE, scaler_siblings=(("1.0.13.7.0.255", GXDLMSRegister),)),
+    # ── M13, issue 06 — the three of the eleven this family records ──────────
+    # **NOT HARDWARE-VERIFIED.** These three come from the 2026-07-18 round-4
+    # scan (`docs/meter-notes/tcc-obis-scan.md`, Logger 1's capture list), and
+    # the test meter (203.170.148.103) has answered on neither 4059 nor 50001
+    # since 2026-08-09, so nothing here has been read off a live ST-3CL.
+    #
+    # Two specifics a reader should not assume from the CEWE entries above:
+    # this family captures phase angle at **E=40/51/62 with D=7**, the
+    # instantaneous register itself, where CEWE captures E=4/15/26 at D=27; and
+    # because the capture address IS the D=7 address, there is no D=7 sibling
+    # to borrow from — the own-address read is the only route. On CEWE meters
+    # that route is refused for every measurement column, so if this family
+    # behaves the same way these three will be NULL rather than wrong.
+    #
+    # To verify when the meter is reachable: run
+    # `scripts/probe_capture_objects.py --model smart_tcc` to confirm the three
+    # addresses are still in Logger 1's capture list, then read one interval
+    # through `read_load_profile()` and check the three columns are non-NULL.
+    # If they are NULL, the own address is denied and this family needs a
+    # sibling declared, exactly as CEWE's columns do.
+    #
+    # The Interval Status word stays **unmapped**: this family captures
+    # `0.0.96.10.1.255`, a different object whose bit meanings nobody has
+    # verified. v1 refused to map it and recorded why; mapping it would store a
+    # number nothing can decode (CONTEXT.md — Interval Status).
+    ("1.0.81.7.40.255", 2): LpColumn("phase_angle_a", Unit.PHASE_ANGLE_DEGREE),
+    ("1.0.81.7.51.255", 2): LpColumn("phase_angle_b", Unit.PHASE_ANGLE_DEGREE),
+    ("1.0.81.7.62.255", 2): LpColumn("phase_angle_c", Unit.PHASE_ANGLE_DEGREE),
 }
 
 

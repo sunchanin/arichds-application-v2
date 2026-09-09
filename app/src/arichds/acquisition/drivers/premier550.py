@@ -66,6 +66,13 @@ _LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
     ("1.0.4.29.0.255", 2): LpColumn(
         "export_reactive_kvarh", Unit.REACTIVE_ENERGY, scaler_siblings=(("1.0.4.8.0.255", GXDLMSRegister),)
     ),
+    # ── M13, issue 06 — the only one of the eleven this model records ────────
+    # Confirmed live on 2026-09-09 (`scripts/probe_capture_objects.py` against
+    # 49.229.159.44:50001): Logger 1's seven columns include `1.0.96.5.4.255`
+    # at attribute 2 as a class-1 Data object. Same word, same 13 bits and the
+    # same decoder as the Prometer 100's — this family shares it. Passthrough:
+    # no scaler exists, and the raw integer is what is stored.
+    ("1.0.96.5.4.255", 2): LpColumn("interval_status_flag", Unit.NO_UNIT, passthrough=True),
 }
 
 #: Logger 2 (F7, meter-notes:109-113) — V/I only. Cumulative energy

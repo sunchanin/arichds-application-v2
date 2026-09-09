@@ -58,7 +58,7 @@ from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers import _gurux_net_patch  # noqa: F401 — import applies the patch
 from arichds.acquisition.drivers._gurux_trace import silence_frame_trace
 from arichds.acquisition.drivers.base import EnergyRegisterReading, MeterConnectionError, MeterDriver, SpecialDayEntry
-from arichds.acquisition.obis import ENERGY_COLUMNS_WH
+from arichds.acquisition.obis import ENERGY_COLUMNS_WH, POWER_COLUMNS_W
 from arichds.constants import (
     CONNECT_ASSOC_RETRY_ATTEMPTS,
     CONNECT_ASSOC_RETRY_BACKOFF_SEC,
@@ -567,8 +567,10 @@ class DlmsDriver(MeterDriver):
     def _normalize(self, column: str, raw: Any) -> float | None:
         """Coerce *raw* to a float in the unit the column name promises.
 
-        Energy registers report Wh on the wire and are stored as kWh — the
-        division happens here, at write time, exactly once (REMAKE-PLAN §6.1).
+        Energy registers report Wh on the wire and are stored as kWh, and
+        the average-power columns report W/var and are stored as kW/kvar (M13,
+        issue 06) — the division happens here, at write time, exactly once
+        (REMAKE-PLAN §6.1).
         """
         if raw is None:
             return None
@@ -579,6 +581,6 @@ class DlmsDriver(MeterDriver):
             return None
         value = float(raw)
 
-        if column in ENERGY_COLUMNS_WH:
+        if column in ENERGY_COLUMNS_WH or column in POWER_COLUMNS_W:
             return value / WH_TO_KWH_DIVISOR
         return value

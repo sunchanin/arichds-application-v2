@@ -25,10 +25,12 @@ loggers (D15, ``docs/meter-notes/load-profile-capture-objects.md``):
 
 * Logger 1 (``1.0.99.1.0.255``, 900 s) — the four energy columns, V/I per
   phase, frequency and total power factor.
-* Logger 2 (``1.0.99.2.0.255``, 300 s) — line-to-line voltage (not stored,
-  no column) plus frequency again. Only ``freq`` maps to a column, and it is
-  stored anyway (D17): the point is exercising the per-logger watermark and
-  the 96-vs-288-row Records case, not the one populated column.
+* Logger 2 (``1.0.99.2.0.255``, 300 s) — line-to-line voltage plus frequency
+  again. Until M13 (issue 06) only ``freq`` mapped to a column and the profile
+  was stored anyway (D17), to exercise the per-logger watermark and the
+  96-vs-288-row Records case; the three line-to-line voltages now map too, so
+  this logger is the only source of ``volt_l1_l2``/``volt_l2_l3``/``volt_l3_l1``
+  on this model.
 
 Usage::
 
@@ -45,7 +47,7 @@ from __future__ import annotations
 from typing import Any
 
 from gurux_dlms.enums import Unit
-from gurux_dlms.objects import GXDLMSRegister
+from gurux_dlms.objects import GXDLMSDemandRegister, GXDLMSExtendedRegister, GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers._dlms import read_battery_status_via
@@ -90,6 +92,60 @@ _LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
     # with nothing logged. The two are different members of one enumeration;
     # only the meter can say which it uses.
     ("1.0.13.24.0.255", 2): LpColumn("avg_geo_pf", Unit.NO_UNIT, scaler_siblings=(("1.0.13.7.0.255", GXDLMSRegister),)),
+    # ── M13, issue 06 — eight of the eleven, all already in this buffer ──────
+    # Phase angles. v1 maps only `1.0.81.7.*`, the instantaneous register this
+    # meter does not capture, which is why v1's phase-angle columns are NULL on
+    # every CEWE row (meter-notes, "v1 silently drops the Prometer 100's phase
+    # angles"). D=27 is the interval average; its D=7 sibling carries the scaler.
+    ("1.0.81.27.4.255", 2): LpColumn(
+        "phase_angle_a", Unit.PHASE_ANGLE_DEGREE, scaler_siblings=(("1.0.81.7.4.255", GXDLMSRegister),)
+    ),
+    ("1.0.81.27.15.255", 2): LpColumn(
+        "phase_angle_b", Unit.PHASE_ANGLE_DEGREE, scaler_siblings=(("1.0.81.7.15.255", GXDLMSRegister),)
+    ),
+    ("1.0.81.27.26.255", 2): LpColumn(
+        "phase_angle_c", Unit.PHASE_ANGLE_DEGREE, scaler_siblings=(("1.0.81.7.26.255", GXDLMSRegister),)
+    ),
+    # The Interval Status word — a class-1 Data object with no scaler of any
+    # kind, so it is a passthrough column and never asks the meter for one.
+    # Stored raw, decoded at render time (CONTEXT.md — Interval Status).
+    ("1.0.96.5.4.255", 2): LpColumn("interval_status_flag", Unit.NO_UNIT, passthrough=True),
+    # Average power. **Captured at attribute 3 of a class-5 Demand Register** —
+    # attribute 3 there is `last_average_value`, the average over the closed
+    # demand interval, which is the quantity being asked for; that class carries
+    # its scaler at attribute 4, which `_SCALER_ATTRIBUTE` knows.
+    #
+    # The import and export pairs do NOT resolve the same way, measured
+    # read-only on WP079074, 2026-09-09: the import columns' D=7 siblings answer
+    # as plain Registers, while both export D=7 siblings are denied and only the
+    # D=6 max-demand siblings answer — and only when read as an Extended
+    # Register. Same physical quantity and unit, a different statistic; the
+    # billing path already borrows a max-demand scaler this way, and ADR 0002
+    # holds because the scaler is read rather than assumed.
+    ("1.0.1.5.0.255", 3): LpColumn(
+        "import_active_kw",
+        Unit.ACTIVE_POWER,
+        capture_class=GXDLMSDemandRegister,
+        scaler_siblings=(("1.0.1.7.0.255", GXDLMSRegister),),
+    ),
+    ("1.0.2.5.0.255", 3): LpColumn(
+        "export_active_kw",
+        Unit.ACTIVE_POWER,
+        capture_class=GXDLMSDemandRegister,
+        scaler_siblings=(("1.0.2.6.0.255", GXDLMSExtendedRegister),),
+    ),
+    ("1.0.3.5.0.255", 3): LpColumn(
+        "import_reactive_kvar",
+        Unit.REACTIVE_POWER,
+        capture_class=GXDLMSDemandRegister,
+        scaler_siblings=(("1.0.3.7.0.255", GXDLMSRegister),),
+    ),
+    ("1.0.4.5.0.255", 3): LpColumn(
+        "export_reactive_kvar",
+        Unit.REACTIVE_POWER,
+        capture_class=GXDLMSDemandRegister,
+        scaler_siblings=(("1.0.4.6.0.255", GXDLMSExtendedRegister),),
+    ),
 }
 
 #: Logger 2 (F7, meter-notes:102-107) — only frequency maps to a stored
@@ -99,6 +155,21 @@ _LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
 #: the 96-vs-288-row Records case, not the one populated column.
 _LOGGER_2_COLUMNS: dict[tuple[str, int], LpColumn] = {
     ("1.0.14.27.0.255", 2): LpColumn("freq", Unit.FREQUENCY, scaler_siblings=(("1.0.14.7.0.255", GXDLMSRegister),)),
+    # ── M13, issue 06 — the other three of the eleven ────────────────────────
+    # Line-to-line voltage lives in **Logger 2** on this model, not Logger 1 —
+    # the one place in this product where a column's logger is not the obvious
+    # one. C=157/177/197 are CEWE's own non-standard groups for L1-L2, L2-L3
+    # and L3-L1 (v1 records the same three). Their D=7 siblings carry the
+    # scaler, like every other measurement column here.
+    ("1.0.157.27.0.255", 2): LpColumn(
+        "volt_l1_l2", Unit.VOLTAGE, scaler_siblings=(("1.0.157.7.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.177.27.0.255", 2): LpColumn(
+        "volt_l2_l3", Unit.VOLTAGE, scaler_siblings=(("1.0.177.7.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.197.27.0.255", 2): LpColumn(
+        "volt_l3_l1", Unit.VOLTAGE, scaler_siblings=(("1.0.197.7.0.255", GXDLMSRegister),)
+    ),
 }
 
 

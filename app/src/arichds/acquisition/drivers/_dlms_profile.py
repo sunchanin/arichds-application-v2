@@ -658,24 +658,22 @@ class DlmsProfileDriver(DlmsDriver):
                 passthrough_keys=passthrough_keys,
             )
 
+            # Expanded rather than named one field at a time (M13, issue 06).
+            # The hand-written list was twelve names and would have become
+            # twenty-three, each an opportunity to write `export_active_kwh`
+            # where `export_active_kw` was meant — one character apart, both
+            # real columns, and a mistake nothing would report. `fields` is
+            # keyed by the driver map's own declared field names, and
+            # `test_load_profile_new_columns.py` asserts every declared name is
+            # a field this dataclass has, so an unknown key fails in the suite
+            # rather than at a meter.
             readings.append(
                 IntervalReading(
                     read_at=read_at,
                     source=self.source,
                     logger_id=logger_id,
                     interval_sec=capture_period_sec,
-                    volt_l1=fields.get("volt_l1"),
-                    volt_l2=fields.get("volt_l2"),
-                    volt_l3=fields.get("volt_l3"),
-                    current_l1=fields.get("current_l1"),
-                    current_l2=fields.get("current_l2"),
-                    current_l3=fields.get("current_l3"),
-                    freq=fields.get("freq"),
-                    import_active_kwh=fields.get("import_active_kwh"),
-                    import_reactive_kvarh=fields.get("import_reactive_kvarh"),
-                    export_active_kwh=fields.get("export_active_kwh"),
-                    export_reactive_kvarh=fields.get("export_reactive_kvarh"),
-                    avg_geo_pf=fields.get("avg_geo_pf"),
+                    **fields,
                 )
             )
         return readings

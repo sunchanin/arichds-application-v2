@@ -27,7 +27,7 @@ from gurux_dlms.objects import GXDLMSProfileGeneric
 
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers.base import IntervalReading
-from arichds.acquisition.drivers.smw110 import Smw110Driver, _entry_window
+from arichds.acquisition.drivers.smw110 import _MAPPED_CAPTURE_COLUMNS, Smw110Driver, _entry_window
 
 CLOCK_OBIS = "0.0.1.0.0.255"
 ENERGY_OBIS = "1.0.1.29.0.255"
@@ -541,25 +541,20 @@ class TestReadLoadProfile:
         assert readings[0].export_active_kwh is None
         assert readings[0].export_reactive_kvarh is None
         assert readings[0].avg_geo_pf is None
-        field_names = {f.name for f in fields(IntervalReading)}
-        assert field_names == {
-            "read_at",
-            "source",
-            "logger_id",
-            "interval_sec",
-            "volt_l1",
-            "volt_l2",
-            "volt_l3",
-            "current_l1",
-            "current_l2",
-            "current_l3",
-            "freq",
-            "import_active_kwh",
-            "import_reactive_kvarh",
-            "export_active_kwh",
-            "export_reactive_kvarh",
-            "avg_geo_pf",
-        }
+        # Every measurement field this model does not map must be None — read
+        # off the dataclass rather than re-listed, so a field added later is
+        # covered here the day it is added. This replaces an equality against a
+        # hand-written field list (M13, issue 06): that list said nothing about
+        # the SMW110W4 and duplicated `test_interval_reading_shape.py`, so it
+        # only ever failed when the dataclass grew, which is not what this test
+        # is about. The eleven columns issue 06 adds are among what it now
+        # covers — this model records none of them.
+        mapped = {field for field, _sibling, _unit in _MAPPED_CAPTURE_COLUMNS.values()}
+        identity = {"read_at", "source", "logger_id", "interval_sec"}
+        unmapped = {f.name for f in fields(IntervalReading)} - identity - mapped
+        assert unmapped, "the dataclass has no unmapped field left, so this test proves nothing"
+        for name in sorted(unmapped):
+            assert getattr(readings[0], name) is None, f"{name} leaked a value on a model that does not record it"
 
     def test_reads_capture_objects_period_and_entries_live(self) -> None:
         """D7 — no schema cache, no assumed 900 s: attr 3, 4 and 7 on every call."""

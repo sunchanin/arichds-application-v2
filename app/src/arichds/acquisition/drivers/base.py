@@ -73,6 +73,21 @@ class IntervalReading:
             since M5a-1 (migration 0006) but stayed off this dataclass until
             M4c, issue #24 — a field nothing sets is speculative, and the
             three CEWE drivers are the first to produce them (F7).
+        phase_angle_a/phase_angle_b/phase_angle_c: Average phase angle per
+            phase (degrees), M13 issue 06.
+        volt_l1_l2/volt_l2_l3/volt_l3_l1: Line-to-line voltage (V). On a
+            Prometer 100 these are captured by **Logger 2**, not Logger 1.
+        import_active_kw/export_active_kw: Average active power over the
+            interval — **kW**, divided down from the meter's raw W the same
+            way the energy columns are divided down from Wh.
+        import_reactive_kvar/export_reactive_kvar: Average reactive power
+            over the interval — **kvar**, same division.
+        interval_status_flag: The meter's own Interval Status word for this
+            row, stored as **the raw integer** and decoded at render time
+            (CONTEXT.md — Interval Status). Named for the glossary term
+            rather than the customer's file header, which
+            :class:`BillingReading.record_status` already owns with a
+            different meaning.
     """
 
     read_at: datetime
@@ -94,6 +109,20 @@ class IntervalReading:
     export_active_kwh: float | None = None
     export_reactive_kvarh: float | None = None
     avg_geo_pf: float | None = None
+    # ── M13, issue 06 — the eleven the customer asked for. Every one already
+    # arrived in the buffer the product reads each cycle and was dropped for
+    # want of a field; none of them costs a new read.
+    phase_angle_a: float | None = None
+    phase_angle_b: float | None = None
+    phase_angle_c: float | None = None
+    volt_l1_l2: float | None = None
+    volt_l2_l3: float | None = None
+    volt_l3_l1: float | None = None
+    import_active_kw: float | None = None
+    import_reactive_kvar: float | None = None
+    export_active_kw: float | None = None
+    export_reactive_kvar: float | None = None
+    interval_status_flag: int | None = None
 
     def as_columns(self) -> dict[str, Any]:
         """Return the **measurement** fields as ``load_profile_readings`` column values.
@@ -115,6 +144,17 @@ class IntervalReading:
             "export_active_kwh": self.export_active_kwh,
             "export_reactive_kvarh": self.export_reactive_kvarh,
             "avg_geo_pf": self.avg_geo_pf,
+            "phase_angle_a": self.phase_angle_a,
+            "phase_angle_b": self.phase_angle_b,
+            "phase_angle_c": self.phase_angle_c,
+            "volt_l1_l2": self.volt_l1_l2,
+            "volt_l2_l3": self.volt_l2_l3,
+            "volt_l3_l1": self.volt_l3_l1,
+            "import_active_kw": self.import_active_kw,
+            "import_reactive_kvar": self.import_reactive_kvar,
+            "export_active_kw": self.export_active_kw,
+            "export_reactive_kvar": self.export_reactive_kvar,
+            "interval_status_flag": self.interval_status_flag,
         }
 
 

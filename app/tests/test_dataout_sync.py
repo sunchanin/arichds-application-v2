@@ -407,3 +407,47 @@ class TestItDoesNotShareTheExportHelper:
 
         assert "arichds.export" not in source
         assert "from arichds.capture" not in source
+
+
+class TestNewLocalColumnsReachTheDestinationDefinition:
+    """M13, issue 06 — the eleven new Interval Reading columns reach a
+    configured Database Destination **automatically** on the next sync.
+
+    ``dataout/schema.py`` derives its columns from our own model, and
+    ``reconcile`` issues ``ALTER TABLE … ADD COLUMN`` for whatever the server
+    is missing. That is designed behaviour with a precedent — ``billing_readings``
+    grew from 40 columns to 60 the same way at M4c — and ADR 0020 requires it,
+    since a destination that mirrors our window cannot mirror only some of it.
+
+    It is still a schema change fired into somebody else's database. This test
+    is here so that fact is asserted rather than assumed; the ``ALTER`` itself
+    is covered against a real server in ``test_dataout_mysql.py``, which skips
+    without one.
+    """
+
+    def test_the_eleven_are_in_the_derived_destination_table(self) -> None:
+        from arichds.dataout.schema import LOAD_PROFILE_TABLE
+
+        eleven = {
+            "phase_angle_a",
+            "phase_angle_b",
+            "phase_angle_c",
+            "volt_l1_l2",
+            "volt_l2_l3",
+            "volt_l3_l1",
+            "import_active_kw",
+            "import_reactive_kvar",
+            "export_active_kw",
+            "export_reactive_kvar",
+            "interval_status_flag",
+        }
+
+        assert eleven <= {column.name for column in LOAD_PROFILE_TABLE.columns}
+
+    def test_they_are_nullable_at_the_destination(self) -> None:
+        """Every row already at the destination predates them, and a model that
+        does not record a quantity never fills one."""
+        from arichds.dataout.schema import LOAD_PROFILE_TABLE
+
+        assert LOAD_PROFILE_TABLE.columns["interval_status_flag"].nullable
+        assert LOAD_PROFILE_TABLE.columns["phase_angle_a"].nullable
