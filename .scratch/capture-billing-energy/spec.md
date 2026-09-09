@@ -153,6 +153,11 @@ The tab rendering, the hidden filter card, and the chip colours are covered only
 - **A separate recent-captures page.** The capture time column on this tab is that list.
 - **Real-time push of capture completion.** A notification for the unattended path would need a whole push channel to deliver a message to an empty room; the column and the manual-path confirmation cover what is actually observable.
 - **A frontend test runner.**
+- **The licence change that lets a full-version machine add meters without a Meter
+  Activation Code.** It is a licensing change, not a billing one, and it has not been
+  grilled; it carries a hazard worth grilling for, since the key must be shaped so that its
+  absence preserves today's behaviour. It is the next phase in the remake plan, with its own
+  grill, spec and tickets.
 - **The export-file work** — the billing CSV, the Energy Summary file, and the eleven added Load Profile columns are a later phase.
 - **The empty average-power-factor column**, which is a separate defect found while gathering evidence for this work and needs its own diagnosis.
 
