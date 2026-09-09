@@ -255,7 +255,11 @@ def sign_activation_code(vendor_cli) -> Callable[..., str]:
     """
 
     def issue(
-        *, max_meters: int | None = None, features: list[str] | None = None, models: list[str] | None = None
+        *,
+        max_meters: int | None = None,
+        features: list[str] | None = None,
+        models: list[str] | None = None,
+        require_meter_activation: bool | None = None,
     ) -> str:
         payload = vendor_cli.build_payload(
             customer="Acme Co",
@@ -263,6 +267,7 @@ def sign_activation_code(vendor_cli) -> Callable[..., str]:
             max_meters=max_meters,
             features=features,
             models=models,
+            require_meter_activation=require_meter_activation,
         )
         return vendor_cli.sign_payload(VENDOR_PRIVATE_KEY_PEM, payload)
 
@@ -286,10 +291,18 @@ def relicense(sign_activation_code: Callable[..., str]) -> Callable[..., None]:
         max_meters: int | None = None,
         features: list[str] | None = None,
         models: list[str] | None = None,
+        require_meter_activation: bool | None = None,
     ) -> None:
         response = client.post(
             "/api/license/activate",
-            json={"code": sign_activation_code(max_meters=max_meters, features=features, models=models)},
+            json={
+                "code": sign_activation_code(
+                    max_meters=max_meters,
+                    features=features,
+                    models=models,
+                    require_meter_activation=require_meter_activation,
+                )
+            },
         )
         assert response.status_code == 200, response.text
         assert response.json()["success"] is True, response.text

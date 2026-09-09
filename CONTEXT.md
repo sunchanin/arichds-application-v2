@@ -38,6 +38,11 @@ in a signed license, so the machine a customer bought "full" needs no per-meter 
 against a named feature list still does. It is decided once, when a meter is added
 (ADR 0019) — turning it off later never disturbs meters already present, and turning it on later
 never reaches back for a code the operator was not asked for.
+It is spelled twice on purpose, and the two are not interchangeable: the **licence** carries
+`require_meter_activation`, which is tri-state and where *unstated* is a real value; the **API
+and the browser** carry `meter_activation_required`, which is a plain boolean the server has
+already resolved. Reading the first where you mean the second is how "unstated means not
+required" ends up written twice in two languages.
 _Avoid_: meter activation feature, full version, licence mode, activation lock
 
 **Limited Mode**:

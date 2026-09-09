@@ -156,7 +156,16 @@ MySQL, and ~30 tables.
   serial changes"), but the shipped `_reject_changed_serial` (ADR 0005) already refuses *any*
   Update whose probed serial differs from the stored one, unconditionally, which is stricter than
   a re-check would be; adding one would only re-open the bypass by loosening that refusal. The
-  ADR's "When it is checked" section is amended in place to say so. ·
+  ADR's "When it is checked" section is amended in place to say so.
+  **Amended again (full-version licence, issue 01): whether the gate applies at all is now
+  decided by the machine's own Activation Code** — `require_meter_activation`, a field on the
+  signed payload beside `max_meters` and `models`, where **unstated means not required**, so the
+  full version is sold by saying nothing and adds meters with no code. Deliberately **not** a
+  feature key: `features` names what the product may *do*, this names what the operator must
+  *supply*, and a `features: null` licence would otherwise have picked it up automatically. A
+  supplied code is still verified either way, switching it never disturbs a device already added,
+  and there is still no check at Update (the licensed-model list *is* checked at both, because a
+  device can be edited onto another model but cannot be moved onto another meter). ·
   0020 (a destination **mirrors our window, it never archives** — the customer's MySQL holds
   exactly the 90 days our own store holds, so the sync **deletes from their database** as well as
   writing to it; the owner chose this against the grill's recommendation, and it is why a

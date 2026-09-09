@@ -283,7 +283,7 @@ class DeviceCreate(BaseModel):
     site_name: str = Field(min_length=1, max_length=255)
     transport: Transport
     password: str = Field(default="", max_length=128)
-    meter_activation_code: str = Field(min_length=1, max_length=1024)
+    meter_activation_code: str | None = Field(default=None, min_length=1, max_length=1024)
     site_code: str | None = Field(default=None, max_length=80)
     customer: str | None = Field(default=None, max_length=255)
     meter_number: str | None = Field(default=None, max_length=80)
@@ -832,6 +832,42 @@ def _verify_meter_activation_code(code: str, *, meter_serial: str, machine_id: s
     )
 
 
+def _resolve_meter_activation_code(
+    code: str | None, *, required: bool, meter_serial: str, machine_id: str
+) -> str | None:
+    """Apply the machine's **Meter Activation Requirement** (CONTEXT.md, issue 01).
+
+    *required* comes off the machine's own Activation Code. When it is unstated
+    — the full version — an operator adds a meter with no code at all.
+
+    **A supplied code is verified either way.** The requirement is "you need
+    not supply one", never "you may not": ignoring a code an operator did send
+    would write an unverified string into a column a later reader will assume
+    was checked.
+
+    Raises:
+        HTTPException: 422 when the machine demands a code and none was sent —
+            the same status the required field itself used to produce, so an
+            operator sees no change in behaviour. 409 for a code that does not
+            verify, from :func:`_verify_meter_activation_code`.
+
+    Returns:
+        The code to store, or ``None`` when none was supplied and none was
+        demanded.
+    """
+    if code is None:
+        if required:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "This machine requires a Meter Activation Code for each meter. "
+                    "Ask the vendor for one issued for this meter."
+                ),
+            )
+        return None
+    return _verify_meter_activation_code(code, meter_serial=meter_serial, machine_id=machine_id)
+
+
 def _require_device(session: SessionDep, device_id: int) -> Device:
     """Load a device or refuse with 404.
 
@@ -1000,8 +1036,12 @@ def create_device(
         return _probe_failure(response, exc)
 
     _reject_duplicate_serial(session, probe.meter_serial)
-    stored_code = _verify_meter_activation_code(
+    # Same `license_state` local the model gate and the quota gate above read,
+    # for the same reason: one evaluation per request, never two that could
+    # straddle a staleness-TTL re-evaluation (ADR 0001).
+    stored_code = _resolve_meter_activation_code(
         payload.meter_activation_code,
+        required=bool(license_state.require_meter_activation),
         meter_serial=probe.meter_serial,
         machine_id=license_service.machine_id,
     )

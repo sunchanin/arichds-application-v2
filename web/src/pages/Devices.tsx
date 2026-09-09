@@ -292,7 +292,16 @@ function toInput(values: DeviceFormValues, mode: "create" | "edit"): DeviceInput
     transport: transportFromForm(values),
     // Create only — ADR 0019 checks it once, at Create; Update never
     // re-validates it, so sending it there would be misleading at best.
-    ...(mode === "create" ? { meter_activation_code: values.meter_activation_code } : {}),
+    //
+    // Sent when the operator supplied one, not when the machine demands one
+    // (issue 01): the field is absent from the form on a machine with no
+    // Meter Activation Requirement, so there is nothing to send there — and
+    // keying on the value rather than the requirement keeps this a pure
+    // function of its arguments, and matches the server, which verifies a
+    // supplied code either way.
+    ...(mode === "create" && values.meter_activation_code
+        ? { meter_activation_code: values.meter_activation_code }
+        : {}),
     site_code: blankToNull(values.site_code),
     customer: blankToNull(values.customer),
     meter_number: blankToNull(values.meter_number),
@@ -335,6 +344,7 @@ function toInput(values: DeviceFormValues, mode: "create" | "edit"): DeviceInput
 export function Devices({
   role,
   licensedModels,
+  meterActivationRequired,
 }: {
   role: "admin" | "user";
   /**
@@ -343,6 +353,12 @@ export function Devices({
    * model lock carries. `[]` means none may be added.
    */
   licensedModels: string[] | null;
+  /**
+   * Whether this machine demands a **Meter Activation Code** for each meter
+   * added (issue 01). Already resolved by the server — the licence's
+   * "unstated means not required" rule lives there, not here.
+   */
+  meterActivationRequired: boolean;
 }) {
   const { message, modal } = App.useApp();
   const isAdmin = role === "admin";
@@ -984,7 +1000,12 @@ export function Devices({
                         <Typography.Text>{meterSerial ?? NOTHING}</Typography.Text>
                       </Form.Item>
                     </Col>
-                    {mode === "create" ? (
+                    {/* Hidden, not disabled, on a machine that does not
+                        require one (issue 01) — a greyed control invites the
+                        question an absent one does not, and there is nothing
+                        the operator could do about it anyway: the requirement
+                        lives on the machine's own Activation Code. */}
+                    {mode === "create" && meterActivationRequired ? (
                       <Col xs={24} md={8}>
                         <Form.Item
                           name="meter_activation_code"

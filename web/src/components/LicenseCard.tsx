@@ -88,6 +88,9 @@ export function LicenseCard({
   const modeText = status.mode ? (MODE_TEXT[status.mode] ?? status.mode) : "—";
   const expiryText = status.expires_at ? dayjs(status.expires_at).format("YYYY-MM-DD HH:mm") : "No expiry";
   const maxMetersText = status.max_meters === null ? "Unlimited" : String(status.max_meters);
+  const meterActivationText = status.meter_activation_required
+    ? "A code is required for each meter"
+    : "Not required";
   // Three states, all meaningful (issue 015, D2): `null` grants every
   // catalogued model, `[]` grants none, a list names exactly which. Raw
   // model keys, joined for the confirm text — no label map in TypeScript
@@ -110,6 +113,11 @@ export function LicenseCard({
     { key: "mode", label: "Mode", children: modeText },
     { key: "expiry", label: "Expiry", children: expiryText },
     { key: "max_meters", label: "Max meters", children: maxMetersText },
+    // Beside the quota and the model list, because it is the same kind of
+    // thing: a constraint this machine's Activation Code decides (issue 01).
+    // This is the only place anyone can answer "why does that machine ask for
+    // a code and this one doesn't".
+    { key: "meter_activation", label: "Meter activation", children: meterActivationText },
     {
       key: "licensed_models",
       label: "Licensed models",
@@ -190,7 +198,7 @@ export function LicenseCard({
     }
     modal.confirm({
       title: "Replace this machine's license?",
-      content: `Licensed to: ${customerText} · Mode: ${modeText} · Expiry: ${expiryText} · Max meters: ${maxMetersText} · Licensed models: ${licensedModelsText}. The pasted code replaces that license immediately, even if it licenses less. Nothing can check what a code grants until it is installed, so make sure it is the right one.`,
+      content: `Licensed to: ${customerText} · Mode: ${modeText} · Expiry: ${expiryText} · Max meters: ${maxMetersText} · Meter activation: ${meterActivationText} · Licensed models: ${licensedModelsText}. The pasted code replaces that license immediately, even if it licenses less. Nothing can check what a code grants until it is installed, so make sure it is the right one.`,
       okText: "Replace license",
       onOk: submit,
     });

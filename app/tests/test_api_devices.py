@@ -979,8 +979,15 @@ class TestMeterActivationCode:
         assert admin_client.get("/api/devices").json()["data"] == []
 
     def test_a_missing_code_is_422_and_writes_nothing(
-        self, admin_client: TestClient, fake_meter: FakeMeterState
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
     ) -> None:
+        """**Relicensed, not deleted** (issue 01). The shared fixture now signs
+        a licence that says nothing about the Meter Activation Requirement,
+        which means *not* required — so this machine has to be told to demand
+        one for the refusal to be the thing under test. Without the
+        `relicense` call this test would pass a 201 and quietly stop being the
+        only proof the gate refuses anything at all."""
+        relicense(admin_client, require_meter_activation=True)
         fake_meter.meter_serial = "SN-1"
         response = admin_client.post("/api/devices", json=DEVICE)
 
@@ -2356,3 +2363,126 @@ def insert_device_with_transport(transport: dict) -> int:
         session.add(device)
         session.flush()
         return device.id
+
+
+class TestTheMeterActivationRequirementGatesTheCode:
+    """The Meter Activation Code is demanded only when the machine's
+    **Meter Activation Requirement** says so (full-version licence, issue 01).
+
+    The whole class runs against a machine whose Activation Code says nothing
+    about the requirement — which is what the shared ``activation_code``
+    fixture signs, and what the full version is. ``relicense`` puts the
+    requirement back where a test needs the other kind of machine.
+    """
+
+    def test_a_device_is_created_with_no_code_at_all(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.meter_serial = "SN-1"
+
+        response = admin_client.post("/api/devices", json=DEVICE)
+
+        assert response.status_code == 201, response.text
+        assert stored_secret(response.json()["data"]["id"], "meter_activation_code") is None
+
+    def test_a_supplied_code_is_still_verified_and_stored(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """The requirement is "you need not supply one", never "you may not".
+        Ignoring a supplied code would write an unverified string into a
+        column a later reader will assume was checked."""
+        fake_meter.meter_serial = "SN-1"
+        code = mint_meter_activation_code(meter_serial="SN-1")
+
+        response = admin_client.post("/api/devices", json={**DEVICE, "meter_activation_code": code})
+
+        assert response.status_code == 201, response.text
+        assert stored_secret(response.json()["data"]["id"], "meter_activation_code") == code
+
+    def test_a_code_for_another_meter_is_still_refused(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.meter_serial = "SN-1"
+        code = mint_meter_activation_code(meter_serial="SN-OTHER")
+
+        response = admin_client.post("/api/devices", json={**DEVICE, "meter_activation_code": code})
+
+        assert response.status_code == 409, response.text
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_a_tampered_code_is_still_refused(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        fake_meter.meter_serial = "SN-1"
+        code = mint_meter_activation_code(meter_serial="SN-1")
+        tampered = code[:-4] + ("AAAA" if not code.endswith("AAAA") else "BBBB")
+
+        response = admin_client.post("/api/devices", json={**DEVICE, "meter_activation_code": tampered})
+
+        assert response.status_code == 409, response.text
+
+    def test_a_blank_code_is_still_422(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """Empty is not the same as absent — an operator who cleared the box
+        typed something, and the machine should say so rather than silently
+        treat it as "no code offered"."""
+        fake_meter.meter_serial = "SN-1"
+
+        response = admin_client.post("/api/devices", json={**DEVICE, "meter_activation_code": ""})
+
+        assert response.status_code == 422
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_a_machine_that_states_the_requirement_still_refuses_a_missing_code(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        """The other half of the gate — this is the behaviour every machine
+        shipped today has, and it must survive the change that makes it
+        conditional."""
+        relicense(admin_client, require_meter_activation=True)
+        fake_meter.meter_serial = "SN-1"
+
+        response = admin_client.post("/api/devices", json=DEVICE)
+
+        assert response.status_code == 422, response.text
+        assert admin_client.get("/api/devices").json()["data"] == []
+
+    def test_a_machine_that_states_the_requirement_accepts_a_valid_code(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        relicense(admin_client, require_meter_activation=True)
+        fake_meter.meter_serial = "SN-1"
+        code = mint_meter_activation_code(meter_serial="SN-1")
+
+        response = admin_client.post("/api/devices", json={**DEVICE, "meter_activation_code": code})
+
+        assert response.status_code == 201, response.text
+
+
+class TestSwitchingTheRequirementNeverDisturbsExistingDevices:
+    """Decided once, when the device is added (ADR 0019). Neither direction
+    reaches back."""
+
+    def test_a_device_added_without_a_code_keeps_working_once_the_requirement_is_on(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        fake_meter.meter_serial = "SN-1"
+        created = admin_client.post("/api/devices", json=DEVICE)
+        assert created.status_code == 201, created.text
+        device_id = created.json()["data"]["id"]
+
+        relicense(admin_client, require_meter_activation=True)
+
+        assert len(admin_client.get("/api/devices").json()["data"]) == 1
+        assert admin_client.post(f"/api/devices/{device_id}/read-now").status_code == 200
+
+    def test_a_device_added_with_a_code_keeps_it_once_the_requirement_is_off(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, relicense
+    ) -> None:
+        relicense(admin_client, require_meter_activation=True)
+        fake_meter.meter_serial = "SN-1"
+        code = mint_meter_activation_code(meter_serial="SN-1")
+        created = admin_client.post("/api/devices", json={**DEVICE, "meter_activation_code": code})
+        assert created.status_code == 201, created.text
+        device_id = created.json()["data"]["id"]
+
+        relicense(admin_client)
+
+        assert stored_secret(device_id, "meter_activation_code") == code

@@ -52,6 +52,17 @@ export interface LicenseStatus {
    * vendor CLI's `--models` and the Create/Update 422 both name.
    */
   licensed_models: string[] | null;
+  /**
+   * Whether this machine demands a **Meter Activation Code** for each meter
+   * added (issue 01) — **resolved by the server**, unlike `licensed_models`.
+   *
+   * The licence's own value is a tri-state where "unstated" means "not
+   * required"; that rule lives in the backend only, so this is a plain
+   * boolean and TypeScript never carries a second copy of it. `false` on a
+   * non-active machine, which is meaningless there — Limited Mode blocks
+   * every device handler before anything can be added.
+   */
+  meter_activation_required: boolean;
 }
 
 /**

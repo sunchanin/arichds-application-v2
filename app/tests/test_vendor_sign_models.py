@@ -231,3 +231,56 @@ class TestHelpText:
         out = capsys.readouterr().out
         assert "--models" in out
         assert "--brands" in out
+
+
+class TestTheMeterActivationRequirementFlag:
+    """``--require-meter-activation`` on ``sign`` (full-version licence,
+    issue 01).
+
+    A constraint on scope, beside ``--max-meters`` and ``--models``. Its
+    **absence is the full version**, so the flag appears only on codes sold
+    against a named feature list.
+    """
+
+    def test_omitting_it_signs_an_unstated_requirement(self, vendor_cli, key_path: Path, capsys) -> None:
+        exit_code = sign(vendor_cli, key_path)
+
+        assert exit_code == 0
+        code = capsys.readouterr().out.strip()
+        assert payload_of(code)["require_meter_activation"] is None
+
+    def test_passing_it_signs_a_stated_requirement(self, vendor_cli, key_path: Path, capsys) -> None:
+        exit_code = sign(vendor_cli, key_path, "--require-meter-activation")
+
+        assert exit_code == 0
+        code = capsys.readouterr().out.strip()
+        assert payload_of(code)["require_meter_activation"] is True
+
+    def test_the_summary_names_the_requirement_either_way(self, vendor_cli, key_path: Path, capsys) -> None:
+        """Whoever signed the code should read what they sold, not infer it
+        from what they typed."""
+        sign(vendor_cli, key_path)
+        unstated = capsys.readouterr().err
+
+        sign(vendor_cli, key_path, "--require-meter-activation")
+        stated = capsys.readouterr().err
+
+        assert "meter activation" in unstated.lower()
+        assert "meter activation" in stated.lower()
+        assert unstated != stated
+
+
+class TestTheIssueCommandStaysInStepWithTheFlag:
+    """The project's issue-an-Activation-Code command is the one place a human
+    decides what a licence says. It passes flags through verbatim, so a
+    renamed flag would leave it silently stale — this is the only thing that
+    would notice. Same shape as ``test_nav_feature_contract.py``, which reads
+    frontend files rather than trusting them."""
+
+    def test_the_command_names_the_flag(self) -> None:
+        from pathlib import Path as _Path
+
+        command = _Path(__file__).resolve().parents[2] / ".claude" / "commands" / "activate.md"
+
+        assert command.exists(), command
+        assert "--require-meter-activation" in command.read_text(encoding="utf-8")

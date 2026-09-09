@@ -552,3 +552,46 @@ class TestStatusExposesLicensedModels:
 
         assert payload["state"] == "limited"
         assert payload["licensed_models"] is None
+
+
+class TestStatusExposesTheMeterActivationRequirement:
+    """``GET /api/license/status`` carries ``meter_activation_required``
+    (full-version licence, issue 01).
+
+    **Resolved, not raw** — unlike ``licensed_models``. There is nothing for
+    the browser to interpret here, only the rule "unstated means not
+    required", and sending the raw tri-state would put that rule in a second
+    language. The raw value stays on the signed payload for anyone auditing
+    a code.
+
+    Uses ``issue_code``/``vendor_keys`` for the reason
+    ``TestStatusExposesLicensedModels`` gives: this module's ``client``
+    trusts a vendor key local to this file.
+    """
+
+    def _status(self, client: TestClient, vendor_cli, vendor_keys: Path, **kwargs) -> dict:
+        code = issue_code(vendor_cli, vendor_keys, machine_id=TEST_MACHINE_ID, **kwargs)
+        assert client.post("/api/license/activate", json={"code": code}).json()["success"] is True
+        return client.get("/api/license/status").json()["data"]
+
+    def test_a_licence_that_says_nothing_reports_not_required(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        body = self._status(client, vendor_cli, vendor_keys)
+
+        assert body["meter_activation_required"] is False
+
+    def test_a_licence_that_states_the_requirement_reports_required(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        body = self._status(client, vendor_cli, vendor_keys, require_meter_activation=True)
+
+        assert body["meter_activation_required"] is True
+
+    def test_it_is_a_boolean_never_the_raw_tri_state(self, client: TestClient, vendor_cli, vendor_keys: Path) -> None:
+        """The browser must never receive `null` here and have to know that
+        `null` means not required — that is the rule this field exists to
+        keep out of TypeScript."""
+        body = self._status(client, vendor_cli, vendor_keys)
+
+        assert isinstance(body["meter_activation_required"], bool)

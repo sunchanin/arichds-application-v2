@@ -80,8 +80,8 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
   (enforcement ออกแบบให้ re-evaluate ใน process — ต่างจาก v1 ที่ต้อง restart) —
   หน้านี้เป็น **gate** สำหรับ first-run กับ Limited Mode เท่านั้น (App.tsx เลิก render ทันทีที่ active)
   และเป็นที่อยู่ของ online activation ใน M9 — ส่วนการ**ต่อ/เปลี่ยน license ที่ยังใช้งานได้อยู่**
-  ทำที่ **Settings → License** (การ์ดเดียวกันโชว์ customer/mode/expiry/max_meters/licensed models/
-  enabled features + Machine ID, admin เท่านั้นที่กรอกโค้ดได้)
+  ทำที่ **Settings → License** (การ์ดเดียวกันโชว์ customer/mode/expiry/max_meters/**meter activation**/
+  licensed models/enabled features + Machine ID, admin เท่านั้นที่กรอกโค้ดได้)
 - Machine fingerprint คำนวณใน Python — **พอร์ตสูตรเดิมจาก Go** (`modbus-logger/internal/license/fingerprint.go`:
   collect → combine → SHA-256; ฝั่ง Windows องค์ประกอบเดียวคือ registry `MachineGuid`)
   เปลี่ยนเฉพาะ salt/ชื่อเป็น ARICHDS แล้ว**แช่แข็งตั้งแต่วันแรก** (เปลี่ยนสูตรทีหลัง = license ทุกใบพัง)
@@ -1079,6 +1079,16 @@ one header.
 - **Meter Key** (โมเดลเดิม v1 #145): 1 key = 1 device slot ผูก serial มิเตอร์ผ่าน probe-first redeem ·
   ลบ device แล้ว slot ไม่คืน · เกิน `max_meters` ต้องใช้ key — **ทั้งย่อหน้านี้เริ่มมีผลที่ M9**
   (redeem ต้องมี portal) · **M3 บังคับด้วยการนับจำนวนอย่างเดียว ไม่มีช่อง Meter Key ในฟอร์ม** (§3.3)
+- **Meter Activation Requirement** (full-version licence, issue 01) — ฟิลด์
+  `require_meter_activation` บน payload ที่เซ็น นั่งข้าง `max_meters` และ `models` ·
+  **ไม่ระบุ = ไม่บังคับ** ตามกฎ "ไม่ระบุ = ไม่จำกัด" ที่ทุก constraint ในใบนี้ใช้อยู่แล้ว ⇒
+  **version full ขายโดยไม่พูดถึงมัน** และเครื่องนั้นเพิ่มมิเตอร์ได้โดยไม่ต้องกรอก
+  Meter Activation Code · ใบที่ขายแบบระบุ `--features` ให้ระบุข้อบังคับด้วย แล้วเครื่องนั้น
+  ทำงานเหมือนทุกวันนี้ (ADR 0019) · **ไม่ใช่ feature key โดยตั้งใจ** — `features` บอกว่า
+  *โปรแกรมทำอะไรได้* ส่วนอันนี้บอกว่า *คนต้องกรอกอะไร* และถ้าเป็น feature key ใบที่เซ็นด้วย
+  `features: null` จะได้มันมาเองโดยไม่มีใครเลือก · ตัดสินครั้งเดียวตอนเพิ่ม device — สลับทีหลัง
+  ไม่ย้อนไปยุ่งกับมิเตอร์ที่มีอยู่แล้วทั้งสองทิศทาง · **code ที่ส่งมาถูกตรวจเสมอ** ไม่ว่าเครื่องนั้น
+  จะบังคับหรือไม่ ("ไม่ต้องมีก็ได้" ไม่ใช่ "ห้ามมี")
 - **Feature entitlement**: enabled = `.env FEATURES ∩ license features` · sellable 11 ตัว (M7 slice 4,
   issue #35 เพิ่ม `billing_image_export`; §3.10 เพิ่ม `database_destination`;
   issue 013 เพิ่ม `file_upload_destination`; เดิม 8 ตัวเท่า v1):

@@ -131,6 +131,7 @@ def build_payload(
     max_meters: int | None = None,
     features: list[str] | None = None,
     models: list[str] | None = None,
+    require_meter_activation: bool | None = None,
 ) -> dict[str, Any]:
     """Build the v2 payload. Mirrors the app's ``build_payload`` field-for-field."""
     return {
@@ -144,6 +145,7 @@ def build_payload(
         "max_meters": max_meters,
         "features": features,
         "models": models,
+        "require_meter_activation": require_meter_activation,
     }
 
 
@@ -468,6 +470,10 @@ def cmd_sign(args: argparse.Namespace) -> int:
         max_meters=args.max_meters,
         features=features,
         models=models,
+        # `or None`, never the bare False: an unstated requirement is `null`
+        # on the payload, matching every other constraint. There is no way to
+        # say "explicitly not required" and none is needed — `null` is that.
+        require_meter_activation=args.require_meter_activation or None,
     )
     code = sign_payload(private_path.read_bytes(), payload)
 
@@ -477,6 +483,13 @@ def cmd_sign(args: argparse.Namespace) -> int:
     print(f"Expires    : {payload['expires_at'] or 'never'}", file=sys.stderr)
     print(f"Max meters : {payload['max_meters'] if payload['max_meters'] is not None else 'unlimited'}", file=sys.stderr)
     print(f"Models     : {models_summary_text(payload['models'])}", file=sys.stderr)
+    # Named on every code, not only when the flag was typed: whoever signed it
+    # should read what they sold rather than infer it from what they typed.
+    print(
+        "Meter activation: "
+        + ("required for each meter" if payload["require_meter_activation"] else "not required (full version)"),
+        file=sys.stderr,
+    )
     print("\nACTIVATION CODE (send this single line to the customer):\n", file=sys.stderr)
     print(code)
 
@@ -587,6 +600,13 @@ Examples:
         "(an unrecognised name is refused, not signed). Some sellable names are reserved "
         "and not for sale yet: naming one warns but still signs. Omit for every sellable "
         "feature.",
+    )
+    sign.add_argument(
+        "--require-meter-activation",
+        action="store_true",
+        help="Demand a Meter Activation Code for each meter added on this machine (ADR 0019). "
+        "OMIT for the full version, which is what an unstated requirement means — the same "
+        "'unstated is unrestricted' rule --max-meters and --models already follow.",
     )
     sign.add_argument(
         "--models",

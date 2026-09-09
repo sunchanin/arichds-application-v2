@@ -65,6 +65,12 @@ class LicenseState:
             harmless because ``LimitedModeMiddleware`` blocks ``/api/*``
             wholesale before any device handler runs, so nothing ever reads
             this field off an invalid state.
+        require_meter_activation: The **Meter Activation Requirement**
+            (CONTEXT.md, issue 01), or ``None`` for unstated — which means
+            not required. Carried through the **valid** branch only, for the
+            same reason and with the same safety as ``models``: nothing reads
+            it off an invalid state, because Limited Mode refuses ``/api/*``
+            before any device handler runs.
         evaluated_at: Monotonic timestamp of the evaluation that produced this.
     """
 
@@ -76,6 +82,7 @@ class LicenseState:
     max_meters: int | None = None
     features: list[str] | None = None
     models: list[str] | None = None
+    require_meter_activation: bool | None = None
     evaluated_at: float = field(default_factory=time.monotonic)
 
     @property
@@ -108,6 +115,7 @@ def _from_verification(result: ActivationVerification) -> LicenseState:
         max_meters=result.max_meters,
         features=result.features,
         models=result.models,
+        require_meter_activation=result.require_meter_activation,
     )
 
 

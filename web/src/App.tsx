@@ -250,7 +250,11 @@ export default function App() {
       ) : active === "file-upload-destination" ? (
         <FileUploadDestination />
       ) : (
-        <Devices role={session.role} licensedModels={status.licensed_models} />
+        <Devices
+          role={session.role}
+          licensedModels={status.licensed_models}
+          meterActivationRequired={status.meter_activation_required}
+        />
       )}
     </AppShell>
   );

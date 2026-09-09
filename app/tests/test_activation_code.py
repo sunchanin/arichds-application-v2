@@ -100,6 +100,7 @@ class TestBuildPayload:
             "max_meters",
             "features",
             "models",
+            "require_meter_activation",
         }
 
     def test_defaults_to_offline_mode_version_2_arichds(self) -> None:
@@ -330,3 +331,83 @@ class TestAPreChangeLicenceStillVerifies:
         # makes this the same code path as an explicit `null`, but that is
         # the claim this test exists to prove, not something to assume.
         assert result.models is None
+        # Same claim for `require_meter_activation` (full-version licence,
+        # issue 01). This licence predates that field too, so it is the real
+        # artefact proving the compatibility promise — a hand-built payload
+        # would prove only that the code agrees with itself. It is also what
+        # would catch a `PAYLOAD_VERSION` bump or the field being added to
+        # `_REQUIRED_FIELDS`, either of which would fail this assertion's own
+        # `result.valid` above.
+        assert result.require_meter_activation is None
+
+
+class TestTheMeterActivationRequirement:
+    """``require_meter_activation`` on the signed payload (full-version licence,
+    issue 01).
+
+    A **constraint on scope**, beside ``max_meters`` and ``models`` — never a
+    feature key. Unstated means **not required**, matching every other
+    constraint on a signed Activation Code.
+    """
+
+    def test_the_payload_version_is_unchanged(self) -> None:
+        """The verifier compares it for exact equality, so a bump makes every
+        Activation Code already signed fail as the wrong product."""
+        assert ac.PAYLOAD_VERSION == 2
+
+    def test_the_field_is_not_required(self) -> None:
+        """``_REQUIRED_FIELDS`` is a membership test over the decoded payload.
+        Adding this field there refuses every code signed before today."""
+        assert "require_meter_activation" not in ac._REQUIRED_FIELDS
+
+    def test_build_payload_emits_the_key_unstated_by_default(self) -> None:
+        payload = ac.build_payload(customer="X", machine_id=MACHINE_ID)
+
+        assert payload["require_meter_activation"] is None
+
+    def test_build_payload_carries_a_stated_requirement(self) -> None:
+        payload = ac.build_payload(customer="X", machine_id=MACHINE_ID, require_meter_activation=True)
+
+        assert payload["require_meter_activation"] is True
+
+    def _verify(self, keypair, payload: dict):
+        private_key, public_pem = keypair
+        return verify_activation_code(sign_code(private_key, payload), machine_id=MACHINE_ID, public_key_pem=public_pem)
+
+    def test_a_payload_with_the_key_absent_verifies_and_reads_as_unstated(self, keypair) -> None:
+        """An absent key and an explicit null are the same thing. This is what
+        every Activation Code signed before today looks like."""
+        payload = ac.build_payload(customer="X", machine_id=MACHINE_ID)
+        del payload["require_meter_activation"]
+
+        result = self._verify(keypair, payload)
+
+        assert result.valid
+        assert result.require_meter_activation is None
+
+    def test_an_explicit_null_verifies_and_reads_as_unstated(self, keypair) -> None:
+        payload = ac.build_payload(customer="X", machine_id=MACHINE_ID, require_meter_activation=None)
+
+        result = self._verify(keypair, payload)
+
+        assert result.valid
+        assert result.require_meter_activation is None
+
+    def test_a_stated_requirement_is_carried_off_the_code(self, keypair) -> None:
+        payload = ac.build_payload(customer="X", machine_id=MACHINE_ID, require_meter_activation=True)
+
+        result = self._verify(keypair, payload)
+
+        assert result.valid
+        assert result.require_meter_activation is True
+
+    def test_a_non_boolean_is_malformed(self, keypair) -> None:
+        """Type-checked like every other optional field. ``1`` is not a bool —
+        ``isinstance(1, bool)`` is False — so this really is refused."""
+        payload = ac.build_payload(customer="X", machine_id=MACHINE_ID)
+        payload["require_meter_activation"] = 1
+
+        result = self._verify(keypair, payload)
+
+        assert not result.valid
+        assert result.reason == MALFORMED

@@ -60,6 +60,15 @@ class LicenseStatus(BaseModel):
             state, whose ``models`` is always ``None`` — meaningless there,
             since Limited Mode blocks ``/api/*`` wholesale before any device
             handler runs); ``[]`` means none may be added.
+        meter_activation_required: Whether this machine demands a **Meter
+            Activation Code** per meter (issue 01) — **resolved, not raw**,
+            unlike ``licensed_models``. There is nothing here for the client
+            to interpret, only the rule "unstated means not required", and
+            sending the licence's own tri-state would put that rule in a
+            second language; the raw value stays on the signed payload for
+            anyone auditing a code. ``False`` on a machine that is not
+            active — meaningless there, since Limited Mode blocks ``/api/*``
+            before any device can be added at all.
     """
 
     machine_id: str
@@ -71,6 +80,7 @@ class LicenseStatus(BaseModel):
     max_meters: int | None = None
     enabled_features: list[str] = Field(default_factory=list)
     licensed_models: list[str] | None = None
+    meter_activation_required: bool = False
 
 
 class ActivateRequest(BaseModel):
@@ -130,6 +140,7 @@ def _to_status(machine_id: str, state: LicenseState) -> LicenseStatus:
         max_meters=state.max_meters,
         enabled_features=_enabled_features(state),
         licensed_models=_licensed_models(state),
+        meter_activation_required=bool(state.require_meter_activation),
     )
 
 

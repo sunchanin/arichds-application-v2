@@ -320,13 +320,26 @@ TOU_PEAK_END_UTC: Final[int] = 15
 # plus one ops-only key that `.env` alone controls and the license never
 # governs. `records` (not `instantaneous`) is the key that gates the Records
 # page — owner decision 2026-08-09, SPEC §3.9.
-# No licence has been issued yet (SPEC.md §3.9), so this key set is still free
-# to change — which is why `database_destination` was added the moment the
-# module was designed rather than when it shipped: adding it now is free and
-# adding it after the first licence is issued is not. The mechanism is
-# `licensing/features.py`'s ceiling: a licence signed with `features: null`
-# grandfathers keys added later, one signed with an explicit list never does,
-# silently and with no warning anywhere.
+# **Corrected 2026-09-09 (full-version licence, issue 01).** This comment used
+# to say "no licence has been issued yet" and reasoned from it that the key set
+# was still free to change. That is no longer true, and the record it rested on
+# was wrong even then: `docs/issues/015` describes a signing "on this machine"
+# that is in fact a demo box at a customer site. Two Activation Codes are in the
+# field, one signed with an explicit feature list.
+#
+# The mechanism that made the old reasoning matter is unchanged and is what to
+# reason from now — `licensing/features.py`'s ceiling: a licence signed with
+# `features: null` grandfathers keys added later, one signed with an explicit
+# list never does, silently and with no warning anywhere.
+#
+# **So every new key must be shaped so that its ABSENCE preserves today's
+# behaviour**, because that is the state every already-issued explicit-list
+# licence is in and nobody gets told. A key that grants something is safe; a key
+# that *demands* something is not, and would silently stop being demanded on
+# every machine already out there. (The Meter Activation Requirement, issue 01,
+# is deliberately **not** a feature key for a related reason: a `features: null`
+# licence would have picked it up automatically. It is a constraint on the
+# Activation Code payload, beside `max_meters` — see ADR 0019.)
 # Not every sellable key is for sale — see `RESERVED_FEATURE_KEYS` below.
 SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
     {

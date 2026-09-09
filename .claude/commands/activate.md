@@ -42,6 +42,29 @@ If a machine ID **was** supplied, use it as given.
   ```
 - **WARN loudly and stop — do not run `keygen` yourself.** Generating a *new* keypair invalidates every Activation Code issued so far, and any exe already built bundles the *old* public key (`app/src/arichds/licensing/public_key.pem`) — codes signed with a new key won't verify against exes built with the old one. `keygen` is a once-per-vendor bootstrap act, never an automatic recovery step for a missing-key error. If the key is genuinely missing, ask the human how they want to proceed.
 
+## Step 2b — Confirm the Meter Activation Requirement
+
+**Only when the caller passed `--features`.** A licence sold against a named feature list is
+a restricted licence, and if it says nothing about meter activation it silently stops
+demanding a **Meter Activation Code** per meter (ADR 0019) — the machine simply never asks,
+and nothing on it says so. That is the one combination that gives per-meter entitlement away
+by accident, and this is the last moment it can be caught: after the code is signed it is
+already the thing you hand over.
+
+So if `$ARGUMENTS` contains `--features` and does **not** contain `--require-meter-activation`,
+**stop and ask** whether that is intended, naming the consequence in one line: *"this machine
+will not ask for a Meter Activation Code when a meter is added — is that intended?"* Sign only
+once the human answers. If they say it was not intended, add `--require-meter-activation` and
+sign.
+
+**Ask, never refuse.** A licence that grants every feature and still demands Meter Activation
+Codes is one we may genuinely want to sell, and it is signed by answering "yes".
+
+**Say nothing when `--features` was not passed.** That is the full version — the requirement
+is unstated on purpose, which is what "unstated means unrestricted" means for every other
+constraint on the code (`--max-meters`, `--models`). Asking there would fire on every
+full-version sale and teach the reader to click through the question.
+
 ## Step 3 — Sign
 
 Run from the repo root:
@@ -54,7 +77,11 @@ app\.venv\Scripts\python.exe tools\arichds_vendor.py sign --customer "$1" --mach
 
 ## Step 4 — Report
 
-Print the full command output, making the `ACTIVATION CODE` block prominent (it's on stdout; the customer/machine/mode/expiry summary is on stderr — show both). Remind the user:
+Print the full command output, making the `ACTIVATION CODE` block prominent (it's on stdout; the customer/machine/mode/expiry/max-meters/models/**meter-activation** summary is on stderr — show both).
+
+**Call out the `Meter activation:` line explicitly** rather than letting it scroll past in the summary. It is the one property of a code that is invisible on the machine until someone tries to add a meter, and whoever signed it should read what they sold instead of inferring it from what they typed. It reads either `required for each meter` or `not required (full version)`.
+
+Remind the user:
 
 - Paste the one-line code into the machine's **Activation** page (first-run / Limited Mode screen).
 - It applies **live, with no service restart** (ADR 0001) — the poller starts and the Devices page appears immediately on a valid code.
@@ -62,5 +89,6 @@ Print the full command output, making the `ACTIVATION CODE` block prominent (it'
 ## Never
 
 - Never invoke bare `python`/`python3` — always the venv interpreter, repo-root-relative.
+- Never sign a `--features` licence without confirming the Meter Activation Requirement (Step 2b) — the omission is silent on the machine and irreversible once the code is handed over.
 - Never run `keygen` automatically, under any error condition.
 - Never commit anything (the private key must never be committed; codes/output files stay local).

@@ -109,6 +109,20 @@ issued — including the one signed on this machine on 2026-08-27 for `f46b6763�
 always carry it, explicitly `null` when unrestricted) and is read with `payload.get("models")`
 plus a type check, the way `features` is at `activation_code.py:285`.
 
+> **Corrected 2026-09-09 (full-version licence, issue 01).** "The one signed **on this
+> machine**" above is wrong, and it was expensive. Machine ID `f46b6763…b57e0` is a **demo
+> install at a customer site**, not this development machine — twelve `premier550` meters, and
+> its own License card (photographed in the customer's requirements workbook) reads
+> `Licensed to: Ryosan · Max meters: Unlimited · Licensed models: premier550 · Enabled
+> features: App Log · Billing · Database Destination · Load Profile`, i.e. an **explicit
+> feature list**.
+>
+> Read together with `constants.py`'s own "no licence has been issued yet", this line led a
+> later design round to conclude twice that no Activation Code was in the field, and to pick a
+> default direction on that basis. **Activation Codes are in the field.** Anyone weighing a
+> change to the payload or the key set should start from that, and from the rule the corrected
+> `constants.py` comment now states: a new key's absence must preserve today's behaviour.
+
 **Do not bump `PAYLOAD_VERSION`.** The check is `payload.get("v") != PAYLOAD_VERSION` — strict
 equality — so v3 would make every v2 licence invalid on the new build.
 

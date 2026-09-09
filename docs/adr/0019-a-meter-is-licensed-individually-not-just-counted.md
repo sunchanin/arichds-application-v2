@@ -35,6 +35,42 @@ needs no new endpoint:
 Test connection  →  Meter Serial  →  ask us for a code  →  paste it  →  Create
 ```
 
+## Whether it applies at all
+
+> **Amendment (full-version licence, issue 01, 2026-09-09):** this ADR was written as an
+> unconditional rule — every sentence below treats "a new device needs a valid Meter
+> Activation Code" as flat. **It is now decided by the machine's own Activation Code.**
+>
+> The **Meter Activation Requirement** (CONTEXT.md) is a field on the signed Activation Code
+> payload, beside `max_meters` and `models`. **Unstated means not required**, matching every
+> other constraint there — so the *full version*, which we sell by stating nothing, adds
+> meters with no code.
+>
+> **A licence sold against a named feature list is expected to state the requirement, and
+> nothing enforces that.** `--features` and `--require-meter-activation` are independent flags;
+> signing the first without the second produces a restricted licence that silently stops
+> demanding Meter Activation Codes. The only guard is the issue-an-Activation-Code command,
+> which *asks* — and asks rather than refuses, because "every feature, gate still on" is a
+> licence we may want to sell. So the pairing is a **convention held by a question put to a
+> human**, not an invariant held by the code. Said plainly here because a reader who assumes
+> otherwise would be reasoning from a guarantee that does not exist.
+>
+> **It is deliberately not a feature key.** `features` names what the product may *do*; this
+> names what the operator must *supply*. It would also have inherited that list's
+> grandfathering rule — a licence signed with no explicit list picks up every key added later
+> — which would have decided this gate by a mechanism nobody chose for it.
+>
+> The title still stands: when the requirement applies, a meter is licensed individually and
+> not just counted. What changed is **who decides that it applies**.
+>
+> Two consequences worth stating rather than leaving to be re-derived. A **supplied code is
+> verified either way** — the requirement is "you need not supply one", never "you may not",
+> and ignoring a code an operator did send would store an unverified string in a column a
+> later reader will assume was checked. And **switching the requirement never disturbs a
+> device already added**, in either direction: the section below is unchanged, and a machine
+> whose requirement is switched on later does not reach back for a code its operator was
+> never asked for.
+
 ## When it is checked
 
 **At Create.**
@@ -52,6 +88,13 @@ Test connection  →  Meter Serial  →  ask us for a code  →  paste it  →  
 > *loosen* `_reject_changed_serial` into "admit the new serial if a valid code is supplied" —
 > reopening the exact bypass this section was written to prevent. No Update-side code check was
 > built; do not add one without first relaxing `_reject_changed_serial` on purpose.
+>
+> **(Issue 01)** The same reasoning is why the Meter Activation Requirement is not enforced at
+> Update either — and this is worth saying out loud, because the licensed-model list
+> (issue 015) sits beside this gate and *is* enforced at both Create and Update. It has to be:
+> a device could be created under a licensed model and then edited onto an unlicensed one.
+> No equivalent bypass exists here, for exactly the reason above — a device cannot be moved
+> onto a different meter at all. Two gates, two answers, one reason.
 
 It is deliberately **not** re-checked continuously. That is what separates it from the machine
 licence, where ADR 0001 requires live re-evaluation because Limited Mode has to arrive and
