@@ -192,6 +192,27 @@ export interface LoadProfileRow {
   current_l2: number | null;
   current_l3: number | null;
   freq: number | null;
+  phase_angle_a: number | null;
+  phase_angle_b: number | null;
+  phase_angle_c: number | null;
+  /**
+   * The meter's own Interval Status word, raw. `interval_status` below is the
+   * same value decoded to words; the decoding happens on the server, in
+   * `arichds/interval_status.py`, so the CSV and this page can never word one
+   * bitmap differently. This is deliberately unlike `units.ts`, which is a
+   * hand-kept TypeScript twin — a status vocabulary has no reason to exist
+   * twice.
+   */
+  interval_status_flag: number | null;
+  /** The decoded wording, or `""` on a model that records no status word. */
+  interval_status: string;
+  import_active_kw: number | null;
+  import_reactive_kvar: number | null;
+  export_active_kw: number | null;
+  export_reactive_kvar: number | null;
+  volt_l1_l2: number | null;
+  volt_l2_l3: number | null;
+  volt_l3_l1: number | null;
 }
 
 /** One page of Interval Readings. `total` is the unpaged count the pager needs. */

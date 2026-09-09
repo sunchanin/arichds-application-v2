@@ -146,6 +146,18 @@ The OBIS differs by family and only one of them is decoded. CEWE captures
 meanings nobody has verified on hardware, so it stays **blank rather than decoded**,
 which is the call v1 made and recorded.
 
+**Stored as the raw integer, decoded at render time** (`load_profile_readings
+.interval_status_flag`, migration 0016). Storing decoded text would make every
+historical row permanently un-decodable on the day the SMART TCC word is finally
+verified. One decoder serves both renderers — `arichds/interval_status.py` — so the
+CSV and the Load Profile page cannot word the same bitmap differently.
+
+**Two set bits join with a pipe, `ALL_INVALID|DISTURBED`, not a comma.** v1 joined
+with a comma, but v1's rendering never reached a CSV — it existed only on v1's screen
+— so no Output Parity is broken. A comma inside a cell survives only if every
+downstream consumer honours CSV quoting, which cannot be tested from here. A bit
+outside the three known ones is appended as a hex remainder rather than dropped.
+
 The customer's export file names this column `Record Status` and **that header stays**,
 because the file is a contract they wrote. The name splits at the same boundary display
 units do (ADR 0013): the file keeps their word, the product uses this one.

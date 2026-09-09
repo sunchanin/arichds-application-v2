@@ -6,13 +6,16 @@ output; :mod:`arichds.export.writer` adds the UTF-8 BOM, the head-comparison
 rule and the actual file write, none of which belong here.
 
 **D-1 — the CSV never reads the display-unit setting (ADR 0013).** The
-header is written once, when the file is absent or empty, and rows append
-for months; an operator flipping kW/W to read a *screen* must never leave a
-file whose header disagrees with its own rows a thousandfold. The unit here
-is fixed at kWh/kvarh — nothing in this module divides a value by anything.
+header is written once and rows append for months; an operator flipping kW/W
+to read a *screen* must never leave a file whose header disagrees with its own
+rows a thousandfold. The unit here is fixed at kWh/kvarh/kW/kvar — nothing in
+this module divides a value by anything. Since M13 issue 07 this file carries
+four **power** columns as well, which is the first time the boundary runs in
+both directions on the same quantity: the Load Profile page scales those four
+and this file never does.
 
 **D-3 — cells are mapped by name, never by position.** :data:`_CSV_COLUMNS`
-names the twelve attributes in :data:`_EXPORT_HEADERS`' order; a future
+names the twenty-three attributes in :data:`_EXPORT_HEADERS`' order; a future
 reorder of the shared ``MERGED_COLUMNS`` tuple in
 :mod:`arichds.db.load_profile_query` cannot silently reorder this contract
 file, because this module never imports that tuple.
@@ -25,12 +28,28 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from arichds.constants import METER_LOCAL_UTC_OFFSET_HOURS
+from arichds.interval_status import decode_interval_status
 
-#: F1 — the fourteen column headers, order frozen so a row appended to an
-#: existing v1 file still lands in the right column. Only the four energy
-#: strings differ from v1's own header (D-4, owner ruling 2026-08-11):
-#: v1's "Import kWh Reactive" names a kvarh quantity "kWh", and "Export kWh
-#: Re" is wrong in both name and unit.
+#: F1 — the column headers, order frozen so a row appended to an existing file
+#: still lands in the right column. Only the four energy strings differ from
+#: v1's own header (D-4, owner ruling 2026-08-11): v1's "Import kWh Reactive"
+#: names a kvarh quantity "kWh", and "Export kWh Re" is wrong in both name and
+#: unit.
+#:
+#: **Twenty-five since M13 issue 07**, and in the customer's own order, which
+#: inserts the three phase angles and the status column *before* ``Frequency
+#: (Hz)`` rather than appending everything at the end. That moves an existing
+#: column's position, and is only survivable because :mod:`arichds.export.writer`
+#: closes the old file under a dated name when the head changes.
+#:
+#: Names continue this product's own convention rather than the customer's
+#: spelling, which repeats v1's unit error (``Import kVar Reactive`` for a
+#: kvar quantity) and carries stray whitespace; adopting it verbatim would
+#: leave one file using two naming conventions. **The status column is the one
+#: exception** — it keeps the customer's own header word, because the file
+#: speaks their language while the product speaks the glossary's (the same
+#: split ADR 0013 already draws, and the reason the stored column is named
+#: ``interval_status_flag``).
 _EXPORT_HEADERS: tuple[str, ...] = (
     "Name",
     "Date/Time",
@@ -45,10 +64,21 @@ _EXPORT_HEADERS: tuple[str, ...] = (
     "Current L1 (A)",
     "Current L2 (A)",
     "Current L3 (A)",
+    "Avg Phase Angle Ph-A",
+    "Avg Phase Angle Ph-B",
+    "Avg Phase Angle Ph-C",
     "Frequency (Hz)",
+    "Record Status",
+    "Import Active (kW)",
+    "Import Reactive (kvar)",
+    "Export Active (kW)",
+    "Export Reactive (kvar)",
+    "Voltage L1-L2 (V)",
+    "Voltage L2-L3 (V)",
+    "Voltage L3-L1 (V)",
 )
 
-#: The twelve measurement attribute names, in the same order as the twelve
+#: The twenty-three measurement attribute names, in the same order as the
 #: trailing entries of :data:`_EXPORT_HEADERS` (F1) — written out literally
 #: here rather than imported from ``db.load_profile_query.MERGED_COLUMNS``
 #: (D-3): a future reorder of that tuple must not silently reorder this
@@ -65,11 +95,32 @@ _CSV_COLUMNS: tuple[str, ...] = (
     "current_l1",
     "current_l2",
     "current_l3",
+    "phase_angle_a",
+    "phase_angle_b",
+    "phase_angle_c",
     "freq",
+    "interval_status_flag",
+    "import_active_kw",
+    "import_reactive_kvar",
+    "export_active_kw",
+    "export_reactive_kvar",
+    "volt_l1_l2",
+    "volt_l2_l3",
+    "volt_l3_l1",
 )
 
-#: Which of the twelve columns are energy (formatted ``.9f``, v1 parity) —
-#: everything else in _CSV_COLUMNS is PF/V/I/frequency (``.3f``).
+#: The one column that is not a number. Rendered through
+#: :func:`~arichds.interval_status.decode_interval_status`, the same decoder the
+#: Load Profile page's own column goes through, so the two can never word the
+#: same bitmap differently.
+_STATUS_COLUMN = "interval_status_flag"
+
+#: Which columns are energy (formatted ``.9f``, v1 parity) — everything else
+#: numeric in _CSV_COLUMNS is PF/V/I/frequency/phase-angle/power (``.3f``).
+#: **Unchanged by M13 issue 07**: this file has an Output Parity obligation
+#: against v1 that the two files added in this phase do not, so the eleven new
+#: columns adopt its existing measurement format rather than the trimmed
+#: decimals the billing and Energy files use.
 _ENERGY_COLUMNS: frozenset[str] = frozenset(
     {"import_active_kwh", "import_reactive_kvarh", "export_active_kwh", "export_reactive_kvarh"}
 )
@@ -141,9 +192,12 @@ def format_rows(
 
     Args:
         rows: Merged rows — each a mapping carrying ``"read_at"`` (a
-            timezone-aware UTC ``datetime``) plus the twelve
+            timezone-aware UTC ``datetime``) plus the twenty-three
             :data:`_CSV_COLUMNS` names, e.g. the ``Row._mapping`` objects
             :func:`arichds.db.load_profile_query.merged_rows_select` yields.
+            A column this model does not record is absent or ``None`` and
+            renders empty — never missing, so every meter's file has the same
+            shape.
         device_label: The already-built ``"<name> (<serial>)"`` label — every
             row in one export call belongs to the same device (F2), so this
             is computed once by the caller, not per row.
@@ -151,7 +205,7 @@ def format_rows(
             (F3), translated once for the whole call.
 
     Returns:
-        One list of fourteen string cells per input row, in input order.
+        One list of twenty-five string cells per input row, in input order.
     """
     strftime_fmt = _translate_date_format(date_format)
     output: list[list[str]] = []
@@ -164,6 +218,9 @@ def format_rows(
 
         cells = [device_label, read_at_ict.strftime(strftime_fmt)]
         for name in _CSV_COLUMNS:
+            if name == _STATUS_COLUMN:
+                cells.append(decode_interval_status(row.get(name)))
+                continue
             fmt = _ENERGY_FORMAT if name in _ENERGY_COLUMNS else _MEASUREMENT_FORMAT
             cells.append(_num(row.get(name), fmt))
         output.append(cells)

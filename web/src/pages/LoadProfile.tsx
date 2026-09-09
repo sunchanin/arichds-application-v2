@@ -48,31 +48,51 @@ const num =
   (value: number | null): string =>
     value == null ? NOTHING : value.toFixed(digits);
 
-/** Energy columns carry v1's nine decimals; everything else carries three. */
-const ENERGY_DIGITS = 9;
+/** Energy columns carry v1's nine decimals (declared per column in the tuples
+ * below); everything else carries three. */
 const MEASUREMENT_DIGITS = 3;
 
-/** The four energy columns' identity, independent of scale — display-unit
+/** The scale-aware columns' identity, independent of scale — display-unit
  * conversion applies to these and nothing else on this page: voltage,
- * current, power factor and frequency are untouched in both value and
- * label. */
-const ENERGY_COLUMNS: { titlePrefix: string; titleSuffix: string; dataIndex: keyof LoadProfileRow; unit: UnitKind; width: number }[] = [
-  { titlePrefix: "Import", titleSuffix: "Active", dataIndex: "import_active_kwh", unit: "energy", width: 180 },
-  { titlePrefix: "Import", titleSuffix: "Reactive", dataIndex: "import_reactive_kvarh", unit: "reactiveEnergy", width: 190 },
-  { titlePrefix: "Export", titleSuffix: "Active", dataIndex: "export_active_kwh", unit: "energy", width: 180 },
-  { titlePrefix: "Export", titleSuffix: "Reactive", dataIndex: "export_reactive_kvarh", unit: "reactiveEnergy", width: 190 },
+ * current, power factor, frequency and phase angle are untouched in both
+ * value and label.
+ *
+ * The four **power** columns (M13, issue 07) join the four energy ones here.
+ * They are the first columns ADR 0013's boundary runs through in both
+ * directions on one quantity: the setting reaches them on this screen and
+ * never reaches the Load Profile CSV, which carries kW and kvar whatever the
+ * setting says, because a file that appends for months under a header written
+ * once cannot follow a view preference. */
+const SCALED_COLUMNS: { titlePrefix: string; titleSuffix: string; dataIndex: keyof LoadProfileRow; unit: UnitKind; width: number; digits: number }[] = [
+  { titlePrefix: "Import", titleSuffix: "Active", dataIndex: "import_active_kwh", unit: "energy", width: 180, digits: 9 },
+  { titlePrefix: "Import", titleSuffix: "Reactive", dataIndex: "import_reactive_kvarh", unit: "reactiveEnergy", width: 190, digits: 9 },
+  { titlePrefix: "Export", titleSuffix: "Active", dataIndex: "export_active_kwh", unit: "energy", width: 180, digits: 9 },
+  { titlePrefix: "Export", titleSuffix: "Reactive", dataIndex: "export_reactive_kvarh", unit: "reactiveEnergy", width: 190, digits: 9 },
+];
+
+/** The four average-power columns, rendered after the phase angles in the same
+ * order the CSV carries them. Split from the tuple above only because they sit
+ * elsewhere in the column order and carry three decimals rather than nine. */
+const SCALED_POWER_COLUMNS: typeof SCALED_COLUMNS = [
+  { titlePrefix: "Import", titleSuffix: "Active", dataIndex: "import_active_kw", unit: "power", width: 170, digits: 3 },
+  { titlePrefix: "Import", titleSuffix: "Reactive", dataIndex: "import_reactive_kvar", unit: "reactivePower", width: 180, digits: 3 },
+  { titlePrefix: "Export", titleSuffix: "Active", dataIndex: "export_active_kw", unit: "power", width: 170, digits: 3 },
+  { titlePrefix: "Export", titleSuffix: "Reactive", dataIndex: "export_reactive_kvar", unit: "reactivePower", width: 180, digits: 3 },
 ];
 
 /** The identity/measurement columns plus every scale-aware energy column,
  * built fresh per `scale`, in the page's original column order. */
 function buildColumns(scale: DisplayUnitScale): ColumnsType<LoadProfileRow> {
-  const energyColumns: ColumnsType<LoadProfileRow> = ENERGY_COLUMNS.map((column) => ({
-    title: `${column.titlePrefix} ${unitLabel(column.unit, scale)} ${column.titleSuffix}`,
-    dataIndex: column.dataIndex,
-    key: column.dataIndex,
-    width: column.width,
-    render: (value: number | null) => num(ENERGY_DIGITS)(scaleValue(value, scale) ?? null),
-  }));
+  const scaled = (columns: typeof SCALED_COLUMNS): ColumnsType<LoadProfileRow> =>
+    columns.map((column) => ({
+      title: `${column.titlePrefix} ${unitLabel(column.unit, scale)} ${column.titleSuffix}`,
+      dataIndex: column.dataIndex,
+      key: column.dataIndex,
+      width: column.width,
+      render: (value: number | null) => num(column.digits)(scaleValue(value, scale) ?? null),
+    }));
+  const energyColumns = scaled(SCALED_COLUMNS);
+  const powerColumns = scaled(SCALED_POWER_COLUMNS);
 
   return [
     {
@@ -118,7 +138,64 @@ function buildColumns(scale: DisplayUnitScale): ColumnsType<LoadProfileRow> {
       width: 130,
       render: num(MEASUREMENT_DIGITS),
     },
+    // ── M13, issue 07 — the eleven, in the same order the CSV carries them,
+    // so a number that looks wrong in the file can be found on the screen
+    // without counting columns across two layouts.
+    {
+      title: "Avg Phase Angle Ph-A",
+      dataIndex: "phase_angle_a",
+      key: "phase_angle_a",
+      width: 180,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    {
+      title: "Avg Phase Angle Ph-B",
+      dataIndex: "phase_angle_b",
+      key: "phase_angle_b",
+      width: 180,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    {
+      title: "Avg Phase Angle Ph-C",
+      dataIndex: "phase_angle_c",
+      key: "phase_angle_c",
+      width: 180,
+      render: num(MEASUREMENT_DIGITS),
+    },
     { title: "Frequency (Hz)", dataIndex: "freq", key: "freq", width: 130, render: num(MEASUREMENT_DIGITS) },
+    {
+      // The decoded wording arrives from the server (`interval_status`), not
+      // from a decoder in this file — see `api.ts`'s note on the field. An
+      // empty string means the model records no status word, and renders as
+      // the same em dash every other absent value gets.
+      title: "Record Status",
+      dataIndex: "interval_status",
+      key: "interval_status",
+      width: 200,
+      render: (value: string) => (value === "" ? NOTHING : value),
+    },
+    ...powerColumns,
+    {
+      title: "Voltage L1-L2 (V)",
+      dataIndex: "volt_l1_l2",
+      key: "volt_l1_l2",
+      width: 160,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    {
+      title: "Voltage L2-L3 (V)",
+      dataIndex: "volt_l2_l3",
+      key: "volt_l2_l3",
+      width: 160,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    {
+      title: "Voltage L3-L1 (V)",
+      dataIndex: "volt_l3_l1",
+      key: "volt_l3_l1",
+      width: 160,
+      render: num(MEASUREMENT_DIGITS),
+    },
   ];
 }
 

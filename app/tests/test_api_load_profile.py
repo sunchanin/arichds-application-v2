@@ -455,16 +455,29 @@ class TestPaging:
         assert response.json()["data"]["total"] == 30
 
 
-#: The five of the twelve columns an SMW110W4 never fills. Four are the ones
-#: SPEC §3.5 lists as "added at M4c"; ``freq`` is the fifth, and it is easy to
-#: miss — the driver's own docstring (``smw110.py``) records that this model's
-#: load profile has no frequency column at all.
+#: The columns an SMW110W4 never fills. Four are the ones SPEC §3.5 lists as
+#: "added at M4c"; ``freq`` is the fifth, and it is easy to miss — the driver's
+#: own docstring (``smw110.py``) records that this model's load profile has no
+#: frequency column at all. The eleven added at M13 issue 06 join them: this
+#: model records none of them either, and the page's contract is that an absent
+#: column is present and null, never dropped.
 UNSOURCED_ON_SMW110 = (
     "import_reactive_kvarh",
     "export_active_kwh",
     "export_reactive_kvarh",
     "avg_geo_pf",
     "freq",
+    "phase_angle_a",
+    "phase_angle_b",
+    "phase_angle_c",
+    "interval_status_flag",
+    "import_active_kw",
+    "import_reactive_kvar",
+    "export_active_kw",
+    "export_reactive_kvar",
+    "volt_l1_l2",
+    "volt_l2_l3",
+    "volt_l3_l1",
 )
 
 
@@ -535,6 +548,10 @@ class TestColumns:
             "current_l1",
             "current_l2",
             "current_l3",
+            # The one derived value (M13, issue 07) — the decoded wording of
+            # `interval_status_flag`, computed on the server so the page and
+            # the CSV cannot word one bitmap differently.
+            "interval_status",
         }
 
 

@@ -34,7 +34,7 @@ class TestExportHeaders:
     """T3 — the header text, written out literally so this test cannot pass
     merely by importing itself."""
 
-    def test_the_headers_are_exactly_f1s_fourteen_strings_in_order(self) -> None:
+    def test_the_headers_are_exactly_f1s_twenty_five_strings_in_order(self) -> None:
         assert _EXPORT_HEADERS == (
             "Name",
             "Date/Time",
@@ -49,8 +49,52 @@ class TestExportHeaders:
             "Current L1 (A)",
             "Current L2 (A)",
             "Current L3 (A)",
+            "Avg Phase Angle Ph-A",
+            "Avg Phase Angle Ph-B",
+            "Avg Phase Angle Ph-C",
             "Frequency (Hz)",
+            "Record Status",
+            "Import Active (kW)",
+            "Import Reactive (kvar)",
+            "Export Active (kW)",
+            "Export Reactive (kvar)",
+            "Voltage L1-L2 (V)",
+            "Voltage L2-L3 (V)",
+            "Voltage L3-L1 (V)",
         )
+
+    def test_the_three_phase_angles_and_the_status_come_before_frequency(self) -> None:
+        """The customer's own order, and the one thing about it that is easy to
+        get wrong: they are **inserted**, not appended, so `Frequency (Hz)`
+        moves from the fourteenth column to the seventeenth. Appending them at
+        the end instead would produce a file that looks right until somebody
+        compares it against the sample."""
+        position = _EXPORT_HEADERS.index
+        assert position("Avg Phase Angle Ph-A") < position("Frequency (Hz)")
+        assert position("Avg Phase Angle Ph-C") < position("Frequency (Hz)")
+        assert position("Frequency (Hz)") < position("Record Status")
+        assert position("Record Status") < position("Import Active (kW)")
+
+    def test_the_status_column_keeps_the_customers_own_header_word(self) -> None:
+        """The file speaks their language while the product speaks the
+        glossary's — the same split ADR 0013 already draws, and the reason the
+        stored column is `interval_status_flag` and this header is not."""
+        assert "Record Status" in _EXPORT_HEADERS
+        assert "Interval Status" not in _EXPORT_HEADERS
+
+    def test_the_new_power_headers_do_not_repeat_v1s_unit_error(self) -> None:
+        """The customer's sample spells these `Import kW Active` and `Import
+        kVar Reactive`, repeating the same mistake the 2026-08-11 ruling
+        corrected in the four energy headers, plus stray whitespace. Adopting
+        their spelling verbatim would leave one file using two conventions."""
+        customer_spellings = {
+            "Import kW Active",
+            "Import kVar Reactive",
+            "Export kW Active",
+            "Export kVar Reactive",
+            "Voltage L1-L2 ",
+        }
+        assert customer_spellings.isdisjoint(_EXPORT_HEADERS)
 
     def test_v1s_wrong_headers_are_absent(self) -> None:
         v1_strings = {"Import kWh Active", "Import kWh Reactive", "Export kWh Active", "Export kWh Re"}

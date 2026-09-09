@@ -180,12 +180,20 @@ class TestEndpointAndFileAgree:
 
         file_path = tmp_path / "SN-1.csv"
         file_lines = file_path.read_text(encoding="utf-8-sig").splitlines()
-        data_lines = file_lines[1:]  # skip header
+        # Five file-header-block lines plus the column header row (M13, issue
+        # 07) — the header row is taken from the file itself rather than
+        # counted, so this stays honest if the block ever changes length.
+        header_index = next(i for i, line in enumerate(file_lines) if line.startswith("Name,Date/Time,"))
+        headers = file_lines[header_index].split(",")
+        data_lines = file_lines[header_index + 1 :]
         assert len(data_lines) == 3
 
-        # Field-by-field: for each exported row, the volt_l1 cell (index 7,
-        # after Name/Date/Time/4 energy/PF) must equal the endpoint's value
-        # for the same read_at, formatted the same way (.3f, empty for None).
+        # Field-by-field: for each exported row, the volt_l1 cell must equal
+        # the endpoint's value for the same read_at, formatted the same way
+        # (.3f, empty for None). The column is found by its header rather than
+        # by a hardcoded index — at M13 issue 07 eleven columns were inserted,
+        # three of them ahead of an existing one, and an index written down
+        # here would have silently started reading a different column.
         for line in data_lines:
             cells = line.split(",")
             timestamp_ict = cells[1]
@@ -194,6 +202,6 @@ class TestEndpointAndFileAgree:
             read_at_utc = (local_dt - timedelta(hours=7)).isoformat()
             matching_api_row = next((v for k, v in api_rows.items() if k.startswith(read_at_utc[:19])), None)
             assert matching_api_row is not None, f"{timestamp_ict} not found in the endpoint's rows"
-            volt_l1_cell = cells[7]
+            volt_l1_cell = cells[headers.index("Voltage L1 (V)")]
             expected = "" if matching_api_row["volt_l1"] is None else format(matching_api_row["volt_l1"], ".3f")
             assert volt_l1_cell == expected

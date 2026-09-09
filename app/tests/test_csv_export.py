@@ -15,7 +15,7 @@ import io
 import os
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -32,10 +32,25 @@ from arichds.db.app_settings import (
 from arichds.db.models import Device, LoadProfileReading
 from arichds.db.session import session_scope
 from arichds.export.csv_export import csv_export_cycle, export_device
+from arichds.export.format import _EXPORT_HEADERS
 
 pytestmark = pytest.mark.usefixtures("fake_meter")
 
 BASE = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
+
+#: Spelled out because a literal newline inside a source string is easy to
+#: lose to an editing tool.
+LF = chr(10)
+QUOTE = chr(34)
+BOM = chr(65279)
+
+#: Five file-header-block lines plus the column header row (M13, issue 07).
+HEAD_LINES = 6
+
+#: The twenty-five column headers this file carries, in the customer's own
+#: order — imported from the module that owns them rather than restated, so a
+#: test that counts positions cannot drift from the file it is counting.
+EXPECTED_HEADERS = _EXPORT_HEADERS
 
 
 def make_device(
@@ -288,7 +303,9 @@ class TestFsyncPrecedesTheWatermark:
         def raising_open(*args: object, **kwargs: object) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr("arichds.export.csv_export.open", raising_open, raising=False)
+        # Patched where the write now happens — M13 issue 07 moved this file's
+        # own writer to the shared ``arichds.export.writer``.
+        monkeypatch.setattr("arichds.export.writer.open", raising_open, raising=False)
         first = export_device(device_id, require_auto_save=True)
 
         assert first.rows_written == 0
@@ -301,34 +318,89 @@ class TestFsyncPrecedesTheWatermark:
         assert second.rows_written == 2, "none of the pending rows may be lost, and none duplicated"
         assert watermark(device_id) == BASE + timedelta(minutes=15)
         rows = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-1.csv"))))
-        assert len(rows) == 3, "one header row plus exactly two data rows — no duplicate, no loss"
+        # Five file-header-block lines and one column-header row (M13, issue
+        # 07), then exactly two data rows — no duplicate, no loss.
+        assert len(rows) == HEAD_LINES + 2, "no duplicate, no loss"
 
 
-class TestAppendingUnderAnExistingV1Header:
-    """T4."""
+class TestAnOlderHeaderIsClosedRatherThanAppendedUnder:
+    """T4, **reversed at M13 issue 07** — and the reversal is the point.
 
-    def test_a_pre_existing_v1_header_is_not_rewritten(self, migrated_db: Settings, tmp_path: Path) -> None:
-        device_id = make_device()
-        fake_meter_state().load_profile_loggers = (1,)
-        configure(output_dir=tmp_path)
+    This test used to assert that a file carrying v1's own fourteen-column
+    header was appended to without rewriting it. That was right while the
+    column set was v1's. It is wrong now: this file carries twenty-five columns
+    and a five-line header block, so appending under the old header would put
+    every number under the wrong name, silently and for ever — no error, no
+    warning, just a file where `Frequency (Hz)` holds a phase angle.
+
+    ADR 0013's amendment says what happens instead: the old file is **closed**
+    under a dated name and a new one opens beside it. Nothing is rewritten.
+    """
+
+    def _write_old_edition(self, target: Path) -> str:
         v1_header = (
             "Name,Date/Time,Import kWh Active,Import kWh Reactive,Export kWh Active,Export kWh Re,"
             "Avg Geo PF,Voltage L1 (V),Voltage L2 (V),Voltage L3 (V),Current L1 (A),Current L2 (A),"
-            "Current L3 (A),Frequency (Hz)\n"
+            "Current L3 (A),Frequency (Hz)" + LF
         )
-        v1_row = "Old Row (SN-1),2026-01-01 00:00:00," + ",".join(["0"] * 12) + "\n"
-        target = tmp_path / "SN-1.csv"
+        v1_row = "Old Row (SN-1),2026-01-01 00:00:00," + ",".join(["0"] * 12) + LF
         target.write_bytes(("﻿" + v1_header + v1_row).encode("utf-8"))
+        return v1_header
+
+    def test_the_old_file_is_closed_under_a_dated_name_with_its_rows_intact(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        target = tmp_path / "SN-1.csv"
+        v1_header = self._write_old_edition(target)
 
         seed(device_id, BASE, import_reactive_kvarh=99.0)
         result = export_device(device_id, require_auto_save=True)
 
         assert result.rows_written == 1
-        lines = read_file(target).splitlines()
-        assert lines[0] == v1_header.strip()
-        assert len(lines) == 3, "no second header line was written"
-        appended_cells = lines[2].split(",")
-        assert appended_cells[3] == format(99.0, ".9f")
+        closed = tmp_path / f"SN-1.{date.today().isoformat()}.csv"
+        assert closed.exists(), "the old edition must be kept, not overwritten"
+        closed_lines = read_file(closed).splitlines()
+        assert closed_lines[0] == v1_header.strip()
+        assert len(closed_lines) == 2, "the closed edition keeps its own header and its own row, unchanged"
+
+    def test_the_new_file_opens_with_the_new_head_and_only_the_new_rows(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        target = tmp_path / "SN-1.csv"
+        self._write_old_edition(target)
+
+        seed(device_id, BASE, import_reactive_kvarh=99.0)
+        export_device(device_id, require_auto_save=True)
+
+        rows = list(csv.reader(io.StringIO(read_file(target))))
+        assert rows[0] == ["Customer :", ""]
+        assert rows[HEAD_LINES - 1] == list(EXPECTED_HEADERS)
+        assert len(rows) == HEAD_LINES + 1, "the new edition holds only what was written under its own head"
+        assert rows[HEAD_LINES][EXPECTED_HEADERS.index("Import Reactive (kvarh)")] == format(99.0, ".9f")
+
+    def test_a_second_export_appends_rather_than_rolling_again(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """The roll fires on a head *change*, not on every write — otherwise
+        every cycle would open a new file."""
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        target = tmp_path / "SN-1.csv"
+        self._write_old_edition(target)
+
+        seed(device_id, BASE, import_reactive_kvarh=99.0)
+        export_device(device_id, require_auto_save=True)
+        seed(device_id, BASE + timedelta(minutes=15), import_reactive_kvarh=98.0)
+        export_device(device_id, require_auto_save=True)
+
+        rows = list(csv.reader(io.StringIO(read_file(target))))
+        assert len(rows) == HEAD_LINES + 2
+        assert len(list(tmp_path.glob("SN-1.*.csv"))) == 1, "only the one original edition was ever closed"
 
 
 class TestNeverFollowsTheDisplayUnitSetting:
@@ -364,6 +436,49 @@ class TestNeverFollowsTheDisplayUnitSetting:
 
         assert at_kilo == at_base, "the display-unit scale must never change a single byte of the CSV"
 
+    def test_flipping_kw_w_changes_no_byte_of_the_four_power_columns_either(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        """M13, issue 07 — **the other half of ADR 0013's boundary.**
+
+        Until this ticket the file carried no column the display-unit setting
+        had any opinion about, so "the CSV never follows the setting" was true
+        the way a rule about an empty set is true. The four average-power
+        columns are the first that the setting genuinely converts *on the
+        screen*, which makes this the first time the file half is a real
+        claim rather than a vacuous one — and the reason the page test beside
+        it asserts the opposite direction on the same four columns.
+        """
+        from arichds.db.app_settings import DISPLAY_UNIT_SCALE_KEY
+        from arichds.db.app_settings import set_setting as _set_setting
+
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        seed(
+            device_id,
+            BASE,
+            import_active_kw=34.1,
+            import_reactive_kvar=5.3,
+            export_active_kw=12.2,
+            export_reactive_kvar=7.4,
+        )
+
+        export_device(device_id, require_auto_save=True)
+        at_kilo = (tmp_path / "SN-1.csv").read_bytes()
+        (tmp_path / "SN-1.csv").unlink()
+        with session_scope() as session:
+            _set_setting(session, DISPLAY_UNIT_SCALE_KEY, "base")
+        set_watermark(device_id, BASE - timedelta(seconds=1))
+
+        export_device(device_id, require_auto_save=True)
+        at_base = (tmp_path / "SN-1.csv").read_bytes()
+
+        assert at_kilo == at_base
+        # And the header still says kW/kvar, not W/var, in both.
+        assert "Import Active (kW)" in at_kilo.decode("utf-8-sig")
+        assert "Import Active (W)" not in at_base.decode("utf-8-sig")
+
     def test_no_export_source_file_mentions_the_display_unit_machinery(self) -> None:
         forbidden = ("display_unit_scale", "DISPLAY_UNIT_SCALE_KEY", "scale_value", "_render_shared")
         export_dir = Path(__file__).resolve().parents[1] / "src" / "arichds" / "export"
@@ -377,15 +492,20 @@ class TestNeverFollowsTheDisplayUnitSetting:
 
 
 class TestOutputParityWholeFile:
-    """T9 — byte for byte, BOM + header + rows, with a None column and a
-    midnight-crossing timestamp."""
+    """T9 — byte for byte, BOM + file header block + column header + rows, with
+    a None column and a midnight-crossing timestamp.
 
-    def test_the_whole_file_matches_the_expected_bytes(self, migrated_db: Settings, tmp_path: Path) -> None:
-        device_id = make_device(name="Main Incomer", serial="1232002893")
-        fake_meter_state().load_profile_loggers = (1,)
-        configure(output_dir=tmp_path)
-        # UTC 18:30 -> ICT 01:30 the next day.
-        read_at = datetime(2026, 8, 1, 18, 30, 0, tzinfo=UTC)
+    Twenty-five columns since M13 issue 07. **The fourteen pre-existing columns
+    keep their v1 formats and their v1 values** — this file has an Output
+    Parity obligation the two files added in this phase do not, so the eleven
+    new columns adopt its existing `.3f` rather than the trimmed decimals used
+    elsewhere.
+    """
+
+    def _seed_every_column(self, device_id: int, read_at: datetime) -> None:
+        """Every one of the twenty-three measurement columns, each a distinct
+        value — a transposition between two columns of the same quantity is a
+        byte difference here rather than a silent one in a customer's file."""
         seed(
             device_id,
             read_at,
@@ -401,45 +521,158 @@ class TestOutputParityWholeFile:
             current_l2=5.222,
             current_l3=5.333,
             freq=50.01,
+            phase_angle_a=118.5,
+            phase_angle_b=238.25,
+            phase_angle_c=358.75,
+            interval_status_flag=17,
+            import_active_kw=34.1,
+            import_reactive_kvar=5.3,
+            export_active_kw=12.2,
+            export_reactive_kvar=7.4,
+            volt_l1_l2=411.5,
+            volt_l2_l3=412.25,
+            volt_l3_l1=413.75,
         )
+
+    def test_the_whole_file_matches_the_expected_bytes(self, migrated_db: Settings, tmp_path: Path) -> None:
+        device_id = make_device(name="Main Incomer", serial="1232002893")
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        # UTC 18:30 -> ICT 01:30 the next day.
+        read_at = datetime(2026, 8, 1, 18, 30, 0, tzinfo=UTC)
+        self._seed_every_column(device_id, read_at)
 
         result = export_device(device_id, require_auto_save=True)
         assert result.rows_written == 1
 
-        expected_header = (
-            "Name,Date/Time,Import Active (kWh),Import Reactive (kvarh),Export Active (kWh),"
-            "Export Reactive (kvarh),Avg Geo PF,Voltage L1 (V),Voltage L2 (V),Voltage L3 (V),"
-            "Current L1 (A),Current L2 (A),Current L3 (A),Frequency (Hz)\n"
+        expected_block = (
+            "Customer :,"
+            + LF
+            + "Site Name :,Plant A"
+            + LF
+            + "Serial Meter :,1232002893"
+            + LF
+            + "Setting :,1"
+            + LF
+            + "Load Profile :,"
+            + LF
         )
+        expected_header = ",".join(EXPECTED_HEADERS) + LF
         expected_row = (
-            "Main Incomer (1232002893),2026-08-02 01:30:00,"
-            + format(1234.5, ".9f")
-            + ","
-            + ""
-            + ","
-            + format(10.123456789, ".9f")
-            + ","
-            + format(0.0, ".9f")
-            + ","
-            + format(0.987, ".3f")
-            + ","
-            + format(230.123, ".3f")
-            + ","
-            + format(229.5, ".3f")
-            + ","
-            + format(231.2, ".3f")
-            + ","
-            + format(5.111, ".3f")
-            + ","
-            + format(5.222, ".3f")
-            + ","
-            + format(5.333, ".3f")
-            + ","
-            + format(50.01, ".3f")
-            + "\n"
+            ",".join(
+                [
+                    "Main Incomer (1232002893)",
+                    "2026-08-02 01:30:00",
+                    format(1234.5, ".9f"),
+                    "",  # import_reactive_kvarh is None — an empty cell, never "None", never 0
+                    format(10.123456789, ".9f"),
+                    format(0.0, ".9f"),
+                    format(0.987, ".3f"),
+                    format(230.123, ".3f"),
+                    format(229.5, ".3f"),
+                    format(231.2, ".3f"),
+                    format(5.111, ".3f"),
+                    format(5.222, ".3f"),
+                    format(5.333, ".3f"),
+                    format(118.5, ".3f"),
+                    format(238.25, ".3f"),
+                    format(358.75, ".3f"),
+                    format(50.01, ".3f"),
+                    "ALL_INVALID|DISTURBED",  # 17 = bit 0 | bit 4, pipe-joined
+                    format(34.1, ".3f"),
+                    format(5.3, ".3f"),
+                    format(12.2, ".3f"),
+                    format(7.4, ".3f"),
+                    format(411.5, ".3f"),
+                    format(412.25, ".3f"),
+                    format(413.75, ".3f"),
+                ]
+            )
+            + LF
         )
-        expected_bytes = ("﻿" + expected_header + expected_row).encode("utf-8")
+        expected_bytes = (BOM + expected_block + expected_header + expected_row).encode("utf-8")
         assert (tmp_path / "1232002893.csv").read_bytes() == expected_bytes
+
+    def test_the_fourteen_pre_existing_cells_are_unchanged_by_the_eleven(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        """Output Parity over the columns v1 also produced: same header
+        strings, same formats, same values, at their new positions. The three
+        phase angles and the status column are inserted **before** `Frequency
+        (Hz)`, which moves an existing column — this is what proves the move
+        did not disturb what it moved."""
+        device_id = make_device(name="Main Incomer", serial="1232002893")
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        self._seed_every_column(device_id, datetime(2026, 8, 1, 18, 30, 0, tzinfo=UTC))
+
+        export_device(device_id, require_auto_save=True)
+
+        rows = list(csv.reader(io.StringIO(read_file(tmp_path / "1232002893.csv"))))
+        cells = dict(zip(EXPECTED_HEADERS, rows[HEAD_LINES], strict=True))
+        assert cells["Import Active (kWh)"] == format(1234.5, ".9f")
+        assert cells["Import Reactive (kvarh)"] == ""
+        assert cells["Export Active (kWh)"] == format(10.123456789, ".9f")
+        assert cells["Export Reactive (kvarh)"] == format(0.0, ".9f")
+        assert cells["Avg Geo PF"] == format(0.987, ".3f")
+        assert cells["Voltage L1 (V)"] == format(230.123, ".3f")
+        assert cells["Voltage L2 (V)"] == format(229.5, ".3f")
+        assert cells["Voltage L3 (V)"] == format(231.2, ".3f")
+        assert cells["Current L1 (A)"] == format(5.111, ".3f")
+        assert cells["Current L2 (A)"] == format(5.222, ".3f")
+        assert cells["Current L3 (A)"] == format(5.333, ".3f")
+        assert cells["Frequency (Hz)"] == format(50.01, ".3f")
+
+    def test_a_model_that_records_nothing_new_gets_empty_columns_not_missing_ones(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        """Every meter's file has the same shape — already the shipped
+        behaviour for `Frequency (Hz)` on an SMW110W4."""
+        device_id = make_device(serial="SN-1")
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        seed(device_id, BASE, import_active_kwh=1.0)
+
+        export_device(device_id, require_auto_save=True)
+
+        rows = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-1.csv"))))
+        assert len(rows[HEAD_LINES]) == len(EXPECTED_HEADERS)
+        cells = dict(zip(EXPECTED_HEADERS, rows[HEAD_LINES], strict=True))
+        assert cells["Avg Phase Angle Ph-A"] == ""
+        assert cells["Import Active (kW)"] == ""
+        assert cells["Voltage L1-L2 (V)"] == ""
+        assert cells["Record Status"] == ""
+
+
+class TestTheStatusColumnIsWordsJoinedByAPipe:
+    """v1 joined set bits with a comma, but v1's rendering never reached a CSV
+    — it existed only on v1's screen — so no parity is broken. A comma inside a
+    cell survives only if every downstream consumer honours CSV quoting, which
+    cannot be tested from here."""
+
+    def _status_cell(self, tmp_path: Path, flag: int | None) -> str:
+        device_id = make_device(serial="SN-1")
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        seed(device_id, BASE, import_active_kwh=1.0, interval_status_flag=flag)
+        export_device(device_id, require_auto_save=True)
+        rows = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-1.csv"))))
+        return dict(zip(EXPECTED_HEADERS, rows[HEAD_LINES], strict=True))["Record Status"]
+
+    def test_a_clean_interval_reads_ok(self, migrated_db: Settings, tmp_path: Path) -> None:
+        assert self._status_cell(tmp_path, 0) == "OK"
+
+    def test_two_set_bits_are_joined_by_a_pipe_and_the_cell_is_not_quoted(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        assert self._status_cell(tmp_path, 0x0011) == "ALL_INVALID|DISTURBED"
+        # A comma would have forced csv to quote the cell; a pipe does not.
+        raw = read_file(tmp_path / "SN-1.csv")
+        assert "ALL_INVALID|DISTURBED" in raw
+        assert QUOTE + "ALL_INVALID" not in raw
+
+    def test_a_model_with_no_status_word_gets_an_empty_cell(self, migrated_db: Settings, tmp_path: Path) -> None:
+        assert self._status_cell(tmp_path, None) == ""
 
 
 class TestTheTwoGates:
@@ -590,7 +823,7 @@ class TestPerDeviceLock:
         ``t2.is_alive()`` and an elapsed-time floor are both true whether or
         not the per-device lock exists — that was reviewer finding 1. The
         entry count is the one observable that actually differs: **with**
-        the lock, thread 2 cannot even reach ``_append_rows`` until thread 1
+        the lock, thread 2 cannot even reach ``append_rows`` until thread 1
         releases it, so the concurrent-entry count never exceeds 1; **without**
         it, thread 2 races in immediately and both are inside at once.
         """
@@ -604,9 +837,14 @@ class TestPerDeviceLock:
         entries_guard = threading.Lock()
         concurrent_entries = 0
         max_concurrent_entries = 0
-        real_append = __import__("arichds.export.csv_export", fromlist=["_append_rows"])._append_rows
+        # Patched on the module that *calls* it — at M13 issue 07 this file's
+        # own private writer was replaced by the shared
+        # ``arichds.export.writer.append_rows``, which every export file goes
+        # through; patching it at the source would slow the billing and Energy
+        # writers too.
+        real_append = __import__("arichds.export.csv_export", fromlist=["append_rows"]).append_rows
 
-        def slow_append(final_path, rows, allowlist, device_id_):  # noqa: ANN001
+        def slow_append(final_path, **kwargs):  # noqa: ANN001, ANN003
             nonlocal concurrent_entries, max_concurrent_entries
             with entries_guard:
                 concurrent_entries += 1
@@ -615,9 +853,9 @@ class TestPerDeviceLock:
             release.wait(timeout=10)
             with entries_guard:
                 concurrent_entries -= 1
-            return real_append(final_path, rows, allowlist, device_id_)
+            return real_append(final_path, **kwargs)
 
-        monkeypatch.setattr("arichds.export.csv_export._append_rows", slow_append)
+        monkeypatch.setattr("arichds.export.csv_export.append_rows", slow_append)
 
         def run_first() -> None:
             export_device(device_id, require_auto_save=True)

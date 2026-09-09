@@ -39,9 +39,7 @@ contend — each gets its own lock.
 
 from __future__ import annotations
 
-import csv
 import logging
-import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -52,7 +50,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from arichds.acquisition.poller import build_driver
-from arichds.capture.paths import ensure_within_allowlist, sanitize_meter_serial, validate_directory_setting
+from arichds.capture.paths import sanitize_meter_serial, validate_directory_setting
 from arichds.config import get_settings
 from arichds.db.app_settings import (
     EXPORT_AUTO_SAVE_ENABLED_DEFAULT,
@@ -70,13 +68,15 @@ from arichds.db.models import Device, LoadProfileReading
 from arichds.db.session import session_scope
 from arichds.export.billing_csv import export_device_billing
 from arichds.export.energy_csv import export_device_energy
-from arichds.export.format import _EXPORT_HEADERS, format_rows, render_filename
+from arichds.export.format import _EXPORT_HEADERS, file_header_block, format_rows, render_filename
+from arichds.export.writer import append_rows
 
 logger = logging.getLogger(__name__)
 
-#: Written once, when the target file is absent or empty (v1 parity — Excel
-#: on Windows needs the BOM to render non-ASCII text correctly).
-_UTF8_BOM = "﻿"
+#: The label this file's header block carries, matching the customer's samples
+#: (M13, issue 07), and what to call this export in a log line.
+_FILE_LABEL = "Load Profile"
+_LOG_LABEL = "CSV export"
 
 #: F5 — how far Logger 2 may lag Logger 1 before the staleness escape
 #: releases held rows anyway (v1's `LP_L2_SKEW_MAX_HOURS`).
@@ -218,7 +218,31 @@ def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExpo
         filename = render_filename(filename_tmpl, meter_token)
         final_path = resolved_output_dir / filename
 
-        if not _append_rows(final_path, formatted, [resolved_output_dir], device_id):
+        # M13, issue 07 — this file joins the shared writer, which is what makes
+        # its column change survivable: the head it is about to write differs
+        # from the one an operator's existing file carries, so that file is
+        # closed under a dated name and a new one opens beside it. Nothing is
+        # rewritten and no row is ever appended under a header that does not
+        # describe it.
+        #
+        # **The file header block arrives here, not in an earlier ticket.**
+        # Adding the block is itself a head change, so introducing it with
+        # issue 01 or 02 would have rolled every operator's Load Profile file
+        # twice instead of once.
+        written = append_rows(
+            final_path,
+            header_block=file_header_block(
+                customer=device.customer,
+                site_name=device.site_name,
+                meter_serial=meter_token,
+                file_label=_FILE_LABEL,
+            ),
+            header_row=_EXPORT_HEADERS,
+            rows=formatted,
+            allowlist=[resolved_output_dir],
+            label=_LOG_LABEL,
+        )
+        if not written:
             return CsvExportResult(rows_written=0, path=final_path)
 
         max_read_at = _as_utc(rows[-1]._mapping["read_at"])  # noqa: SLF001
@@ -263,42 +287,6 @@ def _compute_cap(session: Session, device_id: int, l1_max: datetime, has_seconda
         return min(l1_max, l2_max)
     # Logger 2 stale beyond the window — staleness escape, release everything.
     return l1_max
-
-
-def _append_rows(final_path: Path, rows: list[list[str]], allowlist: list[Path], device_id: int) -> bool:
-    """Append *rows* to *final_path* (BOM + header when the file is absent
-    or empty), ``flush()`` + ``os.fsync()``.
-
-    Returns:
-        True on success, False on a write ``OSError`` or an allowlist
-        rejection — logged WARNING either way; the caller must not advance
-        the watermark on False.
-    """
-    try:
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-        # Defence-in-depth TOCTOU guard immediately before opening the file
-        # (mirrors capture/write.py's own ordering).
-        ensure_within_allowlist(final_path, allowlist)
-        need_header = not final_path.exists() or final_path.stat().st_size == 0
-        with open(final_path, "a", encoding="utf-8", newline="") as file_obj:
-            writer = csv.writer(file_obj, lineterminator="\n")
-            if need_header:
-                file_obj.write(_UTF8_BOM)
-                writer.writerow(_EXPORT_HEADERS)
-            writer.writerows(rows)
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-        return True
-    except ValueError:
-        logger.warning("CSV export: target path outside allowlist for device_id=%d — skipping", device_id)
-        return False
-    except OSError:
-        logger.warning(
-            "CSV export: write failed for device_id=%d (path unavailable) — will retry next cycle",
-            device_id,
-            exc_info=True,
-        )
-        return False
 
 
 #: What :func:`csv_export_cycle` writes for each device, in order, each inside

@@ -78,3 +78,84 @@ where v1 prints blanks.
 - [ ] The customer is told, in writing, which columns are empty on which model: the
       line-to-line and power columns carry values on one model only, and a SMART TCC gets
       phase angles but a blank status column until that meter is reachable.
+
+## Result — 2026-09-09
+
+### The file
+
+Twenty-five columns, in the customer's order, with the phase angles and the status column
+**inserted before** `Frequency (Hz)` — which moves an existing column, survivable only
+because the Load Profile CSV now goes through `export/writer.py`. Its five-line file header
+block arrives in this ticket, not an earlier one, so an operator's file rolls once rather
+than twice.
+
+Header names follow this product's convention. `test_export_format.py` pins that the
+customer's own spellings (`Import kW Active`, `Import kVar Reactive`, `Voltage L1-L2 ` with
+its trailing space) are absent, and that the status column keeps their `Record Status`
+while the stored column keeps the glossary's `interval_status_flag`.
+
+The status word is decoded through one helper, `arichds/interval_status.py`, imported by
+both the CSV formatter and the API row. It sits at the top of the package rather than in
+`export/` because `api/` must never import `export/` — that direction closes a cycle
+through `api/deps` -> `jobs/scheduler` -> `export/csv_export`. That is also why the page
+receives decoded words rather than decoding them itself: a TypeScript twin of a status
+vocabulary, the way `units.ts` twins the unit conversion, would be two wordings of one
+bitmap kept in step by hand.
+
+### The page
+
+All eleven columns, in the same order the file carries them. The four power columns go
+through `scaleValue`/`unitLabel`; the phase angles and line-to-line voltages deliberately
+do not, because degrees and volts have no kilo/base form and scaling one would be a wrong
+number rather than a differently-labelled one.
+
+### Tests that discriminate, checked by mutation
+
+Seven distinct mutations, all killed and all restored:
+
+| mutation | result |
+|---|---|
+| phase angles A and B transposed in `_CSV_COLUMNS` | KILLED |
+| `import_active_kw` column reads the `import_active_kwh` field | KILLED |
+| status separator changed from a pipe to a comma | KILLED |
+| power columns dropped from the page's returned column list | KILLED |
+| page renders `interval_status_flag` instead of the decoded wording | KILLED |
+| phase angle A column removed from the page | KILLED |
+| `import_active_kw` declared as `reactivePower` on the page | KILLED |
+
+The first page probe (**power columns dropped from the page**) **survived** the first
+version of `test_display_unit_boundary.py` — every assertion there checked what was
+*declared* and none checked what was *rendered*, so removing the spread that puts the four
+on screen was invisible. That is what `test_the_built_columns_actually_include_them` and
+`TestEveryNewColumnReachesThePage` exist for, and the test says so in its own docstring.
+
+### Output Parity
+
+`TestOutputParityWholeFile` compares the whole file byte for byte with every one of the
+twenty-three measurement columns carrying a distinct value, and a second test checks the
+fourteen pre-existing columns keep their v1 formats and values **at their new positions** —
+which is what proves the insertion did not disturb what it moved.
+
+The inverted phase-angle assertion is in `test_cewe_replay_parity.py`, next to the live
+capture lists that make it a fact rather than a claim: v1's addresses
+(`1.0.81.7.4/15/26.255`) are **absent** from the Prometer 100's live capture list and v2's
+(`1.0.81.27.*`) are **present**, and the two sets are disjoint so this cannot be read as one
+object named two ways. Without it, a correct v2 printing numbers where v1 prints blanks
+reads as a regression, and the obvious repair is to point v2 at v1's address — which would
+break it.
+
+### The customer note
+
+`.scratch/export-files/customer-note-empty-columns.md` — which columns are empty on which
+model, that their existing file has been closed under a dated name, that the phase angles
+read `0.000` because the meter reports zero, and why two column names differ from their
+sample.
+
+### Documentation
+
+`CONTEXT.md`'s Interval Status entry records the raw-integer storage, the one decoder, and
+the pipe separator. `SPEC.md` §3.5 records the twelve-to-twenty-three column expansion, the
+per-model coverage, the fourteen-to-twenty-five file expansion and the inverted parity rule
+— including that the original "did v1 show it?" criterion was not overturned but satisfied:
+it said nobody could name a reader for those columns, and the customer has now named
+themselves.

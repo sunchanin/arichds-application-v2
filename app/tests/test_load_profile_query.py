@@ -50,7 +50,7 @@ def seed(device_id: int, read_at: datetime, *, logger_id: int = 1, **columns: fl
 
 
 class TestMergedColumnsOrder:
-    def test_it_is_the_twelve_measurement_columns_in_the_pages_order(self) -> None:
+    def test_it_is_the_twenty_three_measurement_columns_in_the_pages_order(self) -> None:
         assert MERGED_COLUMNS == (
             "import_active_kwh",
             "import_reactive_kvarh",
@@ -64,6 +64,21 @@ class TestMergedColumnsOrder:
             "current_l2",
             "current_l3",
             "freq",
+            # M13, issue 06/07 — the eleven. `interval_status_flag` sits among
+            # them and is the one non-measurement value here: a raw bitmap the
+            # COALESCE treats like any other column, decoded only at render
+            # time.
+            "phase_angle_a",
+            "phase_angle_b",
+            "phase_angle_c",
+            "interval_status_flag",
+            "import_active_kw",
+            "import_reactive_kvar",
+            "export_active_kw",
+            "export_reactive_kvar",
+            "volt_l1_l2",
+            "volt_l2_l3",
+            "volt_l3_l1",
         )
 
 

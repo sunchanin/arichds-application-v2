@@ -50,7 +50,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, computed_field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -61,6 +61,7 @@ from arichds.db.app_settings import EXPORT_OUTPUT_DIR_DEFAULT, EXPORT_OUTPUT_DIR
 from arichds.db.load_profile_query import merged_rows_select
 from arichds.db.models import Device, LoadProfileReading
 from arichds.export.csv_export import export_device
+from arichds.interval_status import decode_interval_status
 
 router = APIRouter(
     prefix="/api/load-profile",
@@ -72,11 +73,15 @@ router = APIRouter(
 class LoadProfileRowOut(BaseModel):
     """One Interval Reading as the Load Profile page renders it.
 
-    The twelve measurement columns keep their **exact model attribute names**,
-    so nothing between the driver that normalized them and the table that shows
-    them has to translate. All twelve are nullable and stay so: the only model
-    in service (SMW110W4) captures seven of them, and the page's contract is
-    that an absent column renders as an em dash, never as ``0``.
+    The twenty-three measurement columns keep their **exact model attribute
+    names**, so nothing between the driver that normalized them and the table
+    that shows them has to translate. All of them are nullable and stay so: no
+    model captures every one, and the page's contract is that an absent column
+    renders as an em dash, never as ``0``.
+
+    ``interval_status`` is the one derived value — the decoded wording of
+    ``interval_status_flag``, added at M13 issue 07. The raw integer stays on
+    the payload beside it.
 
     ``source``, ``interval_sec`` and ``id`` are deliberately absent — no column
     on the page reads them. ``logger_id`` is absent too, as of the read-side
@@ -105,6 +110,34 @@ class LoadProfileRowOut(BaseModel):
     current_l2: float | None
     current_l3: float | None
     freq: float | None
+    # ── M13, issue 07 — the eleven, in the same order the file carries them.
+    phase_angle_a: float | None
+    phase_angle_b: float | None
+    phase_angle_c: float | None
+    interval_status_flag: int | None
+    import_active_kw: float | None
+    import_reactive_kvar: float | None
+    export_active_kw: float | None
+    export_reactive_kvar: float | None
+    volt_l1_l2: float | None
+    volt_l2_l3: float | None
+    volt_l3_l1: float | None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def interval_status(self) -> str:
+        """The status word as words, decoded here rather than in the browser.
+
+        The page and the CSV both need this rendering, and this is the one
+        decoder (:mod:`arichds.interval_status`) — a TypeScript twin of it, the
+        way ``web/src/units.ts`` twins the display-unit conversion, would be two
+        wordings of one bitmap kept in step by hand. The raw integer travels
+        beside it, so nothing is lost to a reader who wants the bits.
+
+        A model that records no status word gets the empty string, which the
+        page renders as its em dash like any other absent value.
+        """
+        return decode_interval_status(self.interval_status_flag)
 
     @field_validator("read_at")
     @classmethod

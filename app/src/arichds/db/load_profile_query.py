@@ -29,9 +29,17 @@ from arichds.db.models import LoadProfileReading
 #: Logger 2, joined against the Logger 1 spine — never queried on its own here.
 _Logger2 = aliased(LoadProfileReading)
 
-#: The twelve measurement columns both callers render, in
-#: COALESCE(logger1, logger2) order — Logger 1 wins. Formerly
-#: ``api/load_profile.py``'s private ``_MEASUREMENT_COLUMNS``.
+#: The measurement columns both callers render, in COALESCE(logger1, logger2)
+#: order — Logger 1 wins. Formerly ``api/load_profile.py``'s private
+#: ``_MEASUREMENT_COLUMNS``.
+#:
+#: **Twenty-three since M13 issue 06/07.** The COALESCE is what makes the three
+#: line-to-line voltages work at all: on a Prometer 100 they are captured by
+#: **Logger 2** while everything else here comes from Logger 1, so the spine row
+#: holds NULL for them and the join supplies the value. The Prometer 100's
+#: Logger 2 runs at 300 s against Logger 1's 900 s, so only every third Logger 2
+#: row has an exact ``read_at`` match — that is the shipped merge behaviour and
+#: it is unchanged here.
 MERGED_COLUMNS = (
     "import_active_kwh",
     "import_reactive_kvarh",
@@ -45,13 +53,25 @@ MERGED_COLUMNS = (
     "current_l2",
     "current_l3",
     "freq",
+    # M13, issue 06/07 — the eleven the customer asked for.
+    "phase_angle_a",
+    "phase_angle_b",
+    "phase_angle_c",
+    "interval_status_flag",
+    "import_active_kw",
+    "import_reactive_kvar",
+    "export_active_kw",
+    "export_reactive_kvar",
+    "volt_l1_l2",
+    "volt_l2_l3",
+    "volt_l3_l1",
 )
 
 
 def merged_rows_select(device_id: int) -> Select:
     """Logger 1 spine, Logger 2 outer-joined on an exact ``read_at``, COALESCE per column.
 
-    Selects ``read_at`` plus the twelve :data:`MERGED_COLUMNS`, filtered to
+    Selects ``read_at`` plus the twenty-three :data:`MERGED_COLUMNS`, filtered to
     *device_id* and ``logger_id == 1`` (Logger 1 is the spine the whole merge
     is keyed on — a device with only a Logger 2 shows nothing, matching the
     page's existing behaviour). The caller adds its own time window,
