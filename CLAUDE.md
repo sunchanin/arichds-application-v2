@@ -158,8 +158,11 @@ MySQL, and ~30 tables.
   ID**, checked once at Create, grandfathering devices that predate it and stacking with
   `max_meters` rather than replacing it; the price is that an RMA and a hardware migration both
   cost new codes; the vendor half landed with issue #41 —
-  `licensing/meter_activation_code.py`, `tools/arichds_vendor.py sign-meter`, and
-  `/activate-meter` — the product half landed with issue #42: the nullable `devices.
+  `licensing/meter_activation_code.py` and `tools/arichds_vendor.py sign-meter` (**there is no
+  `/activate-meter` endpoint** — this digest named one until 2026-09-11 and none was ever
+  specified: #41's own criteria ask only that a code can be issued and verified, and the
+  verification happens at Create, in `api/devices.py:785-809`) — the product half landed with
+  issue #42: the nullable `devices.
   meter_activation_code` column (migration 0013), the gate wired into `create_device` between
   `_reject_duplicate_serial` and the row write, and the Add-device form field. **Update needs no
   code check** — the ADR's own text originally described one ("re-checked at Update when the
