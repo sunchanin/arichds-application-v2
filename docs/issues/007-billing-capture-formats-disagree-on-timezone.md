@@ -67,8 +67,7 @@ ADR or an amendment to 0015. Only after that is decided does a code or test chan
       each other
 - [ ] A test pins the chosen convention — asserting on the rendered string, not merely that
       *some* timezone handling ran
-- [ ] `ruff format --check .` + `ruff check .` + `python -m pytest -n auto` (use `python -m
-      pytest`; the console script under-collects, see `docs/issues/004`) and `pnpm lint && pnpm build`
+- [ ] `ruff format --check .` + `ruff check .` + `pytest -n auto` and `pnpm lint && pnpm build`
       for the frontend half, if touched
 
 ## Not touched by this filing

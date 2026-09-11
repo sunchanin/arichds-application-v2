@@ -72,8 +72,7 @@ test-only fix. **Decide which, do not do both.**
 - [ ] If `/CreationDate` is frozen instead, ADR 0015's three-format contract is checked for
       anything the change makes false, and `capture/xlsx.py` is checked for the same class of
       embedded timestamp
-- [ ] `ruff format --check .` + `ruff check .` + `python -m pytest -n auto` (use `python -m
-      pytest`; the console script under-collects, see `docs/issues/004`)
+- [ ] `ruff format --check .` + `ruff check .` + `pytest -n auto`
 
 ## Blocked by
 

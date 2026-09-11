@@ -53,3 +53,35 @@ One line in `app/pyproject.toml`.
 ## Blocked by
 
 None - can start immediately.
+
+---
+
+## Fixed 2026-09-11 — and the numbers above had gone stale in the worse direction
+
+`app/pyproject.toml` now reads `pythonpath = ["src", "."]`. One line, as prescribed. The
+five `from tests.conftest import ...` modules were not touched.
+
+Verified from `app/`, all three invocations agreeing for the first time:
+
+```
+.venv/Scripts/pytest.exe --collect-only -q          ->  2163 collected, 0 errors
+.venv/Scripts/python.exe -m pytest --collect-only   ->  2163 collected, 0 errors
+.venv/Scripts/pytest.exe -n auto                    ->  2106 passed, 57 skipped in 143s
+```
+
+**Two corrections to this issue as filed.** The counts above (1395 / 1494, "99 fewer") were
+true in August and were not true by September: the number had grown to **2024 vs 2163**, and
+a sixth module had joined the five (`test_feature_entitlement.py`). More importantly the
+failure mode had changed. This issue says the run "fails loudly ... so nothing has shipped
+against a green run that was secretly short" — by 2026-09-11 the documented gate did not run
+at all. It ended with `Interrupted: 6 errors during collection`, so the loudness had become a
+refusal. The reassurance in "Why it matters" was therefore describing a milder bug than the
+one that was sitting there.
+
+The gate numbers reported when M13 closed (**2106 passed, 57 skipped**) match the full 2163
+collection exactly, so no phase shipped against a short run. What shipped short was the
+*instruction*: every issue after this one was told to run a command that could not work, and
+nine of them pasted a workaround into their acceptance criteria instead. Those notes are
+removed from the five issues still open (005, 006, 007, 008, 014). The four already fixed
+(013, 015, 016, 017) keep theirs: they record what was true when they ran, and rewriting a
+closed record is the failure ADR 0013 is about.

@@ -261,7 +261,14 @@ today changes what last January reports tomorrow. That is a property of the desi
 fault — the Holiday table is the one knob that moves it, and it moves it toward the truth. The
 peak window is a constant for the same reason: a second retroactive knob would move the
 numbers with nothing in the world to justify the move.
-_Avoid_: TOU report, energy report, meter energy (that's Energy Registers)
+Since M13 the buckets also reach an **Energy Export File**, and that does not make them
+stored: a row in that file is a snapshot of the derivation at the moment it was written, never
+a document of record (ADR 0012, amendment). **If the file and the page disagree, the page is
+right** — the file is old, and a Holiday entered since is the usual reason. Rows the meter
+flagged `ALL_INVALID` are excluded from the buckets, which is an **Output Parity** obligation,
+not an optimisation (see *Interval Status*).
+_Avoid_: TOU report, energy report, meter energy (that's Energy Registers), the energy file as
+"the record" (it is a snapshot — Billing holds records)
 
 **Energy Registers**:
 A meter's **cumulative** energy counters (COSEM `D=8` — import/export, active/reactive) read
@@ -371,7 +378,8 @@ page; the auto-save switch and the output folder sit on the Load Profile page in
 "Save CSV now" and the table they export.
 
 **One folder, one switch, one cadence, one date format — several files.** Since M13 the same
-job writes a **Load Profile CSV**, a **billing file** and an **Energy Summary file** per meter,
+job writes a **Load Profile CSV**, a **Billing Export File** and an **Energy Export File** per
+meter,
 and each has its own filename template only because they share a folder and one template would
 have them overwrite each other. A second output folder or a second auto-save switch would be a
 value somebody has to keep in step with the first by hand.
@@ -388,6 +396,36 @@ folder are correct, not clutter** — they hold rows the live file does not.
 _Avoid_: divide by 1000 (v1's setting; not ported — write-time normalization already made it
 vacuous), per-meter format (rejected — see above), a second output folder (rejected — see
 above)
+
+**Closed Edition**:
+A dated export file that will never receive another row — `<name>.2026-09-15.csv`. It is
+closed *because* its head stopped describing what we would write today: the column set
+changed, or a device row field inside the file header block was edited. The live file beside
+it is the **Open Edition**, the only one that is ever appended to. Nothing rewrites a Closed
+Edition, so an export folder accumulates editions the way a filing cabinet accumulates
+volumes. One writer opens and closes all of them for all three export files
+(`export/writer.py`) — that is why the rule cannot hold for one file and not another.
+_Avoid_: archive, backup, rolled file, old file (all of them suggest something replaceable or
+deletable — a Closed Edition holds rows no other file has)
+
+**Billing Export File**:
+One row per **closed** billing period per meter, appended — `<meter>-billing.csv`, 24 columns
+in the customer's order. The Open Period is never exported: its `bill_date` advances on every
+read (see *Open Period*), so exporting it would append the same period again under a moving
+date. `Record No` counts closed periods for that meter oldest-first, **not** lines in the
+file, because a line count would reset at every Closed Edition. Its `Record Status` column
+reads `closed` on every row and is **not the same column** as `Record Status` in the Load
+Profile CSV, which is an *Interval Status* word.
+_Avoid_: billing CSV, billing file, bill export (one name, so a grep finds every mention)
+
+**Energy Export File**:
+One row per device and local calendar day — `<meter>-energy.csv`, the
+`Date` plus the eight Time-of-Use columns the page shows. Written daily by the export job and
+on demand by **Save to file**, which re-saves a chosen range and is the fix for both ways the
+file goes stale (a late interval, a Holiday entered after the fact). It carries **no total
+row**: a file that keeps growing cannot have one, and the total belongs on the page. A row is
+a snapshot, never a record — see *Energy Summary*.
+_Avoid_: energy CSV, TOU file, summary export
 
 **Output Parity**:
 The acceptance rule for domain modules: numbers shown by v2 must equal v1's output at v1's

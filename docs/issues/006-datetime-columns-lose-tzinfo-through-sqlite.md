@@ -79,8 +79,7 @@ decision is 007's, not this issue's.
       reattachment this issue enumerates (and any it missed — a fresh grep for
       `tzinfo=UTC` and `DateTime(timezone=True)` is the way to find the rest) is removed in favor
       of the type-level fix, not left standing alongside it
-- [ ] `ruff format --check .` + `ruff check .` + `python -m pytest -n auto` (use `python -m
-      pytest`; the console script under-collects, see `docs/issues/004`)
+- [ ] `ruff format --check .` + `ruff check .` + `pytest -n auto`
 - [ ] Every table this touches keeps its existing behavior — this is a refactor, not a behavior
       change, so Output Parity does not apply, but every existing datetime-comparison and
       datetime-rendering test must still pass unmodified in intent (adjusted only for the removed

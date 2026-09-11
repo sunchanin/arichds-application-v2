@@ -75,7 +75,15 @@ MySQL, and ~30 tables.
   write-time normalization already made vacuous; the setting itself shipped in `bbdd6b7`;
   **fully implemented** with issue #30/M7 slice 3: the boundary landed on the Load Profile CSV
   — `export/` never imports the render-time scale machinery, and the mixed-unit capture folder
-  stays a **recorded shipped gap** needing its own issue, unchanged by this issue) ·
+  stays a **recorded shipped gap** needing its own issue, unchanged by this issue.
+  **Amended at M13 (issue 01, `19b68ac`) — read that amendment before touching any export
+  file**: a contract does not change, it is *replaced*. When a file's head — the file header
+  block **or** the column header row — no longer matches what we would write today, the file
+  is **closed** under a name carrying the date (`<name>.2026-09-15.csv`) and a new one opens
+  beside it; nothing is rewritten and no row is ever appended under a head that does not
+  describe it. Dated files in an export folder are **correct, not clutter**. The rule governs
+  all three export files through one shared writer (`export/writer.py`), so it cannot hold in
+  one place and not another) ·
   0014 (the capture image is **drawn, never screenshotted** — Pillow as a third renderer over
   `_render_shared`; shipped with issue #35 and **REVERSED by ADR 0017** — read 0017 first, and do
   not cite 0014's "no screen to photograph" premise or its 250 MB browser costing, both of which
@@ -211,8 +219,10 @@ MySQL, and ~30 tables.
   in v2 yet* so nobody cites v1 code as if it were ours.
 - `docs/meter-notes/` — OBIS and capture-object maps **scanned off real meters**, not vendor
   datasheets: `load-profile-capture-objects.md` (CEWE ×3, 2026-08-05 — including the evidence
-  that SPEC §3.5's Logger-1/2 merge is impossible), plus `tcc-obis-scan.md` and
-  `mitsu-obis-scan.md` ported from v1. The skill above says *how* to read a register; these
+  that SPEC §3.5's Logger-1/2 merge is impossible), `lp-new-columns-scan.md` (the M13
+  columns read off the Prometer 100, 2026-09-09 — every scaler resolved, `export_reactive_kvar`
+  cross-checked 12/12, and the two things measurement could **not** close), plus
+  `tcc-obis-scan.md` and `mitsu-obis-scan.md` ported from v1. The skill above says *how* to read a register; these
   say *which*. Each carries its own limitations section — read it before trusting a value.
 
 ## Layout
@@ -221,12 +231,22 @@ MySQL, and ~30 tables.
   (`src/arichds/`): FastAPI (API + serves the built SPA, one origin, no CORS) ·
   **SQLAlchemy 2** ORM + SQLite WAL + one Alembic setup (`render_as_batch=True`) · poller ·
   job-registry scheduler · licensing · `auth/` (bcrypt + PyJWT, Role enum, token service —
-  HTTP-free; the guard dependencies live in `api/deps.py`) · `export/` (the Load Profile CSV
-  auto-export — row/filename formatting and the exporter itself, issue #30) · `dataout/` (the
+  HTTP-free; the guard dependencies live in `api/deps.py`) · `export/` (the three
+  **export files** — Load Profile CSV (issue #30), billing CSV and Energy Summary file (M13) —
+  behind **one shared writer**, `export/writer.py`, which owns ADR 0013's closed-edition rule;
+  `format.py` holds row/filename formatting. A fourth export file means a new renderer *over
+  that writer*, never a second writer) · `dataout/` (the
   **Database Destination** — the customer's own MariaDB/MySQL written through SQLAlchemy Core +
   PyMySQL on the `dbdest_sync` job, issue #46; deliberately **not** part of `export/`, which
-  ADR 0021 forbids it from sharing a local-time helper with). Venv at
-  `app/.venv`, `pyproject.toml` + pip.
+  ADR 0021 forbids it from sharing a local-time helper with) · `interval_status.py` (the one
+  Interval Status decoder, at the package top because `api/` must not import `export/` — that
+  direction closes a cycle through `api/deps` -> `jobs/scheduler` -> `export/csv_export`).
+  Venv at `app/.venv`, `pyproject.toml` + pip.
+- `app/scripts/` — read-only hardware probes, run by hand. **They are acceptance criteria, not
+  scratch work**: `fake_meter` is autouse in the suite, so no automated test can prove a driver
+  change against a real meter. `probe_lp_new_column_scalers.py` and `probe_lp_column_fill.py`
+  derive their targets from `LOAD_PROFILE_COLUMN_MAP`, so they cannot go stale the way the
+  first hand-written version of the scaler probe already had.
 - `web/` — Vite + React + TS + **AntD v6 re-themed** (deep teal `#0f766e`, compact, light,
   English-only UI). No Tailwind — AntD tokens + its layout primitives cover the UI. pnpm.
 - `installer/` — Inno Setup script (`arichds.iss`) + NSSM service wrapper
@@ -257,7 +277,7 @@ MySQL, and ~30 tables.
 .venv\Scripts\activate            # Windows venv
 fastapi dev                        # dev server (entrypoint in pyproject [tool.fastapi])
 ruff format . && ruff check . --fix
-pytest -n auto                     # full suite in parallel — 87s across 16 cores (1910 tests, measured 2026-09-08)
+pytest -n auto                     # full suite in parallel — 143s across 16 cores (2163 tests, measured 2026-09-11)
 pytest tests/<file>::<test>        # one file/test — plain, NEVER -n auto (workers cost 6.4s, the run costs 0.1s)
 python -m alembic upgrade head     # manual; app also auto-migrates at startup
 
@@ -343,9 +363,9 @@ Do NOT create issues for modules that have not been grilled. "เทสผ่า
 The full suite is the gate — **never narrow it to "the tests for what I changed"**, because the
 party choosing the subset is the one with an incentive to under-scope, and this codebase's changes
 cross layers routinely (a base-class rename touched 7 files; an `endpoint` fix broke a lock key two
-modules away). It costs 87s with `-n auto`, so there is nothing to buy by skipping it. Use plain
+modules away). It costs 143s with `-n auto`, so there is nothing to buy by skipping it. Use plain
 scoped runs inside the red→green loop and `-n auto` for the gate — **and never the bare `pytest`
-for the gate**, which is 428s for the same 1910 tests. That has happened repeatedly (`634 passed in
+for the gate**, which was 428s when last measured against 1910 tests. That has happened repeatedly (`634 passed in
 407.27s`, `659 passed in 299.09s` in the run logs), and it is ~5.7 minutes of the owner's wall clock
 per occurrence, spent proving nothing the parallel run does not prove. The split is why there is no
 `addopts` in `pyproject.toml`: a config default would fix the gate and tax every scoped run in the

@@ -77,8 +77,7 @@ This issue is only about the empty **string**.
 - [ ] `--features "   "` (whitespace only) resolves the same way as `""`, whichever way that is
 - [ ] The decision is recorded where a reader of `features.py:47` will meet it, since that line is
       what makes the two spellings mean opposite things
-- [ ] **Gate**: `ruff format --check .` + `ruff check .` + `python -m pytest -n auto` in `app/`
-      (use `python -m pytest`; the console script under-collects — `docs/issues/004`)
+- [ ] **Gate**: `ruff format --check .` + `ruff check .` + `pytest -n auto` in `app/`
 - [ ] **Output Parity vs v1** is not applicable — v1 had no feature entitlement
 
 ## Blocked by

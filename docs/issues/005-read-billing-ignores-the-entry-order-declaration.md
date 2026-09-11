@@ -61,8 +61,7 @@ that needs to be written down, not left as the current silence.
       ADR 0009 calls the one read path
 - [ ] Real-meter read against the three reachable CEWE meters, since this changes what is
       requested over the wire
-- [ ] `ruff format --check .` + `ruff check .` + `python -m pytest -n auto` (use `python -m
-      pytest`; the console script under-collects, see `docs/issues/004`)
+- [ ] `ruff format --check .` + `ruff check .` + `pytest -n auto`
 
 ## Blocked by
 

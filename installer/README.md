@@ -155,6 +155,18 @@ where `<user>` is the account the sync agent runs as. The app never rewrites
 ACLs itself: a service silently re-permissioning a directory under someone's
 Desktop is a worse surprise than the bug it would fix.
 
+### Give every install two admins — before handover
+
+An `admin` can reset any account's password from **User Management**, so two admin accounts
+recover each other and no escape hatch is needed. One admin account is a single point of
+failure with **no** recovery path: see the Troubleshooting row above, and `SPEC.md` §3.2, where
+the vendor-CLI escape hatch that line used to promise is now explicitly descoped.
+
+At handover, create a second `admin` — the operator's own account plus one held by whoever
+maintains the machine — and confirm both can log in. If the customer insists on exactly one
+operator, say plainly that forgetting that password costs a reinstall, which loses the local
+database.
+
 ### What the owner must verify after installing or upgrading
 
 ```powershell
@@ -245,6 +257,7 @@ deleted or edited by hand.
 | Service will not start | `C:\ProgramData\ARICHDS\logs\service.log` (NSSM's capture) and `arichds.log` (the app's own rotating, credential-redacted log) |
 | Web UI unreachable from another machine | The firewall rule exists (`netsh advfirewall firewall show rule name="ARICHDS Web UI (TCP 8000)"`) and nothing else holds port 8000 |
 | Uninstall hangs | An `nssm remove` without `confirm` opens a GUI dialog. The script always passes `confirm`; if you removed it by hand, put it back |
+| The only `admin` forgot the password | **There is no recovery on the machine — this is the one lockout the product cannot undo.** Nothing installed can rewrite a bcrypt hash: the installer ships no `python.exe` and no `sqlite3.exe`, and `arichds.exe` takes no subcommands. See **Give every install two admins** above, and do it before handover rather than after a lockout |
 | Activation refused with `WRONG_MACHINE` | The Machine ID sent to the vendor does not match this machine. Re-copy it from the Activation page — it is bound to the hardware |
 | A Billing capture `.png` fails with a 500 naming Edge | `resolve_edge_path()` (`capture/screenshot.py`) could not find `msedge.exe` via the registry or either well-known Program Files location — Edge was uninstalled or is at a non-standard path |
 | A Billing capture `.png` fails with a 500 naming `schtasks`, or every capture after the first one fails | The `ARICHDS Capture Browser` scheduled task is missing (registration failed at install — check `SetupLogging`'s log) or stuck `Running` (a hard-killed service left it that way; `schtasks /query /TN "ARICHDS Capture Browser"` shows `Status`). `capture/screenshot.py` runs `schtasks /end` before every `/run` as a self-heal, so a *stuck* task should clear itself on the next capture attempt; a *missing* task needs `register-capture-task.ps1` re-run by hand (see **The service account and the capture browser task** above) |
