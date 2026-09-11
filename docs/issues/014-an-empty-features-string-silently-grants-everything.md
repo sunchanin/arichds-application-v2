@@ -96,3 +96,53 @@ That is not a ruling on this issue: `--features ""` may still resolve differentl
 reason. But if it does, the `sign` command will hold two spellings of an empty list that mean
 opposite things, and that needs saying out loud rather than discovering. `_resolve_models` in
 `tools/arichds_vendor.py` is the worked example either way.
+
+---
+
+## Fixed 2026-09-11 — option 1, refuse, because the sibling flag had already decided it
+
+`--features ""` and `--features "   "` now refuse the run before anything is signed, exit 1,
+with a message that names both of the things the vendor might have meant:
+
+```
+ERROR: --features was given an empty value. That is not an empty list, and it is not 'sell nothing'.
+       Omit --features entirely to grandfather every sellable feature, or pass the names you are selling.
+       (A shell variable that expanded to nothing is the usual cause.)
+```
+
+**Why option 1 and not option 2 ("treat it as `[]`").** The Added 2026-08-27 note above is the
+whole argument: `--models ""` and `--brands ""` on this same command have been hard errors since
+issue 015, gated on presence rather than truthiness. Choosing option 2 would have left `sign`
+holding two spellings of an empty list that mean opposite things — one sells everything, one
+sells nothing — on flags that sit three lines apart. Refusing costs a vendor one retyped command
+and cannot be misread. Option 3 was rejected in the filing and still is: a warning leaves the
+trap and adds a message.
+
+**The implementation is the gate, not a new validator.** `if args.features:` became
+`if args.features is not None:`, plus an explicit blank check inside the branch. The stale
+comment telling the next reader *not* to align this flag with `--models` is gone; all three flags
+now refuse an empty value and mean "grandfather everything" only when **omitted**.
+
+**One existing test moved rather than changed meaning.** `TestEmptyEntry` parametrised `"   "`
+and asserted the *empty feature name* message. A whole-value blank is now caught one step
+earlier, so that case is pinned by `TestAnEmptyFeaturesStringIsRefused` instead. Both spellings
+still refuse and still sign nothing — only which message fires moved, and the parametrize list
+says so.
+
+**Mutation-probed, three probes, no survivors:**
+
+| Mutation | Result |
+|---|---|
+| gate back to `if args.features:` | 2 failed |
+| drop the blank check (`if False:`) | 1 failed |
+| refusal message stops saying "omit" | 1 failed |
+
+The third probe is there because the acceptance criterion is not merely "it refuses" — a vendor
+whose variable expanded to nothing needs to be told which payload to ask for, so the message is
+part of the fix and is asserted as such.
+
+Criteria met: decided meaning implemented and stated in help text and module docstring · a test
+pins it and reverting to `None` turns it red · `--features` omitted still signs `features: null`
+(`TestGrandfatheringPathIsUntouched`, unchanged) · `"   "` resolves the same way as `""` · the
+decision is recorded here and at the `is not None` gate, which is what a reader of
+`licensing/features.py:47` follows back.

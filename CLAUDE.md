@@ -75,7 +75,9 @@ MySQL, and ~30 tables.
   write-time normalization already made vacuous; the setting itself shipped in `bbdd6b7`;
   **fully implemented** with issue #30/M7 slice 3: the boundary landed on the Load Profile CSV
   — `export/` never imports the render-time scale machinery, and the mixed-unit capture folder
-  stays a **recorded shipped gap** needing its own issue, unchanged by this issue.
+  stays a **recorded shipped gap** — now filed as `docs/issues/019`, because GitHub #32 was
+  filed for it and closed without the fix; the code is still unchanged, so believe the ADR's
+  Outstanding section over the tracker.
   **Amended at M13 (issue 01, `19b68ac`) — read that amendment before touching any export
   file**: a contract does not change, it is *replaced*. When a file's head — the file header
   block **or** the column header row — no longer matches what we would write today, the file

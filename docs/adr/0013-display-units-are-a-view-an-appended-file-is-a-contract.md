@@ -133,6 +133,13 @@ own issue, and the plausible fixes are cheap: put the unit in the rendered docum
 where a reader will see it, or in the filename. It is recorded here because this is where a
 future reader will come looking for why the rule has an exception.
 
+> **The issue it needs is `docs/issues/019`** (filed 2026-09-11), which also records why this
+> paragraph still reads as outstanding: GitHub **#32** was filed for exactly this gap and then
+> **closed without the fix**, inside a nine-issue bulk close on 2026-08-24. The code is
+> unchanged — `capture/service.py:58` builds the stem from `bill_date` alone and
+> `capture/pdf.py:70-76` renders a header with no unit — so a reader arriving here after
+> seeing #32 closed should trust this section, not the tracker.
+
 ## What was rejected
 
 **Port `divide_by_1000` as its own Export Format control.** Restores v1's placement exactly and

@@ -98,7 +98,11 @@ class TestEmptyEntry:
     something other than what was typed.
     """
 
-    @pytest.mark.parametrize("raw", ["billing,,records", "billing,records,", "   ", ","])
+    # ``"   "`` used to live here. Since issue 014 a value that is blank *as a
+    # whole* is refused one step earlier, by the empty-value check, so it is
+    # pinned by ``TestAnEmptyFeaturesStringIsRefused`` instead. Both spellings
+    # still refuse and still sign nothing; only which message fires moved.
+    @pytest.mark.parametrize("raw", ["billing,,records", "billing,records,", ","])
     def test_empty_entry_is_refused_and_nothing_is_signed(self, vendor_cli, key_path: Path, capsys, raw: str) -> None:
         exit_code = sign(vendor_cli, key_path, "--features", raw)
 
@@ -162,12 +166,49 @@ class TestGrandfatheringPathIsUntouched:
         assert exit_code == 0
         assert payload_of(code)["features"] is None
 
-    def test_an_empty_features_string_signs_a_null_features_payload(self, vendor_cli, key_path: Path, capsys) -> None:
-        exit_code = sign(vendor_cli, key_path, "--features", "")
 
-        code = capsys.readouterr().out.strip()
-        assert exit_code == 0
-        assert payload_of(code)["features"] is None
+class TestAnEmptyFeaturesStringIsRefused:
+    """``--features ""`` is a hard error, not "grandfather everything" (issue 014).
+
+    It used to sign ``features: None`` — the most permissive license the product
+    can produce — because ``""`` is falsy. Every way a vendor reaches that
+    spelling (an unset shell variable, a script clearing a field, typing it to
+    mean "none") intends *less* access and got *all* of it, silently, at exit 0.
+
+    Refusing matches ``--models ""``/``--brands ""``, which issue 015 shipped as
+    hard errors on this same command, so one command no longer holds two
+    spellings of an empty list that mean opposite things. The **omitted** flag
+    still means ``None``; that is the deliberate grandfathering path and the
+    class below pins it.
+    """
+
+    @pytest.mark.parametrize("raw", ["", "   ", "	"])
+    def test_an_empty_or_blank_string_is_refused_and_nothing_is_signed(
+        self, vendor_cli, key_path: Path, capsys, raw: str
+    ) -> None:
+        exit_code = sign(vendor_cli, key_path, "--features", raw)
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert captured.out == ""
+
+    def test_the_refusal_names_both_things_the_vendor_might_have_meant(
+        self, vendor_cli, key_path: Path, capsys
+    ) -> None:
+        """A vendor whose variable expanded to nothing needs to be told which
+        of the two payloads to ask for, not merely that the input was bad."""
+        sign(vendor_cli, key_path, "--features", "")
+
+        err = capsys.readouterr().err
+        # omit the flag -> every sellable key; --features with names -> only those
+        assert "omit" in err.lower()
+        assert "--features" in err
+
+    def test_the_help_text_says_an_empty_string_is_refused(self, vendor_cli, capsys) -> None:
+        with pytest.raises(SystemExit):
+            vendor_cli.main(["sign", "--help"])
+
+        assert "empty" in capsys.readouterr().out.lower()
 
 
 class TestEveryProblemIsReportedInOnePass:

@@ -28,7 +28,10 @@ Commands
     ``app_log``, which no license ever governs — refuses the run before
     anything is signed rather than producing a valid code for a feature that
     does not exist. Omit the flag entirely to grandfather every sellable
-    feature; that is not the same as passing an empty list.
+    feature; that is not the same as passing an empty list. **An empty or blank
+    value is refused** (issue 014) — the two spellings mean opposite things to
+    ``licensing/features.py``, and the falsy one used to resolve toward *more*
+    access.
 
     Some sellable names are **reserved** (``RESERVED_FEATURE_KEYS``, also
     imported): signable, so a license cut today already carries them, but
@@ -431,7 +434,29 @@ def cmd_sign(args: argparse.Namespace) -> int:
         expires_at = datetime.now(UTC) + timedelta(days=args.lease_days)
 
     features: list[str] | None = None
-    if args.features:
+    if args.features is not None:
+        # Gated on **presence**, not truthiness (issue 014). `--features ""` used
+        # to fall through this branch and sign `features: None`, which reads as
+        # *every* sellable key — so an unset shell variable bought the customer
+        # everything, silently, at exit 0. `--models`/`--brands` below have
+        # always been gated this way; now one command does not hold two
+        # spellings of an empty list that mean opposite things.
+        if not args.features.strip():
+            print(
+                "ERROR: --features was given an empty value. That is not an empty list, and it"
+                " is not 'sell nothing'.",
+                file=sys.stderr,
+            )
+            print(
+                "       Omit --features entirely to grandfather every sellable feature, or pass"
+                " the names you are selling.",
+                file=sys.stderr,
+            )
+            print(
+                "       (A shell variable that expanded to nothing is the usual cause.)",
+                file=sys.stderr,
+            )
+            return 1
         # Stripped: a space after a comma is shell quoting, not a typo. An entry
         # that is *empty* after stripping still fails below — we do not guess.
         features = [name.strip() for name in args.features.split(",")]
@@ -449,10 +474,9 @@ def cmd_sign(args: argparse.Namespace) -> int:
             print(line, file=sys.stderr)
 
     # Gated on presence (`is not None`), not truthiness — `--models ""` and
-    # `--brands ""` must be hard errors, exactly the `--features ""` trap
-    # issue 014 records for the sibling flag (D13). Do NOT change the
-    # `--features` branch above to match: 014 is a separate open issue and
-    # its own test asserts the current (different) behaviour stays put.
+    # `--brands ""` are hard errors. `--features` above now matches (issue 014,
+    # 2026-09-11); all three flags on this command refuse an empty value and
+    # mean "grandfather everything" only when omitted.
     models: list[str] | None = None
     if args.models is not None or args.brands is not None:
         resolved, errors = _resolve_models(args.models, args.brands)
@@ -599,7 +623,8 @@ Examples:
         help="Comma-separated licensed feature names, validated against the sellable set "
         "(an unrecognised name is refused, not signed). Some sellable names are reserved "
         "and not for sale yet: naming one warns but still signs. Omit for every sellable "
-        "feature.",
+        "feature — an empty value is refused, because omitting and emptying mean "
+        "opposite things.",
     )
     sign.add_argument(
         "--require-meter-activation",
