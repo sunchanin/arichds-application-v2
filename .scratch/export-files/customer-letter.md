@@ -170,7 +170,9 @@ of it.
 
 ## Questions we would still like answered
 
-Nothing below blocks you using the files.
+Nothing below blocks you using the files. **These four are also in
+`customer-questions.md`, which goes out on its own** — this letter describes a change that has
+reached your machine, so it waits for the update; the questions do not have to.
 
 1. **Do you need `Avg Phase Angle` to work?** If yes, it is a meter commissioning question
    for CEWE, not a software one — see §2.
