@@ -28,17 +28,20 @@ the meter captures, so there is nothing for us to read.
 
 **1. Your existing file has been closed and a new one opened beside it.**
 The column set changed, so the file that was being appended to is renamed with the date it
-closed — `<meter>.2026-09-09.csv` — and a new `<meter>.csv` starts with the new header. No
+closed — `<meter>.<date>.csv`, using the date the update reached your machine — and a
+new `<meter>.csv` starts with the new header. No
 row is ever written under a header that does not describe it, and nothing in the old file is
 altered. If your tooling reads a fixed filename, it will find the new file; the old rows are
 in the dated one.
 
-**2. The three phase angles read `0.000` on the meter we tested.**
-This is the meter's own answer, not a gap in the file. We checked it directly: the phase
-angle registers on that Prometer 100 return zero while the power factor register on the same
-connection returns a real number. If your meters report a real phase angle, the column will
-carry it; on this firmware they report zero, and no change on our side can produce a number
-the meter does not have. Worth raising with CEWE if you expect otherwise.
+**2. The three phase angles read `0.000` and `-1.000` on the meter we tested.**
+This is the meter's own answer, not a gap in the file. We checked it directly: the
+phase-angle registers on that Prometer 100 return those values while the power factor
+register on the same connection returns a real number — and a power factor of 0.076
+implies an angle near 86 degrees, so the meter is not reporting a usable angle at all. If
+your meters report a real phase angle, the column will carry it; on this unit no change on
+our side can produce a number the meter does not have. **Worth raising with CEWE** — it
+looks like these registers are not commissioned on this meter.
 
 **3. Two column names differ from your sample, on purpose.**
 Your sample spells the power columns `Import kW Active` and `Import kVar Reactive`. Those
@@ -50,7 +53,22 @@ file does not carry two naming conventions. The status column **keeps your word*
 
 ## The status column's wording
 
-`OK` when the interval is clean. When the meter flags something, the words are
-`ALL_INVALID`, `DISTURBED` and `POWER_LOSS`, and **two or more join with a pipe**:
-`ALL_INVALID|DISTURBED`. A pipe rather than a comma, so the cell never needs quoting and
-cannot split a row in a reader that handles CSV quoting loosely.
+`OK` when the interval is clean. When the meter flags something the words are
+`DISTURBED` and `POWER_LOSS`, and **two or more join with a pipe**:
+`DISTURBED|POWER_LOSS`. A pipe rather than a comma, so the cell never needs quoting and
+cannot split a row in a reader that handles CSV quoting loosely. A flag we do not yet have
+a word for is shown as a hex number (`DISTURBED|0x0400`) rather than dropped, so nothing
+the meter told us disappears.
+
+You will not see `ALL_INVALID` in the file — see below: those rows are removed entirely
+rather than written with a label.
+
+
+## One more change you will notice
+
+Intervals your meter itself marks **all invalid** are no longer included in the Load
+Profile file, the Load Profile screen, or the Energy Summary totals. That matches what
+your previous system did. An interval flagged only `DISTURBED` or `POWER_LOSS` is still
+included — only the meter's own "everything in this interval is invalid" flag removes a
+row. Day-completeness counts still count every interval that arrived, whatever the meter
+thought of it.

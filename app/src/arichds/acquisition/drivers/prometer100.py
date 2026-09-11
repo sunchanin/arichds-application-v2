@@ -57,11 +57,20 @@ from arichds.constants import DLMS_INTER_REQUEST_DELAY_MS, TCP_READ_TIMEOUT_SEC
 
 #: Logger 1 (F7, meter-notes:70-83) — energy, V/I, frequency, total PF. Every
 #: column carries a sibling OBIS to borrow ``scaler_unit`` from (review
-#: finding 1) — the live 2026-08-09 scan showed every own-address read
-#: refused, the same denial the SMW110W4 already documents for load profile.
+#: finding 1), because the own-address read is refused on all but one of them —
+#: the same denial the SMW110W4 already documents for load profile.
+#:
 #: D=29 interval energy borrows from D=8 cumulative energy, D=27 V/I borrows
 #: from the D=7 instantaneous sibling, D=24 (total PF) borrows from D=7 too —
 #: same pattern SMW110W4's ``_MAPPED_CAPTURE_COLUMNS`` already uses.
+#:
+#: **The one exception is ``freq``**, whose own address answers (``FREQUENCY``
+#: (44), scaler 1.0, measured 2026-09-11), so its declared sibling is never
+#: reached. Earlier text here and in the 2026-08-09 notes said *every*
+#: own-address read was refused; that was true of every target those scans
+#: covered, and ``freq`` was not one of them. Corrected rather than deleted,
+#: because the blanket claim is repeated elsewhere — see
+#: ``docs/meter-notes/lp-new-columns-scan.md``.
 _LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
     ("1.0.1.29.0.255", 2): LpColumn(
         "import_active_kwh", Unit.ACTIVE_ENERGY, scaler_siblings=(("1.0.1.8.0.255", GXDLMSRegister),)

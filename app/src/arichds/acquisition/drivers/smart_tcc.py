@@ -147,12 +147,23 @@ _LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
     # that route is refused for every measurement column, so if this family
     # behaves the same way these three will be NULL rather than wrong.
     #
-    # To verify when the meter is reachable: run
-    # `scripts/probe_capture_objects.py --model smart_tcc` to confirm the three
-    # addresses are still in Logger 1's capture list, then read one interval
-    # through `read_load_profile()` and check the three columns are non-NULL.
-    # If they are NULL, the own address is denied and this family needs a
-    # sibling declared, exactly as CEWE's columns do.
+    # To verify when the meter is reachable, from `app/` — both commands are
+    # read-only and take one association each:
+    #
+    #   PYTHONPATH=src .venv/Scripts/python.exe scripts/probe_capture_objects.py \
+    #       --host 203.170.148.103 --port 4059 --model smart_tcc
+    #   PYTHONPATH=src .venv/Scripts/python.exe scripts/probe_lp_column_fill.py \
+    #       --host 203.170.148.103 --port 4059 --model smart_tcc
+    #
+    # The first confirms the three addresses are still in Logger 1's capture
+    # list; the second reads one interval through the shipped
+    # `read_load_profile()` and reports whether the three columns filled. If
+    # they are NULL, the own address is denied and this family needs a sibling
+    # declared, exactly as CEWE's columns do.
+    #
+    # (`--host` is required and there is no default, which is why this names
+    # the address; an earlier version of this note omitted it and could not be
+    # run as written.)
     #
     # The Interval Status word stays **unmapped**: this family captures
     # `0.0.96.10.1.255`, a different object whose bit meanings nobody has

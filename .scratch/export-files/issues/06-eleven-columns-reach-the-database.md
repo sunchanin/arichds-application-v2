@@ -168,3 +168,40 @@ the same way at M4c — and ADR 0020 requires it, since a destination that mirro
 window cannot mirror only part of it. **It is still a schema change fired into
 somebody else's database.** Pinned by
 `test_dataout_sync.py::TestNewLocalColumnsReachTheDestinationDefinition`.
+
+## Re-read 2026-09-11 — the export cross-check is no longer vacuous
+
+Prompted by `/scrutinize`, which pointed out that the 2026-09-09 export rows compared
+zero against zero and therefore proved nothing. Two things were wrong: the site exports
+no active power, **and the probe could not tell "verified" from "nothing to compare"** —
+it reported 0.00 % either way. The probe now counts and names the non-zero rows and calls
+the vacuous case vacuous. That flaw was in the instrument, not the meter.
+
+On the re-read the site *was* exporting reactive power:
+
+```
+import_active_kw       12/12 rows non-zero, worst error 0.00 %  OK
+import_reactive_kvar   11/12 rows non-zero, worst error 0.00 %  OK
+export_reactive_kvar   12/12 rows non-zero, worst error 0.00 %  OK
+export_active_kw       12 rows, every one zero on both sides — VACUOUS, proves nothing
+```
+
+**`export_reactive_kvar` is now verified against non-zero values.** It borrows its
+scaler from `1.0.4.6.0.255` read as an **Extended Register** — the riskiest declaration
+in the set — and agrees with independently-routed energy on twelve rows.
+
+`export_active_kw` stays unverified because this site exports no active power. Its
+residual risk is now narrow rather than open: the identical route (`D=6` max-demand
+sibling, Extended Register) is proven on its reactive twin. Closing it entirely needs a
+site that exports active power.
+
+**Correction to this ticket's own earlier note.** It said all three phase angles read
+`0.0`. On the re-read `phase_angle_c` reads **`-1.0`**, so "the meter reports zero" was
+too tidy: it reports values that cannot be real phase angles at all, given `avg_geo_pf`
+of 0.076 on the same association implies about 86°. The mapping is still right and still
+transcribes faithfully — verified against the instantaneous registers directly — but the
+meter's own numbers look uncommissioned rather than simply zero.
+
+Both probes are now in `app/scripts/` and their output is recorded in
+`docs/meter-notes/lp-new-columns-scan.md`, which is what the spec asked for and this
+ticket had not done.
