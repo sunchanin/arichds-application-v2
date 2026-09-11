@@ -174,9 +174,9 @@ Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""{#FirewallR
 ; on LocalSystem above. `-Force` inside the script converges an upgrade with
 ; no separate "does it already exist" branch. A failed registration must not
 ; fail the install (decision D12) — like every other [Run] entry here, its
-; exit code is never checked, so a failure only shows up in SetupLogging's
-; log and leaves a capture failing loudly with `BrowserCaptureError` later,
-; which the operator's own verification step (installer/README.md) catches.
+; exit code is never checked. It is no longer *silent*, though: VerifyCaptureTask
+; in [Code] queries the task at ssPostInstall and tells the person at the keyboard
+; if it is missing (issue 009). D12 asks the install to succeed, not to hide.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
     Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\register-capture-task.ps1"" -TaskName ""{#CaptureTaskName}"" -ProfileDir ""{commonappdata}\{#AppName}\tmp"""; \
     Flags: runhidden waituntilterminated; StatusMsg: "Registering the capture browser task..."
@@ -213,6 +213,48 @@ var
 begin
   Result := Exec(ExpandConstant('{sys}\sc.exe'), 'query ' + ServiceName, '',
                  SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+{ True when the capture browser's scheduled task exists. `schtasks /query`
+  returns non-zero for an unknown task — the same shape as ServiceExists above. }
+function CaptureTaskExists(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\schtasks.exe'), '/query /TN "{#CaptureTaskName}"', '',
+                 SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+{ Issue 009: on 2026-08-25 a real install registered no task and reported
+  success. A non-terminating PowerShell error skipped the script's own catch,
+  and a [Run] entry's exit code is not checked anyway. The script now fails
+  loudly, but the install must still not fail (D12) — so the outcome is checked
+  HERE, against Windows rather than against the script's report, and the person
+  at the keyboard is told while they are still standing there.
+
+  Deliberately a query and not an exit code: a call that returns quietly and
+  leaves no task behind is the exact failure being guarded, and an exit code
+  cannot see it. }
+procedure VerifyCaptureTask();
+begin
+  if CaptureTaskExists() then
+    Exit;
+  Log('Capture browser task "{#CaptureTaskName}" is MISSING after registration.');
+  MsgBox('ARICHDS is installed and will run, but the capture browser task' + #13#10 +
+         '"{#CaptureTaskName}" could not be registered.' + #13#10 + #13#10 +
+         'Billing capture images will fail until it exists. Everything else works.' + #13#10 + #13#10 +
+         'To fix it, from an elevated PowerShell:' + #13#10 +
+         '  & "' + ExpandConstant('{app}') + '\register-capture-task.ps1" -TaskName "{#CaptureTaskName}" -ProfileDir "' +
+         ExpandConstant('{commonappdata}\{#AppName}') + '\tmp"' + #13#10 + #13#10 +
+         'then confirm with:' + #13#10 +
+         '  Get-ScheduledTask -TaskName "{#CaptureTaskName}"',
+         mbError, MB_OK);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    VerifyCaptureTask();
 end;
 
 { Stop an existing service BEFORE [Files] replaces the exe. Without this an

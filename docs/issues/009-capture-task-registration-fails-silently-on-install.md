@@ -187,3 +187,62 @@ a customer must intervene is unknown, and the safe assumption is that they must.
 ## Blocked by
 
 Nothing.
+
+---
+
+## Partly fixed 2026-09-11 — items 1–4 done, items 5–6 need a machine
+
+**Four of the seven criteria are met. Two cannot be met from a desk, and this issue stays open
+for them.** What was reported as fixed is only the reporting and the verification; whether a
+customer must still intervene is *unchanged and still unknown*.
+
+### 1. The script fails when it fails
+
+`Register-ScheduledTask` now carries **`-ErrorAction Stop`**
+(`installer/register-capture-task.ps1`). `$ErrorActionPreference` was deliberately **not** set
+globally: the Edge-discovery code above walks registry paths that may legitimately be absent,
+and a blanket `Stop` would turn a normal miss into a failed install. The one call that must
+never fail quietly is the one that gets the flag.
+
+### 2. The script verifies instead of trusting
+
+After registering, the script queries `Get-ScheduledTask -TaskName $TaskName` and exits 1 if the
+task is absent, **before** printing anything. The success line now also reports the task's
+`State`, so its output is evidence rather than a claim.
+
+That query is not redundant with `-ErrorAction Stop`: the flag catches an error that is
+*raised*, and the failure this issue documents is a call that returned with **no** error and
+left no task. Only looking for the task afterwards can see that.
+
+### 3. The operator finds out while they are still standing there
+
+`installer/arichds.iss` gains `CaptureTaskExists()` / `VerifyCaptureTask()` in `[Code]`, called
+from `CurStepChanged(ssPostInstall)`. It asks **Windows** (`schtasks /query`) rather than
+trusting the script's exit code — which the `[Run]` entry does not check, and which was `0` on
+the failing install — and on a miss shows a message box naming the task, saying that everything
+except Billing capture images works, and printing the exact elevated command to repair it plus
+the `Get-ScheduledTask` line that confirms the repair.
+
+**D12 is untouched**: the install still succeeds. D12 asks the install not to fail, not to stay
+silent. Verified by compiling: `ISCC.exe installer/arichds.iss` -> `Successful compile`.
+
+### 4. The capture failure already named the task
+
+Verified rather than changed: `capture/screenshot.py:333` and `:336-338` raise
+`BrowserCaptureError` carrying `CAPTURE_TASK_NAME` plus schtasks' own stdout/stderr, and
+`api/billing.py:880-887` puts that string verbatim into the 500 detail. The operator reading the
+error sees the task name and Windows' own explanation.
+
+### 5 and 6 are still open — and they are the ones that matter
+
+- **The root cause of the 2026-08-25 failure is still unidentified.** Nothing above explains why
+  an elevated installer failed where an elevated manual run succeeded. Everything above makes
+  that failure *visible*; none of it makes it *absent*.
+- **The experiment in "What is still unknown" has still not been run.** It needs a real machine:
+  delete the task, re-run a setup exe, query for the task.
+
+**So the safe assumption stated in this issue still holds: a customer may still have to
+intervene.** The difference is that they will now be told at install time instead of discovering
+it through a 500 weeks later.
+
+Do not close this issue on the strength of items 1–4.

@@ -173,9 +173,26 @@ try {
 
     # -Force overwrites an existing registration so an upgrade converges
     # (D1) — no separate "does it already exist" branch needed.
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+    #
+    # `-ErrorAction Stop` is load-bearing (issue 009): without it a
+    # **non-terminating** error — `Access is denied.` is one — never enters the
+    # catch below, execution falls through to the success line, and the script
+    # exits 0 having registered nothing. That is exactly what a real install
+    # did on 2026-08-25, and the Setup log recorded `Process exit code: 0`.
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
 
-    Write-Output "register-capture-task.ps1: registered '$TaskName' -> $edgePath"
+    # Verify rather than trust (issue 009). `-ErrorAction Stop` catches an error
+    # that is raised; it cannot catch a call that returns quietly and leaves no
+    # task behind. Only a query proves the outcome, so the success line below is
+    # printed **after** this and never before.
+    $registered = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $registered) {
+        Write-Error ("register-capture-task.ps1: Register-ScheduledTask reported no error but " +
+                     "'$TaskName' does not exist afterwards. Nothing was registered.")
+        exit 1
+    }
+
+    Write-Output "register-capture-task.ps1: registered '$TaskName' -> $edgePath (state: $($registered.State))"
 } catch {
     Write-Error "register-capture-task.ps1: failed to register the '$TaskName' scheduled task: $_"
     exit 1
