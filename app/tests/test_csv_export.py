@@ -40,6 +40,14 @@ BASE = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
 
 #: Spelled out because a literal newline inside a source string is easy to
 #: lose to an editing tool.
+#: A status word with **two bits set and bit 0 clear** — DISTURBED (0x0010)
+#: and POWER_LOSS (0x0800). It has to avoid bit 0 deliberately: since
+#: `/scrutinize` (2026-09-11) a row whose word carries ALL_INVALID is excluded
+#: from the export altogether (v1's INV-LP-06), so using it as sample data here
+#: would produce a file with no rows in it and a test that appeared to fail for
+#: the wrong reason. `test_all_invalid_intervals_are_excluded.py` owns that case.
+STATUS_TWO_BITS = 0x0010 | 0x0800
+
 LF = chr(10)
 QUOTE = chr(34)
 BOM = chr(65279)
@@ -524,7 +532,7 @@ class TestOutputParityWholeFile:
             phase_angle_a=118.5,
             phase_angle_b=238.25,
             phase_angle_c=358.75,
-            interval_status_flag=17,
+            interval_status_flag=STATUS_TWO_BITS,
             import_active_kw=34.1,
             import_reactive_kvar=5.3,
             export_active_kw=12.2,
@@ -578,7 +586,7 @@ class TestOutputParityWholeFile:
                     format(238.25, ".3f"),
                     format(358.75, ".3f"),
                     format(50.01, ".3f"),
-                    "ALL_INVALID|DISTURBED",  # 17 = bit 0 | bit 4, pipe-joined
+                    "DISTURBED|POWER_LOSS",  # 0x0810 = bit 4 | bit 11, pipe-joined
                     format(34.1, ".3f"),
                     format(5.3, ".3f"),
                     format(12.2, ".3f"),
@@ -665,11 +673,11 @@ class TestTheStatusColumnIsWordsJoinedByAPipe:
     def test_two_set_bits_are_joined_by_a_pipe_and_the_cell_is_not_quoted(
         self, migrated_db: Settings, tmp_path: Path
     ) -> None:
-        assert self._status_cell(tmp_path, 0x0011) == "ALL_INVALID|DISTURBED"
+        assert self._status_cell(tmp_path, STATUS_TWO_BITS) == "DISTURBED|POWER_LOSS"
         # A comma would have forced csv to quote the cell; a pipe does not.
         raw = read_file(tmp_path / "SN-1.csv")
-        assert "ALL_INVALID|DISTURBED" in raw
-        assert QUOTE + "ALL_INVALID" not in raw
+        assert "DISTURBED|POWER_LOSS" in raw
+        assert QUOTE + "DISTURBED" not in raw
 
     def test_a_model_with_no_status_word_gets_an_empty_cell(self, migrated_db: Settings, tmp_path: Path) -> None:
         assert self._status_cell(tmp_path, None) == ""

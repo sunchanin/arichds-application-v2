@@ -21,12 +21,29 @@ downstream consumer honours CSV quoting, which cannot be tested from here.
 
 from __future__ import annotations
 
+#: Bit 0 — the meter's own verdict that **every value in this interval is
+#: invalid**. It is the only bit anything branches on, and the reason this
+#: module exports a mask rather than keeping the number private: a row carrying
+#: it is excluded from the Energy Summary, the Load Profile page and the Load
+#: Profile CSV, which is v1's own rule (``INV-LP-06``,
+#: ``cewe/cewe-worker/src/load_profile/repository.py:182,204,242,260,290,329``)
+#: and therefore an Output Parity obligation for all three (CLAUDE.md binds
+#: parity to LP/Billing/Energy).
+#:
+#: **Records deliberately does not filter on it**, matching v1's own
+#: ``_GRID_SQL`` (``repository.py:61-76``, which carries no such predicate).
+#: The two answer different questions, exactly as CONTEXT.md separates them:
+#: Records asks whether a *row arrived*, this asks whether *one row is
+#: trustworthy*. A day whose rows all arrived is complete even if the meter
+#: disowned their contents.
+ALL_INVALID_MASK = 0x0001
+
 #: The three bits v1 decodes, and the wording it uses
 #: (``cewe-worker/src/worker/load_profile_reader.py``'s ``_decode_status_flag``).
 #: Carried over verbatim because the customer has been reading these words for
 #: years; the only change is the separator below.
 _BITS: tuple[tuple[int, str], ...] = (
-    (0x0001, "ALL_INVALID"),
+    (ALL_INVALID_MASK, "ALL_INVALID"),
     (0x0010, "DISTURBED"),
     (0x0800, "POWER_LOSS"),
 )
@@ -73,4 +90,4 @@ def decode_interval_status(flag: int | None) -> str:
     return SEPARATOR.join(parts)
 
 
-__all__ = ["BLANK", "SEPARATOR", "decode_interval_status"]
+__all__ = ["ALL_INVALID_MASK", "BLANK", "SEPARATOR", "decode_interval_status"]

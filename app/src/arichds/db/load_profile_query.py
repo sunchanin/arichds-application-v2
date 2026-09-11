@@ -21,10 +21,11 @@ that was never theirs.
 
 from __future__ import annotations
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import aliased
 
 from arichds.db.models import LoadProfileReading
+from arichds.interval_status import ALL_INVALID_MASK
 
 #: Logger 2, joined against the Logger 1 spine — never queried on its own here.
 _Logger2 = aliased(LoadProfileReading)
@@ -94,5 +95,22 @@ def merged_rows_select(device_id: int) -> Select:
             & (_Logger2.read_at == LoadProfileReading.read_at)
             & (_Logger2.logger_id == 2),
         )
-        .where(LoadProfileReading.device_id == device_id, LoadProfileReading.logger_id == 1)
+        .where(
+            LoadProfileReading.device_id == device_id,
+            LoadProfileReading.logger_id == 1,
+            # v1's INV-LP-06 — an interval the meter marked all-invalid is
+            # excluded from both the page and the CSV
+            # (`cewe/.../load_profile/repository.py:204,242,260,290,329`). A
+            # NULL word means the model records none, and those rows stay.
+            #
+            # Applied here rather than at each caller on purpose, and for the
+            # reason this function already exists: the page's rows, the page's
+            # `total` and the CSV's rows all build on this Select, so a
+            # predicate added at one caller would leave a page whose rows and
+            # whose count disagree.
+            or_(
+                LoadProfileReading.interval_status_flag.is_(None),
+                LoadProfileReading.interval_status_flag.op("&")(ALL_INVALID_MASK) == 0,
+            ),
+        )
     )

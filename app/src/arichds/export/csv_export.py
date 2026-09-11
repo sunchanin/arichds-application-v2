@@ -196,8 +196,36 @@ def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExpo
             stmt = stmt.where(LoadProfileReading.read_at > watermark)
         stmt = stmt.where(LoadProfileReading.read_at <= cap).order_by(LoadProfileReading.read_at.asc())
 
+        # The newest row **in the window**, counted without the all-invalid
+        # filter `merged_rows_select` applies (v1's INV-LP-06). The watermark
+        # has to advance past a row that filter dropped, or the window grows by
+        # one interval every cycle and the same rejected rows are re-queried for
+        # ever — the shape of the self-healing-watermark trap, which needs no
+        # bug to trigger it, only a meter that flagged one interval.
+        #
+        # This is the same value `rows[-1]` carried before the filter existed,
+        # so the watermark's meaning is unchanged: "every row up to here has
+        # been dealt with", where dealt with includes deliberately excluded.
+        # It does **not** cover a write failure — those still return early
+        # below, leaving the watermark untouched so the rows retry.
+        window_max = session.scalar(
+            select(func.max(LoadProfileReading.read_at)).where(
+                LoadProfileReading.device_id == device_id,
+                LoadProfileReading.logger_id == 1,
+                LoadProfileReading.read_at <= cap,
+                *([LoadProfileReading.read_at > watermark] if watermark is not None else []),
+            )
+        )
+        if window_max is None:
+            return CsvExportResult(rows_written=0, path=None)
+        window_max = _as_utc(window_max)
+
         rows = session.execute(stmt).all()
         if not rows:
+            # Rows exist in the window but the meter disowned every one of
+            # them. Nothing to write, and nothing pending either.
+            device.csv_exported_through = window_max
+            session.commit()
             return CsvExportResult(rows_written=0, path=None)
 
         device_label = f"{device.name} ({meter_token})"
@@ -245,8 +273,10 @@ def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExpo
         if not written:
             return CsvExportResult(rows_written=0, path=final_path)
 
-        max_read_at = _as_utc(rows[-1]._mapping["read_at"])  # noqa: SLF001
-        device.csv_exported_through = max_read_at
+        # `window_max`, not `rows[-1]` — see its own comment above. They are the
+        # same instant unless the newest rows in the window were all-invalid,
+        # and in that case `rows[-1]` would leave them pending for ever.
+        device.csv_exported_through = window_max
         session.commit()
         return CsvExportResult(rows_written=len(formatted), path=final_path)
 

@@ -32,6 +32,7 @@ from arichds.constants import (
     TOU_PEAK_START_UTC,
 )
 from arichds.db.models import Device
+from arichds.interval_status import ALL_INVALID_MASK
 
 #: Logger 1 carries the energy columns on every model (decision 6, `base.py`
 #: D2 module docstring) — the only correct answer, so there is no logger
@@ -46,6 +47,18 @@ _TZ_SHIFT = f"{METER_LOCAL_UTC_OFFSET_HOURS:+d} hours"
 #: date (CONTEXT.md — Holiday). ``strftime('%w', ...)`` is SQLite's
 #: day-of-week, **0 = Sunday** (the MySQL ``DAYOFWEEK`` v1 used is 1 = Sunday
 #: — the translation trap this predicate exists to get right).
+#: v1's ``INV-LP-06``: an interval the meter itself marked **all invalid** is
+#: excluded from the Energy Summary
+#: (``cewe/cewe-worker/src/load_profile/repository.py:182``). A NULL word means
+#: the model records none — the SMW110W4 and the Saral 305 — and those rows
+#: stay, because "the meter said nothing" is not "the meter said this is
+#: rubbish".
+#:
+#: The column only existed from M13 issue 06, so until then this divergence
+#: from v1 was unavoidable rather than chosen; issue 06 made the filter
+#: possible and this is it (found by ``/scrutinize``, 2026-09-11).
+_INTERVAL_IS_VALID = f"(lr.interval_status_flag IS NULL OR (lr.interval_status_flag & {ALL_INVALID_MASK}) = 0)"
+
 _IS_HOLIDAY_PREDICATE = """(
             strftime('%w', date(lr.read_at, :tz_shift)) IN ('0', '6')
             OR EXISTS (
@@ -108,9 +121,10 @@ _ENERGY_SUMMARY_SQL = text(
       AND lr.logger_id = :logger_id
       AND lr.read_at  >= :start_dt
       AND lr.read_at  <  :end_dt
+      AND {interval_is_valid}
     GROUP BY date(lr.read_at, :tz_shift)
     ORDER BY record_date
-    """.replace("{is_holiday}", _IS_HOLIDAY_PREDICATE)
+    """.replace("{is_holiday}", _IS_HOLIDAY_PREDICATE).replace("{interval_is_valid}", _INTERVAL_IS_VALID)
 )
 
 

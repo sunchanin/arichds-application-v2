@@ -155,8 +155,24 @@ CSV and the Load Profile page cannot word the same bitmap differently.
 **Two set bits join with a pipe, `ALL_INVALID|DISTURBED`, not a comma.** v1 joined
 with a comma, but v1's rendering never reached a CSV — it existed only on v1's screen
 — so no Output Parity is broken. A comma inside a cell survives only if every
-downstream consumer honours CSV quoting, which cannot be tested from here. A bit
-outside the three known ones is appended as a hex remainder rather than dropped.
+downstream consumer honours CSV quoting, which cannot be tested from here.
+
+**A bit outside the three known ones is appended as a hex remainder** (`DISTURBED|0x0400`)
+rather than dropped. This is the one place v2 renders a status word differently from
+v1, which kept only the words it recognised whenever it recognised at least one, and
+fell back to `STATUS_0x….` only when it recognised none. So v1 could silently discard
+a bit the meter had set — the same shape of silent loss that left `avg_geo_pf` empty
+for 87,000 rows — and nothing depends on that behaviour, because this column has never
+been written to a file before. Recorded here because it was an implementer's judgement
+that no requirement asked for (`/scrutinize`, 2026-09-11); it is a decision now, not an
+accident. Bit 0 is the only bit anything branches on — see below.
+
+**A row with bit 0 (`ALL_INVALID`) set is excluded from the Energy Summary, the Load
+Profile page and the Load Profile CSV** — v1's `INV-LP-06`, and an Output Parity
+obligation for all three. A NULL word means the model records none (the SMW110W4, the
+Saral 305) and those rows stay: *the meter said nothing* is not *the meter said this is
+rubbish*. **Records deliberately still counts them**, matching v1, because Records asks
+whether a row arrived and this asks whether one row is trustworthy.
 
 The customer's export file names this column `Record Status` and **that header stays**,
 because the file is a contract they wrote. The name splits at the same boundary display
