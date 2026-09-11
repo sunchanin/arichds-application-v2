@@ -146,8 +146,7 @@ break it.
 
 ### The customer note
 
-`.scratch/export-files/customer-note-empty-columns.md` — which columns are empty on which
-model, that their existing file has been closed under a dated name, that the phase angles
+`.scratch/export-files/customer-letter.md` — which columns are empty on which model, that their existing file has been closed under a dated name, that the phase angles
 read `0.000` because the meter reports zero, and why two column names differ from their
 sample.
 
