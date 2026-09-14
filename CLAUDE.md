@@ -65,12 +65,9 @@ MySQL, and ~30 tables.
   correspondence for all three flags instead of a hardcoded list) ·
   0012 (**SUPERSEDED by ADR 0022** — `GET /api/energy/summary` no longer aggregates
   `load_profile_readings` live; the paragraph below records what 0012 decided and why, kept for
-  history rather than because it is still the shipped read path. Two callers still aggregate live
-  — `export/energy_csv.py`'s daily and on-demand Energy Export File writers — not because 0022
-  left them alone by design, but because **ADR 0023** (decided alongside 0022, not yet
-  implemented) is the ticket that moves the Energy Export File onto `energy_summary_days` too;
-  until it lands, those two callers still run `db/energy_query.py::energy_summary_rows()`
-  directly) (the
+  history rather than because it is still the shipped read path. The Energy Export File and Save to
+  file followed it onto `energy_summary_days` with M14 ticket 04 (ADR 0023), so the only live caller
+  of `db/energy_query.py::energy_summary_rows()` left is the recompute job itself) (the
   Energy Summary was **derived on every request and deliberately not reproducible** — adding a
   Holiday today changed what last January reported tomorrow, and that was the point, because
   holidays are rules a human enters late; no summary table, no cache; the peak window stays a
@@ -96,11 +93,9 @@ MySQL, and ~30 tables.
   `replace_rows()` swaps a temp file over the target in one `os.replace` — a head change now
   rewrites the whole file in place (each of the three files' own "whole current content" query)
   instead of opening a dated edition, and a caller that skips the `head_changed` check gets a
-  refused append rather than a corrupted file. **Not yet landed**: M14 tickets 04 (the Energy and
-  Billing files rewritten whole *every* cycle, off `energy_summary_days`, dropping their
-  `_exported_through` watermarks) and 05 (the Load Profile CSV's own daily 90-day trim job) —
-  until those land, all three files still only *reach* `replace_rows` on a head change; the normal
-  cycle still appends) ·
+  refused append rather than a corrupted file. M14 tickets 04 and 05 then made the rewrite the
+  normal path — Energy and Billing are rewritten every cycle, the Load Profile CSV is trimmed
+  daily; see ADR 0023 below) ·
   0014 (the capture image is **drawn, never screenshotted** — Pillow as a third renderer over
   `_render_shared`; shipped with issue #35 and **REVERSED by ADR 0017** — read 0017 first, and do
   not cite 0014's "no screen to photograph" premise or its 250 MB browser costing, both of which
