@@ -258,6 +258,45 @@ DBDEST_SESSION_SQL_MODE: Final[str] = "STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZE
 # be reading the wrong thing.
 JOB_DBDEST_SYNC: Final[str] = "dbdest_sync"
 
+# ─── Central Push (ADR 0024, SPEC §3.8, M14 ticket 08) ────────────────────────
+# The push to the team's own server — billing, load profile, the Energy
+# Summary and the meter roster, JSON every fifteen minutes. Its own interval,
+# deliberately NOT aliased to LOAD_PROFILE_INTERVAL_SEC, for the same reason
+# DBDEST_SYNC_INTERVAL_SEC above is not: a network write to a machine we do
+# not own, on a cadence the owner picked for freshness, registered last —
+# one job later than the Database Destination sync, because it is the
+# SECOND job that talks to a machine we do not own (ADR 0024: "last in the
+# scheduler queue").
+CENTRAL_PUSH_INTERVAL_SEC: Final[int] = 900
+# The wall-clock ceiling on one cycle, the same shape DBDEST_SYNC_BUDGET_SEC
+# established: the scheduler runs every job sequentially on one thread, so a
+# push that hangs on an unreachable or slow server hangs nothing behind it —
+# there is nothing behind it, since this job is last — but must still not run
+# forever. A cycle that runs out of budget stops cleanly; the next cycle's
+# holdings answer is the resume point (ADR 0024: "no sync_state").
+CENTRAL_PUSH_BUDGET_SEC: Final[float] = 60.0
+# Explicit connect and read timeouts (ADR 0024: "connect/read timeout"),
+# mirroring DBDEST_CONNECT_TIMEOUT_SEC / DBDEST_READ_TIMEOUT_SEC — a
+# receiving server that stalls after accepting the connection must not hang
+# the scheduler thread past this many seconds.
+CENTRAL_PUSH_CONNECT_TIMEOUT_SEC: Final[int] = 10
+CENTRAL_PUSH_READ_TIMEOUT_SEC: Final[int] = 30
+# Items per `POST /v1/push` request (ADR 0024/Contract v1: "capped per
+# request by a constant"). Matches DBDEST_ROW_CHUNK's value for the same
+# reason it was chosen there — small enough that no single request risks the
+# read timeout, big enough that the round trips disappear.
+CENTRAL_PUSH_ITEM_CAP: Final[int] = 5000
+# How far the server's own newest load-profile `read_at` (per Meter Serial
+# and logger) is rewound before we resume sending (ADR 0024: "a small safety
+# margin"). Deliberately smaller than DBDEST_WATERMARK_REWIND_SEC's 3600 s —
+# that value came from a measured timezone-conversion hazard (ADR 0021) this
+# module does not have; the wire carries UTC with an explicit offset, not a
+# naive local `DATETIME`, so there is no boundary to cross. Sixty seconds
+# absorbs ordinary clock skew between this machine and the server, and a
+# re-sent row collapses onto itself through the server's own upsert.
+CENTRAL_PUSH_LOAD_PROFILE_REWIND_SEC: Final[int] = 60
+JOB_CENTRAL_PUSH: Final[str] = "central_push"
+
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"
 SOURCE_MODBUS: Final[str] = "modbus"

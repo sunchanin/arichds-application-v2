@@ -25,16 +25,19 @@ from dataclasses import dataclass
 from arichds.acquisition.battery import battery_cycle
 from arichds.acquisition.billing import billing_cycle
 from arichds.acquisition.load_profile import load_profile_cycle
+from arichds.centralpush.cycle import central_push_cycle
 from arichds.constants import (
     BACKUP_INTERVAL_SEC,
     BATTERY_INTERVAL_SEC,
     BILLING_INTERVAL_SEC,
+    CENTRAL_PUSH_INTERVAL_SEC,
     CSV_EXPORT_INTERVAL_SEC,
     DBDEST_SYNC_INTERVAL_SEC,
     ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
     JOB_BACKUP,
     JOB_BATTERY,
     JOB_BILLING,
+    JOB_CENTRAL_PUSH,
     JOB_CSV_EXPORT,
     JOB_DBDEST_SYNC,
     JOB_ENERGY_SUMMARY_RECOMPUTE,
@@ -441,4 +444,11 @@ def default_jobs() -> list[Job]:
         # thread, so putting it anywhere earlier would let a slow customer
         # database delay a meter read within the same pass.
         Job(name=JOB_DBDEST_SYNC, interval_sec=DBDEST_SYNC_INTERVAL_SEC, fn=database_destination_cycle),
+        # The Central Push (ADR 0024, SPEC §3.8, M14 ticket 08) — **last**,
+        # one job behind the Database Destination sync, deliberately: it is
+        # the SECOND job that talks to a machine we do not own, and jobs run
+        # sequentially in registry order on the one thread, so putting it
+        # anywhere earlier would let a slow team server delay the customer's
+        # own database sync (or a meter read) within the same pass.
+        Job(name=JOB_CENTRAL_PUSH, interval_sec=CENTRAL_PUSH_INTERVAL_SEC, fn=central_push_cycle),
     ]

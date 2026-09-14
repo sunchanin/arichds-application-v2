@@ -118,9 +118,10 @@ MySQL, and ~30 tables.
   the **Database Destination** (the customer's own MariaDB/MySQL, SPEC §3.10) **landed with
   issue #46** — `dataout/`, the `dbdest_sync` scheduler job, the three
   `/api/settings/database-destination` endpoints and a working
-  `web/src/pages/DatabaseDestination.tsx`; the **central-server push** (SPEC §3.8, JSON + JWT
-  + an ACK-driven watermark) is still **M8 and unbuilt**, on its own queue, and
-  `FileUploadDestination.tsx` remains a presentation-only shell) ·
+  `web/src/pages/DatabaseDestination.tsx`; the **central-server push** (SPEC §3.8, JSON + JWT,
+  no watermark — each cycle asks the server what it holds, ADR 0024) **landed with M14 ticket
+  08**, its own queue, separate contract, separate module (`centralpush/`); `FileUploadDestination.tsx`
+  remains a presentation-only shell) ·
   0017 (the capture image is a **headless screenshot of our own page** — **reverses 0014**:
   Edge ships with Windows and `websockets` already arrives via `uvicorn[standard]`, so driving
   the installed browser over CDP costs **0 MB** and makes fidelity an identity rather than an
@@ -324,7 +325,9 @@ MySQL, and ~30 tables.
   `central_push_token` ends in the literal `token` so the existing redaction filter pattern
   already covers it with no new pattern), `GET .../status` (always `None` until ticket 08) and
   `GET .../contract`, all `AdminDep` and gated by **no licence feature key** — ADR 0024's own
-  text, "no separate licence key". Saving a token verifies it and additionally requires its
+  text, "no separate licence key". `GET .../status` reads `None` until a first cycle has run,
+  which ticket 08 below makes true again after a fresh install/restart (ADR 0008: it resets).
+  Saving a token verifies it and additionally requires its
   Machine ID to equal `LicenseService.machine_id` (never a new derivation); a rejected token
   changes nothing and the response names which check failed (`MALFORMED` /
   `INVALID_SIGNATURE` / `WRONG_PRODUCT` / `UNSUPPORTED_VERSION` /
@@ -335,14 +338,39 @@ MySQL, and ~30 tables.
   (`LoadProfileReading`/`BillingReading`/`EnergySummaryDay`) rather than typed out by hand, so
   "every measured column" cannot go stale — and `render_contract()` renders the published
   document from `model_fields`, never a hand-written duplicate list, so a field added to a
-  model reaches the API page with no other edit; `status.py` is the in-memory `CycleStatus`
-  slot ticket 08's scheduler job will populate (ADR 0008: no persisted job state). Web: an
+  model reaches the API page with no other edit; `status.py`'s in-memory `CycleStatus` slot is
+  populated by ticket 08 below (ADR 0008: no persisted job state). Web: an
   **API** page under the Data-out group (`web/src/pages/CentralPush.tsx`), admin-only like its
   two siblings but `kind: "always"` in `features.ts` (no licence key), which also means the
   Data-out group header no longer disappears on a licence lacking `database_destination` — this
-  entry alone now holds it up. **Not yet implemented**: the scheduler job, the holdings/push
-  HTTP client and everything that writes to `centralpush/status.py` (ticket 08) — nothing yet
-  builds or sends a `PushEnvelope`.
+  entry alone now holds it up. **The cycle itself — the scheduler job, the holdings/push HTTP
+  client, and everything that writes `centralpush/status.py` — landed with M14 ticket 08**:
+  `centralpush/client.py` is the stdlib-`urllib`-only transport (hard constraint — no
+  `httpx`/`requests` in the product) — `GET /v1/holdings` and `POST /v1/push`, every request
+  carrying `Authorization: Bearer <Push Token>`, with **separate connect and read timeouts**
+  (`CENTRAL_PUSH_CONNECT_TIMEOUT_SEC`/`CENTRAL_PUSH_READ_TIMEOUT_SEC`) that plain
+  `urlopen(timeout=)` cannot express — a small `http.client.HTTPConnection` subclass fixes the
+  connect timeout before `connect()` and re-`settimeout`s the live socket for reads, wired into
+  `urllib.request` through a custom opener; a non-2xx, a timeout or an unreachable host all
+  collapse into one `PushRequestError` carrying only the failure's class name, never the URL or
+  the token. `centralpush/cycle.py`'s `central_push_cycle()` is the `central_push` Scheduler job
+  (`jobs/scheduler.py`), registered **last**, one behind `dbdest_sync` — the cycle asks holdings
+  first, sends the meter roster as a full snapshot every time (`send_when_empty=True`, the only
+  way the server learns every device is gone), then billing/Energy Summary/load profile gated
+  per kind by `feature_enabled` (background-path shape, no `Request`) and each kind's own
+  `updated_at`/`read_at` watermark from the holdings answer — load profile's is rewound by
+  `CENTRAL_PUSH_LOAD_PROFILE_REWIND_SEC` (60 s, ADR 0024's "small safety margin"; deliberately
+  smaller than `DBDEST_WATERMARK_REWIND_SEC`'s 3600 s, which exists for a timezone-crossing
+  hazard — ADR 0021 — this wire, carrying an explicit UTC offset, does not have). A device with
+  no known Meter Serial is skipped and counted, for every kind including the roster; any HTTP
+  failure — the holdings read or a push — ends the whole cycle `"skipped"` right there, with no
+  retry inside the cycle (the next cycle's holdings answer is the retry) — `CycleOutcome` is now
+  `Literal["success", "skipped"]` (renamed from ticket 07's `"unreachable"`/`"timed_out"`, its
+  own reviewer's nit, to match this wording). Tests (`test_central_push_cycle.py`) run against
+  `fake_central_push_receiver.py`, an in-process `ThreadingHTTPServer` implementing contract
+  version 1 on `127.0.0.1:0` — an ephemeral port so `pytest -n auto` workers never collide —
+  verifying the Push Token with `verify_push_token` and upserting on the contract's own natural
+  keys; every test asserts only on what it holds.
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
@@ -461,9 +489,9 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
   `token=` become `[REDACTED]`.
 - **Auth is user JWT only** — no API keys, no inbound M2M surface. Data leaves the box only
   through a **Data-out Destination we drive outbound** — the Database Destination
-  (ADR 0016/0020/0021, issue #46, `dataout/`) and the central-server push (SPEC §3.8, still
-  unbuilt), which are **two transports and two contracts, not one** (SPEC §3.10). Nothing
-  external reads our tables.
+  (ADR 0016/0020/0021, issue #46, `dataout/`) and the central-server push (SPEC §3.8, ADR
+  0024, `centralpush/`, M14 ticket 08), which are **two transports and two contracts, not
+  one** (SPEC §3.10). Nothing external reads our tables.
 - **English-only UI** — no Thai strings in `web/` (v1 had them; do not carry them over).
 
 ## v1 as reference (read-only)

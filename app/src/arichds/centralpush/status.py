@@ -10,9 +10,8 @@ It resets on restart, and that is correct rather than a gap: the API page's
 status card answers *"is the push working right now"*, and a service that
 just came up has no answer to that yet.
 
-**Ticket 07 never calls** :func:`set_last_cycle` — nothing here runs a
-cycle yet, so :func:`last_cycle` answers ``None`` until ticket 08 wires the
-scheduler job that populates it.
+**Ticket 08** is what calls :func:`set_last_cycle` — `centralpush/cycle.py`'s
+scheduler job.
 """
 
 from __future__ import annotations
@@ -22,10 +21,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-#: What a cycle ended as (SPEC story 12): it ran and finished, the server
-#: could not be reached (or refused, or timed out on read), or the cycle's
-#: own wall-clock budget ran out mid-way.
-CycleOutcome = Literal["success", "unreachable", "timed_out"]
+#: What a cycle ended as (SPEC story 12). ``"skipped"`` covers every failure
+#: the ticket names as one word — unreachable, refused, timed out on
+#: connect or read, or a non-2xx response — because from the API page's
+#: point of view they are the same fact: nothing new reached the server this
+#: pass, and *why* lives in :attr:`CycleStatus.error`, not in a second
+#: outcome value.
+CycleOutcome = Literal["success", "skipped"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,9 +46,11 @@ class CycleStatus:
         skipped_rows: Rows whose device has no known Meter Serial, and were
             therefore not sent (SPEC story 14).
         duration_sec: Wall clock for the whole cycle.
-        error: The failure that ended the cycle, or ``None``. A cycle that
-            stopped on its time budget is `"timed_out"` in *outcome*, not an
-            *error* — it stopped cleanly and resumes next tick.
+        error: The failure's class name (never the URL or the token) when
+            *outcome* is `"skipped"`, else ``None``. A cycle that stopped on
+            its own time budget is *not* an error — it stopped cleanly with
+            *outcome* `"success"` and resumes next tick from wherever it got
+            to.
     """
 
     ran_at: datetime

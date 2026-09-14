@@ -37,14 +37,17 @@ from arichds.acquisition.load_profile import (
 )
 from arichds.acquisition.locks import endpoint_locks
 from arichds.acquisition.status import DeviceStatus
+from arichds.centralpush.cycle import central_push_cycle
 from arichds.config import Settings
 from arichds.constants import (
     BACKUP_INTERVAL_SEC,
     BATTERY_INTERVAL_SEC,
     BILLING_INTERVAL_SEC,
+    CENTRAL_PUSH_INTERVAL_SEC,
     CSV_EXPORT_INTERVAL_SEC,
     DBDEST_SYNC_INTERVAL_SEC,
     ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
+    JOB_CENTRAL_PUSH,
     JOB_DBDEST_SYNC,
     JOB_ENERGY_SUMMARY_RECOMPUTE,
     JOB_LP_CSV_TRIM,
@@ -547,16 +550,16 @@ class TestSchedulerMasterSwitch:
 
 
 class TestTheDefaultRegistry:
-    """D12 — nine jobs at M14 ticket 05 (`lp_csv_trim`, ADR 0023, inserted
-    immediately behind `retention`). M8's central-server push adds its own
-    one line at the end, still unbuilt."""
+    """D12 — ten jobs at M14 ticket 08 (`central_push`, ADR 0024, added last,
+    one behind `dbdest_sync` — the second job that talks to a machine we do
+    not own)."""
 
-    def test_it_holds_all_nine_jobs_in_order(self) -> None:
+    def test_it_holds_all_ten_jobs_in_order(self) -> None:
         jobs = default_jobs()
 
-        # Asserted deliberately so that whoever adds M8's push has to come
+        # Asserted deliberately so that whoever adds the next job has to come
         # here and update the count on purpose.
-        assert len(jobs) == 9
+        assert len(jobs) == 10
         assert [job.name for job in jobs] == [
             "load_profile",
             "energy_summary_recompute",
@@ -567,6 +570,7 @@ class TestTheDefaultRegistry:
             "retention",
             "lp_csv_trim",
             "dbdest_sync",
+            "central_push",
         ]
         assert [job.interval_sec for job in jobs] == [
             LOAD_PROFILE_INTERVAL_SEC,
@@ -578,6 +582,7 @@ class TestTheDefaultRegistry:
             RETENTION_INTERVAL_SEC,
             LP_CSV_TRIM_INTERVAL_SEC,
             DBDEST_SYNC_INTERVAL_SEC,
+            CENTRAL_PUSH_INTERVAL_SEC,
         ]
         assert [job.fn for job in jobs] == [
             load_profile_cycle,
@@ -589,7 +594,14 @@ class TestTheDefaultRegistry:
             purge_expired,
             csv_trim_cycle,
             database_destination_cycle,
+            central_push_cycle,
         ]
+
+    def test_central_push_is_registered_last_behind_dbdest_sync(self) -> None:
+        names = [job.name for job in default_jobs()]
+
+        assert names.index(JOB_CENTRAL_PUSH) == names.index(JOB_DBDEST_SYNC) + 1
+        assert names[-1] == JOB_CENTRAL_PUSH
 
     def test_lp_csv_trim_is_registered_immediately_behind_retention(self) -> None:
         """Ticket 05 — the daily trim runs right behind the daily purge, at
@@ -638,17 +650,19 @@ class TestTheDefaultRegistry:
         """A function, not a module constant — one ``setattr`` swaps it whole."""
         assert default_jobs() is not default_jobs()
 
-    def test_the_database_destination_sync_is_registered_last(self) -> None:
-        """Issue #46. **Last, deliberately**: it is the only network job that
-        can legitimately consume its whole budget, and everything ahead of it
-        is a meter read or a local disk job that should not queue behind it
-        within a pass (jobs run sequentially on one thread).
+    def test_the_database_destination_sync_is_registered_second_to_last(self) -> None:
+        """Issue #46, **superseded by M14 ticket 08** (ADR 0024): the
+        Database Destination sync was last until `central_push` (below) took
+        that slot — it is still the last **local-vs-customer** network job,
+        one ahead of the second machine we do not own, and everything ahead
+        of both is a meter read or a local disk job that should not queue
+        behind either within a pass (jobs run sequentially on one thread).
         """
         jobs = default_jobs()
 
-        assert jobs[-1].name == JOB_DBDEST_SYNC
-        assert jobs[-1].interval_sec == DBDEST_SYNC_INTERVAL_SEC
-        assert jobs[-1].fn is database_destination_cycle
+        assert jobs[-2].name == JOB_DBDEST_SYNC
+        assert jobs[-2].interval_sec == DBDEST_SYNC_INTERVAL_SEC
+        assert jobs[-2].fn is database_destination_cycle
 
     def test_the_sync_interval_is_its_own_constant_not_the_load_profile_one(self) -> None:
         """`CSV_EXPORT_INTERVAL_SEC` aliases `LOAD_PROFILE_INTERVAL_SEC`
