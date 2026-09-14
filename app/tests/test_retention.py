@@ -20,7 +20,7 @@ from sqlalchemy import event, select
 from arichds.acquisition.load_profile import read_and_store_load_profile
 from arichds.config import Settings
 from arichds.constants import LOAD_PROFILE_BACKFILL_DAYS, METER_LOCAL_UTC_OFFSET_HOURS, RETENTION_DAYS, SOURCE_DLMS
-from arichds.db.models import BillingReading, Device, DeviceEvent, EnergySummaryDay, LoadProfileReading
+from arichds.db.models import BillingReading, Device, DeviceEvent, EnergySummaryDay, HolidayChange, LoadProfileReading
 from arichds.db.retention import purge_expired
 from arichds.db.session import get_engine, session_scope
 
@@ -348,6 +348,38 @@ class TestEnergySummaryDaysRetention:
         purge_expired(now=NOW)
 
         assert stored_energy_summary_dates(device_id) == {window_start, local_today}
+
+
+def seed_holiday_changes(*moments: datetime) -> None:
+    """Record one Holiday Change per moment."""
+    with session_scope() as session:
+        session.add_all(
+            HolidayChange(username="admin", action="add", holiday_kind="annual", created_at=moment)
+            for moment in moments
+        )
+
+
+def stored_holiday_change_times() -> list[datetime]:
+    with session_scope() as session:
+        return [
+            value.replace(tzinfo=UTC)
+            for value in session.scalars(select(HolidayChange.created_at).order_by(HolidayChange.created_at))
+        ]
+
+
+class TestHolidayChangesRetention:
+    """ADR 0022, M14 ticket 06 — `holiday_changes` goes uniformly with
+    `device_events`, cut on `created_at` at the same UTC cutoff.
+    """
+
+    def test_changes_older_than_the_cutoff_go_and_the_rest_stay(self, migrated_db: Settings) -> None:
+        expired = NOW - timedelta(days=RETENTION_DAYS + 1)
+        kept = NOW - timedelta(days=RETENTION_DAYS - 1)
+        seed_holiday_changes(expired, kept)
+
+        purge_expired(now=NOW)
+
+        assert stored_holiday_change_times() == [kept]
 
 
 class TestAnEmptyDatabase:

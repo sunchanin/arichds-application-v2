@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   DatePicker,
+  Drawer,
   Empty,
   Flex,
   Form,
@@ -26,6 +27,9 @@ import {
   type CatalogEntry,
   type Device,
   type Holiday,
+  type HolidayChange,
+  type HolidayChangeAction,
+  type HolidayChangePage,
   type HolidayInput,
   type HolidayKind,
 } from "../api";
@@ -33,9 +37,32 @@ import {
 /** Shown wherever a value is absent. */
 const NOTHING = "—";
 
+/** How many Holiday Change rows one Drawer page holds. The API pages
+ * server-side (antd-ui: a list that can grow, mirrors the Devices page's
+ * own History drawer). */
+const CHANGES_PAGE_SIZE = 50;
+
 /** How one holiday's day is shown, regardless of kind. */
 function holidayDay(row: Holiday): string {
   return row.kind === "public" ? (row.date ?? NOTHING) : `${row.month}/${row.day} (every year)`;
+}
+
+/** How one recorded Holiday Change describes the action it names (ADR 0022,
+ * M14 ticket 06). */
+const CHANGE_ACTION_LABEL: Record<HolidayChangeAction, string> = {
+  add: "Added",
+  edit: "Edited",
+  delete: "Deleted",
+  import_csv: "Imported (JSON)",
+  import_meter: "Imported (meter)",
+};
+
+/** The day or count one Holiday Change record names — a day for the three
+ * single-Holiday actions, a count for the two imports. */
+function changeSubject(row: HolidayChange): string {
+  if (row.count !== null) return `${row.count} holiday(s)`;
+  const day = row.holiday_kind === "public" ? (row.holiday_date ?? NOTHING) : `${row.holiday_month}/${row.holiday_day}`;
+  return `${row.holiday_name ?? NOTHING} (${day})`;
 }
 
 interface HolidayFormValues {
@@ -179,6 +206,10 @@ export function Holidays({ role }: { role: "admin" | "user" }) {
   const [meterDeviceId, setMeterDeviceId] = useState<number | undefined>(undefined);
   const [importingFromMeter, setImportingFromMeter] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [changesOpen, setChangesOpen] = useState(false);
+  const [changesPage, setChangesPage] = useState(1);
+  const [changesData, setChangesData] = useState<HolidayChangePage | null>(null);
+  const [changesLoading, setChangesLoading] = useState(false);
 
   const surface = useCallback(
     (err: unknown, fallback: string) => {
@@ -230,6 +261,36 @@ export function Holidays({ role }: { role: "admin" | "user" }) {
     [devices, supportedModels],
   );
 
+  const openChanges = () => {
+    setChangesData(null);
+    setChangesPage(1);
+    setChangesOpen(true);
+  };
+
+  useEffect(() => {
+    if (!changesOpen) return;
+    let live = true;
+    // The drawer's own spinner — every other setState here lands in a
+    // promise callback once the API answers (mirrors Devices.tsx's History
+    // drawer, the same server-paginated-list shape).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setChangesLoading(true);
+    api
+      .listHolidayChanges(CHANGES_PAGE_SIZE, (changesPage - 1) * CHANGES_PAGE_SIZE)
+      .then((page) => {
+        if (live) setChangesData(page);
+      })
+      .catch((err: unknown) => {
+        if (live) surface(err, "Could not load the Holiday Change record.");
+      })
+      .finally(() => {
+        if (live) setChangesLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [changesOpen, changesPage, surface]);
+
   const onDelete = (row: Holiday) => {
     api
       .deleteHoliday(row.id)
@@ -263,6 +324,7 @@ export function Holidays({ role }: { role: "admin" | "user" }) {
       .importHolidays(document)
       .then((imported) => {
         message.success(`Imported ${imported.length} holiday(s).`);
+        notifyEnergySummaryWillRecompute(notification);
         load();
       })
       .catch((err: unknown) => surface(err, "Could not import the file."));
@@ -300,6 +362,7 @@ export function Holidays({ role }: { role: "admin" | "user" }) {
                 ? `Imported ${result.imported.length} holiday(s), skipped ${result.skipped} duplicate(s) from the meter.`
                 : `Imported ${result.imported.length} holiday(s).`,
             );
+            notifyEnergySummaryWillRecompute(notification);
             load();
           })
           .catch((err: unknown) => surface(err, "Could not import from the meter."))
@@ -387,6 +450,7 @@ export function Holidays({ role }: { role: "admin" | "user" }) {
               </Button>
             </>
           ) : null}
+          <Button onClick={openChanges}>Change history</Button>
         </Flex>
       </Card>
       <Card size="small">
@@ -409,6 +473,40 @@ export function Holidays({ role }: { role: "admin" | "user" }) {
           surface={surface}
         />
       ) : null}
+      <Drawer open={changesOpen} onClose={() => setChangesOpen(false)} width={560} title="Holiday Change record">
+        <Table<HolidayChange>
+          size="small"
+          rowKey={(row) => row.id}
+          loading={changesLoading}
+          dataSource={changesData?.items ?? []}
+          pagination={{
+            current: changesPage,
+            pageSize: CHANGES_PAGE_SIZE,
+            total: changesData?.total ?? 0,
+            showSizeChanger: false,
+            onChange: setChangesPage,
+          }}
+          locale={{ emptyText: <Empty description="No holiday changes recorded" /> }}
+          columns={CHANGE_COLUMNS}
+        />
+      </Drawer>
     </Space>
   );
 }
+
+const CHANGE_COLUMNS: ColumnsType<HolidayChange> = [
+  {
+    title: "When",
+    dataIndex: "created_at",
+    key: "created_at",
+    render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm"),
+  },
+  { title: "Who", dataIndex: "username", key: "username" },
+  {
+    title: "What",
+    dataIndex: "action",
+    key: "action",
+    render: (action: HolidayChangeAction) => CHANGE_ACTION_LABEL[action],
+  },
+  { title: "Holiday / count", key: "subject", render: (_: unknown, row: HolidayChange) => changeSubject(row) },
+];

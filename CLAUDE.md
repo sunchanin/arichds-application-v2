@@ -254,8 +254,16 @@ MySQL, and ~30 tables.
   computation is retired with it: `HolidayMutationOut` dropped `affected_date`/
   `energy_files_written_past`, `db/energy_query.py::most_recent_occurrence`/
   `energy_files_written_past` are deleted, and the page shows one fixed "will be recalculated
-  within 15 minutes" notice on every Holiday change instead. **The Holiday Change log itself is
-  still not implemented** — a separate ticket, never ticket 04's) ·
+  within 15 minutes" notice on every Holiday change instead. **The Holiday Change log itself
+  landed with M14 ticket 06**: migration 0019's `holiday_changes` (no `device_id`, machine-wide
+  like `holidays`) is written in the same transaction as each of the five mutation paths —
+  `api/holidays.py`'s `_record_holiday_change`/`_record_import_change`, called before the one
+  `session.commit()` each handler already had, so a refused mutation (a collision, a 29 February
+  annual) records nothing and a commit failure rolls both writes back together — and also logged
+  to the App Log; `GET /api/holidays/changes` reads it newest-first under the router's existing
+  `energy_summary` gate, open to any signed-in role; `db/retention.py` purges it on `created_at`
+  alongside `device_events`; the recalculation notice now also fires after both imports, which
+  ticket 04 had left out) ·
   0023 (export files **mirror our window and are rewritten, never archived** — **supersedes 0013's
   M13 amendment**, extends 0020 to the export folder: Load Profile CSV and Energy file hold 90
   days, the Billing file every closed period; LP appends and is trimmed daily with retention, the

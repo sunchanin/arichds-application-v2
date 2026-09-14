@@ -16,10 +16,15 @@ recalculated within 15 minutes" notice on every Holiday change
 (`web/src/pages/Holidays.tsx::notifyEnergySummaryWillRecompute`), replacing M13 issue 03's
 per-change "these energy files may be stale" computation — `HolidayMutationOut` dropped
 `affected_date`/`energy_files_written_past`, and `db/energy_query.py::most_recent_occurrence`/
-`energy_files_written_past` are gone. **The Holiday Change log itself — a `holiday_changes` table
-recording who/when/which day for all five mutation paths — is still not implemented**: that is a
-separate ticket, not ticket 04, which only had to retire the fields ticket 04's own column drop
-(`devices.energy_exported_through`, migration 0018) made unreadable.
+`energy_files_written_past` are gone. **The Holiday Change log itself landed with M14 ticket 06**:
+migration 0019's `holiday_changes` table (no `device_id`, machine-wide like `holidays`), written
+in the same transaction as all five mutation paths (`api/holidays.py`'s
+`_record_holiday_change`/`_record_import_change`, called before each handler's one
+`session.commit()`) and also logged to the App Log
+(`_log_holiday_change`/`_log_import_change`); `GET /api/holidays/changes` reads it back
+newest-first under the router's existing `energy_summary` licence gate, open to any signed-in
+role; retention purges it on `created_at` alongside `device_events`; the recalculation notice
+now also fires after both imports, which it had not before ticket 06.
 
 ADR 0012 made the Energy Summary a live derivation with no table, deliberately not reproducible,
 so that a Holiday entered late would move the numbers toward the truth. That rested on one

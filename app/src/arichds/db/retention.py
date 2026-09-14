@@ -15,6 +15,10 @@ window start the recompute job (:mod:`arichds.db.energy_summary_store`) itself
 maintains: a UTC cutoff here could delete a day the recompute just wrote, or leave one
 extra day past the window depending on which side of local midnight it landed.
 
+``holiday_changes`` (ADR 0022, M14 ticket 06) goes uniformly with ``device_events`` —
+cut on ``created_at`` at the same UTC cutoff — because it lasts exactly as long as the
+Energy Summary rows it explains.
+
 It lives under ``db/`` rather than ``acquisition/`` because it reads no meter,
 builds no driver and takes no Transport Endpoint lock: its domain is the rows.
 
@@ -40,7 +44,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import InstrumentedAttribute
 
 from arichds.constants import METER_LOCAL_UTC_OFFSET_HOURS, RETENTION_DAYS, RETENTION_DELETE_BATCH_SIZE
-from arichds.db.models import DeviceEvent, EnergySummaryDay, LoadProfileReading
+from arichds.db.models import DeviceEvent, EnergySummaryDay, HolidayChange, LoadProfileReading
 from arichds.db.session import session_scope
 
 logger = logging.getLogger(__name__)
@@ -76,6 +80,7 @@ def purge_expired(*, now: datetime | None = None, batch_size: int = RETENTION_DE
     cutoff = now_utc - timedelta(days=RETENTION_DAYS)
     readings = _purge(LoadProfileReading, LoadProfileReading.read_at, cutoff, batch_size)
     events = _purge(DeviceEvent, DeviceEvent.created_at, cutoff, batch_size)
+    holiday_changes = _purge(HolidayChange, HolidayChange.created_at, cutoff, batch_size)
 
     # The same local-day shift as `arichds.db.energy_query.local_today`, and the
     # same window start the recompute job maintains: `local_today - (RETENTION_DAYS - 1)`.
@@ -85,10 +90,11 @@ def purge_expired(*, now: datetime | None = None, batch_size: int = RETENTION_DE
     energy_summary_days = _purge(EnergySummaryDay, EnergySummaryDay.local_date, energy_summary_cutoff, batch_size)
 
     logger.info(
-        "Retention removed %d Interval Reading(s) and %d Device Event(s) older than %s, "
+        "Retention removed %d Interval Reading(s), %d Device Event(s) and %d Holiday Change(s) older than %s, "
         "and %d Energy Summary day(s) older than %s",
         readings,
         events,
+        holiday_changes,
         cutoff.isoformat(),
         energy_summary_days,
         energy_summary_cutoff.isoformat(),
@@ -96,7 +102,7 @@ def purge_expired(*, now: datetime | None = None, batch_size: int = RETENTION_DE
 
 
 def _purge(
-    model: type[LoadProfileReading] | type[DeviceEvent] | type[EnergySummaryDay],
+    model: type[LoadProfileReading] | type[DeviceEvent] | type[EnergySummaryDay] | type[HolidayChange],
     column: InstrumentedAttribute[datetime] | InstrumentedAttribute[date],
     cutoff: datetime | date,
     batch_size: int,

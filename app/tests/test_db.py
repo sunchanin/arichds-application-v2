@@ -38,8 +38,8 @@ class TestMigration:
 
     def test_only_the_shipped_modules_tables_exist(self, migrated_db: Settings) -> None:
         """M1 landed two tables, M2-1 two more and M3-2 one; M6a and M6b add
-        one each; M7-1 adds two more and M7-2 one more; M14 ticket 01 adds one
-        more; the rest arrive with their own modules.
+        one each; M7-1 adds two more and M7-2 one more; M14 tickets 01 and 06
+        add one more each; the rest arrive with their own modules.
 
         ``device_events`` is the only table M3 adds. There is deliberately no
         ``device_status`` and no ``device_heartbeats`` beside it (ADR 0004):
@@ -53,10 +53,12 @@ class TestMigration:
         followed — an hourly snapshot, never a computed or live value (ADR
         0007 still holds: it is a stored status, not an instantaneous read).
         ``energy_summary_days`` (ADR 0022, supersedes ADR 0012; M14 ticket 01)
-        is the eleventh and, as of this module, the last: the Summary Report
-        moved from a live aggregation to one stored row per meter per local
-        day, recomputed over the whole retention window every scheduler
-        cycle — a device's rows go with the device.
+        followed: the Summary Report moved from a live aggregation to one
+        stored row per meter per local day, recomputed over the whole
+        retention window every scheduler cycle — a device's rows go with the
+        device. ``holiday_changes`` (ADR 0022, M14 ticket 06) is the twelfth
+        and, as of this module, the last: one row per Holiday mutation,
+        machine-wide like ``holidays`` itself — no ``device_id``.
         """
         tables = set(inspect(get_engine()).get_table_names()) - {"alembic_version"}
         assert tables == {
@@ -71,6 +73,7 @@ class TestMigration:
             "energy_register_readings",
             "battery_readings",
             "energy_summary_days",
+            "holiday_changes",
         }
 
     def test_wal_is_enabled(self, migrated_db: Settings) -> None:

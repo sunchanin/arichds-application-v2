@@ -1371,7 +1371,8 @@ watermark ที่เลื่อนเมื่อ ACK · หัวข้อ�
   `interval_status_flag` + `source` + `interval_sec`; §3.5 คือที่มา) ·
   `billing_readings` · `energy_register_readings` · `battery_readings` ·
   `holidays` · `settings` (key/value) · `users` · `user_tokens` · **ตาราง Energy Summary รายวัน** ·
-  **ตาราง Holiday Change** (ADR 0022 — ชื่อตารางตัดสินตอน `/to-spec`) · ~~`sync_state`~~ **ตัดทิ้ง** (ADR 0024 —
+  `holiday_changes` (ADR 0022, M14 ticket 06 — บันทึกทุก mutation ของ Holiday ทั้ง 5 ทาง: who/when/
+  which day หรือ count, ไม่มี `device_id` เหมือน `holidays`) · ~~`sync_state`~~ **ตัดทิ้ง** (ADR 0024 —
   push ถาม server แทนการจำ · ไม่เคยถูกสร้าง)
   — **`billing_captures` ถูกตัดออกที่ grill M6 (2026-08-09)**: มัน**ไม่เคยมีอยู่ใน v1** (grep ทั้งรีโป
   ได้ศูนย์ผลลัพธ์) และถูกนับเข้ามาตอนวางแผนโดยเข้าใจผิดว่ายกมาจาก v1 · v1 ตัดสินไว้ที่

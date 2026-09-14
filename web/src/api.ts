@@ -590,6 +590,38 @@ export interface HolidayImportFromMeterResult {
   skipped: number;
 }
 
+/** Which of the five ways a Holiday moves one recorded change names
+ * (ADR 0022, M14 ticket 06; CONTEXT.md — Holiday Change). */
+export type HolidayChangeAction = "add" | "edit" | "delete" | "import_csv" | "import_meter";
+
+/**
+ * One recorded Holiday Change, from `GET /api/holidays/changes` — who made a
+ * Holiday mutation, when, and which day it names (or how many Holidays an
+ * import brought in). `holiday_*` fields are set for `add`/`edit`/`delete`
+ * and `null` for the two imports; `count` is the reverse.
+ */
+export interface HolidayChange {
+  id: number;
+  created_at: string;
+  username: string;
+  action: HolidayChangeAction;
+  holiday_kind: HolidayKind | null;
+  holiday_name: string | null;
+  holiday_date: string | null;
+  holiday_month: number | null;
+  holiday_day: number | null;
+  count: number | null;
+}
+
+/** One page of the Holiday Change record. `total` is the unpaged count the
+ * pager needs — mirrors {@link DeviceEventPage}. */
+export interface HolidayChangePage {
+  items: HolidayChange[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 /**
  * One entry off a meter's own Special Days Table, from `GET /api/special-days`
  * (M7-1, issue #28) — read-through, never stored. The annual/public split
@@ -1445,7 +1477,7 @@ export const api = {
   /** Every stored Holiday, machine-wide. Any authenticated role. */
   listHolidays: () => request<Holiday[]>("/api/holidays"),
 
-  /** Add one Holiday — admin-only. Reports any energy files the change may have left stale. */
+  /** Add one Holiday — admin-only. */
   createHoliday: (input: HolidayInput) =>
     request<HolidayMutation>("/api/holidays", { method: "POST", body: JSON.stringify(input) }),
 
@@ -1474,6 +1506,12 @@ export const api = {
 
   /** Read one device's Special Days Table now, read-through — nothing is stored. */
   specialDays: (deviceId: number) => request<SpecialDaysReadResult>(`/api/special-days?device_id=${deviceId}`),
+
+  /** One page of the Holiday Change record, newest first (ADR 0022, M14
+   * ticket 06) — server-paginated like {@link api.deviceEvents}. Any
+   * authenticated role. */
+  listHolidayChanges: (limit: number, offset: number) =>
+    request<HolidayChangePage>(`/api/holidays/changes?limit=${limit}&offset=${offset}`),
 
   /**
    * One page of stored Battery Readings (M7-2, issue #29), newest

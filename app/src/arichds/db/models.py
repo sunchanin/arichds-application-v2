@@ -550,6 +550,52 @@ class Holiday(Base):
     )
 
 
+class HolidayChange(Base):
+    """One recorded Holiday mutation — who, when, and which day (ADR 0022,
+    M14 ticket 06; CONTEXT.md — Holiday Change).
+
+    Written in the **same transaction** as the Holiday mutation it records, on
+    all five ways a Holiday moves: ``add``/``edit``/``delete`` (one Holiday) and
+    ``import_csv``/``import_meter`` (a whole-set replace). A mutation the API
+    refuses — a colliding Holiday, a 29 February annual Holiday — never reaches
+    the write path, so it records nothing (ADR 0008: no state for work that
+    didn't happen). No ``device_id``, same as :class:`Holiday` — the calendar
+    is machine-wide.
+
+    Attributes:
+        id: Surrogate primary key.
+        created_at: When the change was made (UTC).
+        username: The signed-in user who made it.
+        action: ``"add"``, ``"edit"``, ``"delete"``, ``"import_csv"`` or
+            ``"import_meter"``.
+        holiday_kind: The changed Holiday's kind, for the three single-Holiday
+            actions. ``None`` for an import.
+        holiday_name: The changed Holiday's name, for the three single-Holiday
+            actions. ``None`` for an import.
+        holiday_date: The changed Holiday's exact date (``public`` only).
+        holiday_month: The changed Holiday's recurring month (``annual`` only).
+        holiday_day: The changed Holiday's recurring day-of-month (``annual``
+            only).
+        count: How many Holidays the import brought in, for the two import
+            actions. ``None`` for a single-Holiday action.
+    """
+
+    __tablename__ = "holiday_changes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    username: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(16))
+    holiday_kind: Mapped[str | None] = mapped_column(String(16), default=None)
+    holiday_name: Mapped[str | None] = mapped_column(String(128), default=None)
+    holiday_date: Mapped[date | None] = mapped_column(Date, default=None)
+    holiday_month: Mapped[int | None] = mapped_column(default=None)
+    holiday_day: Mapped[int | None] = mapped_column(default=None)
+    count: Mapped[int | None] = mapped_column(default=None)
+
+    __table_args__ = (Index("ix_holiday_changes_created_at", "created_at"),)
+
+
 class EnergyRegisterReading(Base):
     """One dated snapshot of a meter's cumulative Energy Registers (M7-1,
     issue #28; CONTEXT.md — Energy Registers).
