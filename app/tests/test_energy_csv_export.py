@@ -262,18 +262,21 @@ class TestTheOnDemandSave:
         agrees with the screen is produced."""
         device_id = make_device()
         configure(output_dir=tmp_path)
-        yesterday = local_today() - timedelta(days=1)
-        set_watermark(device_id, yesterday - timedelta(days=1))
-        seed_day(device_id, yesterday, kwh=40.0, hour_local=10)
+        # A weekday: a weekend day is already Holiday, so adding one would change nothing.
+        day = local_today() - timedelta(days=1)
+        while day.weekday() >= 5:
+            day -= timedelta(days=1)
+        set_watermark(device_id, day - timedelta(days=1))
+        seed_day(device_id, day, kwh=40.0, hour_local=10)
         export_device_energy(device_id, require_auto_save=True)
         archived = data_rows(tmp_path / "SN-1-energy.csv")[0]
 
         with session_scope() as session:
-            session.add(Holiday(kind="public", date=yesterday, name="Declared late"))
+            session.add(Holiday(kind="public", date=day, name="Declared late"))
 
-        export_energy_range(device_id, yesterday, yesterday)
+        export_energy_range(device_id, day, day)
 
-        corrected = data_rows(tmp_path / f"SN-1-energy-{yesterday.isoformat()}-to-{yesterday.isoformat()}.csv")[0]
+        corrected = data_rows(tmp_path / f"SN-1-energy-{day.isoformat()}-to-{day.isoformat()}.csv")[0]
         holiday_column = ENERGY_EXPORT_HEADERS.index("Holiday Import (kWh)")
         assert archived[holiday_column] != corrected[holiday_column]
         assert corrected[holiday_column] == "40"
