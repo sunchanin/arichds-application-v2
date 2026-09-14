@@ -2,7 +2,10 @@
 
 Status: accepted (2026-09-14, owner decision during the M14 grill — customer requirement E4).
 Settles SPEC §3.8's open question on the field-level contract and on how the server verifies a
-token. Not yet implemented.
+token. Partially implemented: M14 ticket 03 landed the Push Token issue/verify primitive, and
+ticket 07 landed the configuration, the admin endpoints and the published contract (see
+CLAUDE.md's digest for both). The push cycle itself — the scheduler job, the holdings/push HTTP
+client, and everything that writes `centralpush/status.py` — is ticket 08, still unbuilt.
 
 The customer's requirement E4 is one word — `"API"`, sheet 13, cell P17 — which the owner has
 confirmed means ARICHDS pushes outward. v1 has **no data push to copy**: its only outbound HTTP is

@@ -820,6 +820,92 @@ export interface DatabaseDestinationTest {
   server_version: string | null;
 }
 
+/**
+ * What the last Central Push cycle did (ADR 0024, ticket 07).
+ *
+ * In memory on the service only (ADR 0008), the same shape
+ * `DatabaseDestinationSyncStatus` has. Always `null` before ticket 08 lands
+ * the job that populates it, and on every restart after.
+ */
+export interface CentralPushCycleStatus {
+  ran_at: string;
+  outcome: string;
+  meters_rows: number;
+  billing_rows: number;
+  energy_summary_rows: number;
+  load_profile_rows: number;
+  skipped_rows: number;
+  duration_sec: number;
+  error: string | null;
+}
+
+/**
+ * The Central Push configuration (ADR 0024, ticket 07).
+ *
+ * **There is no `token` field, by design** — write-only, never returned.
+ * `token_set` is what lets the form show "token set" rather than an empty
+ * box that reads as cleared.
+ */
+export interface CentralPushSettings {
+  /** `""` disables the push. */
+  url: string;
+  token_set: boolean;
+  last_cycle: CentralPushCycleStatus | null;
+}
+
+/**
+ * The body `PUT /api/settings/central-push` takes.
+ *
+ * **Omit `token` to keep the stored one; send `""` to clear it; send a
+ * pasted token to have it verified and, if accepted, stored.**
+ */
+export interface CentralPushUpdate {
+  url: string;
+  token?: string;
+}
+
+/** One field the published contract documents for one item kind. */
+export interface CentralPushContractField {
+  name: string;
+  type: string;
+  description: string;
+}
+
+/** One item kind (`meters` / `billing` / `energy_summary` / `load_profile`) in the published contract. */
+export interface CentralPushContractKind {
+  kind: string;
+  natural_key: string[];
+  replace_whole_roster: boolean;
+  fields: CentralPushContractField[];
+}
+
+/** One of the three lists inside the holdings response (`load_profile` / `billing` / `energy_summary`). */
+export interface CentralPushContractHoldingsEntry {
+  kind: string;
+  fields: CentralPushContractField[];
+}
+
+/**
+ * What `GET /api/settings/central-push/contract` returns — generated from
+ * the same models the push serializes: the four item kinds, plus the
+ * holdings response (`GET .../v1/holdings`) and its three entry lists, plus
+ * the push envelope (`POST .../v1/push`) — every payload model, not just
+ * the item kinds.
+ */
+export interface CentralPushContract {
+  contract_version: number;
+  holdings_endpoint: string;
+  push_endpoint: string;
+  /** The top-level fields of the holdings response (`contract_version`, `load_profile`, `billing`, `energy_summary`). */
+  holdings: CentralPushContractField[];
+  /** The fields inside each of the holdings response's three lists. */
+  holdings_entries: CentralPushContractHoldingsEntry[];
+  /** The fields of one push request's envelope (`contract_version`, `machine_id`, `sent_at`, `kind`, `items`). */
+  envelope: CentralPushContractField[];
+  kinds: CentralPushContractKind[];
+  notes: string[];
+}
+
 /** What `POST /api/load-profile/export` ("Save CSV now") did. */
 export interface LoadProfileExportResult {
   rows_written: number;
@@ -1433,6 +1519,30 @@ export const api = {
    */
   testDatabaseDestination: () =>
     request<DatabaseDestinationTest>("/api/settings/database-destination/test", { method: "POST" }),
+
+  /**
+   * The Central Push configuration and the last cycle's status — admin-only
+   * (ADR 0024, ticket 07): unlike the settings above, even reading this is
+   * gated, because the URL and whether a token is set are machine-internal.
+   */
+  centralPushSettings: () => request<CentralPushSettings>("/api/settings/central-push"),
+
+  /**
+   * Save the Central Push configuration — admin-only. A non-empty `token` is
+   * verified on the spot; a rejected token changes nothing and the promise
+   * rejects with an `ApiRequestError` whose `reason` names the failed check.
+   */
+  updateCentralPushSettings: (settings: CentralPushUpdate) =>
+    request<CentralPushSettings>("/api/settings/central-push", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
+
+  /** The last Central Push cycle's status alone — admin-only. */
+  centralPushStatus: () => request<CentralPushCycleStatus | null>("/api/settings/central-push/status"),
+
+  /** The published Central Push contract — admin-only. */
+  centralPushContract: () => request<CentralPushContract>("/api/settings/central-push/contract"),
 
   /**
    * "Save CSV now" — export one device's pending Interval Readings at once,

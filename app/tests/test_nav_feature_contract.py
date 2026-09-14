@@ -93,7 +93,13 @@ UNSWEPT_PAGES: frozenset[str] = frozenset({"app-log"})
 #: membership unchanged**: the `file_upload_destination` key now exists, but it
 #: is reserved rather than sold, so the page stays `kind: "never"` and therefore
 #: stays ungoverned. See `TestTheReservedFileUploadKeyGatesNothing` below.
-UNGOVERNED_PAGES: frozenset[str] = frozenset({"devices", "users", "settings", "file-upload-destination"})
+#: ``central-push`` joins this set with ticket 07 (ADR 0024): the API page
+#: is admin-only but carries no licence feature key at all — "visible
+#: regardless of licence features" is the spec's own wording — so it is
+#: ``always``, not ``feature``, and never reaches the sweep below.
+UNGOVERNED_PAGES: frozenset[str] = frozenset(
+    {"devices", "users", "settings", "file-upload-destination", "central-push"}
+)
 
 
 def _source() -> str:
@@ -147,7 +153,7 @@ class TestTheRegexesFindSomething:
         `TestThePagesALicenceMayNeverHide` assert over a half-empty dict."""
         kinds = page_entitlement_kinds()
 
-        assert len(kinds) == 14, kinds
+        assert len(kinds) == 15, kinds
         assert set(kinds.values()) == {"feature", "always", "never"}, kinds
 
 

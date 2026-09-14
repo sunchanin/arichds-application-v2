@@ -10,6 +10,7 @@ import { Activation } from "./pages/Activation";
 import { AppLog } from "./pages/AppLog";
 import { Battery } from "./pages/Battery";
 import { Billing } from "./pages/Billing";
+import { CentralPush } from "./pages/CentralPush";
 import { DatabaseDestination } from "./pages/DatabaseDestination";
 import { Devices } from "./pages/Devices";
 import { EnergySummary } from "./pages/EnergySummary";
@@ -190,7 +191,8 @@ export default function App() {
     (page === "users" ||
       page === "app-log" ||
       page === "database-destination" ||
-      page === "file-upload-destination") &&
+      page === "file-upload-destination" ||
+      page === "central-push") &&
     session.role !== "admin"
       ? "devices"
       : page;
@@ -249,6 +251,8 @@ export default function App() {
         <DatabaseDestination />
       ) : active === "file-upload-destination" ? (
         <FileUploadDestination />
+      ) : active === "central-push" ? (
+        <CentralPush />
       ) : (
         <Devices
           role={session.role}

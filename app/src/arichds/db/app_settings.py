@@ -101,6 +101,27 @@ DB_DEST_USER_DEFAULT = ""
 DB_DEST_PASSWORD_KEY = "db_dest_password"
 DB_DEST_PASSWORD_DEFAULT = ""
 
+#: The two Central Push keys (ADR 0024, ticket 07) — the team's own server, a
+#: **different Data-out Destination** from the customer's MySQL above (SPEC
+#: §3.10 — "two transports, do not conflate them"). Machine-wide, same as
+#: every key in this module.
+#:
+#: `""` means "not configured" — same convention as `db_dest_host`. An empty
+#: URL means the push is disabled (ADR 0024, "Opting out").
+CENTRAL_PUSH_URL_KEY = "central_push_url"
+CENTRAL_PUSH_URL_DEFAULT = ""
+
+#: Stored in the clear, the same footing as `db_dest_password`. **The key name
+#: ends in the literal `token` on purpose**: the redaction filter's existing
+#: `(token\\s*[=:]\\s*)\\S+` pattern matches anywhere in a line, so
+#: `central_push_token=…` is already redacted without a new pattern. Renaming
+#: this key to anything not ending in `token` would silently drop that
+#: protection — `test_api_central_push.py` pins it. The API never returns it
+#: (`CentralPushOut` has no `token` field at all); `token_set` is what lets
+#: the form show "token set" instead of an empty box that reads as cleared.
+CENTRAL_PUSH_TOKEN_KEY = "central_push_token"
+CENTRAL_PUSH_TOKEN_DEFAULT = ""
+
 
 def get_setting(session: Session, key: str, default: str) -> str:
     """Return *key*'s stored value, or *default* if the row is absent."""

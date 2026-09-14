@@ -37,7 +37,8 @@ export type Page =
   | "users"
   | "settings"
   | "database-destination"
-  | "file-upload-destination";
+  | "file-upload-destination"
+  | "central-push";
 
 export const PAGES: readonly Page[] = [
   "devices",
@@ -54,6 +55,7 @@ export const PAGES: readonly Page[] = [
   "settings",
   "database-destination",
   "file-upload-destination",
+  "central-push",
 ];
 
 /** Read a menu key as a page, falling back to Devices for anything unrecognised. */
@@ -121,6 +123,14 @@ export const PAGE_ENTITLEMENT: Record<Page, PageEntitlement> = {
   // when M8 / SPEC §3.8 gives the page a transport, not before —
   // `app/tests/test_nav_feature_contract.py` fails if you flip it sooner.
   "file-upload-destination": { kind: "never" },
+  // Ticket 07 (ADR 0024) — admin-only (`AppShell` gates it the way
+  // App Log/Users/the Data-out group are), but carries **no** licence
+  // feature key: "visible regardless of licence features" is the spec's
+  // own wording, because the Central Push is a free capability, not a
+  // sellable one. `always` rather than `feature`, and it therefore never
+  // reaches `test_nav_feature_contract.py`'s per-key sweep — see that
+  // file's `UNGOVERNED_PAGES`.
+  "central-push": { kind: "always" },
 };
 
 /**

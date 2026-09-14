@@ -316,9 +316,33 @@ MySQL, and ~30 tables.
   `MALFORMED`. The other direction gets its own reason: the Push Token verifier recognises
   either licence format by its shape (one dot, a JSON payload naming `arichds`) and refuses it as
   `LICENCE_CODE_NOT_PUSH_TOKEN`, without checking its signature, so an operator who pastes the
-  wrong secret into the Push Token field is told which mistake they made. **Not yet
-  implemented**: the settings, the two endpoints, the scheduler job and the published contract
-  (tickets 07/08) — nothing yet calls `verify_push_token` from an API route).
+  wrong secret into the Push Token field is told which mistake they made.
+  **The configuration, the admin endpoints and the published contract landed with M14 ticket
+  07**: `app/src/arichds/api/central_push.py` is the first caller of `verify_push_token` —
+  `GET`/`PUT /api/settings/central-push` (config: URL + write-only Push Token, `token_set`
+  rather than the token itself, never returned — `CentralPushOut` has no `token` field, and
+  `central_push_token` ends in the literal `token` so the existing redaction filter pattern
+  already covers it with no new pattern), `GET .../status` (always `None` until ticket 08) and
+  `GET .../contract`, all `AdminDep` and gated by **no licence feature key** — ADR 0024's own
+  text, "no separate licence key". Saving a token verifies it and additionally requires its
+  Machine ID to equal `LicenseService.machine_id` (never a new derivation); a rejected token
+  changes nothing and the response names which check failed (`MALFORMED` /
+  `INVALID_SIGNATURE` / `WRONG_PRODUCT` / `UNSUPPORTED_VERSION` /
+  `LICENCE_CODE_NOT_PUSH_TOKEN` / this endpoint's own `WRONG_MACHINE`). `app/src/arichds/
+  centralpush/` is the new module ADR 0024 asks for, separate from `dataout/`: `contract.py`
+  declares contract version 1 as Pydantic models — `LoadProfileItem`/`BillingItem`/
+  `EnergySummaryItem`'s measurement columns are built by walking the ORM model's own columns
+  (`LoadProfileReading`/`BillingReading`/`EnergySummaryDay`) rather than typed out by hand, so
+  "every measured column" cannot go stale — and `render_contract()` renders the published
+  document from `model_fields`, never a hand-written duplicate list, so a field added to a
+  model reaches the API page with no other edit; `status.py` is the in-memory `CycleStatus`
+  slot ticket 08's scheduler job will populate (ADR 0008: no persisted job state). Web: an
+  **API** page under the Data-out group (`web/src/pages/CentralPush.tsx`), admin-only like its
+  two siblings but `kind: "always"` in `features.ts` (no licence key), which also means the
+  Data-out group header no longer disappears on a licence lacking `database_destination` — this
+  entry alone now holds it up. **Not yet implemented**: the scheduler job, the holdings/push
+  HTTP client and everything that writes to `centralpush/status.py` (ticket 08) — nothing yet
+  builds or sends a `PushEnvelope`.
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject

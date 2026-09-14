@@ -1,4 +1,5 @@
 import {
+  ApiOutlined,
   AreaChartOutlined,
   CalendarOutlined,
   CloudServerOutlined,
@@ -143,6 +144,15 @@ type NavGroup = { type: "group"; label: string; children: NavEntry[] };
  * in turn is what lets the group header disappear entirely when the licence
  * omits `database_destination`.
  *
+ * Ticket 07 (ADR 0024) adds the group's third entry, **API** — the Central
+ * Push configuration, status and published contract. Admin-only like its two
+ * siblings, but unlike them it is `kind: "always"` in `features.ts`, not
+ * `"feature"`: the Central Push carries no licence key at all ("visible
+ * regardless of licence features" is the spec's own wording), so it stays in
+ * the menu even on a licence that omits `database_destination` — which also
+ * means the group header itself no longer disappears on such a licence, since
+ * this entry alone is now always there to hold it up for an admin.
+ *
  * The header carries who is signed in, the way to change your own password
  * (every role — the modal is owned here, so no page has to pass a prop for it),
  * and the way out.
@@ -219,6 +229,7 @@ export function AppShell({
             children: [
               { key: "database-destination", icon: <CloudServerOutlined />, label: "Database" },
               { key: "file-upload-destination", icon: <CloudUploadOutlined />, label: "File Upload" },
+              { key: "central-push", icon: <ApiOutlined />, label: "API" },
             ],
           },
         ] satisfies NavGroup[])

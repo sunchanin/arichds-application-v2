@@ -321,6 +321,12 @@ LOG_FILE_BACKUP_COUNT: Final[int] = 5
 # ─── API error codes ──────────────────────────────────────────────────────────
 ERROR_LICENSE_INVALID: Final[str] = "LICENSE_INVALID"
 ERROR_FEATURE_DISABLED: Final[str] = "FEATURE_DISABLED"
+#: Saving a Central Push Token that fails `verify_push_token` or names another
+#: machine (ADR 0024, ticket 07). `reason` on the envelope carries one of
+#: `push_token.MALFORMED` / `INVALID_SIGNATURE` / `WRONG_PRODUCT` /
+#: `UNSUPPORTED_VERSION` / `LICENCE_CODE_NOT_PUSH_TOKEN`, or this endpoint's
+#: own `"WRONG_MACHINE"`.
+ERROR_PUSH_TOKEN_INVALID: Final[str] = "PUSH_TOKEN_INVALID"
 
 # ─── Energy Summary (SPEC/CONTEXT.md, ADR 0012, M7-1 issue #28) ───────────────
 # The Time-of-Use peak window, pre-shifted to UTC for ICT (local 09:00-22:00,
