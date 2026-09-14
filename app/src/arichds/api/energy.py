@@ -2,9 +2,14 @@
 Energy Registers (Meter Registers tab), and its Read now trigger (M7-1,
 issue #28; CONTEXT.md — Energy Summary / Energy Registers).
 
-**The Summary Report is derived, never stored** (ADR 0012): the Peak /
-Off-Peak / Holiday buckets are aggregated out of ``load_profile_readings`` on
-every request, the way ``api/records.py`` counts its cells live. Ported from
+**The Summary Report is stored, and recomputed over the whole retention
+window every scheduler cycle** (ADR 0022, supersedes ADR 0012; M14, ticket
+01): ``GET /api/energy/summary`` below reads ``energy_summary_days`` through
+:func:`arichds.db.energy_summary_store.stored_energy_summary_rows`, never
+re-aggregating ``load_profile_readings`` on the request. The response shape
+and the 31-day bound are unchanged. The Peak / Off-Peak / Holiday
+classification itself is untouched — it still lives in
+:mod:`arichds.db.energy_query`, which the recompute job calls — ported from
 v1 ``cewe-worker/src/load_profile/repository.py`` (``_IS_HOLIDAY_PREDICATE``,
 ``_ENERGY_SUMMARY_SQL``), translated MySQL -> SQLite:
 
@@ -52,7 +57,8 @@ from arichds.constants import (
     MANUAL_READ_LOCK_TIMEOUT_SEC,
 )
 from arichds.db.app_settings import EXPORT_OUTPUT_DIR_DEFAULT, EXPORT_OUTPUT_DIR_KEY, get_setting
-from arichds.db.energy_query import EnergySummaryReport, energy_summary_rows
+from arichds.db.energy_query import EnergySummaryReport
+from arichds.db.energy_summary_store import stored_energy_summary_rows
 from arichds.db.models import Device, EnergyRegisterReading
 from arichds.db.session import session_scope
 from arichds.export.energy_csv import export_energy_range
@@ -85,7 +91,11 @@ def read_energy_summary(
 ) -> ApiResponse[EnergySummaryReport]:
     """Return the Time-of-Use daily totals for one device over a bounded
     range of local dates. Any authenticated role — reading a device's data is
-    not admin-only (matches ``api/records.py``/``api/billing.py``)."""
+    not admin-only (matches ``api/records.py``/``api/billing.py``).
+
+    **Stored, not live** (ADR 0022): this reads ``energy_summary_days``, the
+    recompute job's own table — never ``load_profile_readings`` directly.
+    """
     _require_device_exists(session, device_id)
 
     if end_date < start_date:
@@ -100,7 +110,9 @@ def read_energy_summary(
             detail=f"The range spans {span} days; at most {MAX_DAYS} may be asked for at once.",
         )
 
-    return ApiResponse.ok(EnergySummaryReport(days=energy_summary_rows(session, device_id, start_date, end_date)))
+    return ApiResponse.ok(
+        EnergySummaryReport(days=stored_energy_summary_rows(session, device_id, start_date, end_date))
+    )
 
 
 class EnergyExportOut(BaseModel):

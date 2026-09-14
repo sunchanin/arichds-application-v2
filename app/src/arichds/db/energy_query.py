@@ -13,9 +13,22 @@ The move was **forced** rather than chosen: the exporter importing
 that both a route and a background job need was living in the route's module,
 and the import graph said so.
 
-**Nothing is stored and nothing is cached.** ADR 0012 makes this derived on
-every request precisely so that adding a Holiday today changes what last
-January reports tomorrow.
+**This module still does the aggregating; it stores nothing itself.**
+ADR 0012 made the result derived on every request; ADR 0022 (M14, ticket 01)
+supersedes that for ``GET /api/energy/summary``, which now reads the stored
+``energy_summary_days`` table through
+:mod:`arichds.db.energy_summary_store` instead of calling
+:func:`energy_summary_rows` directly. This function is still the one place
+the Time-of-Use rules live, and it is still called from three places: the
+recompute job (so the stored table is built from it, not a re-derivation),
+and the Energy Export File's daily writer
+(``export/energy_csv.py::_export_daily_locked``) and its on-demand
+**Save to file** button (``export/energy_csv.py::export_energy_range``).
+Both of the export file's callers still aggregate live — that is a
+sequencing fact, not a design one: ADR 0023 (decided alongside 0022, not yet
+implemented) is what moves the Energy Export File onto ``energy_summary_days``
+too, rewritten whole every export cycle; until that ticket lands, this
+function is what those two callers still run.
 """
 
 from __future__ import annotations

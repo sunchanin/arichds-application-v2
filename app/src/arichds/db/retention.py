@@ -1,12 +1,19 @@
 """The daily retention job — 90 days of rows, and nothing older (M5c, issue #19).
 
 SPEC §5: ``load_profile_readings`` is cut on ``read_at`` and ``device_events`` on
-``created_at``, both at :data:`~arichds.constants.RETENTION_DAYS`. Nothing else
-expires here — ``billing_readings`` (M6a, issue #21) is deliberately excluded:
-ADR 0009 says a closed period is never rewritten once stored, and the only way
-to remove one is ``Delete all data`` on the Devices page, not a daily purge.
-``user_tokens`` needs no job either, because :mod:`arichds.auth.service` purges
-expired tokens on every login.
+``created_at``, both at :data:`~arichds.constants.RETENTION_DAYS`. ``billing_readings``
+(M6a, issue #21) is deliberately excluded: ADR 0009 says a closed period is never
+rewritten once stored, and the only way to remove one is ``Delete all data`` on the
+Devices page, not a daily purge. ``user_tokens`` needs no job either, because
+:mod:`arichds.auth.service` purges expired tokens on every login.
+
+``energy_summary_days`` (ADR 0022, M14 ticket 01) is cut here too, but on its own
+local calendar date rather than the UTC cutoff the two tables above use — Time-of-Use
+days are local days (:mod:`arichds.db.energy_query`), so the cutoff below is shifted
+the same way :func:`arichds.db.energy_query.local_today` is, and lands on exactly the
+window start the recompute job (:mod:`arichds.db.energy_summary_store`) itself
+maintains: a UTC cutoff here could delete a day the recompute just wrote, or leave one
+extra day past the window depending on which side of local midnight it landed.
 
 It lives under ``db/`` rather than ``acquisition/`` because it reads no meter,
 builds no driver and takes no Transport Endpoint lock: its domain is the rows.
@@ -27,13 +34,13 @@ is the correct outcome, not a gap.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import InstrumentedAttribute
 
-from arichds.constants import RETENTION_DAYS, RETENTION_DELETE_BATCH_SIZE
-from arichds.db.models import DeviceEvent, LoadProfileReading
+from arichds.constants import METER_LOCAL_UTC_OFFSET_HOURS, RETENTION_DAYS, RETENTION_DELETE_BATCH_SIZE
+from arichds.db.models import DeviceEvent, EnergySummaryDay, LoadProfileReading
 from arichds.db.session import session_scope
 
 logger = logging.getLogger(__name__)
@@ -65,21 +72,33 @@ def purge_expired(*, now: datetime | None = None, batch_size: int = RETENTION_DE
             own unit of work, so SQLite's write lock is released between them and
             the Poller and the load-profile job are never held off by a purge.
     """
-    cutoff = (datetime.now(UTC) if now is None else now) - timedelta(days=RETENTION_DAYS)
+    now_utc = datetime.now(UTC) if now is None else now
+    cutoff = now_utc - timedelta(days=RETENTION_DAYS)
     readings = _purge(LoadProfileReading, LoadProfileReading.read_at, cutoff, batch_size)
     events = _purge(DeviceEvent, DeviceEvent.created_at, cutoff, batch_size)
+
+    # The same local-day shift as `arichds.db.energy_query.local_today`, and the
+    # same window start the recompute job maintains: `local_today - (RETENTION_DAYS - 1)`.
+    energy_summary_cutoff = (now_utc + timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)).date() - timedelta(
+        days=RETENTION_DAYS - 1
+    )
+    energy_summary_days = _purge(EnergySummaryDay, EnergySummaryDay.local_date, energy_summary_cutoff, batch_size)
+
     logger.info(
-        "Retention removed %d Interval Reading(s) and %d Device Event(s) older than %s",
+        "Retention removed %d Interval Reading(s) and %d Device Event(s) older than %s, "
+        "and %d Energy Summary day(s) older than %s",
         readings,
         events,
         cutoff.isoformat(),
+        energy_summary_days,
+        energy_summary_cutoff.isoformat(),
     )
 
 
 def _purge(
-    model: type[LoadProfileReading] | type[DeviceEvent],
-    column: InstrumentedAttribute[datetime],
-    cutoff: datetime,
+    model: type[LoadProfileReading] | type[DeviceEvent] | type[EnergySummaryDay],
+    column: InstrumentedAttribute[datetime] | InstrumentedAttribute[date],
+    cutoff: datetime | date,
     batch_size: int,
 ) -> int:
     """Delete rows of *model* whose *column* is before *cutoff*, and count them.

@@ -31,11 +31,13 @@ from arichds.constants import (
     BILLING_INTERVAL_SEC,
     CSV_EXPORT_INTERVAL_SEC,
     DBDEST_SYNC_INTERVAL_SEC,
+    ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
     JOB_BACKUP,
     JOB_BATTERY,
     JOB_BILLING,
     JOB_CSV_EXPORT,
     JOB_DBDEST_SYNC,
+    JOB_ENERGY_SUMMARY_RECOMPUTE,
     JOB_LOAD_PROFILE,
     JOB_RETENTION,
     LOAD_PROFILE_INTERVAL_SEC,
@@ -45,6 +47,7 @@ from arichds.constants import (
 )
 from arichds.dataout.sync import database_destination_cycle
 from arichds.db.backup import backup_database
+from arichds.db.energy_summary_store import energy_summary_recompute_cycle
 from arichds.db.retention import purge_expired
 from arichds.export.csv_export import csv_export_cycle
 from arichds.licensing.service import LicenseState
@@ -390,6 +393,15 @@ def default_jobs() -> list[Job]:
     return [
         Job(name=JOB_LOAD_PROFILE, interval_sec=LOAD_PROFILE_INTERVAL_SEC, fn=load_profile_cycle),
         # Registered immediately behind load_profile, at the same interval
+        # (ADR 0022, M14 ticket 01) — a pure disk job with no meter and no
+        # Transport Endpoint lock, so it runs against this pass's freshest
+        # rows before CSV export reads the same window.
+        Job(
+            name=JOB_ENERGY_SUMMARY_RECOMPUTE,
+            interval_sec=ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
+            fn=energy_summary_recompute_cycle,
+        ),
+        # Registered immediately behind the recompute, at the same interval
         # (D-10, M7 slice 3, issue #30) — a pure disk job with no meter and
         # no Transport Endpoint lock, so it does not belong inside
         # load_profile_cycle's own error handling. The registry runs jobs in

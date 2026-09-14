@@ -63,13 +63,20 @@ MySQL, and ~30 tables.
   `MeterDriver`, implemented on the three CEWE models, with `supports_battery` corrected from
   all nine models to exactly those three; `test_catalog.py` now asserts the driver-catalog
   correspondence for all three flags instead of a hardcoded list) ·
-  0012 (**SUPERSEDED by ADR 0022, decided 2026-09-14 and not yet implemented** — until M14 lands the
-  code below still describes the shipped behaviour) (the Energy Summary is **derived on every request and deliberately not reproducible** —
-  adding a Holiday today changes what last January reports tomorrow, and that is the point,
-  because holidays are rules a human enters late; no summary table, no cache; the peak window
-  stays a constant so there is only ever **one** retroactive knob and it tracks reality;
-  **fully implemented** with issue #28/M7-1: `GET /api/energy/summary` aggregates
-  `load_profile_readings` live, bounded to 31 local days) ·
+  0012 (**SUPERSEDED by ADR 0022** — `GET /api/energy/summary` no longer aggregates
+  `load_profile_readings` live; the paragraph below records what 0012 decided and why, kept for
+  history rather than because it is still the shipped read path. Two callers still aggregate live
+  — `export/energy_csv.py`'s daily and on-demand Energy Export File writers — not because 0022
+  left them alone by design, but because **ADR 0023** (decided alongside 0022, not yet
+  implemented) is the ticket that moves the Energy Export File onto `energy_summary_days` too;
+  until it lands, those two callers still run `db/energy_query.py::energy_summary_rows()`
+  directly) (the
+  Energy Summary was **derived on every request and deliberately not reproducible** — adding a
+  Holiday today changed what last January reported tomorrow, and that was the point, because
+  holidays are rules a human enters late; no summary table, no cache; the peak window stays a
+  constant so there is only ever **one** retroactive knob and it tracks reality;
+  **fully implemented** with issue #28/M7-1, bounded to 31 local days, until M14 ticket 01
+  replaced the read path — see 0022 below) ·
   0013 (display units are a **view**, an appended file is a **contract** — the machine-wide
   kW/W setting reaches anything rendered per request, and never the Load Profile CSV, which
   appends for months under a header written once; **reverses** v1's `divide_by_1000`, which
@@ -219,7 +226,24 @@ MySQL, and ~30 tables.
   Reading both land within one cycle with no trigger for either; `updated_at` moves only when
   values change; a **Holiday Change** log (who/when/which day, all five paths) kept 90 days;
   measured at ~0.07 s per meter for the full window, and the owner's largest site is under 20
-  meters; **decided, not yet implemented**) ·
+  meters. **The stored table and the recompute landed with M14 ticket 01**
+  (`.scratch/central-push/issues/01-energy-summary-is-stored-and-recomputed.md`): migration 0017
+  creates `energy_summary_days` (device, local date, the eight buckets, `updated_at`, unique on
+  device+local date, cascades with the device); `db/energy_summary_store.py`'s
+  `energy_summary_recompute_cycle()` is the `energy_summary_recompute` scheduler job, registered
+  immediately behind `load_profile` at the same interval — it re-runs the **unchanged**
+  `db/energy_query.py::energy_summary_rows()` aggregation over the whole retention window per
+  device and upserts only the days whose buckets actually differ, so `updated_at` stays quiet on
+  a repeat recompute — and a stored day *inside* the window that the live aggregation no longer
+  produces (its readings deleted, or a re-read reclassified every interval all-invalid) is deleted
+  in the same pass, never left to linger until Retention; `GET /api/energy/summary` now reads that
+  table (`stored_energy_summary_rows()`) instead of aggregating live, with its response shape and
+  31-day bound unchanged; `db/retention.py::purge_expired()` drops rows past the same
+  local-day-shifted `RETENTION_DAYS` window the recompute maintains. The Energy Export File and
+  **Save to file** still call `energy_summary_rows()` live (see 0012 above) — not by this ADR's
+  design, but because ADR 0023's own ticket, which moves them onto `energy_summary_days`, has not
+  landed yet — and the **Holiday Change log is not yet implemented**: this ticket only covers the
+  stored Energy Summary half of this ADR) ·
   0023 (export files **mirror our window and are rewritten, never archived** — **supersedes 0013's
   M13 amendment**, extends 0020 to the export folder: Load Profile CSV and Energy file hold 90
   days, the Billing file every closed period; LP appends and is trimmed daily with retention, the

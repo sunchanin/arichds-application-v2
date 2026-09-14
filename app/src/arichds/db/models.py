@@ -637,6 +637,60 @@ class EnergyRegisterReading(Base):
     __table_args__ = (UniqueConstraint("device_id", "read_at", name="uq_energy_register_readings_device_read_at"),)
 
 
+class EnergySummaryDay(Base):
+    """One meter's Time-of-Use split for one **local** calendar day, stored
+    and recomputed over the whole retention window every scheduler cycle
+    (ADR 0022, supersedes ADR 0012; CONTEXT.md — Energy Summary).
+
+    The Energy Summary page, the Energy Export File and the Central Push all
+    read these rows instead of each re-aggregating ``load_profile_readings``
+    on their own, so the three cannot disagree. Field names match
+    :class:`arichds.db.energy_query.EnergySummaryDay` (the pydantic shape the
+    live aggregation still returns, and the recompute job's own input)
+    exactly, so writing a fresh row is a straight field copy.
+
+    Attributes:
+        id: Surrogate primary key.
+        device_id: Owning device. Rows go when the device does.
+        local_date: The meter's local calendar day
+            (``METER_LOCAL_UTC_OFFSET_HOURS``), never a UTC date — Time-of-Use
+            days are local days.
+        peak_import_kwh/offpeak_import_kwh/holiday_import_kwh/total_import_kwh:
+            Import active energy, split the way
+            :func:`arichds.db.energy_query.energy_summary_rows` classifies it.
+        peak_export_kwh/offpeak_export_kwh/holiday_export_kwh/total_export_kwh:
+            The same split for export active energy.
+        updated_at: When a bucket value on this row last actually changed
+            (UTC), stamped explicitly by the recompute job — only when a
+            value differs from what is already stored, so a recompute that
+            finds nothing new leaves this untouched. Otherwise a future push
+            would resend the whole window every cycle.
+    """
+
+    __tablename__ = "energy_summary_days"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    local_date: Mapped[date] = mapped_column(Date)
+
+    peak_import_kwh: Mapped[float] = mapped_column(default=0.0)
+    offpeak_import_kwh: Mapped[float] = mapped_column(default=0.0)
+    holiday_import_kwh: Mapped[float] = mapped_column(default=0.0)
+    total_import_kwh: Mapped[float] = mapped_column(default=0.0)
+    peak_export_kwh: Mapped[float] = mapped_column(default=0.0)
+    offpeak_export_kwh: Mapped[float] = mapped_column(default=0.0)
+    holiday_export_kwh: Mapped[float] = mapped_column(default=0.0)
+    total_export_kwh: Mapped[float] = mapped_column(default=0.0)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    device: Mapped[Device] = relationship()
+
+    __table_args__ = (UniqueConstraint("device_id", "local_date", name="uq_energy_summary_days_device_local_date"),)
+
+
 class BatteryReading(Base):
     """One dated snapshot of a meter's battery status (M7-2, issue #29;
     CONTEXT.md — Battery Reading).

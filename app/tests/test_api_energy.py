@@ -6,17 +6,27 @@ peak-window boundaries, the UTC-hour-vs-local-day translation traps) is
 exercised through this HTTP surface — see ``TestOutputParityAndTranslationTraps``
 below for the required behaviours, each with a comment naming the rule it
 proves.
+
+**Stored, not live** (ADR 0022, M14 ticket 01): ``GET /api/energy/summary``
+now reads ``energy_summary_days``, so every test below that asserts on a
+value must run :func:`~arichds.db.energy_summary_store.energy_summary_recompute_cycle`
+after seeding and before the request — the recompute job is what the
+Scheduler would have already run in production. ``recompute()`` below passes
+``today`` explicitly so each call's 90-day window covers exactly the dates a
+test seeded, without depending on the real clock.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from conftest import mint_meter_activation_code
 from fakes import FakeMeterState
 from fastapi.testclient import TestClient
+from sqlalchemy import delete
 
+from arichds.db.energy_summary_store import energy_summary_recompute_cycle
 from arichds.db.models import LoadProfileReading
 from arichds.db.session import session_scope
 
@@ -38,6 +48,12 @@ def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = 
     response = client.post("/api/devices", json=payload)
     assert response.status_code == 201, response.text
     return response.json()["data"]["id"]
+
+
+def recompute(today: date) -> None:
+    """Run the recompute job the Scheduler would have already run in
+    production, with an explicit ``today`` so the window is deterministic."""
+    energy_summary_recompute_cycle(today=today)
 
 
 def seed(device_id: int, rows: list[tuple[datetime, float | None, float | None]], *, logger_id: int = 1) -> None:
@@ -92,6 +108,7 @@ class TestOutputParityAndTranslationTraps:
         device_id = add_device(admin_client, fake_meter)
         # 2026-08-07 is a Friday; +7h -> 2026-08-08 00:30 ICT, a Saturday.
         seed(device_id, [(datetime(2026, 8, 7, 17, 30, tzinfo=UTC), 1.0, 0.0)])
+        recompute(date(2026, 8, 8))
 
         response = admin_client.get(
             f"/api/energy/summary?device_id={device_id}&start_date=2026-08-07&end_date=2026-08-08"
@@ -113,6 +130,7 @@ class TestOutputParityAndTranslationTraps:
         08:00 sits inside [02, 15) — the peak window."""
         device_id = add_device(admin_client, fake_meter)
         seed(device_id, [(datetime(2026, 8, 8, 8, 0, tzinfo=UTC), 2.0, 0.0)])
+        recompute(date(2026, 8, 8))
 
         response = admin_client.get(
             f"/api/energy/summary?device_id={device_id}&start_date=2026-08-08&end_date=2026-08-08"
@@ -146,11 +164,16 @@ class TestOutputParityAndTranslationTraps:
             ],
         )
 
+        # Two recompute calls, deliberately: the two seeded dates are more
+        # than RETENTION_DAYS apart, so no single 90-day window covers both —
+        # each call's `today` is the date its own request needs in range.
+        recompute(date(2026, 4, 13))
         response = admin_client.get(
             f"/api/energy/summary?device_id={device_id}&start_date=2026-04-13&end_date=2026-04-13"
         )
         assert response.json()["data"]["days"][0]["holiday_import_kwh"] == pytest.approx(3.0)
 
+        recompute(date(2027, 4, 13))
         response = admin_client.get(
             f"/api/energy/summary?device_id={device_id}&start_date=2027-04-13&end_date=2027-04-13"
         )
@@ -173,11 +196,15 @@ class TestOutputParityAndTranslationTraps:
             ],
         )
 
+        # Two recompute calls for the same reason as the annual test above —
+        # the two seeded dates sit more than RETENTION_DAYS apart.
+        recompute(date(2026, 3, 2))
         matched = admin_client.get(
             f"/api/energy/summary?device_id={device_id}&start_date=2026-03-02&end_date=2026-03-02"
         ).json()["data"]["days"][0]
         assert matched["holiday_import_kwh"] == pytest.approx(5.0)
 
+        recompute(date(2027, 3, 2))
         unmatched = admin_client.get(
             f"/api/energy/summary?device_id={device_id}&start_date=2027-03-02&end_date=2027-03-02"
         ).json()["data"]["days"][0]
@@ -201,6 +228,7 @@ class TestOutputParityAndTranslationTraps:
                 (datetime(2026, 8, 6, 15, 0, tzinfo=UTC), 4.0, 0.0),
             ],
         )
+        recompute(date(2026, 8, 6))
 
         day = admin_client.get(
             f"/api/energy/summary?device_id={device_id}&start_date=2026-08-06&end_date=2026-08-06"
@@ -221,6 +249,7 @@ class TestOutputParityAndTranslationTraps:
         device_id = add_device(admin_client, fake_meter)
         seed(device_id, [(datetime(2026, 8, 6, 8, 0, tzinfo=UTC), 5.0, 0.0)], logger_id=1)
         seed(device_id, [(datetime(2026, 8, 6, 8, 0, tzinfo=UTC), 100.0, 0.0)], logger_id=2)
+        recompute(date(2026, 8, 6))
 
         day = admin_client.get(
             f"/api/energy/summary?device_id={device_id}&start_date=2026-08-06&end_date=2026-08-06"
@@ -251,6 +280,7 @@ class TestOutputParityAndTranslationTraps:
                 (datetime(2026, 8, 8, 8, 0, tzinfo=UTC), 3.0, 0.5),
             ],
         )
+        recompute(date(2026, 8, 8))
 
         response = admin_client.get(
             f"/api/energy/summary?device_id={device_id}&start_date=2026-08-06&end_date=2026-08-08"
@@ -279,6 +309,71 @@ class TestOutputParityAndTranslationTraps:
             "holiday_export_kwh": 0.5,
             "total_export_kwh": 0.5,
         }
+
+
+class TestStoredNotLive:
+    """ADR 0022 — `GET /api/energy/summary` reads `energy_summary_days`,
+    never a re-aggregation of `load_profile_readings` on the request."""
+
+    def test_the_response_survives_deleting_the_underlying_readings(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed(device_id, [(datetime(2026, 8, 6, 10, 0, tzinfo=UTC), 2.5, 0.0)])
+        recompute(date(2026, 8, 6))
+
+        before = admin_client.get(
+            f"/api/energy/summary?device_id={device_id}&start_date=2026-08-06&end_date=2026-08-06"
+        ).json()["data"]["days"]
+        assert before[0]["peak_import_kwh"] == pytest.approx(2.5), (
+            "the seeded value never reached the stored table, so this proves nothing"
+        )
+
+        with session_scope() as session:
+            session.execute(delete(LoadProfileReading).where(LoadProfileReading.device_id == device_id))
+
+        after = admin_client.get(
+            f"/api/energy/summary?device_id={device_id}&start_date=2026-08-06&end_date=2026-08-06"
+        ).json()["data"]["days"]
+
+        assert after == before, (
+            "the response changed after the source Interval Readings were deleted — it re-derived them instead "
+            "of reading the stored energy_summary_days table"
+        )
+
+
+class TestRetroactive:
+    """A Holiday added **through the API** for a past day moves that day's
+    energy into the Holiday bucket after one recompute (ADR 0022)."""
+
+    def test_a_holiday_added_through_the_api_moves_a_past_day_into_holiday(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        today = date(2026, 3, 2)  # a Monday, inside the peak window
+        seed(device_id, [(datetime(2026, 3, 2, 8, 0, tzinfo=UTC), 5.0, 0.0)])
+        recompute(today)
+
+        before = admin_client.get(
+            f"/api/energy/summary?device_id={device_id}&start_date=2026-03-02&end_date=2026-03-02"
+        ).json()["data"]["days"][0]
+        assert before["peak_import_kwh"] == pytest.approx(5.0)
+        assert before["holiday_import_kwh"] == pytest.approx(0.0)
+
+        holiday_response = admin_client.post(
+            "/api/holidays", json={"kind": "public", "name": "One-off", "date": "2026-03-02"}
+        )
+        assert holiday_response.status_code == 201, holiday_response.text
+
+        recompute(today)
+
+        after = admin_client.get(
+            f"/api/energy/summary?device_id={device_id}&start_date=2026-03-02&end_date=2026-03-02"
+        ).json()["data"]["days"][0]
+        assert after["holiday_import_kwh"] == pytest.approx(5.0), (
+            "the Holiday added through the API between recomputes was not picked up"
+        )
+        assert after["peak_import_kwh"] == pytest.approx(0.0)
 
 
 class TestEnergyRegisters:

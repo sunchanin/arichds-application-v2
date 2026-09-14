@@ -44,7 +44,9 @@ from arichds.constants import (
     BILLING_INTERVAL_SEC,
     CSV_EXPORT_INTERVAL_SEC,
     DBDEST_SYNC_INTERVAL_SEC,
+    ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
     JOB_DBDEST_SYNC,
+    JOB_ENERGY_SUMMARY_RECOMPUTE,
     LOAD_PROFILE_INTERVAL_SEC,
     MANUAL_READ_LOCK_TIMEOUT_SEC,
     RETENTION_INTERVAL_SEC,
@@ -52,6 +54,7 @@ from arichds.constants import (
 )
 from arichds.dataout.sync import database_destination_cycle
 from arichds.db.backup import backup_database
+from arichds.db.energy_summary_store import energy_summary_recompute_cycle
 from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 from arichds.db.retention import purge_expired
 from arichds.db.session import session_scope
@@ -542,18 +545,19 @@ class TestSchedulerMasterSwitch:
 
 
 class TestTheDefaultRegistry:
-    """D12 — seven jobs at issue #46 (`dbdest_sync`, the Database Destination,
-    added a seventh at the **end**). M8's central-server push adds its own one
-    line at a time, still unbuilt."""
+    """D12 — eight jobs at M14 ticket 01 (`energy_summary_recompute`, ADR 0022,
+    inserted immediately behind `load_profile`). M8's central-server push adds
+    its own one line at the end, still unbuilt."""
 
-    def test_it_holds_all_seven_jobs_in_order(self) -> None:
+    def test_it_holds_all_eight_jobs_in_order(self) -> None:
         jobs = default_jobs()
 
         # Asserted deliberately so that whoever adds M8's push has to come
         # here and update the count on purpose.
-        assert len(jobs) == 7
+        assert len(jobs) == 8
         assert [job.name for job in jobs] == [
             "load_profile",
+            "energy_summary_recompute",
             "csv_export",
             "billing",
             "battery",
@@ -563,6 +567,7 @@ class TestTheDefaultRegistry:
         ]
         assert [job.interval_sec for job in jobs] == [
             LOAD_PROFILE_INTERVAL_SEC,
+            ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
             CSV_EXPORT_INTERVAL_SEC,
             BILLING_INTERVAL_SEC,
             BATTERY_INTERVAL_SEC,
@@ -572,6 +577,7 @@ class TestTheDefaultRegistry:
         ]
         assert [job.fn for job in jobs] == [
             load_profile_cycle,
+            energy_summary_recompute_cycle,
             csv_export_cycle,
             billing_cycle,
             battery_cycle,
@@ -580,12 +586,21 @@ class TestTheDefaultRegistry:
             database_destination_cycle,
         ]
 
-    def test_csv_export_is_registered_immediately_behind_load_profile(self) -> None:
-        """D-10 — the index gap is what makes "runs after the LP cycle in the
-        same pass" real, not merely hoped for."""
+    def test_energy_summary_recompute_is_registered_immediately_behind_load_profile(self) -> None:
+        """ADR 0022, M14 ticket 01 — the recompute must run against this
+        pass's freshest rows, immediately behind the load-profile cycle."""
         names = [job.name for job in default_jobs()]
 
-        assert names.index("csv_export") == names.index("load_profile") + 1
+        assert names.index(JOB_ENERGY_SUMMARY_RECOMPUTE) == names.index("load_profile") + 1
+
+    def test_csv_export_is_registered_immediately_behind_the_energy_summary_recompute(self) -> None:
+        """D-10 — the index gap is what makes "runs after the LP cycle in the
+        same pass" real, not merely hoped for. The energy-summary recompute
+        (ADR 0022) now sits between them, so this is one hop further back
+        than it used to be — still immediately behind the job ahead of it."""
+        names = [job.name for job in default_jobs()]
+
+        assert names.index("csv_export") == names.index(JOB_ENERGY_SUMMARY_RECOMPUTE) + 1
 
     def test_backup_runs_before_retention(self) -> None:
         """Deliberate order (issue #19): the backup still holds the rows retention

@@ -38,8 +38,8 @@ class TestMigration:
 
     def test_only_the_shipped_modules_tables_exist(self, migrated_db: Settings) -> None:
         """M1 landed two tables, M2-1 two more and M3-2 one; M6a and M6b add
-        one each; M7-1 adds two more and M7-2 one more; the rest arrive with
-        their own modules.
+        one each; M7-1 adds two more and M7-2 one more; M14 ticket 01 adds one
+        more; the rest arrive with their own modules.
 
         ``device_events`` is the only table M3 adds. There is deliberately no
         ``device_status`` and no ``device_heartbeats`` beside it (ADR 0004):
@@ -49,12 +49,14 @@ class TestMigration:
         ``capture_dir`` as its first key (ADR 0010), never a
         ``billing_captures`` table (a capture's path is derived from
         convention, never stored). ``holidays`` and ``energy_register_readings``
-        (M7-1, issue #28) landed next — there is deliberately no
-        ``energy_summary`` table beside them (ADR 0012): the Summary Report is
-        aggregated live, never stored. ``battery_readings`` (M7-2, issue #29)
-        is the tenth and, as of this module, the last — an hourly snapshot,
-        never a computed or live value (ADR 0007 still holds: it is a stored
-        status, not an instantaneous read).
+        (M7-1, issue #28) landed next. ``battery_readings`` (M7-2, issue #29)
+        followed — an hourly snapshot, never a computed or live value (ADR
+        0007 still holds: it is a stored status, not an instantaneous read).
+        ``energy_summary_days`` (ADR 0022, supersedes ADR 0012; M14 ticket 01)
+        is the eleventh and, as of this module, the last: the Summary Report
+        moved from a live aggregation to one stored row per meter per local
+        day, recomputed over the whole retention window every scheduler
+        cycle — a device's rows go with the device.
         """
         tables = set(inspect(get_engine()).get_table_names()) - {"alembic_version"}
         assert tables == {
@@ -68,6 +70,7 @@ class TestMigration:
             "holidays",
             "energy_register_readings",
             "battery_readings",
+            "energy_summary_days",
         }
 
     def test_wal_is_enabled(self, migrated_db: Settings) -> None:

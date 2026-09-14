@@ -1,7 +1,12 @@
 # The Energy Summary is stored, and recomputed over the whole window every cycle
 
 Status: accepted (2026-09-14, owner decision during the M14 grill). **Supersedes ADR 0012.**
-Not yet implemented — until M14 lands, `GET /api/energy/summary` still aggregates live.
+**The stored table and the recompute landed with M14 ticket 01**
+(`.scratch/central-push/issues/01-energy-summary-is-stored-and-recomputed.md`): migration 0017's
+`energy_summary_days`, the `energy_summary_recompute` scheduler job
+(`db/energy_summary_store.py`), and `GET /api/energy/summary` reading the table instead of
+aggregating live. **The Holiday Change log below is not yet implemented** — that is a separate
+ticket.
 
 ADR 0012 made the Energy Summary a live derivation with no table, deliberately not reproducible,
 so that a Holiday entered late would move the numbers toward the truth. That rested on one

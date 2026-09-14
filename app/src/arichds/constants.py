@@ -132,6 +132,14 @@ JOB_BATTERY: Final[str] = "battery"
 CSV_EXPORT_INTERVAL_SEC: Final[int] = LOAD_PROFILE_INTERVAL_SEC
 JOB_CSV_EXPORT: Final[str] = "csv_export"
 
+# ─── Energy Summary recompute (ADR 0022, M14, ticket 01) ──────────────────────
+# The Energy Summary recompute job. Same cadence as `load_profile` and
+# registered **immediately** behind it (ADR 0022) — same reasoning
+# CSV_EXPORT_INTERVAL_SEC gives above: this always runs against this pass's
+# freshest rows, with no second interval to keep in sync by hand.
+ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC: Final[int] = LOAD_PROFILE_INTERVAL_SEC
+JOB_ENERGY_SUMMARY_RECOMPUTE: Final[str] = "energy_summary_recompute"
+
 # ─── Scheduler (SPEC §4, M5a-2) ───────────────────────────────────────────────
 # How long `Scheduler.stop()` waits for the one job thread to finish the job it
 # is inside. Deliberately shorter than a worst-case load-profile cycle (which is

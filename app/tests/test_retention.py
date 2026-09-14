@@ -1,8 +1,10 @@
-"""The daily retention job (M5c, issue #19).
+"""The daily retention job (M5c, issue #19; extended for ADR 0022, M14 ticket 01).
 
-Two tables, one rule: 90 days, cut on ``read_at`` for Interval Readings and on
-``created_at`` for Device Events. The tests drive :func:`purge_expired` through
-its public interface and assert against the rows that survive, because the rows
+Three tables, one rule: 90 days, cut on ``read_at`` for Interval Readings, on
+``created_at`` for Device Events, and on ``local_date`` for Energy Summary days
+(``TestEnergySummaryDaysRetention`` below — its own cutoff, a local calendar day
+rather than a UTC instant). The tests drive :func:`purge_expired` through its
+public interface and assert against the rows that survive, because the rows
 are the whole product of the job — there is no job record to inspect (ADR 0008).
 """
 
@@ -17,8 +19,8 @@ from sqlalchemy import event, select
 
 from arichds.acquisition.load_profile import read_and_store_load_profile
 from arichds.config import Settings
-from arichds.constants import LOAD_PROFILE_BACKFILL_DAYS, RETENTION_DAYS, SOURCE_DLMS
-from arichds.db.models import BillingReading, Device, DeviceEvent, LoadProfileReading
+from arichds.constants import LOAD_PROFILE_BACKFILL_DAYS, METER_LOCAL_UTC_OFFSET_HOURS, RETENTION_DAYS, SOURCE_DLMS
+from arichds.db.models import BillingReading, Device, DeviceEvent, EnergySummaryDay, LoadProfileReading
 from arichds.db.retention import purge_expired
 from arichds.db.session import get_engine, session_scope
 
@@ -289,6 +291,65 @@ class TestBillingReadingsAreNeverPurged:
             assert len(rows) == 1
 
 
+def zero_energy_summary_day(device_id: int, local_date: object) -> EnergySummaryDay:
+    """One `energy_summary_days` row with every bucket at zero — the values
+    are irrelevant to retention, only `local_date` is."""
+    return EnergySummaryDay(
+        device_id=device_id,
+        local_date=local_date,
+        peak_import_kwh=0.0,
+        offpeak_import_kwh=0.0,
+        holiday_import_kwh=0.0,
+        total_import_kwh=0.0,
+        peak_export_kwh=0.0,
+        offpeak_export_kwh=0.0,
+        holiday_export_kwh=0.0,
+        total_export_kwh=0.0,
+    )
+
+
+def stored_energy_summary_dates(device_id: int) -> set[object]:
+    with session_scope() as session:
+        return set(session.scalars(select(EnergySummaryDay.local_date).where(EnergySummaryDay.device_id == device_id)))
+
+
+class TestEnergySummaryDaysRetention:
+    """ADR 0022, M14 ticket 01 — `energy_summary_days` is cut on its own
+    local calendar date rather than the UTC cutoff the two tables above use,
+    at the same window start the recompute job (`energy_summary_store.py`)
+    itself maintains.
+    """
+
+    def test_days_older_than_the_window_go_and_the_rest_stay(self, migrated_db: Settings) -> None:
+        device_id = make_device()
+        local_today = (NOW + timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)).date()
+        window_start = local_today - timedelta(days=RETENTION_DAYS - 1)
+        expired = window_start - timedelta(days=1)
+
+        with session_scope() as session:
+            session.add(zero_energy_summary_day(device_id, expired))
+            session.add(zero_energy_summary_day(device_id, window_start))
+
+        purge_expired(now=NOW)
+
+        assert stored_energy_summary_dates(device_id) == {window_start}
+
+    def test_the_day_exactly_on_the_window_start_is_kept(self, migrated_db: Settings) -> None:
+        """Strictly older than the window start goes; the window start itself stays."""
+        device_id = make_device()
+        local_today = (NOW + timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)).date()
+        window_start = local_today - timedelta(days=RETENTION_DAYS - 1)
+
+        with session_scope() as session:
+            session.add(zero_energy_summary_day(device_id, window_start - timedelta(days=1)))
+            session.add(zero_energy_summary_day(device_id, window_start))
+            session.add(zero_energy_summary_day(device_id, local_today))
+
+        purge_expired(now=NOW)
+
+        assert stored_energy_summary_dates(device_id) == {window_start, local_today}
+
+
 class TestAnEmptyDatabase:
     """Day one of an install: the Scheduler runs every job on its first pass."""
 
@@ -301,3 +362,4 @@ class TestAnEmptyDatabase:
         assert timeline.count("DELETE") == 1, "an empty table cost more than the one statement that found nothing"
         assert stored_read_ats(device_id) == []
         assert stored_event_times(device_id) == []
+        assert stored_energy_summary_dates(device_id) == set()

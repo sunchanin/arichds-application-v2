@@ -1,12 +1,21 @@
 """The Energy Summary export file (M13, issue 02) — the Time-of-Use daily split
 written to disk, in two forms that share one layout.
 
-**Why a file at all, when ADR 0012 says the summary is derived on every request
-and deliberately not reproducible?** Because Retention deletes the Interval
-Readings it is derived from after ninety days. Past that point this file is the
-only record of the split that survives. Nothing here is persisted in the
-database and nothing reads it back: a file is a snapshot somebody chose to take,
-not a cache. **ADR 0012 is untouched.**
+**Why a file at all, when ADR 0012 said the summary was derived on every
+request and deliberately not reproducible?** Because Retention deletes the
+Interval Readings it is derived from after ninety days. Past that point this
+file is the only record of the split that survives — including now that ADR
+0022 (M14, ticket 01) supersedes 0012 and stores the summary in
+``energy_summary_days``: that table is itself subject to Retention (same
+window, same reason), so the file remains the one place a day's split outlives
+ninety days. **This module still calls**
+:func:`arichds.db.energy_query.energy_summary_rows` directly, live, on every
+call — never the stored table — but that is a sequencing fact, not a design
+one: ADR 0023 (decided alongside 0022, not yet implemented) is what moves the
+Energy Export File onto ``energy_summary_days``, rewritten whole every export
+cycle; the ticket that lands ADR 0023 is what retires this module's own live
+aggregation. Nothing here is persisted in the database and nothing reads it
+back: a file is a snapshot somebody chose to take, not a cache.
 
 Two forms:
 
