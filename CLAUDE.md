@@ -274,7 +274,21 @@ MySQL, and ~30 tables.
   `sync_state` — each cycle asks the server what it holds; Meter Serial not `device_id`; ISO 8601
   with offset; a **Push Token** JWT signed EdDSA with the existing vendor key, domain-separated from
   an Activation Code, verified by public key with a server-side denylist — **never run `keygen`**;
-  no URL configured = no push; **decided, not yet implemented**).
+  no URL configured = no push. **The Push Token issue/verify primitive landed with M14 ticket
+  03**: `tools/arichds_vendor.py sign-push --machine-id <64-hex>` prints a real JWT — unlike
+  `sign`/`sign-meter`'s one-dot custom format — signed EdDSA with the same private key, loaded
+  exactly as `sign` loads it; `app/src/arichds/licensing/push_token.py`'s `verify_push_token()`
+  accepts it and returns the Machine ID, or refuses with `MALFORMED` / `INVALID_SIGNATURE` /
+  `WRONG_PRODUCT` / `UNSUPPORTED_VERSION` / `LICENCE_CODE_NOT_PUSH_TOKEN`. Domain separation
+  needed no code in the two licence verifiers: a JWT has two dots and an Activation Code's/Meter
+  Activation Code's own format has exactly one, so `activation_code.py`'s and
+  `meter_activation_code.py`'s existing dot-count guard already refuses a Push Token as
+  `MALFORMED`. The other direction gets its own reason: the Push Token verifier recognises
+  either licence format by its shape (one dot, a JSON payload naming `arichds`) and refuses it as
+  `LICENCE_CODE_NOT_PUSH_TOKEN`, without checking its signature, so an operator who pastes the
+  wrong secret into the Push Token field is told which mistake they made. **Not yet
+  implemented**: the settings, the two endpoints, the scheduler job and the published contract
+  (tickets 07/08) — nothing yet calls `verify_push_token` from an API route).
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject

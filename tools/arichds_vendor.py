@@ -59,6 +59,20 @@ Commands
     Activation Code above, verified by
     ``app/src/arichds/licensing/meter_activation_code.py``.
 
+``sign-push``
+    Sign a Push Token for one machine (ADR 0024)::
+
+        python tools/arichds_vendor.py sign-push --machine-id <64-hex>
+
+    Prints the one-line Push Token on stdout — the secret an administrator
+    pastes into the API page so this machine can push to the team's central
+    server. Unlike ``sign``/``sign-meter``, this **is** a real JWT
+    (``header.payload.signature``), signed ``EdDSA`` with the same private
+    key, carrying ``sub`` (the Machine ID), ``product`` = ``"arichds-push"``
+    (never the licence's ``"arichds"``) and ``v`` — deliberately no ``exp``,
+    since revocation is the receiving server's own denylist by Machine ID.
+    Verified by ``app/src/arichds/licensing/push_token.py``.
+
 ``fingerprint``
     Print *this* machine's Machine ID — for vendor-side testing, so you can sign
     a code for your own dev box without asking anyone for their ID.
@@ -80,6 +94,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
@@ -183,6 +198,28 @@ def build_meter_payload(
         "meter_serial": meter_serial,
         "machine_id": machine_id,
         "issued_at": _to_iso(issued_at or datetime.now(UTC)),
+    }
+
+
+#: Push Token claims (ADR 0024). A real JWT, not the format above — signed
+#: and verified with PyJWT directly, so there is no canonical-bytes rule to
+#: duplicate the way ``sign_payload`` has one; only the claim shape below
+#: must match ``arichds.licensing.push_token.build_push_token_claims``.
+PUSH_TOKEN_VERSION = 1
+PUSH_TOKEN_PRODUCT = "arichds-push"
+PUSH_TOKEN_ALGORITHM = "EdDSA"
+
+
+def build_push_token_claims(*, machine_id: str, issued_at: datetime | None = None) -> dict[str, Any]:
+    """Build a Push Token's claims. Mirrors the app's field-for-field.
+
+    MUST match ``arichds.licensing.push_token.build_push_token_claims``.
+    """
+    return {
+        "sub": machine_id,
+        "product": PUSH_TOKEN_PRODUCT,
+        "v": PUSH_TOKEN_VERSION,
+        "iat": issued_at or datetime.now(UTC),
     }
 
 
@@ -563,6 +600,29 @@ def cmd_sign_meter(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sign_push(args: argparse.Namespace) -> int:
+    """Sign a Push Token for one machine (ADR 0024)."""
+    private_path = Path(args.private_key)
+    if not private_path.exists():
+        print(f"ERROR: Private key not found at {private_path}.", file=sys.stderr)
+        print("       Run: python tools/arichds_vendor.py keygen", file=sys.stderr)
+        return 1
+
+    machine_id = args.machine_id.strip().lower()
+    if len(machine_id) != 64 or not all(c in "0123456789abcdef" for c in machine_id):
+        print("ERROR: --machine-id must be the 64-character hex Machine ID shown on the", file=sys.stderr)
+        print("       Activation page (or from `arichds_vendor.py fingerprint`).", file=sys.stderr)
+        return 1
+
+    claims = build_push_token_claims(machine_id=machine_id)
+    token = jwt.encode(claims, private_path.read_bytes(), algorithm=PUSH_TOKEN_ALGORITHM)
+
+    print(f"Machine ID : {machine_id}", file=sys.stderr)
+    print("\nPUSH TOKEN (paste into the API page's Push Token field):\n", file=sys.stderr)
+    print(token)
+    return 0
+
+
 def cmd_fingerprint(args: argparse.Namespace) -> int:
     """Print this machine's Machine ID (vendor-side testing)."""
     sys.path.insert(0, str(REPO_ROOT / "app" / "src"))
@@ -590,6 +650,7 @@ Examples:
   python tools/arichds_vendor.py sign --customer "Acme Co" --machine-id <64-hex> \\
       --mode leased --lease-days 45 --max-meters 30
   python tools/arichds_vendor.py sign-meter --meter-serial <serial> --machine-id <64-hex>
+  python tools/arichds_vendor.py sign-push --machine-id <64-hex>
 """,
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -659,6 +720,15 @@ Examples:
     sign_meter.add_argument("--private-key", default=str(DEFAULT_PRIVATE_KEY_PATH), help="Signing private key path.")
     sign_meter.add_argument("--out", default=None, help="Also write the code to this file.")
     sign_meter.set_defaults(func=cmd_sign_meter)
+
+    sign_push = sub.add_parser("sign-push", help="Sign a Push Token for one machine (ADR 0024).")
+    sign_push.add_argument(
+        "--machine-id",
+        required=True,
+        help="The customer's 64-hex Machine ID this Push Token is bound to.",
+    )
+    sign_push.add_argument("--private-key", default=str(DEFAULT_PRIVATE_KEY_PATH), help="Signing private key path.")
+    sign_push.set_defaults(func=cmd_sign_push)
 
     fingerprint = sub.add_parser("fingerprint", help="Print this machine's Machine ID.")
     fingerprint.set_defaults(func=cmd_fingerprint)
