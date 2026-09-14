@@ -97,8 +97,8 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
             are written to the output folder set on the Load Profile page. Energy values are always exported in
             kWh/kvarh: they do not follow the Display unit setting on the Settings page. A file's header is written
             once when it is created and rows append to it for months, so its units can never change. If a header
-            ever does change, the file is closed under a dated name and a new one is started beside it, so no row is
-            ever written under a header that does not describe it.
+            ever does change, the file is rewritten in place under the new header, so no row is ever written under a
+            header that does not describe it.
           </Text>
           <Form
             form={form}

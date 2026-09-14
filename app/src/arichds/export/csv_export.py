@@ -52,6 +52,7 @@ from sqlalchemy.orm import Session
 from arichds.acquisition.poller import build_driver
 from arichds.capture.paths import sanitize_meter_serial, validate_directory_setting
 from arichds.config import get_settings
+from arichds.constants import RETENTION_DAYS
 from arichds.db.app_settings import (
     EXPORT_AUTO_SAVE_ENABLED_DEFAULT,
     EXPORT_AUTO_SAVE_ENABLED_KEY,
@@ -69,7 +70,7 @@ from arichds.db.session import session_scope
 from arichds.export.billing_csv import export_device_billing
 from arichds.export.energy_csv import export_device_energy
 from arichds.export.format import _EXPORT_HEADERS, file_header_block, format_rows, render_filename
-from arichds.export.writer import append_rows
+from arichds.export.writer import append_rows, head_changed, replace_rows
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,45 @@ def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExpo
 
         cap = _compute_cap(session, device_id, l1_max, has_secondary_logger)
 
+        try:
+            resolved_output_dir = validate_directory_setting(
+                output_dir_str, get_settings().capture_allowlist_roots(), setting_name="output_dir"
+            )
+        except ValueError:
+            logger.warning("CSV export: export_output_dir invalid for device_id=%d — skipping", device_id)
+            return CsvExportResult(rows_written=0, path=None)
+
+        device_label = f"{device.name} ({meter_token})"
+        final_path = resolved_output_dir / render_filename(filename_tmpl, meter_token)
+        header_block = file_header_block(
+            customer=device.customer, site_name=device.site_name, meter_serial=meter_token, file_label=_FILE_LABEL
+        )
+
+        # ADR 0023 (ticket 02) — a head that no longer matches what is on disk
+        # is rewritten in place under the whole 90-day window, atomically,
+        # instead of M13's roll to a dated edition. This bypasses the
+        # watermark entirely: a rewrite must reproduce the *whole* window a
+        # fresh file would hold today, including rows an old watermark had
+        # already marked exported under the head that is being replaced.
+        if head_changed(final_path, header_block, _EXPORT_HEADERS):
+            full_rows, full_watermark = _full_window_rows(
+                session, device_id, cap=cap, device_label=device_label, date_format=date_format
+            )
+            written = replace_rows(
+                final_path,
+                header_block=header_block,
+                header_row=_EXPORT_HEADERS,
+                rows=full_rows,
+                allowlist=[resolved_output_dir],
+                label=_LOG_LABEL,
+            )
+            if not written:
+                return CsvExportResult(rows_written=0, path=final_path)
+            if full_watermark is not None:
+                device.csv_exported_through = full_watermark
+                session.commit()
+            return CsvExportResult(rows_written=len(full_rows), path=final_path)
+
         watermark = device.csv_exported_through
         watermark = _as_utc(watermark) if watermark is not None else None
 
@@ -228,43 +268,18 @@ def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExpo
             session.commit()
             return CsvExportResult(rows_written=0, path=None)
 
-        device_label = f"{device.name} ({meter_token})"
         formatted = format_rows(
             [row._mapping for row in rows],  # noqa: SLF001 — Row._mapping is the documented public accessor.
             device_label=device_label,
             date_format=date_format,
         )
 
-        try:
-            resolved_output_dir = validate_directory_setting(
-                output_dir_str, get_settings().capture_allowlist_roots(), setting_name="output_dir"
-            )
-        except ValueError:
-            logger.warning("CSV export: export_output_dir invalid for device_id=%d — skipping", device_id)
-            return CsvExportResult(rows_written=0, path=None)
-
-        filename = render_filename(filename_tmpl, meter_token)
-        final_path = resolved_output_dir / filename
-
-        # M13, issue 07 — this file joins the shared writer, which is what makes
-        # its column change survivable: the head it is about to write differs
-        # from the one an operator's existing file carries, so that file is
-        # closed under a dated name and a new one opens beside it. Nothing is
-        # rewritten and no row is ever appended under a header that does not
-        # describe it.
-        #
-        # **The file header block arrives here, not in an earlier ticket.**
-        # Adding the block is itself a head change, so introducing it with
-        # issue 01 or 02 would have rolled every operator's Load Profile file
-        # twice instead of once.
+        # The head has already been confirmed to match (or the file is new) —
+        # see the `head_changed` branch above, which is what makes a plain
+        # append here safe (ticket 02, ADR 0023).
         written = append_rows(
             final_path,
-            header_block=file_header_block(
-                customer=device.customer,
-                site_name=device.site_name,
-                meter_serial=meter_token,
-                file_label=_FILE_LABEL,
-            ),
+            header_block=header_block,
             header_row=_EXPORT_HEADERS,
             rows=formatted,
             allowlist=[resolved_output_dir],
@@ -319,6 +334,58 @@ def _compute_cap(session: Session, device_id: int, l1_max: datetime, has_seconda
     return l1_max
 
 
+def _full_window_rows(
+    session: Session, device_id: int, *, cap: datetime, device_label: str, date_format: str
+) -> tuple[list[list[str]], datetime | None]:
+    """Every stored row inside the 90-day retention window, through the same
+    merged Logger 1/Logger 2 query and skew cap (*cap*) the incremental
+    append above uses — what a head-change rewrite writes instead of the rows
+    a stale watermark would have picked up (ticket 02, ADR 0023).
+
+    **Deliberately bypasses the watermark.** A rewrite has to reproduce the
+    whole window a fresh file would hold today, including rows an earlier
+    cycle already exported under the head that is now being replaced —
+    filtering by the watermark here would drop exactly the rows the old file
+    already carried.
+
+    The lower bound mirrors :func:`arichds.db.retention.purge_expired`'s own
+    cutoff (``now - RETENTION_DAYS``, real clock, UTC) rather than *cap*, so
+    the file's window matches what the database still holds, not what one
+    device's own newest reading happens to be.
+
+    Returns:
+        The formatted rows, oldest first, and the newest ``read_at`` among
+        them (what the caller sets as the watermark) — or ``([], None)`` when
+        the window holds nothing for this device.
+    """
+    window_start = datetime.now(UTC) - timedelta(days=RETENTION_DAYS)
+
+    window_max = session.scalar(
+        select(func.max(LoadProfileReading.read_at)).where(
+            LoadProfileReading.device_id == device_id,
+            LoadProfileReading.logger_id == 1,
+            LoadProfileReading.read_at >= window_start,
+            LoadProfileReading.read_at <= cap,
+        )
+    )
+    if window_max is None:
+        return [], None
+    window_max = _as_utc(window_max)
+
+    stmt = (
+        merged_rows_select(device_id)
+        .where(LoadProfileReading.read_at >= window_start, LoadProfileReading.read_at <= cap)
+        .order_by(LoadProfileReading.read_at.asc())
+    )
+    rows = session.execute(stmt).all()
+    formatted = format_rows(
+        [row._mapping for row in rows],  # noqa: SLF001 — Row._mapping is the documented public accessor.
+        device_label=device_label,
+        date_format=date_format,
+    )
+    return formatted, window_max
+
+
 #: What :func:`csv_export_cycle` writes for each device, in order, each inside
 #: its own error boundary (M13, issue 01). A tuple rather than two calls in the
 #: loop body so adding the next export file is one line here and not another
@@ -366,7 +433,7 @@ def csv_export_cycle() -> None:
     load-profile cycle rather than give it its own.
 
     **Each file sits in its own error boundary.** A billing file that cannot
-    be written — a locked file, a full disk, a head that cannot be rolled —
+    be written — a locked file, a full disk, a file that cannot be replaced —
     must not cost that same device its Load Profile rows.
     """
     with session_scope() as session:

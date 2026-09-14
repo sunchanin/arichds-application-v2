@@ -15,7 +15,7 @@ import io
 import os
 import threading
 import time
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -331,18 +331,17 @@ class TestFsyncPrecedesTheWatermark:
         assert len(rows) == HEAD_LINES + 2, "no duplicate, no loss"
 
 
-class TestAnOlderHeaderIsClosedRatherThanAppendedUnder:
-    """T4, **reversed at M13 issue 07** — and the reversal is the point.
+class TestAHeadChangeRewritesTheFileInPlace:
+    """T4, **reversed at M13 issue 07, and reversed again by ADR 0023 (ticket
+    02)**.
 
-    This test used to assert that a file carrying v1's own fourteen-column
-    header was appended to without rewriting it. That was right while the
-    column set was v1's. It is wrong now: this file carries twenty-five columns
-    and a five-line header block, so appending under the old header would put
-    every number under the wrong name, silently and for ever — no error, no
-    warning, just a file where `Frequency (Hz)` holds a phase angle.
-
-    ADR 0013's amendment says what happens instead: the old file is **closed**
-    under a dated name and a new one opens beside it. Nothing is rewritten.
+    This class used to assert that an old-header file was **closed** under a
+    dated name while a new one opened beside it. ADR 0023 replaces that: the
+    customer's limited disk space rules out a folder that accumulates dated
+    editions, so a head change now **rewrites the one file in place**, under
+    an atomic swap, with the whole 90-day window recomputed from the database
+    rather than just the rows a stale watermark would have picked up. No
+    dated file is ever created.
     """
 
     def _write_old_edition(self, target: Path) -> str:
@@ -355,26 +354,7 @@ class TestAnOlderHeaderIsClosedRatherThanAppendedUnder:
         target.write_bytes(("﻿" + v1_header + v1_row).encode("utf-8"))
         return v1_header
 
-    def test_the_old_file_is_closed_under_a_dated_name_with_its_rows_intact(
-        self, migrated_db: Settings, tmp_path: Path
-    ) -> None:
-        device_id = make_device()
-        fake_meter_state().load_profile_loggers = (1,)
-        configure(output_dir=tmp_path)
-        target = tmp_path / "SN-1.csv"
-        v1_header = self._write_old_edition(target)
-
-        seed(device_id, BASE, import_reactive_kvarh=99.0)
-        result = export_device(device_id, require_auto_save=True)
-
-        assert result.rows_written == 1
-        closed = tmp_path / f"SN-1.{date.today().isoformat()}.csv"
-        assert closed.exists(), "the old edition must be kept, not overwritten"
-        closed_lines = read_file(closed).splitlines()
-        assert closed_lines[0] == v1_header.strip()
-        assert len(closed_lines) == 2, "the closed edition keeps its own header and its own row, unchanged"
-
-    def test_the_new_file_opens_with_the_new_head_and_only_the_new_rows(
+    def test_the_file_is_rewritten_in_place_under_the_new_head_and_no_dated_file_appears(
         self, migrated_db: Settings, tmp_path: Path
     ) -> None:
         device_id = make_device()
@@ -384,17 +364,19 @@ class TestAnOlderHeaderIsClosedRatherThanAppendedUnder:
         self._write_old_edition(target)
 
         seed(device_id, BASE, import_reactive_kvarh=99.0)
-        export_device(device_id, require_auto_save=True)
+        result = export_device(device_id, require_auto_save=True)
 
+        assert result.rows_written == 1
         rows = list(csv.reader(io.StringIO(read_file(target))))
         assert rows[0] == ["Customer :", ""]
         assert rows[HEAD_LINES - 1] == list(EXPECTED_HEADERS)
-        assert len(rows) == HEAD_LINES + 1, "the new edition holds only what was written under its own head"
+        assert len(rows) == HEAD_LINES + 1, "the rewritten file holds only what the current window produces"
         assert rows[HEAD_LINES][EXPECTED_HEADERS.index("Import Reactive (kvarh)")] == format(99.0, ".9f")
+        assert list(tmp_path.glob("SN-1.*.csv")) == [], "no dated edition may ever be created"
 
-    def test_a_second_export_appends_rather_than_rolling_again(self, migrated_db: Settings, tmp_path: Path) -> None:
-        """The roll fires on a head *change*, not on every write — otherwise
-        every cycle would open a new file."""
+    def test_a_second_export_appends_rather_than_rewriting_again(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """The rewrite fires on a head *change*, not on every write —
+        otherwise every cycle would pay for a full-window query."""
         device_id = make_device()
         fake_meter_state().load_profile_loggers = (1,)
         configure(output_dir=tmp_path)
@@ -408,7 +390,77 @@ class TestAnOlderHeaderIsClosedRatherThanAppendedUnder:
 
         rows = list(csv.reader(io.StringIO(read_file(target))))
         assert len(rows) == HEAD_LINES + 2
-        assert len(list(tmp_path.glob("SN-1.*.csv"))) == 1, "only the one original edition was ever closed"
+        assert list(tmp_path.glob("SN-1.*.csv")) == [], "a head change must never leave a dated file behind"
+
+    def test_the_rewrite_reproduces_a_row_the_old_watermark_had_already_marked_exported(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        """The behaviour a plain append cannot give: a row inside the 90-day
+        window that an earlier cycle already exported *under the old head*
+        must still appear in the rewritten file — a rewrite reproduces the
+        whole window, not just what a stale watermark still calls pending."""
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        target = tmp_path / "SN-1.csv"
+        self._write_old_edition(target)
+
+        already_exported = BASE
+        newly_pending = BASE + timedelta(minutes=15)
+        seed(device_id, already_exported, import_reactive_kvarh=11.0)
+        seed(device_id, newly_pending, import_reactive_kvarh=22.0)
+        set_watermark(device_id, already_exported)  # as if a prior cycle, under the old head, had exported this row
+
+        export_device(device_id, require_auto_save=True)
+
+        rows = list(csv.reader(io.StringIO(read_file(target))))
+        data_rows = rows[HEAD_LINES:]
+        assert len(data_rows) == 2, "the row before the old watermark must reappear under the new head"
+        assert watermark(device_id) == newly_pending
+
+    def test_a_row_older_than_ninety_days_is_excluded_from_the_rewrite(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        target = tmp_path / "SN-1.csv"
+        self._write_old_edition(target)
+
+        now = datetime.now(UTC)
+        outside_window = now - timedelta(days=100)
+        inside_window = now - timedelta(days=10)
+        seed(device_id, outside_window, import_active_kwh=1.0)
+        seed(device_id, inside_window, import_active_kwh=2.0)
+
+        export_device(device_id, require_auto_save=True)
+
+        rows = list(csv.reader(io.StringIO(read_file(target))))
+        data_rows = rows[HEAD_LINES:]
+        assert len(data_rows) == 1, "only the row inside the 90-day window may reach the rewritten file"
+        assert watermark(device_id) == inside_window
+
+    def test_the_rewrite_still_holds_rows_past_the_skew_cap(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """F5's skew cap is not just an incremental-append rule — the
+        head-change rewrite goes through the same `_compute_cap` and must
+        stay behind it too: a Logger 1 row newer than Logger 2's own frontier
+        is still held back, even on a full-window rewrite."""
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1, 2)
+        configure(output_dir=tmp_path)
+        target = tmp_path / "SN-1.csv"
+        self._write_old_edition(target)
+
+        seed(device_id, BASE, import_active_kwh=1.0)
+        seed(device_id, BASE + timedelta(hours=1), import_active_kwh=2.0)  # past L2's frontier — held
+        seed(device_id, BASE, logger_id=2, volt_l1=1.0)
+
+        export_device(device_id, require_auto_save=True)
+
+        rows = list(csv.reader(io.StringIO(read_file(target))))
+        data_rows = rows[HEAD_LINES:]
+        assert len(data_rows) == 1, "only the row at or before the skew cap may reach the rewritten file"
+        assert watermark(device_id) == BASE
 
 
 class TestNeverFollowsTheDisplayUnitSetting:

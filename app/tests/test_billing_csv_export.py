@@ -211,7 +211,7 @@ class TestRecordNoCountsFromTheOldestPeriod:
     def test_it_numbers_the_series_not_the_file(self, migrated_db: Settings, tmp_path: Path) -> None:
         """The second export continues the numbering rather than restarting at
         1 — the ordinal is a property of the data, so it survives both an
-        incremental append and a file that has rolled."""
+        incremental append and a whole-file rewrite."""
         device_id = make_device()
         configure(output_dir=tmp_path)
         seed(device_id, JAN, import_active_kwh_total=100.0)
@@ -398,16 +398,18 @@ class TestADeviceWithNothingToNameItsFileHoldsQuietly:
         assert export_device_billing(device_id, require_auto_save=True).rows_written == 0
 
 
-class TestTheFileRollsWhenItsHeadChanges:
-    """The rule the whole phase rests on: a file that appends is a contract, and
-    a contract that changes opens a new edition rather than being rewritten.
+class TestAHeadChangeRewritesTheWholeFileInPlace:
+    """The rule the whole phase rests on: a file that appends is a contract.
+    **Since ADR 0023 (ticket 02)**, a contract that changes is rewritten in
+    place, atomically, with the file's whole current content — every closed
+    period the device has — rather than being closed under a dated name.
 
     Exercised here through the **file header block**, because the block carries
     values an operator can edit at any time. The column row is the other half of
-    the same head and rolls through the same code path.
+    the same head and rewrites through the same code path.
     """
 
-    def test_renaming_the_site_closes_the_old_file_and_opens_a_new_one(
+    def test_renaming_the_site_rewrites_the_one_file_under_the_new_head(
         self, migrated_db: Settings, tmp_path: Path
     ) -> None:
         device_id = make_device(site_name="Plant A")
@@ -421,17 +423,18 @@ class TestTheFileRollsWhenItsHeadChanges:
         export_device_billing(device_id, require_auto_save=True)
 
         live = tmp_path / "SN-1-billing.csv"
-        closed = [path for path in tmp_path.glob("SN-1-billing.*.csv")]
-        assert len(closed) == 1, "the old edition must survive under a dated name"
+        assert list(tmp_path.glob("SN-1-billing.*.csv")) == [], "no dated edition may ever be created"
         assert read_rows(live)[1] == ["Site Name :", "Plant B"]
-        assert read_rows(closed[0])[1] == ["Site Name :", "Plant A"]
 
-    def test_no_row_is_ever_appended_under_a_head_that_does_not_describe_it(
+    def test_every_closed_period_reaches_the_rewritten_file_under_the_new_head(
         self, migrated_db: Settings, tmp_path: Path
     ) -> None:
-        """The failure this exists to prevent, and the one nobody would see: a
-        row under the wrong head raises no error, it just puts every value under
-        the wrong name."""
+        """The behaviour a plain append cannot give: the period the first
+        export already wrote *under the old head* must still be in the file
+        after a rewrite — a rewrite reproduces the whole series, not just
+        what a stale watermark still calls pending, which is also why
+        `Record No` is unaffected: both periods keep the ordinal the whole
+        series gives them."""
         device_id = make_device(site_name="Plant A")
         configure(output_dir=tmp_path)
         seed(device_id, JAN, import_active_kwh_total=100.0)
@@ -442,13 +445,10 @@ class TestTheFileRollsWhenItsHeadChanges:
         seed(device_id, JAN + timedelta(days=31), import_active_kwh_total=200.0)
         export_device_billing(device_id, require_auto_save=True)
 
-        closed = next(iter(tmp_path.glob("SN-1-billing.*.csv")))
-        assert [row[0] for row in read_rows(closed)[6:]] == ["1"], "the closed edition keeps only its own rows"
-        assert [row[0] for row in data_rows(tmp_path / "SN-1-billing.csv")] == ["2"]
+        rows = data_rows(tmp_path / "SN-1-billing.csv")
+        assert [row[0] for row in rows] == ["1", "2"], "both periods must land under the new head"
 
-    def test_a_second_head_change_on_one_day_does_not_destroy_the_first_edition(
-        self, migrated_db: Settings, tmp_path: Path
-    ) -> None:
+    def test_repeated_head_changes_never_leave_a_dated_file_behind(self, migrated_db: Settings, tmp_path: Path) -> None:
         device_id = make_device(site_name="Plant A")
         configure(output_dir=tmp_path)
         seed(device_id, JAN, import_active_kwh_total=100.0)
@@ -460,11 +460,12 @@ class TestTheFileRollsWhenItsHeadChanges:
             seed(device_id, JAN + timedelta(days=31 * index), import_active_kwh_total=200.0)
             export_device_billing(device_id, require_auto_save=True)
 
-        assert len(list(tmp_path.glob("SN-1-billing.*.csv"))) == 2
+        assert list(tmp_path.glob("SN-1-billing.*.csv")) == []
+        assert [row[0] for row in data_rows(tmp_path / "SN-1-billing.csv")] == ["1", "2", "3"]
 
-    def test_an_unchanged_head_appends_without_rolling(self, migrated_db: Settings, tmp_path: Path) -> None:
-        """The roll must be rare. A file that rolled on every append would turn
-        one growing file into a folder of one-row files."""
+    def test_an_unchanged_head_appends_without_rewriting(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """The rewrite must be rare. A file rewritten from the whole series on
+        every append would cost a query it does not need."""
         device_id = make_device()
         configure(output_dir=tmp_path)
         for month in range(3):

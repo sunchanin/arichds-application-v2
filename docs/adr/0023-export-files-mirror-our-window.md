@@ -2,8 +2,17 @@
 
 Status: accepted (2026-09-14, owner decision during the M14 grill). **Supersedes the M13
 amendment to ADR 0013** (closed editions). ADR 0013's core — display units never reach a file —
-is untouched. Extends ADR 0020's rule from the customer's database to the export folder. Not yet
-implemented: until M14 lands, `export/writer.py` still closes and renames files.
+is untouched. Extends ADR 0020's rule from the customer's database to the export folder.
+**The atomic-replace primitive and the in-place head-change rewrite landed with M14 ticket 02**:
+`export/writer.py` gained `replace_rows()` (temp file in the same directory, `flush()` +
+`fsync()`, then `os.replace()`) and `head_changed()`; `_roll` and its dated-edition naming are
+deleted, with nothing left referring to them. Each of the three files gained its own "whole
+current content" query, used only on a head change today: Load Profile CSV (the 90-day merged
+query, same skew cap and all-invalid exclusion), Billing (every closed period, unfiltered) and
+Energy (the live `energy_summary_rows()` aggregation over 90 days — moving onto
+`energy_summary_days` is still ticket 04). **Not yet implemented**: ticket 04 (Energy/Billing
+rewritten whole *every* cycle) and ticket 05 (the Load Profile CSV's daily 90-day trim) — until
+those land, a normal cycle for all three files still only appends.
 
 M13 treated the export files as a long-term archive. Its spec called the daily Energy file "a
 long-term archive — it outlives the ninety-day retention", and ADR 0013's amendment let dated

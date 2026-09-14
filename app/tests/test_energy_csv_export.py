@@ -220,6 +220,53 @@ class TestTheWatermarkMovesPastADayThatProducedNothing:
         assert gap.isoformat() not in written
 
 
+class TestAHeadChangeRewritesTheFileInPlace:
+    """ADR 0023 (ticket 02): a head that no longer matches what is on disk is
+    rewritten in place, atomically, with the whole 90-day window — not closed
+    under a dated name the way M13's amendment did (now reversed)."""
+
+    def test_renaming_the_site_rewrites_the_file_with_every_day_in_window_under_the_new_head(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        device_id = make_device()
+        configure(output_dir=tmp_path)
+        first_day = local_today() - timedelta(days=3)
+        second_day = local_today() - timedelta(days=1)
+        set_watermark(device_id, first_day - timedelta(days=1))
+        seed_day(device_id, first_day, kwh=11.0)
+        export_device_energy(device_id, require_auto_save=True)
+
+        with session_scope() as session:
+            session.get(Device, device_id).site_name = "Plant B"
+        seed_day(device_id, second_day, kwh=22.0)
+        export_device_energy(device_id, require_auto_save=True)
+
+        path = tmp_path / "SN-1-energy.csv"
+        rows = read_rows(path)
+        assert rows[1] == ["Site Name :", "Plant B"]
+        written_dates = [row[0] for row in data_rows(path)]
+        assert written_dates == [
+            first_day.isoformat(),
+            second_day.isoformat(),
+        ], "the day already exported under the old head must reappear under the new one"
+        assert list(tmp_path.glob("SN-1-energy.*.csv")) == [], "no dated edition may ever be created"
+        assert watermark(device_id) == second_day
+
+    def test_an_unchanged_head_never_creates_a_dated_file(self, migrated_db: Settings, tmp_path: Path) -> None:
+        device_id = make_device()
+        configure(output_dir=tmp_path)
+        yesterday = local_today() - timedelta(days=1)
+        set_watermark(device_id, yesterday - timedelta(days=3))
+        seed_day(device_id, yesterday - timedelta(days=2))
+        seed_day(device_id, yesterday)
+
+        export_device_energy(device_id, require_auto_save=True)
+        export_device_energy(device_id, require_auto_save=True)
+
+        assert list(tmp_path.glob("SN-1-energy.*.csv")) == []
+        assert len(data_rows(tmp_path / "SN-1-energy.csv")) == 2
+
+
 class TestTheOnDemandSave:
     def test_its_filename_carries_the_range_so_it_cannot_collide(self, migrated_db: Settings, tmp_path: Path) -> None:
         device_id = make_device()

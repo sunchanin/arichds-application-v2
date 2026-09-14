@@ -79,7 +79,7 @@ def closed_periods_with_record_no(device_id: int) -> Select:
     ``record_no`` is the row's **ordinal among all of that device's closed
     periods**, counted from the oldest — not a count of lines already in the
     file. A line count would need the file read on every append and would reset
-    the moment the file rolls to a new edition
+    the moment the file is rewritten under a new head
     (:mod:`arichds.export.writer`); this number is a property of the data, so
     it survives both. Billing Readings are not subject to Retention, so it is
     stable for the life of the device.

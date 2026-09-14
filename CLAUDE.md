@@ -87,12 +87,20 @@ MySQL, and ~30 tables.
   filed for it and closed without the fix; the code is still unchanged, so believe the ADR's
   Outstanding section over the tracker.
   **Amended at M13 (issue 01, `19b68ac`), and that amendment is SUPERSEDED by ADR 0023**
-  (2026-09-14, not yet implemented): M13 closed a file under a dated name when its head changed
-  and let those Closed Editions accumulate; ADR 0023 makes every export file mirror our 90-day
-  window instead (billing: every closed period), rewritten atomically, one head per file, no
-  editions — because the customer's stated constraint is disk space (ADR 0020). The core rule
-  above — units never reach a file — stands. Until M14 lands, `export/writer.py` still implements
-  the amendment) ·
+  (2026-09-14): M13 closed a file under a dated name when its head changed and let those Closed
+  Editions accumulate; ADR 0023 makes every export file mirror our 90-day window instead
+  (billing: every closed period), rewritten atomically, one head per file, no editions — because
+  the customer's stated constraint is disk space (ADR 0020). The core rule above — units never
+  reach a file — stands. **Closed Editions are gone as of M14 ticket 02**: `export/writer.py`'s
+  `_roll` is deleted, `head_changed()` tells a caller when the on-disk head no longer matches, and
+  `replace_rows()` swaps a temp file over the target in one `os.replace` — a head change now
+  rewrites the whole file in place (each of the three files' own "whole current content" query)
+  instead of opening a dated edition, and a caller that skips the `head_changed` check gets a
+  refused append rather than a corrupted file. **Not yet landed**: M14 tickets 04 (the Energy and
+  Billing files rewritten whole *every* cycle, off `energy_summary_days`, dropping their
+  `_exported_through` watermarks) and 05 (the Load Profile CSV's own daily 90-day trim job) —
+  until those land, all three files still only *reach* `replace_rows` on a head change; the normal
+  cycle still appends) ·
   0014 (the capture image is **drawn, never screenshotted** — Pillow as a third renderer over
   `_render_shared`; shipped with issue #35 and **REVERSED by ADR 0017** — read 0017 first, and do
   not cite 0014's "no screen to photograph" premise or its 250 MB browser costing, both of which
@@ -248,7 +256,18 @@ MySQL, and ~30 tables.
   M13 amendment**, extends 0020 to the export folder: Load Profile CSV and Energy file hold 90
   days, the Billing file every closed period; LP appends and is trimmed daily with retention, the
   two small files are rewritten whole every cycle; every rewrite is temp-then-replace; Closed
-  Editions are gone; **decided, not yet implemented**) ·
+  Editions are gone. **The atomic-replace primitive and the in-place head-change rewrite landed
+  with M14 ticket 02**: `export/writer.py::replace_rows()` is the temp-file-then-`os.replace`
+  swap, `head_changed()` is what a caller checks before choosing it over the cheap
+  `append_rows()`, and each of the three files gained its own "whole current content" query
+  (Load Profile: the 90-day merged query, same skew cap and all-invalid exclusion; Billing:
+  every closed period, unfiltered; Energy: the live `energy_summary_rows()` 90-day window —
+  moving that one onto `energy_summary_days` is still ticket 04). `append_rows()` no longer rolls
+  a mismatched head to a dated file; it refuses, on the assumption a caller has already checked
+  `head_changed()`. **Not yet implemented**: ticket 04 (Energy/Billing rewritten whole *every*
+  cycle, dropping their `_exported_through` columns) and ticket 05 (the Load Profile CSV's own
+  daily 90-day trim job) — until those land, the every-cycle behaviour for all three files is
+  still "append when the head matches", exactly as before ticket 02) ·
   0024 (the **central push holds no state and is signed** — customer requirement E4: billing, load
   profile, energy summary and the meter roster, JSON every 15 min; **our** versioned contract,
   published on the in-app API page from the same models that serialize the payload; no
@@ -281,10 +300,11 @@ MySQL, and ~30 tables.
   job-registry scheduler · licensing · `auth/` (bcrypt + PyJWT, Role enum, token service —
   HTTP-free; the guard dependencies live in `api/deps.py`) · `export/` (the three
   **export files** — Load Profile CSV (issue #30), billing CSV and Energy Summary file (M13) —
-  behind **one shared writer**, `export/writer.py`, which owns the file-head rule — ADR 0013's closed
-  editions today, replaced by ADR 0023's rewrite-the-90-day-window once M14 lands;
-  `format.py` holds row/filename formatting. A fourth export file means a new renderer *over
-  that writer*, never a second writer) · `dataout/` (the
+  behind **one shared writer**, `export/writer.py`, which owns the file-head rule — a head change
+  rewrites the file in place under an atomic `os.replace` swap (`replace_rows()`), never M13's
+  dated edition (ADR 0023, M14 ticket 02 — `_roll` is gone); `format.py` holds row/filename
+  formatting. A fourth export file means a new renderer *over that writer*, never a second
+  writer) · `dataout/` (the
   **Database Destination** — the customer's own MariaDB/MySQL written through SQLAlchemy Core +
   PyMySQL on the `dbdest_sync` job, issue #46; deliberately **not** part of `export/`, which
   ADR 0021 forbids it from sharing a local-time helper with) · `interval_status.py` (the one

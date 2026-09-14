@@ -139,6 +139,9 @@ looking for Billing, and this amendment does not give them a second option.
 
 **Why the file exists at all**, given the above: the customer asked for it (requirement D1),
 and the thing they asked for is *a record of what they were shown*, which is a weaker and
-achievable claim than *a record of what was true*. ADR 0013's closed-edition rule applies to it
-like any other export file — the head changes, the file closes, a dated edition stays behind —
-so the drift is visible in the folder rather than hidden inside one growing file.
+achievable claim than *a record of what was true*. At the time this ADR was written, ADR 0013's
+closed-edition rule applied to it like any other export file — the head changes, the file
+closes, a dated edition stays behind, so the drift was visible in the folder rather than hidden
+inside one growing file. **That rule is itself superseded by ADR 0023** (M14 ticket 02): a head
+change now rewrites the file in place instead, so this paragraph is history, not current
+behaviour.

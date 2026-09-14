@@ -40,7 +40,7 @@ from arichds.interval_status import decode_interval_status
 #: inserts the three phase angles and the status column *before* ``Frequency
 #: (Hz)`` rather than appending everything at the end. That moves an existing
 #: column's position, and is only survivable because :mod:`arichds.export.writer`
-#: closes the old file under a dated name when the head changes.
+#: rewrites the file in place under the new head when the head changes (ADR 0023).
 #:
 #: Names continue this product's own convention rather than the customer's
 #: spelling, which repeats v1's unit error (``Import kVar Reactive`` for a
