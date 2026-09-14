@@ -279,9 +279,17 @@ MySQL, and ~30 tables.
   still holds quietly rather than writing an empty file, the same choice the Load Profile CSV
   already makes, with the one residual gap flagged rather than silently fixed: a device that stops
   reporting for a whole retention window leaves its last Energy file in place rather than being
-  emptied (Billing cannot hit this — a closed period is never deleted, ADR 0009). **Still not
-  implemented**: ticket 05 (the Load Profile CSV's own daily 90-day trim job) — that file still
-  only appends, exactly as ticket 02 left it) ·
+  emptied (Billing cannot hit this — a closed period is never deleted, ADR 0009). **The Load
+  Profile CSV's own daily 90-day trim landed with M14 ticket 05**: `export/csv_export.py` gained
+  `trim_device_load_profile_csv()` / `csv_trim_cycle()`, the Scheduler's `lp_csv_trim` job
+  (`constants.py::JOB_LP_CSV_TRIM` / `LP_CSV_TRIM_INTERVAL_SEC`, aliased to
+  `RETENTION_INTERVAL_SEC` the way `ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC` aliases
+  `LOAD_PROFILE_INTERVAL_SEC`), registered immediately behind `retention`. It reuses ticket 02's
+  whole-window rewrite (`_replace_whole_window`, factored out of the head-change branch into a
+  helper both paths now share) **unconditionally**, every day, rather than only on a head change —
+  the fifteen-minute `csv_export` cycle still only ever appends or rewrites on an actual head
+  change, never to trim the window on its own. The file may still hold up to 91 days between
+  trims, exactly as ADR 0023's own Consequences section says) ·
   0024 (the **central push holds no state and is signed** — customer requirement E4: billing, load
   profile, energy summary and the meter roster, JSON every 15 min; **our** versioned contract,
   published on the in-app API page from the same models that serialize the payload; no

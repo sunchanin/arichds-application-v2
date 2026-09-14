@@ -47,7 +47,9 @@ from arichds.constants import (
     ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
     JOB_DBDEST_SYNC,
     JOB_ENERGY_SUMMARY_RECOMPUTE,
+    JOB_LP_CSV_TRIM,
     LOAD_PROFILE_INTERVAL_SEC,
+    LP_CSV_TRIM_INTERVAL_SEC,
     MANUAL_READ_LOCK_TIMEOUT_SEC,
     RETENTION_INTERVAL_SEC,
     SOURCE_DLMS,
@@ -58,7 +60,7 @@ from arichds.db.energy_summary_store import energy_summary_recompute_cycle
 from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 from arichds.db.retention import purge_expired
 from arichds.db.session import session_scope
-from arichds.export.csv_export import csv_export_cycle
+from arichds.export.csv_export import csv_export_cycle, csv_trim_cycle
 from arichds.jobs.scheduler import Job, Scheduler, default_jobs
 from arichds.licensing.service import STATE_ACTIVE, STATE_LIMITED, LicenseState
 
@@ -545,16 +547,16 @@ class TestSchedulerMasterSwitch:
 
 
 class TestTheDefaultRegistry:
-    """D12 — eight jobs at M14 ticket 01 (`energy_summary_recompute`, ADR 0022,
-    inserted immediately behind `load_profile`). M8's central-server push adds
-    its own one line at the end, still unbuilt."""
+    """D12 — nine jobs at M14 ticket 05 (`lp_csv_trim`, ADR 0023, inserted
+    immediately behind `retention`). M8's central-server push adds its own
+    one line at the end, still unbuilt."""
 
-    def test_it_holds_all_eight_jobs_in_order(self) -> None:
+    def test_it_holds_all_nine_jobs_in_order(self) -> None:
         jobs = default_jobs()
 
         # Asserted deliberately so that whoever adds M8's push has to come
         # here and update the count on purpose.
-        assert len(jobs) == 8
+        assert len(jobs) == 9
         assert [job.name for job in jobs] == [
             "load_profile",
             "energy_summary_recompute",
@@ -563,6 +565,7 @@ class TestTheDefaultRegistry:
             "battery",
             "backup",
             "retention",
+            "lp_csv_trim",
             "dbdest_sync",
         ]
         assert [job.interval_sec for job in jobs] == [
@@ -573,6 +576,7 @@ class TestTheDefaultRegistry:
             BATTERY_INTERVAL_SEC,
             BACKUP_INTERVAL_SEC,
             RETENTION_INTERVAL_SEC,
+            LP_CSV_TRIM_INTERVAL_SEC,
             DBDEST_SYNC_INTERVAL_SEC,
         ]
         assert [job.fn for job in jobs] == [
@@ -583,8 +587,27 @@ class TestTheDefaultRegistry:
             battery_cycle,
             backup_database,
             purge_expired,
+            csv_trim_cycle,
             database_destination_cycle,
         ]
+
+    def test_lp_csv_trim_is_registered_immediately_behind_retention(self) -> None:
+        """Ticket 05 — the daily trim runs right behind the daily purge, at
+        the same cadence, so it never drifts from `RETENTION_DAYS` by hand."""
+        names = [job.name for job in default_jobs()]
+
+        assert names.index(JOB_LP_CSV_TRIM) == names.index("retention") + 1
+
+    def test_lp_csv_trim_shares_retentions_own_constant_not_a_copy(self) -> None:
+        """The interval must be the same object as `RETENTION_INTERVAL_SEC`,
+        not a second constant that happens to equal it today — mirrors
+        `test_energy_summary_recompute_is_registered_immediately_behind_load_profile`'s
+        own reasoning, aliased rather than duplicated."""
+        import arichds.constants as constants
+
+        assert LP_CSV_TRIM_INTERVAL_SEC == RETENTION_INTERVAL_SEC == 86400
+        source = pathlib.Path(constants.__file__).read_text(encoding="utf-8")
+        assert "LP_CSV_TRIM_INTERVAL_SEC: Final[int] = RETENTION_INTERVAL_SEC" in source
 
     def test_energy_summary_recompute_is_registered_immediately_behind_load_profile(self) -> None:
         """ADR 0022, M14 ticket 01 — the recompute must run against this

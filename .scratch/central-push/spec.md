@@ -125,9 +125,11 @@ change of column set simply rewrites the file under its new header — no dated 
 ### Scheduler order
 
 The job registry becomes, in order: load profile → **Energy Summary recompute** → CSV export →
-billing → battery → backup → retention → Database Destination sync → **Central Push**. The
-recompute runs immediately after the load-profile read so every export and the push read fresh
-rows. The Central Push is last because it is the second job that talks to a machine we do not
+billing → battery → backup → retention → **Load Profile CSV trim** → Database Destination sync →
+**Central Push**. The recompute runs immediately after the load-profile read so every export and
+the push read fresh rows. The Load Profile CSV trim runs immediately behind retention, at its own
+daily cadence, so the file it bounds to 90 days never drifts from the window retention itself
+enforces. The Central Push is last because it is the second job that talks to a machine we do not
 own, and jobs share one thread.
 
 ### Energy Summary store (ADR 0022)

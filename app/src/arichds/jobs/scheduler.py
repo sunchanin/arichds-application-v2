@@ -39,8 +39,10 @@ from arichds.constants import (
     JOB_DBDEST_SYNC,
     JOB_ENERGY_SUMMARY_RECOMPUTE,
     JOB_LOAD_PROFILE,
+    JOB_LP_CSV_TRIM,
     JOB_RETENTION,
     LOAD_PROFILE_INTERVAL_SEC,
+    LP_CSV_TRIM_INTERVAL_SEC,
     RETENTION_INTERVAL_SEC,
     SCHEDULER_MIN_SLEEP_SEC,
     SCHEDULER_STOP_JOIN_TIMEOUT_SEC,
@@ -49,7 +51,7 @@ from arichds.dataout.sync import database_destination_cycle
 from arichds.db.backup import backup_database
 from arichds.db.energy_summary_store import energy_summary_recompute_cycle
 from arichds.db.retention import purge_expired
-from arichds.export.csv_export import csv_export_cycle
+from arichds.export.csv_export import csv_export_cycle, csv_trim_cycle
 from arichds.licensing.service import LicenseState
 
 logger = logging.getLogger(__name__)
@@ -424,6 +426,12 @@ def default_jobs() -> list[Job]:
         # side of that trade by a wide margin.
         Job(name=JOB_BACKUP, interval_sec=BACKUP_INTERVAL_SEC, fn=backup_database),
         Job(name=JOB_RETENTION, interval_sec=RETENTION_INTERVAL_SEC, fn=purge_expired),
+        # Registered immediately behind retention, at retention's own
+        # cadence (ADR 0023, M14 ticket 05) — the daily job that keeps the
+        # Load Profile CSV bounded to 90 days runs right behind the daily
+        # job that keeps the database bounded to the same window, so the
+        # two can never drift apart.
+        Job(name=JOB_LP_CSV_TRIM, interval_sec=LP_CSV_TRIM_INTERVAL_SEC, fn=csv_trim_cycle),
         # The Database Destination sync (issue #46, SPEC §3.10) — **last,
         # deliberately**. It is the only job here that talks to a machine we
         # do not own, and the only one that can legitimately consume its

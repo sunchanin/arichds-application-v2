@@ -1,7 +1,8 @@
 """The Load Profile CSV auto-export (M7 slice 3, issue #30) — the file an
-operator's downstream tooling appends to for months, one per meter.
+operator's downstream tooling appends to, one per meter, **bounded to 90
+days** since ADR 0023/ticket 05.
 
-Two entry points:
+Four entry points:
 
 * :func:`export_device` — read one device's pending rows and append them.
   Both "Save CSV now" (``POST /api/load-profile/export``) and the scheduler
@@ -12,6 +13,11 @@ Two entry points:
   before moving to the next (M13, issue 01): the Load Profile CSV here and the
   billing CSV in :mod:`arichds.export.billing_csv` and the Energy Summary file
   in :mod:`arichds.export.energy_csv`, each inside its own error boundary.
+* :func:`trim_device_load_profile_csv` / :func:`csv_trim_cycle` — the
+  Scheduler's ``lp_csv_trim`` job (ticket 05), registered behind ``retention``
+  at its daily cadence: rewrites the whole 90-day window unconditionally,
+  the same way a head change already does, so the file the fifteen-minute
+  cycle only ever appends to never grows past ``RETENTION_DAYS + 1`` days.
 
 **The watermark is ``devices.csv_exported_through``, a column, not a table**
 (D-8) — ``None`` means nothing has been exported yet, so everything stored
@@ -114,6 +120,175 @@ def _device_lock(device_id: int) -> threading.Lock:
         return lock
 
 
+@dataclass(frozen=True)
+class _ResolvedTarget:
+    """Everything settings and the device row alone can resolve, before the
+    Logger 1 skew-cap computation — the prefix :func:`_export_device_locked`
+    and :func:`_trim_device_locked` both need. Deliberately stops short of
+    ``l1_max``/``cap``: the two callers disagree about what "no Logger 1 row"
+    means (the append path holds quietly; the trim must still empty an
+    existing file, reviewer finding 1(b)), so that decision is theirs, not
+    this function's.
+    """
+
+    device: Device
+    has_secondary_logger: bool
+    device_label: str
+    date_format: str
+    header_block: list[list[str]]
+    final_path: Path
+    resolved_output_dir: Path
+
+
+@dataclass(frozen=True)
+class _ExportContext:
+    """A :class:`_ResolvedTarget` plus the skew cap (F5) — what
+    :func:`_replace_whole_window` needs. Built once Logger 1 has at least one
+    row, by both the append path's head-change branch and the trim job.
+    """
+
+    device: Device
+    device_label: str
+    date_format: str
+    header_block: list[list[str]]
+    final_path: Path
+    resolved_output_dir: Path
+    cap: datetime
+
+
+def _resolve_target(session: Session, device_id: int, *, require_auto_save: bool) -> _ResolvedTarget | None:
+    """Resolve *device_id*'s settings, device row and driver, or ``None``
+    when the call must hold quietly — an unset folder, an undiscovered Meter
+    Serial (ADR 0005), a disabled auto-save switch (D-11), an unbuildable
+    driver (D-12) or an invalid output folder. Every hold here is a normal
+    state, not a failure; the caller returns zero rows written. Says nothing
+    about Logger 1 rows — see :class:`_ResolvedTarget`'s own docstring."""
+    if require_auto_save:
+        enabled = get_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, EXPORT_AUTO_SAVE_ENABLED_DEFAULT) == "true"
+        if not enabled:
+            return None
+
+    output_dir_str = get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT).strip()
+    if not output_dir_str:
+        return None
+
+    date_format = get_setting(session, EXPORT_DATE_FORMAT_KEY, EXPORT_DATE_FORMAT_DEFAULT)
+    filename_tmpl = get_setting(session, EXPORT_CSV_FILENAME_TMPL_KEY, EXPORT_CSV_FILENAME_TMPL_DEFAULT)
+
+    device = session.get(Device, device_id)
+    if device is None:
+        logger.warning("CSV export: device_id=%d not found — skipping", device_id)
+        return None
+
+    # D-15 — the file is named by the sanitized serial; an undiscovered
+    # serial is the normal early state (ADR 0005), so this holds quietly.
+    if not device.meter_serial:
+        return None
+    try:
+        meter_token = sanitize_meter_serial(device.meter_serial)
+    except ValueError:
+        logger.warning("CSV export: unsafe meter token for device_id=%d — skipping", device_id)
+        return None
+
+    # D-12 — whether this device has a second logger comes from the
+    # driver, never from the data. Built but never connected; no
+    # Transport Endpoint lock is taken (nothing here talks to a meter).
+    try:
+        driver = build_driver(device)
+    except ValueError as exc:
+        logger.warning("CSV export skipped for device_id=%d: %s", device_id, exc)
+        return None
+    has_secondary_logger = 2 in driver.load_profile_loggers()
+
+    try:
+        resolved_output_dir = validate_directory_setting(
+            output_dir_str, get_settings().capture_allowlist_roots(), setting_name="output_dir"
+        )
+    except ValueError:
+        logger.warning("CSV export: export_output_dir invalid for device_id=%d — skipping", device_id)
+        return None
+
+    device_label = f"{device.name} ({meter_token})"
+    final_path = resolved_output_dir / render_filename(filename_tmpl, meter_token)
+    header_block = file_header_block(
+        customer=device.customer, site_name=device.site_name, meter_serial=meter_token, file_label=_FILE_LABEL
+    )
+    return _ResolvedTarget(
+        device=device,
+        has_secondary_logger=has_secondary_logger,
+        device_label=device_label,
+        date_format=date_format,
+        header_block=header_block,
+        final_path=final_path,
+        resolved_output_dir=resolved_output_dir,
+    )
+
+
+def _l1_max(session: Session, device_id: int) -> datetime | None:
+    """This device's ``MAX(read_at)`` on Logger 1, UTC-aware, or ``None``
+    when it has none — a brand-new device that has never reported, or one
+    whose every Logger 1 row has aged out past ``RETENTION_DAYS`` (the
+    ordinary state right behind ``purge_expired``, reviewer finding 1(b))."""
+    l1_max = session.scalar(
+        select(func.max(LoadProfileReading.read_at)).where(
+            LoadProfileReading.device_id == device_id, LoadProfileReading.logger_id == 1
+        )
+    )
+    return _as_utc(l1_max) if l1_max is not None else None
+
+
+def _context_from_target(session: Session, device_id: int, target: _ResolvedTarget, l1_max: datetime) -> _ExportContext:
+    """Add the skew cap (F5) to an already-resolved *target*."""
+    cap = _compute_cap(session, device_id, l1_max, target.has_secondary_logger)
+    return _ExportContext(
+        device=target.device,
+        device_label=target.device_label,
+        date_format=target.date_format,
+        header_block=target.header_block,
+        final_path=target.final_path,
+        resolved_output_dir=target.resolved_output_dir,
+        cap=cap,
+    )
+
+
+def _resolve_export_context(session: Session, device_id: int, *, require_auto_save: bool) -> _ExportContext | None:
+    """:func:`_resolve_target` plus the skew cap, for the append/head-change
+    path only — holds quietly (``None``) when there are no Logger 1 rows at
+    all yet, exactly as before this was split out (a brand-new device, ADR
+    0005). The trim job below resolves the two steps itself instead, because
+    it must not hold quietly in that case (reviewer finding 1(b))."""
+    target = _resolve_target(session, device_id, require_auto_save=require_auto_save)
+    if target is None:
+        return None
+    l1_max = _l1_max(session, device_id)
+    if l1_max is None:
+        return None
+    return _context_from_target(session, device_id, target, l1_max)
+
+
+def _replace_whole_window(session: Session, ctx: _ExportContext) -> CsvExportResult:
+    """Rewrite the whole 90-day window atomically and advance the watermark
+    to match — ticket 02's head-change rewrite (ADR 0023), reused
+    unconditionally by ticket 05's daily trim job below."""
+    full_rows, full_watermark = _full_window_rows(
+        session, ctx.device.id, cap=ctx.cap, device_label=ctx.device_label, date_format=ctx.date_format
+    )
+    written = replace_rows(
+        ctx.final_path,
+        header_block=ctx.header_block,
+        header_row=_EXPORT_HEADERS,
+        rows=full_rows,
+        allowlist=[ctx.resolved_output_dir],
+        label=_LOG_LABEL,
+    )
+    if not written:
+        return CsvExportResult(rows_written=0, path=ctx.final_path)
+    if full_watermark is not None:
+        ctx.device.csv_exported_through = full_watermark
+        session.commit()
+    return CsvExportResult(rows_written=len(full_rows), path=ctx.final_path)
+
+
 def export_device(device_id: int, *, require_auto_save: bool) -> CsvExportResult:
     """Append *device_id*'s pending Interval Readings to its CSV file.
 
@@ -141,67 +316,9 @@ def export_device(device_id: int, *, require_auto_save: bool) -> CsvExportResult
 
 def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExportResult:
     with session_scope() as session:
-        if require_auto_save:
-            enabled = get_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, EXPORT_AUTO_SAVE_ENABLED_DEFAULT) == "true"
-            if not enabled:
-                return CsvExportResult(rows_written=0, path=None)
-
-        output_dir_str = get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT).strip()
-        if not output_dir_str:
+        ctx = _resolve_export_context(session, device_id, require_auto_save=require_auto_save)
+        if ctx is None:
             return CsvExportResult(rows_written=0, path=None)
-
-        date_format = get_setting(session, EXPORT_DATE_FORMAT_KEY, EXPORT_DATE_FORMAT_DEFAULT)
-        filename_tmpl = get_setting(session, EXPORT_CSV_FILENAME_TMPL_KEY, EXPORT_CSV_FILENAME_TMPL_DEFAULT)
-
-        device = session.get(Device, device_id)
-        if device is None:
-            logger.warning("CSV export: device_id=%d not found — skipping", device_id)
-            return CsvExportResult(rows_written=0, path=None)
-
-        # D-15 — the file is named by the sanitized serial; an undiscovered
-        # serial is the normal early state (ADR 0005), so this holds quietly.
-        if not device.meter_serial:
-            return CsvExportResult(rows_written=0, path=None)
-        try:
-            meter_token = sanitize_meter_serial(device.meter_serial)
-        except ValueError:
-            logger.warning("CSV export: unsafe meter token for device_id=%d — skipping", device_id)
-            return CsvExportResult(rows_written=0, path=None)
-
-        # D-12 — whether this device has a second logger comes from the
-        # driver, never from the data. Built but never connected; no
-        # Transport Endpoint lock is taken (nothing here talks to a meter).
-        try:
-            driver = build_driver(device)
-        except ValueError as exc:
-            logger.warning("CSV export skipped for device_id=%d: %s", device_id, exc)
-            return CsvExportResult(rows_written=0, path=None)
-        has_secondary_logger = 2 in driver.load_profile_loggers()
-
-        l1_max = session.scalar(
-            select(func.max(LoadProfileReading.read_at)).where(
-                LoadProfileReading.device_id == device_id, LoadProfileReading.logger_id == 1
-            )
-        )
-        if l1_max is None:
-            return CsvExportResult(rows_written=0, path=None)
-        l1_max = _as_utc(l1_max)
-
-        cap = _compute_cap(session, device_id, l1_max, has_secondary_logger)
-
-        try:
-            resolved_output_dir = validate_directory_setting(
-                output_dir_str, get_settings().capture_allowlist_roots(), setting_name="output_dir"
-            )
-        except ValueError:
-            logger.warning("CSV export: export_output_dir invalid for device_id=%d — skipping", device_id)
-            return CsvExportResult(rows_written=0, path=None)
-
-        device_label = f"{device.name} ({meter_token})"
-        final_path = resolved_output_dir / render_filename(filename_tmpl, meter_token)
-        header_block = file_header_block(
-            customer=device.customer, site_name=device.site_name, meter_serial=meter_token, file_label=_FILE_LABEL
-        )
 
         # ADR 0023 (ticket 02) — a head that no longer matches what is on disk
         # is rewritten in place under the whole 90-day window, atomically,
@@ -209,32 +326,16 @@ def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExpo
         # watermark entirely: a rewrite must reproduce the *whole* window a
         # fresh file would hold today, including rows an old watermark had
         # already marked exported under the head that is being replaced.
-        if head_changed(final_path, header_block, _EXPORT_HEADERS):
-            full_rows, full_watermark = _full_window_rows(
-                session, device_id, cap=cap, device_label=device_label, date_format=date_format
-            )
-            written = replace_rows(
-                final_path,
-                header_block=header_block,
-                header_row=_EXPORT_HEADERS,
-                rows=full_rows,
-                allowlist=[resolved_output_dir],
-                label=_LOG_LABEL,
-            )
-            if not written:
-                return CsvExportResult(rows_written=0, path=final_path)
-            if full_watermark is not None:
-                device.csv_exported_through = full_watermark
-                session.commit()
-            return CsvExportResult(rows_written=len(full_rows), path=final_path)
+        if head_changed(ctx.final_path, ctx.header_block, _EXPORT_HEADERS):
+            return _replace_whole_window(session, ctx)
 
-        watermark = device.csv_exported_through
+        watermark = ctx.device.csv_exported_through
         watermark = _as_utc(watermark) if watermark is not None else None
 
         stmt = merged_rows_select(device_id)
         if watermark is not None:
             stmt = stmt.where(LoadProfileReading.read_at > watermark)
-        stmt = stmt.where(LoadProfileReading.read_at <= cap).order_by(LoadProfileReading.read_at.asc())
+        stmt = stmt.where(LoadProfileReading.read_at <= ctx.cap).order_by(LoadProfileReading.read_at.asc())
 
         # The newest row **in the window**, counted without the all-invalid
         # filter `merged_rows_select` applies (v1's INV-LP-06). The watermark
@@ -252,7 +353,7 @@ def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExpo
             select(func.max(LoadProfileReading.read_at)).where(
                 LoadProfileReading.device_id == device_id,
                 LoadProfileReading.logger_id == 1,
-                LoadProfileReading.read_at <= cap,
+                LoadProfileReading.read_at <= ctx.cap,
                 *([LoadProfileReading.read_at > watermark] if watermark is not None else []),
             )
         )
@@ -264,36 +365,36 @@ def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExpo
         if not rows:
             # Rows exist in the window but the meter disowned every one of
             # them. Nothing to write, and nothing pending either.
-            device.csv_exported_through = window_max
+            ctx.device.csv_exported_through = window_max
             session.commit()
             return CsvExportResult(rows_written=0, path=None)
 
         formatted = format_rows(
             [row._mapping for row in rows],  # noqa: SLF001 — Row._mapping is the documented public accessor.
-            device_label=device_label,
-            date_format=date_format,
+            device_label=ctx.device_label,
+            date_format=ctx.date_format,
         )
 
         # The head has already been confirmed to match (or the file is new) —
         # see the `head_changed` branch above, which is what makes a plain
         # append here safe (ticket 02, ADR 0023).
         written = append_rows(
-            final_path,
-            header_block=header_block,
+            ctx.final_path,
+            header_block=ctx.header_block,
             header_row=_EXPORT_HEADERS,
             rows=formatted,
-            allowlist=[resolved_output_dir],
+            allowlist=[ctx.resolved_output_dir],
             label=_LOG_LABEL,
         )
         if not written:
-            return CsvExportResult(rows_written=0, path=final_path)
+            return CsvExportResult(rows_written=0, path=ctx.final_path)
 
         # `window_max`, not `rows[-1]` — see its own comment above. They are the
         # same instant unless the newest rows in the window were all-invalid,
         # and in that case `rows[-1]` would leave them pending for ever.
-        device.csv_exported_through = window_max
+        ctx.device.csv_exported_through = window_max
         session.commit()
-        return CsvExportResult(rows_written=len(formatted), path=final_path)
+        return CsvExportResult(rows_written=len(formatted), path=ctx.final_path)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -445,3 +546,123 @@ def csv_export_cycle() -> None:
                 export(device_id, require_auto_save=True)
             except Exception:  # noqa: BLE001 — one file, one device must never strand the rest.
                 logger.exception("%s cycle failed for device id %s", label, device_id)
+
+
+def trim_device_load_profile_csv(device_id: int, *, require_auto_save: bool) -> CsvExportResult:
+    """Rewrite *device_id*'s Load Profile CSV down to the 90-day window
+    (ticket 05, ADR 0023) — the Scheduler's daily ``lp_csv_trim`` job.
+
+    **Unconditional**, unlike the fifteen-minute cycle's own
+    :func:`head_changed` check above: the file may already carry the right
+    head and still hold up to 91 days of rows the append-only cycle let
+    through (ADR 0023's own "may hold up to 91 days" consequence). Reuses
+    ticket 02's whole-window rewrite (:func:`_replace_whole_window`) — the
+    same query, the same skew cap, the same atomic swap — every time this
+    runs, which is what makes the daily file equal what appending alone
+    would have produced for the days it keeps.
+
+    Serialised through the same per-device lock as :func:`export_device`
+    (:func:`_device_lock`): this and the fifteen-minute append cycle touch
+    the same file and the same ``csv_exported_through`` watermark, and must
+    never race each other.
+
+    Args:
+        device_id: The device to trim.
+        require_auto_save: When True (the scheduler job), a device whose
+            ``export_auto_save_enabled`` setting is off is held with zero
+            rows written — the auto-save switch still governs this file,
+            the same as it governs the fifteen-minute cycle.
+
+    Returns:
+        How many rows the file now holds and the resolved target path.
+        Zero rows and a ``None`` path for every hold. Zero rows and the
+        resolved path for a write failure — the previous file is left
+        untouched, exactly like a failed append.
+
+    **A device with no Logger 1 rows is not a hold here** (reviewer finding
+    1(b), unlike the append path's own :func:`_resolve_export_context`,
+    which does hold on it): ``purge_expired`` runs immediately ahead of this
+    job in the registry (``jobs/scheduler.py``), so a meter that has gone
+    quiet for the whole retention window loses every stored row every day,
+    and its CSV would otherwise carry rows past ``RETENTION_DAYS`` forever —
+    exactly the Window criterion this job exists to hold. When that file
+    already exists it is rewritten to hold only the header (``rows=[]``)
+    through the same atomic :func:`replace_rows`; the watermark is left
+    untouched, since there is nothing to advance it to.
+
+    **This job never creates a file** (reviewer finding 1, round 3) —
+    checked once, right after settings/device/driver resolve, before either
+    branch above decides what to write. Trimming only ever shrinks a file
+    the fifteen-minute cycle already created; a device with stored rows but
+    no file yet (e.g. paused before its first export) is a hold, the same
+    as a brand-new device with nothing stored at all — creating a file is
+    export work, gated by :func:`csv_export_cycle`'s own Pause rule, and
+    this job must not bypass it.
+    """
+    with _device_lock(device_id):
+        return _trim_device_locked(device_id, require_auto_save=require_auto_save)
+
+
+def _trim_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExportResult:
+    with session_scope() as session:
+        target = _resolve_target(session, device_id, require_auto_save=require_auto_save)
+        if target is None:
+            return CsvExportResult(rows_written=0, path=None)
+
+        # Trimming only ever shrinks a file the fifteen-minute cycle already
+        # created — creating one is export work, gated by that cycle's own
+        # Pause rule (reviewer finding 1, round 3), and this job must not
+        # bypass it just because a device has stored rows nobody has
+        # exported yet. Checked for **both** branches below, before either
+        # one decides what to write.
+        if not target.final_path.exists():
+            return CsvExportResult(rows_written=0, path=None)
+
+        l1_max = _l1_max(session, device_id)
+        if l1_max is None:
+            replace_rows(
+                target.final_path,
+                header_block=target.header_block,
+                header_row=_EXPORT_HEADERS,
+                rows=[],
+                allowlist=[target.resolved_output_dir],
+                label=_LOG_LABEL,
+            )
+            return CsvExportResult(rows_written=0, path=target.final_path)
+
+        ctx = _context_from_target(session, device_id, target, l1_max)
+        return _replace_whole_window(session, ctx)
+
+
+def csv_trim_cycle() -> None:
+    """Trim every device's Load Profile CSV to the 90-day window, once a day
+    (ticket 05, ADR 0023).
+
+    The Scheduler's ``lp_csv_trim`` job — see
+    :func:`arichds.jobs.scheduler.default_jobs`, registered immediately
+    after ``retention``, at the same cadence: the daily job that keeps the
+    file bounded runs right behind the daily job that keeps the database
+    bounded, both on the one thread.
+
+    **Deliberately no ``enabled`` filter** (reviewer finding 1(a)) — unlike
+    :func:`csv_export_cycle`. That job's own filter protects a paused
+    device's *export*: CONTEXT.md's Pause is about background *reads*, and
+    withholding a paused device's already-stored rows from its export costs
+    nothing but a delay, because the rows are never deleted for it either.
+    ``purge_expired`` carries no such filter — it deletes a paused device's
+    rows past ``RETENTION_DAYS`` exactly like every other device's — so a
+    filter here would leave a paused device's CSV holding rows the database
+    no longer has, forever, which is the defect this job exists to prevent.
+    This job never talks to a meter, reads no status either, and simply
+    walks every device.
+
+    Sequential, one device's failure never stops the next.
+    """
+    with session_scope() as session:
+        device_ids = list(session.scalars(select(Device.id).order_by(Device.id)))
+
+    for device_id in device_ids:
+        try:
+            trim_device_load_profile_csv(device_id, require_auto_save=True)
+        except Exception:  # noqa: BLE001 — one device must never strand the rest.
+            logger.exception("Load Profile CSV trim failed for device id %s", device_id)

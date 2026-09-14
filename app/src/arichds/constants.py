@@ -185,6 +185,18 @@ BACKUP_KEEP_COUNT: Final[int] = 7
 JOB_RETENTION: Final[str] = "retention"
 JOB_BACKUP: Final[str] = "backup"
 
+# ─── Load Profile CSV trim (ADR 0023, M14, ticket 05) ─────────────────────────
+# The daily job that rewrites each device's Load Profile CSV down to the
+# 90-day window (RETENTION_DAYS) — the fifteen-minute `csv_export` job only
+# ever appends, so this is what keeps the file from carrying more than
+# RETENTION_DAYS + 1 days between trims (ADR 0023's own "may hold up to 91
+# days" consequence). Same cadence as `retention`, aliased rather than a
+# second constant — mirrors ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC's own
+# aliasing of LOAD_PROFILE_INTERVAL_SEC above: retuning retention's cadence
+# must retune this trim's cadence with it, not drift from it by hand.
+LP_CSV_TRIM_INTERVAL_SEC: Final[int] = RETENTION_INTERVAL_SEC
+JOB_LP_CSV_TRIM: Final[str] = "lp_csv_trim"
+
 # ─── Database Destination (SPEC §3.10, ADR 0016/0020/0021, M8-adjacent, #46) ──
 # The sync that writes `load_profile_readings` and `billing_readings` into the
 # customer's own MariaDB/MySQL — a Data-out Destination (CONTEXT.md), never our

@@ -30,8 +30,9 @@ from arichds.db.app_settings import (
     set_setting,
 )
 from arichds.db.models import Device, LoadProfileReading
+from arichds.db.retention import purge_expired
 from arichds.db.session import session_scope
-from arichds.export.csv_export import csv_export_cycle, export_device
+from arichds.export.csv_export import csv_export_cycle, csv_trim_cycle, export_device, trim_device_load_profile_csv
 from arichds.export.format import _EXPORT_HEADERS
 
 pytestmark = pytest.mark.usefixtures("fake_meter")
@@ -973,3 +974,221 @@ class TestPerDeviceLock:
 
         assert result.rows_written == 1
         assert elapsed < 1.0, "device B's export must not wait on device A's lock"
+
+
+class TestTheDailyTrimJob:
+    """Ticket 05, ADR 0023 — the daily job that rewrites the Load Profile CSV
+    down to the 90-day window. Registered at the retention job's cadence,
+    immediately behind it (`jobs/scheduler.py::default_jobs`, own test in
+    `test_scheduler.py`); this class proves what the job itself does,
+    through `trim_device_load_profile_csv` and `csv_trim_cycle` directly.
+    """
+
+    def test_the_trim_drops_rows_older_than_the_retention_window(self, migrated_db: Settings, tmp_path: Path) -> None:
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        now = datetime.now(UTC)
+        outside_window = now - timedelta(days=100)
+        inside_window = now - timedelta(days=10)
+        seed(device_id, outside_window, import_active_kwh=1.0)
+        seed(device_id, inside_window, import_active_kwh=2.0)
+        export_device(device_id, require_auto_save=True)
+        before = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-1.csv"))))
+        assert len(before[HEAD_LINES:]) == 2, "both rows must have appended first, or the trim proves nothing"
+
+        result = trim_device_load_profile_csv(device_id, require_auto_save=True)
+
+        rows = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-1.csv"))))
+        data_rows = rows[HEAD_LINES:]
+        assert len(data_rows) == 1, "the trim must drop the row older than RETENTION_DAYS"
+        assert result.rows_written == 1
+        assert watermark(device_id) == inside_window
+
+    def test_the_fifteen_minute_cycle_never_trims_the_window_on_its_own(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        """Cadence — only the daily trim (or a head change) may drop an
+        out-of-window row. The plain append path the fifteen-minute cycle
+        uses must never trim on its own, even once the file already holds a
+        row past RETENTION_DAYS."""
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        now = datetime.now(UTC)
+        outside_window = now - timedelta(days=100)
+        seed(device_id, outside_window, import_active_kwh=1.0)
+        export_device(device_id, require_auto_save=True)
+
+        newer = now - timedelta(days=10)
+        seed(device_id, newer, import_active_kwh=2.0)
+        export_device(device_id, require_auto_save=True)  # a plain append — no head change, no trim
+
+        rows = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-1.csv"))))
+        data_rows = rows[HEAD_LINES:]
+        assert len(data_rows) == 2, "the fifteen-minute cycle rewrote the file down to the window on its own"
+
+    def test_the_trim_keeps_the_kept_rows_byte_identical_to_the_appended_file(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        """Faithful — for the rows it keeps, the trimmed file equals what
+        appending alone had already produced: same formatting, same order,
+        byte for byte."""
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        now = datetime.now(UTC)
+        outside_window = now - timedelta(days=100)
+        inside_window = now - timedelta(days=10)
+        seed(device_id, outside_window, import_active_kwh=1.0)
+        seed(device_id, inside_window, import_active_kwh=2.0)
+        export_device(device_id, require_auto_save=True)
+        appended_lines = (tmp_path / "SN-1.csv").read_text(encoding="utf-8-sig").splitlines()
+        kept_line = appended_lines[-1]  # the newer row's own line — unaffected by the trim
+
+        trim_device_load_profile_csv(device_id, require_auto_save=True)
+
+        trimmed_lines = (tmp_path / "SN-1.csv").read_text(encoding="utf-8-sig").splitlines()
+        assert trimmed_lines[-1] == kept_line, "the kept row's own bytes changed between append and trim"
+        assert len(trimmed_lines) == HEAD_LINES + 1, "the older row must be gone, not just the newer one kept"
+
+    def test_the_first_append_after_a_trim_adds_only_newer_rows_with_no_duplicate(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        now = datetime.now(UTC)
+        inside_window = now - timedelta(days=10)
+        seed(device_id, inside_window, import_active_kwh=2.0)
+        export_device(device_id, require_auto_save=True)
+        trim_device_load_profile_csv(device_id, require_auto_save=True)
+
+        newer = inside_window + timedelta(minutes=15)
+        seed(device_id, newer, import_active_kwh=3.0)
+        result = export_device(device_id, require_auto_save=True)
+
+        assert result.rows_written == 1, "the append after a trim duplicated or skipped a row"
+        rows = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-1.csv"))))
+        data_rows = rows[HEAD_LINES:]
+        assert len(data_rows) == 2, "no duplicate and no gap after a trim"
+        assert watermark(device_id) == newer
+
+    def test_the_trim_writes_nothing_when_auto_save_is_off(self, migrated_db: Settings, tmp_path: Path) -> None:
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        seed(device_id, BASE, import_active_kwh=1.0)
+        export_device(device_id, require_auto_save=True)
+        before = (tmp_path / "SN-1.csv").read_bytes()
+        with session_scope() as session:
+            set_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, "false")
+
+        result = trim_device_load_profile_csv(device_id, require_auto_save=True)
+
+        assert result.rows_written == 0
+        assert (tmp_path / "SN-1.csv").read_bytes() == before, "the trim wrote despite auto-save being off"
+
+    def test_the_cycle_trims_every_enabled_device(self, migrated_db: Settings, tmp_path: Path) -> None:
+        device_a = make_device("A", port=4059, serial="SN-A")
+        device_b = make_device("B", port=4060, serial="SN-B")
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        now = datetime.now(UTC)
+        outside_window = now - timedelta(days=100)
+        inside_window = now - timedelta(days=10)
+        for device_id in (device_a, device_b):
+            seed(device_id, outside_window, import_active_kwh=1.0)
+            seed(device_id, inside_window, import_active_kwh=2.0)
+            export_device(device_id, require_auto_save=True)
+
+        csv_trim_cycle()
+
+        for serial in ("SN-A", "SN-B"):
+            rows = list(csv.reader(io.StringIO(read_file(tmp_path / f"{serial}.csv"))))
+            assert len(rows[HEAD_LINES:]) == 1, f"{serial} was not trimmed to the window"
+
+    def test_the_trim_cycle_does_not_skip_a_paused_device(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """Reviewer finding 1(a) — unlike `csv_export_cycle`, this cycle must
+        not filter on `enabled`. `purge_expired` deletes a paused device's
+        rows past RETENTION_DAYS exactly like every other device's; a filter
+        here would leave a paused device's CSV holding rows the database no
+        longer has, forever. Paired with an active device that must behave
+        the same way, so a blanket "trim everything" implementation can't
+        pass this test for the wrong reason."""
+        paused_id = make_device("Paused", port=4059, enabled=False, serial="SN-PAUSED")
+        active_id = make_device("Active", port=4060, serial="SN-ACTIVE")
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        now = datetime.now(UTC)
+        outside_window = now - timedelta(days=100)
+        for device_id in (paused_id, active_id):
+            seed(device_id, outside_window, import_active_kwh=1.0)
+            export_device(device_id, require_auto_save=True)
+
+        csv_trim_cycle()
+
+        paused_rows = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-PAUSED.csv"))))
+        active_rows = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-ACTIVE.csv"))))
+        assert len(paused_rows[HEAD_LINES:]) == 0, "the paused device's out-of-window row was not trimmed"
+        assert len(active_rows[HEAD_LINES:]) == 0, "the enabled device's out-of-window row was not trimmed"
+
+    def test_a_device_whose_every_logger_1_row_has_aged_out_is_trimmed_to_nothing(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        """Reviewer finding 1(b) — `purge_expired` runs immediately ahead of
+        this job in the registry, so a device that has not reported for the
+        whole retention window has *no* Logger 1 rows left by the time this
+        runs: the ordinary state of a meter gone quiet for 90 days, not a
+        bug. `_resolve_export_context` (the append path) holds quietly on
+        that, but the trim must not — the file must still come down to
+        nothing, or it carries a 100-day-old row forever."""
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        old_reading = datetime.now(UTC) - timedelta(days=100)
+        seed(device_id, old_reading, import_active_kwh=1.0)
+        export_device(device_id, require_auto_save=True)
+        before = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-1.csv"))))
+        assert len(before[HEAD_LINES:]) == 1, "the row must have appended first, or this test proves nothing"
+
+        purge_expired()
+        csv_trim_cycle()
+
+        rows = list(csv.reader(io.StringIO(read_file(tmp_path / "SN-1.csv"))))
+        assert len(rows[HEAD_LINES:]) == 0, "a device with no Logger 1 rows left must still be trimmed to nothing"
+
+    def test_the_trim_cycle_writes_nothing_when_auto_save_is_off(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """Pins that the *job* (`csv_trim_cycle`, `require_auto_save=True`)
+        respects the switch — the direct-call test above only proves
+        `trim_device_load_profile_csv` does."""
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        now = datetime.now(UTC)
+        outside_window = now - timedelta(days=100)
+        seed(device_id, outside_window, import_active_kwh=1.0)
+        export_device(device_id, require_auto_save=True)
+        before = (tmp_path / "SN-1.csv").read_bytes()
+        with session_scope() as session:
+            set_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, "false")
+
+        csv_trim_cycle()
+
+        assert (tmp_path / "SN-1.csv").read_bytes() == before, "the trim cycle wrote despite auto-save being off"
+
+    def test_the_trim_cycle_never_creates_a_file(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """Reviewer finding 1, round 3 — trimming only ever shrinks a file
+        the fifteen-minute cycle already created. A device with stored rows
+        but no file yet (paused before its first `export_device` call, so
+        never exported — `export_device` is deliberately never called here)
+        must not get one created by the daily trim; that would be export
+        work, which `csv_export_cycle`'s own Pause rule already governs."""
+        device_id = make_device("Paused", enabled=False, serial="SN-PAUSED")
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        seed(device_id, datetime.now(UTC) - timedelta(days=10), import_active_kwh=1.0)
+
+        csv_trim_cycle()
+
+        assert not (tmp_path / "SN-PAUSED.csv").exists(), "the trim cycle created a file that never existed"

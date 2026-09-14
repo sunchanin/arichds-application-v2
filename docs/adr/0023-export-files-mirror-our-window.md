@@ -29,8 +29,13 @@ than replacing an existing file with an empty one — the same choice the Load P
 Billing files already made for "nothing to write yet"; for Billing this can never go stale
 (a closed period is never deleted, ADR 0009), but for Energy a device that stops reporting for a
 whole retention window is a residual gap ticket 04 did not close, flagged rather than fixed
-silently. **Not yet implemented**: ticket 05 (the Load Profile CSV's own daily 90-day trim) — the
-Load Profile CSV still only appends, exactly as ticket 02 left it.
+silently. **The Load Profile CSV's own daily 90-day trim landed with ticket 05**:
+`export/csv_export.py::trim_device_load_profile_csv()` / `csv_trim_cycle()` run as the
+Scheduler's `lp_csv_trim` job, registered immediately behind `retention` at its own cadence
+(`LP_CSV_TRIM_INTERVAL_SEC`, aliased to `RETENTION_INTERVAL_SEC`). It reuses ticket 02's
+whole-window rewrite unconditionally, every day, rather than only on a head change; the
+fifteen-minute `csv_export` cycle is unchanged and still only appends (or rewrites on an actual
+head change) — it never trims the window on its own.
 
 M13 treated the export files as a long-term archive. Its spec called the daily Energy file "a
 long-term archive — it outlives the ninety-day retention", and ADR 0013's amendment let dated
