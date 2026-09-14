@@ -91,13 +91,6 @@ class Device(Base):
         consecutive_failures: How many failed reads in a row (ADR 0004's
             3-strikes rule).
         created_at: Row creation time (UTC).
-        billing_exported_through: The newest ``bill_date`` already appended to
-            this device's billing export file (M13, issue 01). ``None`` means
-            nothing has been exported yet.
-        energy_exported_through: The newest local calendar day already appended
-            to this device's Energy Summary file (M13, issue 02). Advances past
-            a day with no readings, which is why it is a watermark and not a
-            count of rows written.
         csv_exported_through: The newest ``read_at`` already appended to this
             device's Load Profile CSV (M7 slice 3, issue #30, D-8) — the
             watermark the CSV export job and "Save CSV now" both advance.
@@ -161,19 +154,12 @@ class Device(Base):
     consecutive_failures: Mapped[int] = mapped_column(default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     csv_exported_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-    # M13, issue 01 — the newest Bill Date already appended to this device's
-    # billing export file. Same shape and same reasoning as
-    # `csv_exported_through` above: a column, not a table (ADR 0008). `None`
-    # means nothing has been exported yet, so every stored closed period goes.
-    billing_exported_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-    # M13, issue 02 — the newest **local calendar day** already appended to this
-    # device's Energy Summary file. A `Date`, not a `DateTime`: the Energy
-    # Summary's row key is a local day, not an instant, and storing it as an
-    # instant would invite a timezone conversion that has no meaning here.
-    # It advances whether or not that day produced a row — a day with no
-    # Interval Readings is genuinely empty, and holding the watermark for it
-    # would re-query the same window for ever.
-    energy_exported_through: Mapped[date | None] = mapped_column(Date, default=None)
+    # M14 ticket 04 / ADR 0023 — `billing_exported_through` (M13, issue 01) and
+    # `energy_exported_through` (M13, issue 02) are gone: the Billing and
+    # Energy export files are now rewritten whole from their source tables
+    # every export cycle, so neither file needs a watermark to avoid
+    # repeating a row. `csv_exported_through` above is untouched — the Load
+    # Profile CSV still appends.
 
     readings: Mapped[list[LoadProfileReading]] = relationship(
         back_populates="device",

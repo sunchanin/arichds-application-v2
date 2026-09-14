@@ -5,8 +5,21 @@ Status: accepted (2026-09-14, owner decision during the M14 grill). **Supersedes
 (`.scratch/central-push/issues/01-energy-summary-is-stored-and-recomputed.md`): migration 0017's
 `energy_summary_days`, the `energy_summary_recompute` scheduler job
 (`db/energy_summary_store.py`), and `GET /api/energy/summary` reading the table instead of
-aggregating live. **The Holiday Change log below is not yet implemented** — that is a separate
-ticket.
+aggregating live. **The Energy Export File moved onto the stored table with M14 ticket 04
+(`.scratch/central-push/issues/04-energy-and-billing-files-are-rewritten-every-cycle.md`)**: both
+`export/energy_csv.py::export_device_energy` and its on-demand **Save to file**
+(`export_energy_range`) now read `energy_summary_days` through
+`db/energy_summary_store.py::stored_energy_summary_rows`, never the live `energy_summary_rows()`
+aggregation — see ADR 0023 below for the file's own every-cycle rewrite. **The recalculation
+notice landed with the same ticket**: the Holidays page shows a fixed "Energy Summary will be
+recalculated within 15 minutes" notice on every Holiday change
+(`web/src/pages/Holidays.tsx::notifyEnergySummaryWillRecompute`), replacing M13 issue 03's
+per-change "these energy files may be stale" computation — `HolidayMutationOut` dropped
+`affected_date`/`energy_files_written_past`, and `db/energy_query.py::most_recent_occurrence`/
+`energy_files_written_past` are gone. **The Holiday Change log itself — a `holiday_changes` table
+recording who/when/which day for all five mutation paths — is still not implemented**: that is a
+separate ticket, not ticket 04, which only had to retire the fields ticket 04's own column drop
+(`devices.energy_exported_through`, migration 0018) made unreadable.
 
 ADR 0012 made the Energy Summary a live derivation with no table, deliberately not reproducible,
 so that a Holiday entered late would move the numbers toward the truth. That rested on one

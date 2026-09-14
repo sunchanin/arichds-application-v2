@@ -618,8 +618,10 @@ class BillingExportOut(BaseModel):
     what they did in two different shapes.
 
     Attributes:
-        rows_written: How many closed periods were appended this call. Zero is
-            a normal answer: every closed period may already be in the file.
+        rows_written: How many closed periods the file now holds — the whole
+            file is rewritten from every closed period on every call (ADR
+            0023). Zero means there is nothing to write, the call held (no
+            output folder, no meter serial), or the write failed.
         path: The file written, or ``None`` when nothing was written.
     """
 
@@ -629,17 +631,18 @@ class BillingExportOut(BaseModel):
 
 @router.post("/export")
 def export_billing_now(session: SessionDep, device_id: Annotated[int, Query(ge=1)]) -> ApiResponse[BillingExportOut]:
-    """ "Save billing file now" — append *device_id*'s unexported closed periods.
+    """ "Save billing file now" — rewrite *device_id*'s whole billing file from
+    every closed period it has (ADR 0023).
 
     Any authenticated role, the same as every other read/export surface on this
     router: exporting stored device data is not an admin act.
 
     **Ignores ``export_auto_save_enabled``**, exactly as "Save CSV now" does —
     an operator pressing this has already expressed intent, and making them
-    flip a *background* switch first would be a trap. It runs the same function
-    under the same per-device lock and advances the same watermark as the
-    scheduler job; two writers to one file that did not share a watermark would
-    duplicate rows.
+    flip a *background* switch first would be a trap. It runs the same
+    function under the same per-device lock the scheduler job uses, so the two
+    never race and rewrite the file at once — there is no watermark for them
+    to share any more; the whole file is what either writer produces.
 
     **``export_output_dir`` is still required.** The scheduler job no-ops
     quietly when it is empty; this is a person pressing a button, so an

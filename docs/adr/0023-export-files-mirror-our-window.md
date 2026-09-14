@@ -7,12 +7,30 @@ is untouched. Extends ADR 0020's rule from the customer's database to the export
 `export/writer.py` gained `replace_rows()` (temp file in the same directory, `flush()` +
 `fsync()`, then `os.replace()`) and `head_changed()`; `_roll` and its dated-edition naming are
 deleted, with nothing left referring to them. Each of the three files gained its own "whole
-current content" query, used only on a head change today: Load Profile CSV (the 90-day merged
-query, same skew cap and all-invalid exclusion), Billing (every closed period, unfiltered) and
-Energy (the live `energy_summary_rows()` aggregation over 90 days — moving onto
-`energy_summary_days` is still ticket 04). **Not yet implemented**: ticket 04 (Energy/Billing
-rewritten whole *every* cycle) and ticket 05 (the Load Profile CSV's daily 90-day trim) — until
-those land, a normal cycle for all three files still only appends.
+current content" query, used only on a head change at that point: Load Profile CSV (the 90-day
+merged query, same skew cap and all-invalid exclusion), Billing (every closed period, unfiltered)
+and Energy (the live `energy_summary_rows()` aggregation over 90 days).
+
+**Energy and Billing rewritten whole every cycle landed with M14 ticket 04**
+(`.scratch/central-push/issues/04-energy-and-billing-files-are-rewritten-every-cycle.md`):
+`export/energy_csv.py::export_device_energy` and `export/billing_csv.py::export_device_billing`
+now call `replace_rows()` on **every** export cycle, unconditionally — `head_changed()` is gone
+from both modules, because there is no cheaper conditional path left to guard: a normal cycle
+*is* what a head change used to trigger. Energy reads `energy_summary_days` for
+`[local_today − (RETENTION_DAYS − 1), local_today]` (today inclusive — a wrong partial-day number
+is corrected on the very next cycle, so there is no reason left to hold it back the way the
+append-only file had to); Billing reads every closed period, unfiltered, exactly as its old
+head-change path already did. Migration 0018 drops `devices.billing_exported_through` (0014) and
+`devices.energy_exported_through` (0015); nothing in the application reads or writes either
+column any more. The on-demand **Save to file** button also moved onto `energy_summary_days`
+(`export_energy_range`), so it can never disagree with the daily file or the page for the same
+days. **A device with nothing stored in its window still holds quietly** (no file written) rather
+than replacing an existing file with an empty one — the same choice the Load Profile CSV and
+Billing files already made for "nothing to write yet"; for Billing this can never go stale
+(a closed period is never deleted, ADR 0009), but for Energy a device that stops reporting for a
+whole retention window is a residual gap ticket 04 did not close, flagged rather than fixed
+silently. **Not yet implemented**: ticket 05 (the Load Profile CSV's own daily 90-day trim) — the
+Load Profile CSV still only appends, exactly as ticket 02 left it.
 
 M13 treated the export files as a long-term archive. Its spec called the daily Energy file "a
 long-term archive — it outlives the ninety-day retention", and ADR 0013's amendment let dated

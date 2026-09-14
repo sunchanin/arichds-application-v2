@@ -1,12 +1,14 @@
-"""``export.billing_csv`` — the billing export file (M13, issue 01).
+"""``export.billing_csv`` — the billing export file (M13, issue 01; rewritten
+whole from every closed period on every export cycle since ADR 0023, M14
+ticket 04).
 
 Everything here is judged **on the bytes that reach disk**, because that file
 is the whole deliverable: a person opens it in Excel and every rule in the
-ticket is either visible there or it is not enforced. Nothing reaches inside
-the exporter to check how a cell got its value.
-
-The one exception is the watermark, which is not in the file and is what stops
-a period being appended twice.
+ticket is either visible there or it is not enforced. There is no watermark
+any more (`devices.billing_exported_through` is dropped, migration 0018):
+every call rewrites the file's whole current content from every closed
+period, so a second cycle over unchanged data must reproduce the same file,
+never duplicate a row.
 """
 
 from __future__ import annotations
@@ -106,14 +108,6 @@ def data_rows(path: Path) -> list[list[str]]:
 
 def cell(path: Path, row_index: int, header: str) -> str:
     return data_rows(path)[row_index][BILLING_EXPORT_HEADERS.index(header)]
-
-
-def watermark(device_id: int) -> datetime | None:
-    with session_scope() as session:
-        device = session.get(Device, device_id)
-        assert device is not None
-        value = device.billing_exported_through
-        return value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value
 
 
 class TestTheFileTheCustomerAskedFor:
@@ -314,8 +308,15 @@ class TestNumbersLookLikeTheCustomersOwnFile:
         assert cell(tmp_path / "SN-1-billing.csv", 0, "Billing total Export kWh Total") == ""
 
 
-class TestTheWatermarkStopsAPeriodBeingWrittenTwice:
-    def test_a_second_export_appends_nothing_when_nothing_is_new(self, migrated_db: Settings, tmp_path: Path) -> None:
+class TestEveryCycleRewritesTheWholeFile:
+    """ADR 0023 (ticket 04): rewritten whole every cycle, not appended — a
+    second cycle over unchanged data must reproduce the same file rather
+    than duplicating a row, since there is no watermark left to prevent it
+    the old way."""
+
+    def test_a_second_export_over_unchanged_data_does_not_duplicate_the_row(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
         device_id = make_device()
         configure(output_dir=tmp_path)
         seed(device_id, JAN, import_active_kwh_total=100.0)
@@ -323,21 +324,13 @@ class TestTheWatermarkStopsAPeriodBeingWrittenTwice:
         export_device_billing(device_id, require_auto_save=True)
         second = export_device_billing(device_id, require_auto_save=True)
 
-        assert second.rows_written == 0
+        assert second.rows_written == 1
         assert len(data_rows(tmp_path / "SN-1-billing.csv")) == 1
 
-    def test_it_advances_to_the_newest_exported_bill_date(self, migrated_db: Settings, tmp_path: Path) -> None:
-        device_id = make_device()
-        configure(output_dir=tmp_path)
-        seed(device_id, JAN, import_active_kwh_total=100.0)
-        seed(device_id, JAN + timedelta(days=31), import_active_kwh_total=200.0)
-
-        export_device_billing(device_id, require_auto_save=True)
-
-        assert watermark(device_id) == JAN + timedelta(days=31)
-
-    def test_a_write_failure_leaves_the_watermark_alone(self, migrated_db: Settings, tmp_path: Path) -> None:
-        """The periods must retry next cycle rather than be lost to a full disk."""
+    def test_a_write_failure_writes_zero_rows(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """A write that cannot land must not be reported as having written
+        anything — the caller has nothing to advance any more, but the
+        result must still say so honestly."""
         device_id = make_device()
         outside = tmp_path / "outside"
         outside.mkdir()
@@ -351,7 +344,6 @@ class TestTheWatermarkStopsAPeriodBeingWrittenTwice:
         result = export_device_billing(device_id, require_auto_save=True)
 
         assert result.rows_written == 0
-        assert watermark(device_id) is None
 
 
 class TestTheAutoSaveSwitch:
@@ -398,11 +390,11 @@ class TestADeviceWithNothingToNameItsFileHoldsQuietly:
         assert export_device_billing(device_id, require_auto_save=True).rows_written == 0
 
 
-class TestAHeadChangeRewritesTheWholeFileInPlace:
-    """The rule the whole phase rests on: a file that appends is a contract.
-    **Since ADR 0023 (ticket 02)**, a contract that changes is rewritten in
-    place, atomically, with the file's whole current content — every closed
-    period the device has — rather than being closed under a dated name.
+class TestAChangedHeadIsReflectedOnTheNextCycle:
+    """A file that mirrors the whole series (ADR 0023, ticket 04) needs no
+    special "head changed" branch any more — an edit to the device's own
+    fields, like every other change, simply shows up rewritten in place,
+    atomically, the next time the file is exported.
 
     Exercised here through the **file header block**, because the block carries
     values an operator can edit at any time. The column row is the other half of
@@ -463,17 +455,27 @@ class TestAHeadChangeRewritesTheWholeFileInPlace:
         assert list(tmp_path.glob("SN-1-billing.*.csv")) == []
         assert [row[0] for row in data_rows(tmp_path / "SN-1-billing.csv")] == ["1", "2", "3"]
 
-    def test_an_unchanged_head_appends_without_rewriting(self, migrated_db: Settings, tmp_path: Path) -> None:
-        """The rewrite must be rare. A file rewritten from the whole series on
-        every append would cost a query it does not need."""
+    def test_a_period_removed_from_billing_readings_disappears_from_the_file(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        """The file mirrors `billing_readings`, not a history of what was once
+        true — the whole reason a watermark is no longer needed. (In practice
+        a closed period is never deleted, ADR 0009, but the export makes no
+        such assumption: it always reproduces whatever is there now.)"""
         device_id = make_device()
         configure(output_dir=tmp_path)
-        for month in range(3):
-            seed(device_id, JAN + timedelta(days=31 * month), import_active_kwh_total=float(month))
-            export_device_billing(device_id, require_auto_save=True)
+        seed(device_id, JAN, import_active_kwh_total=100.0)
+        seed(device_id, JAN + timedelta(days=31), import_active_kwh_total=200.0)
+        export_device_billing(device_id, require_auto_save=True)
+        assert len(data_rows(tmp_path / "SN-1-billing.csv")) == 2
 
-        assert list(tmp_path.glob("SN-1-billing.*.csv")) == []
-        assert len(data_rows(tmp_path / "SN-1-billing.csv")) == 3
+        with session_scope() as session:
+            row = session.query(BillingReading).filter_by(device_id=device_id, bill_date=JAN).one()
+            session.delete(row)
+        export_device_billing(device_id, require_auto_save=True)
+
+        written = [row[0] for row in data_rows(tmp_path / "SN-1-billing.csv")]
+        assert len(written) == 1
 
 
 class TestSaveBillingFileNowThroughTheApi:

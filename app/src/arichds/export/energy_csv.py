@@ -1,49 +1,54 @@
-"""The Energy Summary export file (M13, issue 02) — the Time-of-Use daily split
-written to disk, in two forms that share one layout.
+"""The Energy Summary export file (M13, issue 02) — rewritten whole from the
+stored Energy Summary on every export cycle, since ADR 0022/0023 (M14,
+ticket 04).
 
 **Why a file at all, when ADR 0012 said the summary was derived on every
 request and deliberately not reproducible?** Because Retention deletes the
-Interval Readings it is derived from after ninety days. Past that point this
-file is the only record of the split that survives — including now that ADR
-0022 (M14, ticket 01) supersedes 0012 and stores the summary in
-``energy_summary_days``: that table is itself subject to Retention (same
-window, same reason), so the file remains the one place a day's split outlives
-ninety days. **This module still calls**
-:func:`arichds.db.energy_query.energy_summary_rows` directly, live, on every
-call — never the stored table — but that is a sequencing fact, not a design
-one: ADR 0023 (decided alongside 0022, not yet implemented) is what moves the
-Energy Export File onto ``energy_summary_days``, rewritten whole every export
-cycle; the ticket that lands ADR 0023 is what retires this module's own live
-aggregation. Nothing here is persisted in the database and nothing reads it
-back: a file is a snapshot somebody chose to take, not a cache.
+Interval Readings it was derived from after ninety days, and now also deletes
+`energy_summary_days` rows on the same schedule (ADR 0022). Past that point
+this file is the only record of the split that survives.
 
-Two forms:
+**This module now reads only `energy_summary_days`** through
+:func:`arichds.db.energy_summary_store.stored_energy_summary_rows` — never
+:func:`arichds.db.energy_query.energy_summary_rows`, the live aggregation.
+That live call is what :mod:`arichds.db.energy_summary_store`'s own recompute
+job runs, on the scheduler's `energy_summary_recompute` job, registered
+immediately ahead of `csv_export` (`jobs/scheduler.py::default_jobs`) — so by
+the time this module runs on the same pass, the table already holds this
+cycle's freshest numbers.
 
-* **The daily file** — the scheduler appends one row per device per local day,
-  exactly as before ticket 02. It mirrors the 90-day window (ADR 0023) only
-  when its head changes: a head-change rewrite (:func:`arichds.export.writer.replace_rows`)
-  recomputes the whole 90-day window live and drops anything older, in one
-  atomic swap. Between head changes it still only grows by appends — **ticket
-  04** is what makes it rewrite that same window every cycle regardless of the
-  head, which retires this distinction.
-* **The on-demand file** — an operator presses a button and gets a snapshot of
-  the range they are looking at, in a file whose name carries that range so it
-  can never collide with the daily one.
+Two forms, both reading the same table:
 
-**The watermark advances whether or not a row was written.** A local day with
-no Interval Readings produces no row and is never revisited. Holding the
-watermark until a day produces a row would turn a genuine data gap into a
-window the job re-queries for ever with nothing to report it — a shape this
-codebase has already shipped once.
+* **The daily file** — the scheduler rewrites the whole file every cycle
+  (:func:`export_device_energy`), from exactly the same
+  `[local_today − (RETENTION_DAYS − 1), local_today]` window the recompute
+  job stores — including today's own row, partial or not: unlike the old
+  append-only file, a wrong number here is corrected on the very next cycle
+  rather than being wrong forever, so there is no reason left to hold it
+  back. There is no watermark any more (`devices.energy_exported_through`
+  is dropped, migration 0018) and no head-change special case — every cycle
+  already reproduces the file's whole current content, so a head change is
+  just what a normal cycle does.
+* **The on-demand file** — an operator presses a button and gets a snapshot
+  of the range they are looking at, in a file whose name carries that range
+  so it can never collide with the daily one. Also reads the stored table
+  now, so it always agrees with the Energy Summary page and the daily file
+  for the same days.
 
-**The consequence, stated rather than hidden**: Interval Readings that arrive
-late, through the ninety-day load-profile backfill, are not picked up by the
-daily file's own append cadence — nothing schedules a head change to catch
-them. Together with a Holiday entered after the fact (issue 03), that is
-exactly two reasons the daily file can lag behind the Energy Summary page, and
-**the on-demand save is today's reliable corrective for both**, until ticket
-04's every-cycle rewrite makes the daily file self-heal the same way
-automatically.
+**A resolved target with nothing to write still holds quietly** — mirroring
+`export/billing_csv.py` and `export/csv_export.py`: a device with no stored
+day in its window (a brand-new device, or one whose data has aged out of the
+retention window entirely) is left with no file rather than an empty one, the
+same choice already made for a device with no meter serial or no configured
+output folder. The one difference from the Load Profile CSV / Billing files:
+those can only ever *gain* rows (readings keep arriving; billing periods are
+never purged, ADR 0009), so "hold when there is nothing yet" can never leave
+a stale file behind. The Energy file's window can shrink to nothing for a
+device that stops reporting for the whole retention window — at that point
+this module leaves whatever was last written in place rather than replacing
+it with an empty file. No acceptance criterion in ticket 04 names that case,
+and it is the same choice the sibling exporters already make, but it is
+worth stating plainly rather than leaving it to be discovered.
 """
 
 from __future__ import annotations
@@ -58,6 +63,7 @@ from sqlalchemy.orm import Session
 
 from arichds.capture.paths import sanitize_meter_serial, validate_directory_setting
 from arichds.config import get_settings
+from arichds.constants import RETENTION_DAYS
 from arichds.db.app_settings import (
     EXPORT_AUTO_SAVE_ENABLED_DEFAULT,
     EXPORT_AUTO_SAVE_ENABLED_KEY,
@@ -69,7 +75,8 @@ from arichds.db.app_settings import (
     EXPORT_OUTPUT_DIR_KEY,
     get_setting,
 )
-from arichds.db.energy_query import EnergySummaryDay, energy_summary_rows, local_today
+from arichds.db.energy_query import EnergySummaryDay, local_today
+from arichds.db.energy_summary_store import stored_energy_summary_rows
 from arichds.db.models import Device
 from arichds.db.session import session_scope
 from arichds.export.format import (
@@ -78,17 +85,12 @@ from arichds.export.format import (
     format_energy_rows,
     render_filename,
 )
-from arichds.export.writer import append_rows, head_changed, replace_rows
+from arichds.export.writer import replace_rows
 
 logger = logging.getLogger(__name__)
 
 _FILE_LABEL = "Energy"
 _LOG_LABEL = "Energy export"
-
-#: How far back a device with no watermark starts. Matches Retention, because
-#: there is nothing older to summarise: a day whose Interval Readings have been
-#: purged can never produce a row again.
-_FIRST_RUN_DAYS = 90
 
 _locks: dict[int, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -99,11 +101,11 @@ class EnergyExportResult:
     """What one call did.
 
     Attributes:
-        rows_written: How many local days were appended. Zero is a normal
-            answer for the daily file — a day with no Interval Readings
-            produces no row, and the watermark still moves past it.
-        path: The resolved target file, or ``None`` when the call held or
-            failed before a path existed.
+        rows_written: How many local days the file now holds. Zero is a
+            normal answer — a device with no stored day in its window holds
+            quietly (module docstring).
+        path: The resolved target file, or ``None`` when the call held, wrote
+            nothing, or failed before/while writing.
     """
 
     rows_written: int
@@ -196,25 +198,11 @@ def _header_block(target: _Target) -> list[list[str]]:
     )
 
 
-def _append(target: _Target, path: Path, days: list[EnergySummaryDay]) -> bool:
-    """The cheap incremental path — the head has already been confirmed to
-    match (or the file is new); see the ``head_changed`` branch in
-    :func:`_export_daily_locked` (ticket 02, ADR 0023)."""
-    return append_rows(
-        path,
-        header_block=_header_block(target),
-        header_row=ENERGY_EXPORT_HEADERS,
-        rows=format_energy_rows(days, date_format=target.date_format),
-        allowlist=[target.output_dir],
-        label=_LOG_LABEL,
-    )
-
-
 def _replace_whole(target: _Target, path: Path, days: list[EnergySummaryDay]) -> bool:
-    """The whole-file path (ticket 02, ADR 0023): *days* is this file's
-    entire current content, written as one atomic swap — used for a
-    head-change rewrite and for the on-demand save, which is always the
-    complete answer for its own range rather than a pending batch."""
+    """Write *days* as the file's whole current content, one atomic swap
+    (ADR 0023) — every call to :func:`export_device_energy` and
+    :func:`export_energy_range` goes through this; there is no cheaper
+    incremental path left (module docstring)."""
     return replace_rows(
         path,
         header_block=_header_block(target),
@@ -225,36 +213,15 @@ def _replace_whole(target: _Target, path: Path, days: list[EnergySummaryDay]) ->
     )
 
 
-def _full_window_days(session: Session, device_id: int) -> tuple[list[EnergySummaryDay], date]:
-    """Every finished local day inside the 90-day retention window, from the
-    live Time-of-Use aggregation — what a head-change rewrite writes instead
-    of the days a stale watermark would still call pending (ticket 02).
-
-    **This module still calls** :func:`arichds.db.energy_query.energy_summary_rows`
-    directly — moving onto the stored ``energy_summary_days`` table is ADR
-    0023's ticket 04, not this one (see the module docstring).
-
-    Returns:
-        The days (possibly empty) and ``last_finished`` — the watermark the
-        caller sets regardless of whether the window produced any rows,
-        mirroring the daily incremental path's own reasoning.
-    """
-    last_finished = local_today() - timedelta(days=1)
-    start = last_finished - timedelta(days=_FIRST_RUN_DAYS - 1)
-    return energy_summary_rows(session, device_id, start, last_finished), last_finished
-
-
 def export_device_energy(device_id: int, *, require_auto_save: bool) -> EnergyExportResult:
-    """Append every finished local day *device_id* has not yet exported.
-
-    "Finished" means strictly before today in the meter's local zone — today is
-    still accumulating, and a partial day appended to a file that cannot be
-    revised would be wrong for ever.
+    """Rewrite *device_id*'s whole Energy Export File from `energy_summary_days`
+    (ADR 0023, ticket 04): the `[local_today − (RETENTION_DAYS − 1), local_today]`
+    window, the same one the recompute job stores.
 
     Returns:
-        How many days were appended and the target file. Never raises: a hold,
-        a write failure or an allowlist rejection is zero rows written, logged,
-        with the watermark left where it was.
+        How many days the file now holds and the target file. Never raises: a
+        hold, a write failure or an allowlist rejection is zero rows written,
+        logged, with the previous file (if any) left untouched.
     """
     with _device_lock(device_id):
         return _export_daily_locked(device_id, require_auto_save=require_auto_save)
@@ -266,56 +233,27 @@ def _export_daily_locked(device_id: int, *, require_auto_save: bool) -> EnergyEx
         if target is None:
             return EnergyExportResult(rows_written=0, path=None)
 
-        path = target.output_dir / render_filename(target.filename_tmpl, target.meter_token)
-
-        # ADR 0023 (ticket 02) — a head that no longer matches what is on disk
-        # is rewritten in place with the whole 90-day window, atomically,
-        # instead of M13's roll to a dated edition. Bypasses the watermark
-        # deliberately: a rewrite must reproduce the file's whole current
-        # content, not just the days a stale watermark still calls pending.
-        if head_changed(path, _header_block(target), ENERGY_EXPORT_HEADERS):
-            full_days, last_finished = _full_window_days(session, device_id)
-            # Written unconditionally, even when the window is empty: the
-            # file already carries an old head on disk (that is what
-            # `head_changed` just found), so leaving it there would strand a
-            # stale file under a header nothing describes any more.
-            if not _replace_whole(target, path, full_days):
-                return EnergyExportResult(rows_written=0, path=path)
-            target.device.energy_exported_through = last_finished
-            session.commit()
-            return EnergyExportResult(rows_written=len(full_days), path=path)
-
-        last_finished = local_today() - timedelta(days=1)
-        watermark = target.device.energy_exported_through
-        start = (
-            watermark + timedelta(days=1)
-            if watermark is not None
-            else last_finished - timedelta(days=_FIRST_RUN_DAYS - 1)
-        )
-        if start > last_finished:
+        window_end = local_today()
+        window_start = window_end - timedelta(days=RETENTION_DAYS - 1)
+        days = stored_energy_summary_rows(session, device_id, window_start, window_end)
+        if not days:
+            # Nothing stored in the window yet — hold quietly rather than
+            # write an empty file (module docstring: the same choice the
+            # Load Profile CSV and Billing exports already make).
             return EnergyExportResult(rows_written=0, path=None)
 
-        days = energy_summary_rows(session, device_id, start, last_finished)
-
-        # A window with no readings at all still advances the watermark: the
-        # days are genuinely empty, and re-querying them for ever would be the
-        # self-healing-watermark trap rather than patience.
-        if days and not _append(target, path, days):
+        path = target.output_dir / render_filename(target.filename_tmpl, target.meter_token)
+        if not _replace_whole(target, path, days):
             return EnergyExportResult(rows_written=0, path=path)
-
-        target.device.energy_exported_through = last_finished
-        session.commit()
-        return EnergyExportResult(rows_written=len(days), path=path if days else None)
+        return EnergyExportResult(rows_written=len(days), path=path)
 
 
 def export_energy_range(device_id: int, start: date, end: date) -> EnergyExportResult:
-    """Write *device_id*'s summary for ``[start, end]`` to its own file.
+    """Write *device_id*'s stored summary for ``[start, end]`` to its own file.
 
-    **The watermark is not touched.** This is a snapshot of the chosen range an
-    operator asked for, not the daily file — and it is today's reliable
-    corrective for every reason the daily file can lag behind the Energy
-    Summary page: a Holiday entered after the fact, or Interval Readings that
-    arrived through a backfill after the day had already been written.
+    Reads `energy_summary_days` (ADR 0023, ticket 04) rather than aggregating
+    live — the same table the Energy Summary page and the daily file read, so
+    this can never disagree with either.
 
     Returns:
         How many days were written and the target file.
@@ -325,7 +263,7 @@ def export_energy_range(device_id: int, start: date, end: date) -> EnergyExportR
         if target is None:
             return EnergyExportResult(rows_written=0, path=None)
 
-        days = energy_summary_rows(session, device_id, start, end)
+        days = stored_energy_summary_rows(session, device_id, start, end)
         if not days:
             return EnergyExportResult(rows_written=0, path=None)
 

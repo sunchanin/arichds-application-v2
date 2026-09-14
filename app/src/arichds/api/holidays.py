@@ -32,12 +32,10 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
 
 from arichds.acquisition.special_days import read_special_days
 from arichds.api.deps import AdminDep, SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
-from arichds.db.energy_query import energy_files_written_past, local_today, most_recent_occurrence
 from arichds.db.models import Device, Holiday
 
 router = APIRouter(
@@ -127,41 +125,28 @@ class HolidayImportFromMeterResult(BaseModel):
 
 
 class HolidayMutationOut(BaseModel):
-    """The answer to any change that may have left an Energy Summary file
-    disagreeing with the screen (M13, issue 03).
+    """The answer to any change that may move the Energy Summary (ADR 0022,
+    M14 ticket 04).
 
-    The Energy Summary is derived on every request precisely so that a Holiday
-    entered today changes what last January reports tomorrow (ADR 0012). The
-    daily export file froze one night's answer, and nothing else in the product
-    would ever say the two had parted company.
+    **Drops `affected_date` and `energy_files_written_past`** (M13, issue 03):
+    those existed because the daily Energy Export File was a snapshot that
+    could fall behind a Holiday entered after the fact, so the API told the
+    operator which files needed a manual re-save. Since ADR 0022/0023 the
+    Energy Summary is a stored table recomputed over the whole window every
+    scheduler cycle and the Energy file is rewritten from it every cycle too
+    (ticket 04), so neither can be stale by more than one cycle — there is
+    nothing left to compute or report here, and the page shows a fixed notice
+    instead (`web/src/pages/Holidays.tsx`).
 
     Attributes:
         holiday: The row as it now stands, or ``None`` for a delete.
-        affected_date: The local day this change touches — an exact date for a
-            ``public`` Holiday, the most recent occurrence for an ``annual``
-            one, and ``None`` when it touches no past day at all. A Holiday
-            dated in the future is the ``None`` case, and that silence is what
-            makes the warning mean something when it appears.
-        energy_files_written_past: How many devices' daily Energy Summary files
-            have been written past ``affected_date``. **Computed here, not in
-            the browser**: the page cannot see the export watermarks, and a page
-            that derived this would be guessing.
     """
 
     holiday: HolidayOut | None
-    affected_date: dt.date | None
-    energy_files_written_past: int
 
 
-def _mutation_out(session: Session, row: Holiday | None, *, kind: str, date_, month, day) -> HolidayMutationOut:
-    """Build the response, including how many energy files this change may have
-    left behind."""
-    affected = most_recent_occurrence(kind, date_, month, day, today=local_today())
-    return HolidayMutationOut(
-        holiday=_to_out(row) if row is not None else None,
-        affected_date=affected,
-        energy_files_written_past=energy_files_written_past(session, affected) if affected is not None else 0,
-    )
+def _mutation_out(row: Holiday | None) -> HolidayMutationOut:
+    return HolidayMutationOut(holiday=_to_out(row) if row is not None else None)
 
 
 def _to_out(row: Holiday) -> HolidayOut:
@@ -212,7 +197,7 @@ def create_holiday(body: HolidayIn, session: SessionDep, _admin: AdminDep) -> Ap
     session.flush()
     session.commit()
     session.refresh(row)
-    return ApiResponse.ok(_mutation_out(session, row, kind=body.kind, date_=body.date, month=body.month, day=body.day))
+    return ApiResponse.ok(_mutation_out(row))
 
 
 @router.patch("/{holiday_id}")
@@ -237,23 +222,18 @@ def update_holiday(
     row.day = body.day
     session.commit()
     session.refresh(row)
-    return ApiResponse.ok(_mutation_out(session, row, kind=body.kind, date_=body.date, month=body.month, day=body.day))
+    return ApiResponse.ok(_mutation_out(row))
 
 
 @router.delete("/{holiday_id}")
 def delete_holiday(holiday_id: int, session: SessionDep, _admin: AdminDep) -> ApiResponse[HolidayMutationOut]:
-    """Remove one Holiday. Admin-only.
-
-    Reports the same stale-file count a create does: removing a Holiday changes
-    what an already-written day should say exactly as much as adding one.
-    """
+    """Remove one Holiday. Admin-only."""
     row = session.get(Holiday, holiday_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such holiday.")
-    kind, date_, month, day = row.kind, row.date, row.month, row.day
     session.delete(row)
     session.commit()
-    return ApiResponse.ok(_mutation_out(session, None, kind=kind, date_=date_, month=month, day=day))
+    return ApiResponse.ok(_mutation_out(None))
 
 
 @router.get("/export")

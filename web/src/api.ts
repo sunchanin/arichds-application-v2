@@ -808,7 +808,11 @@ export interface EnergyExportResult {
 }
 
 export interface BillingExportResult {
-  /** Closed periods appended. Zero is normal: they may all already be in the file. */
+  /**
+   * Closed periods the file now holds — every call rewrites the whole file
+   * from every closed period (ADR 0023). Zero means nothing to write, a
+   * hold, or a failure.
+   */
   rows_written: number;
   /** The resolved target file path, or `null` when nothing was written. */
   path: string | null;
@@ -1120,29 +1124,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /**
- * What a Holiday change did, plus what it may have invalidated (M13, issue 03).
+ * What a Holiday change did (ADR 0022, M14 ticket 04).
  *
- * The Energy Summary is derived on every request precisely so that entering a
- * Holiday today changes what last January reports tomorrow (ADR 0012). The
- * daily energy export file froze one night's answer, and nothing else in the
- * product would ever say the two had parted company.
+ * Used to carry `affected_date`/`energy_files_written_past` (M13, issue 03),
+ * so the page could warn which daily energy files had fallen behind a
+ * Holiday entered after the fact. Since ADR 0022/0023 the Energy Summary is
+ * stored and recomputed every cycle and the Energy file is rewritten from it
+ * every cycle too, so neither can be stale by more than one cycle — there is
+ * nothing left to compute or warn about.
  */
 export interface HolidayMutation {
   /** The row as it now stands, or `null` for a delete. */
   holiday: Holiday | null;
-  /**
-   * The local day this change touches — an exact date for a `public` holiday,
-   * the most recent occurrence for an `annual` one, `null` when it touches no
-   * past day. A holiday dated in the future is the `null` case, and that
-   * silence is what makes the warning mean something when it appears.
-   */
-  affected_date: string | null;
-  /**
-   * How many devices' daily energy files have been written past
-   * `affected_date`. Computed on the server — the page cannot see the export
-   * watermarks, and deriving it here would be guessing.
-   */
-  energy_files_written_past: number;
 }
 
 export const api = {
@@ -1280,11 +1273,11 @@ export const api = {
     request<BillingReadNowResult>(`/api/billing/read?device_id=${deviceId}`, { method: "POST" }),
 
   /**
-   * "Save billing file now" — append one device's unexported closed periods,
-   * ignoring `export_auto_save_enabled` the way "Save CSV now" does. Any
-   * authenticated role. `422` when `export_output_dir` is not configured,
-   * which is what makes this the check an installer uses to prove the folder
-   * is right without waiting a cycle.
+   * "Save billing file now" — rewrite one device's whole billing file from
+   * every closed period it has (ADR 0023), ignoring `export_auto_save_enabled`
+   * the way "Save CSV now" does. Any authenticated role. `422` when
+   * `export_output_dir` is not configured, which is what makes this the check
+   * an installer uses to prove the folder is right without waiting a cycle.
    */
   exportBillingNow: (deviceId: number) =>
     request<BillingExportResult>(`/api/billing/export?device_id=${deviceId}`, { method: "POST" }),

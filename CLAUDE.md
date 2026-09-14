@@ -247,11 +247,15 @@ MySQL, and ~30 tables.
   in the same pass, never left to linger until Retention; `GET /api/energy/summary` now reads that
   table (`stored_energy_summary_rows()`) instead of aggregating live, with its response shape and
   31-day bound unchanged; `db/retention.py::purge_expired()` drops rows past the same
-  local-day-shifted `RETENTION_DAYS` window the recompute maintains. The Energy Export File and
-  **Save to file** still call `energy_summary_rows()` live (see 0012 above) — not by this ADR's
-  design, but because ADR 0023's own ticket, which moves them onto `energy_summary_days`, has not
-  landed yet — and the **Holiday Change log is not yet implemented**: this ticket only covers the
-  stored Energy Summary half of this ADR) ·
+  local-day-shifted `RETENTION_DAYS` window the recompute maintains. **The Energy Export File and
+  Save to file moved onto the stored table with M14 ticket 04**: both now call
+  `stored_energy_summary_rows()` instead of the live `energy_summary_rows()` aggregation — see
+  0023 below for the file's own every-cycle rewrite — and the Holidays page's per-change
+  computation is retired with it: `HolidayMutationOut` dropped `affected_date`/
+  `energy_files_written_past`, `db/energy_query.py::most_recent_occurrence`/
+  `energy_files_written_past` are deleted, and the page shows one fixed "will be recalculated
+  within 15 minutes" notice on every Holiday change instead. **The Holiday Change log itself is
+  still not implemented** — a separate ticket, never ticket 04's) ·
   0023 (export files **mirror our window and are rewritten, never archived** — **supersedes 0013's
   M13 amendment**, extends 0020 to the export folder: Load Profile CSV and Energy file hold 90
   days, the Billing file every closed period; LP appends and is trimmed daily with retention, the
@@ -261,13 +265,23 @@ MySQL, and ~30 tables.
   swap, `head_changed()` is what a caller checks before choosing it over the cheap
   `append_rows()`, and each of the three files gained its own "whole current content" query
   (Load Profile: the 90-day merged query, same skew cap and all-invalid exclusion; Billing:
-  every closed period, unfiltered; Energy: the live `energy_summary_rows()` 90-day window —
-  moving that one onto `energy_summary_days` is still ticket 04). `append_rows()` no longer rolls
-  a mismatched head to a dated file; it refuses, on the assumption a caller has already checked
-  `head_changed()`. **Not yet implemented**: ticket 04 (Energy/Billing rewritten whole *every*
-  cycle, dropping their `_exported_through` columns) and ticket 05 (the Load Profile CSV's own
-  daily 90-day trim job) — until those land, the every-cycle behaviour for all three files is
-  still "append when the head matches", exactly as before ticket 02) ·
+  every closed period, unfiltered; Energy: the live `energy_summary_rows()` 90-day window at that
+  point). `append_rows()` no longer rolls a mismatched head to a dated file; it refuses, on the
+  assumption a caller has already checked `head_changed()`. **Energy and Billing rewritten whole
+  every cycle landed with M14 ticket 04**: `export/energy_csv.py::export_device_energy` and
+  `export/billing_csv.py::export_device_billing` call `replace_rows()` unconditionally now —
+  `head_changed()` is gone from both, because a normal cycle already does what a head change used
+  to trigger specially; Energy reads `energy_summary_days` (today inclusive, so a wrong partial-day
+  number is corrected next cycle rather than held back) and Billing reads every closed period,
+  unfiltered — both drop their `_exported_through` watermark (migration 0018 removes
+  `devices.billing_exported_through`/`devices.energy_exported_through`, and nothing in the
+  application reads or writes either column any more); a device with nothing stored in its window
+  still holds quietly rather than writing an empty file, the same choice the Load Profile CSV
+  already makes, with the one residual gap flagged rather than silently fixed: a device that stops
+  reporting for a whole retention window leaves its last Energy file in place rather than being
+  emptied (Billing cannot hit this — a closed period is never deleted, ADR 0009). **Still not
+  implemented**: ticket 05 (the Load Profile CSV's own daily 90-day trim job) — that file still
+  only appends, exactly as ticket 02 left it) ·
   0024 (the **central push holds no state and is signed** — customer requirement E4: billing, load
   profile, energy summary and the meter roster, JSON every 15 min; **our** versioned contract,
   published on the in-app API page from the same models that serialize the payload; no

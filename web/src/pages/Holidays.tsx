@@ -27,7 +27,6 @@ import {
   type Device,
   type Holiday,
   type HolidayInput,
-  type HolidayMutation,
   type HolidayKind,
 } from "../api";
 
@@ -48,29 +47,21 @@ interface HolidayFormValues {
 }
 
 /**
- * Tell the operator when a Holiday change has left an energy file behind
- * (M13, issue 03).
+ * Tell the operator a Holiday change will reach the Energy Summary shortly
+ * (ADR 0022, M14 ticket 04) — replaces M13 issue 03's "these energy files
+ * may be stale" warning, which named specific files an operator had to
+ * re-save by hand.
  *
- * A `notification`, not a `message`: this asks them to do something later, and
- * a toast that vanishes in three seconds cannot. Silent when the change
- * touches no already-written day — which is the usual case, a holiday entered
- * for a date still ahead, and what makes the warning mean something when it
- * does appear.
+ * Since ADR 0022/0023 the Energy Summary is a stored table recomputed over
+ * the whole window every scheduler cycle, and the Energy Export File is
+ * rewritten from it every cycle too — so every Holiday change reaches both
+ * within one cycle automatically, with nothing for the operator to press.
  */
-function warnAboutStaleEnergyFiles(
-  notification: ReturnType<typeof App.useApp>["notification"],
-  result: HolidayMutation,
-): void {
-  if (result.affected_date === null || result.energy_files_written_past === 0) return;
-  const meters = result.energy_files_written_past;
-  notification.warning({
-    message: "Energy files may no longer match this holiday",
-    description:
-      `${meters} meter${meters === 1 ? "'s" : "s'"} daily energy file ` +
-      `${meters === 1 ? "has" : "have"} already been written past ${result.affected_date}, ` +
-      "so those rows were worked out before this change. Open Energy Summary, pick that range, " +
-      "and press Save to file to write a corrected copy.",
-    duration: 0,
+function notifyEnergySummaryWillRecompute(notification: ReturnType<typeof App.useApp>["notification"]): void {
+  notification.info({
+    message: "Energy Summary will be recalculated",
+    description: "This change affects the Energy Summary, which is recalculated automatically within 15 minutes.",
+    duration: 6,
   });
 }
 
@@ -119,8 +110,8 @@ function HolidayFormModal({
     setSaving(true);
     const save = editing ? api.updateHoliday(editing.id, input) : api.createHoliday(input);
     save
-      .then((result) => {
-        warnAboutStaleEnergyFiles(notification, result);
+      .then(() => {
+        notifyEnergySummaryWillRecompute(notification);
         onSaved();
         onClose();
       })
@@ -242,9 +233,9 @@ export function Holidays({ role }: { role: "admin" | "user" }) {
   const onDelete = (row: Holiday) => {
     api
       .deleteHoliday(row.id)
-      .then((result) => {
+      .then(() => {
         message.success("Holiday deleted.");
-        warnAboutStaleEnergyFiles(notification, result);
+        notifyEnergySummaryWillRecompute(notification);
         load();
       })
       .catch((err: unknown) => surface(err, "Could not delete the holiday."));

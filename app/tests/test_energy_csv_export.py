@@ -1,9 +1,12 @@
-"""``export.energy_csv`` — the Energy Summary export file (M13, issue 02).
+"""``export.energy_csv`` — the Energy Summary export file (M13, issue 02;
+rewritten whole from `energy_summary_days` every cycle since ADR 0022/0023,
+M14 ticket 04).
 
-Judged on the bytes on disk, like every other export file. The two things that
-are *not* in the file and still matter are the watermark — which is what stops
-a day being written twice, and what has to move past an empty day — and the
-fact that the on-demand save never touches it.
+Judged on the bytes on disk, like every other export file. There is no
+watermark any more (`devices.energy_exported_through` is dropped, migration
+0018): every call rewrites the file's whole current content from the stored
+table, so what matters here is that the file always equals the table for the
+window it claims to cover.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from arichds.config import Settings
+from arichds.constants import RETENTION_DAYS
 from arichds.db.app_settings import (
     EXPORT_AUTO_SAVE_ENABLED_KEY,
     EXPORT_DATE_FORMAT_KEY,
@@ -22,7 +26,9 @@ from arichds.db.app_settings import (
     EXPORT_OUTPUT_DIR_KEY,
     set_setting,
 )
+from arichds.db.energy_summary_store import energy_summary_recompute_cycle, stored_energy_summary_rows
 from arichds.db.models import Device, Holiday, LoadProfileReading
+from arichds.db.models import EnergySummaryDay as EnergySummaryDayRow
 from arichds.db.session import session_scope
 from arichds.export.energy_csv import export_device_energy, export_energy_range, local_today
 from arichds.export.format import ENERGY_EXPORT_HEADERS
@@ -52,8 +58,10 @@ def local_midnight_utc(day: date) -> datetime:
     return datetime.combine(day, datetime.min.time(), UTC) - timedelta(hours=7)
 
 
-def seed_day(device_id: int, day: date, *, kwh: float = 10.0, hour_local: int = 10) -> None:
-    """One Interval Reading inside *day*, local time."""
+def seed_reading(device_id: int, day: date, *, kwh: float = 10.0, hour_local: int = 10) -> None:
+    """One Interval Reading inside *day*, local time — for the integration
+    tests that go through the real recompute job rather than seeding the
+    stored table directly."""
     with session_scope() as session:
         session.add(
             LoadProfileReading(
@@ -64,6 +72,29 @@ def seed_day(device_id: int, day: date, *, kwh: float = 10.0, hour_local: int = 
                 interval_sec=900,
                 import_active_kwh=kwh,
                 export_active_kwh=0.0,
+            )
+        )
+
+
+def seed_summary_day(device_id: int, day: date, *, total_import_kwh: float = 10.0) -> None:
+    """One `energy_summary_days` row, written directly — what
+    `export_device_energy`/`export_energy_range` read since ticket 04. Bypasses
+    the recompute job entirely; `test_energy_summary_store.py` owns proving the
+    recompute job itself is correct."""
+    with session_scope() as session:
+        session.add(
+            EnergySummaryDayRow(
+                device_id=device_id,
+                local_date=day,
+                peak_import_kwh=0.0,
+                offpeak_import_kwh=0.0,
+                holiday_import_kwh=0.0,
+                total_import_kwh=total_import_kwh,
+                peak_export_kwh=0.0,
+                offpeak_export_kwh=0.0,
+                holiday_export_kwh=0.0,
+                total_export_kwh=0.0,
+                updated_at=datetime.now(UTC),
             )
         )
 
@@ -91,30 +122,13 @@ def data_rows(path: Path) -> list[list[str]]:
     return read_rows(path)[6:]
 
 
-def watermark(device_id: int) -> date | None:
-    with session_scope() as session:
-        device = session.get(Device, device_id)
-        assert device is not None
-        return device.energy_exported_through
-
-
-def set_watermark(device_id: int, value: date) -> None:
-    with session_scope() as session:
-        session.get(Device, device_id).energy_exported_through = value
-
-
 class TestTheDailyFile:
     def test_the_head_is_the_block_then_nine_columns_and_no_total_row(
         self, migrated_db: Settings, tmp_path: Path
     ) -> None:
-        """No total row in either form: it cannot exist in a file that appends,
-        and giving only the on-demand file one would leave two shapes for one
-        concept."""
         device_id = make_device()
         configure(output_dir=tmp_path)
-        yesterday = local_today() - timedelta(days=1)
-        set_watermark(device_id, yesterday - timedelta(days=1))
-        seed_day(device_id, yesterday, kwh=12.5)
+        seed_summary_day(device_id, local_today() - timedelta(days=1), total_import_kwh=12.5)
 
         export_device_energy(device_id, require_auto_save=True)
 
@@ -129,142 +143,163 @@ class TestTheDailyFile:
         beside it would invent a precision the number does not have."""
         device_id = make_device()
         configure(output_dir=tmp_path, date_format="yyyy-mm-dd HH:MM:SS")
-        yesterday = local_today() - timedelta(days=1)
-        set_watermark(device_id, yesterday - timedelta(days=1))
-        seed_day(device_id, yesterday)
+        day = local_today() - timedelta(days=1)
+        seed_summary_day(device_id, day)
 
         export_device_energy(device_id, require_auto_save=True)
 
-        assert data_rows(tmp_path / "SN-1-energy.csv")[0][0] == yesterday.isoformat()
+        assert data_rows(tmp_path / "SN-1-energy.csv")[0][0] == day.isoformat()
 
-    def test_today_is_never_written(self, migrated_db: Settings, tmp_path: Path) -> None:
-        """Today is still accumulating, and a partial day appended to a file
-        that cannot be revised would be wrong for ever."""
+
+class TestEveryCycleRewritesTheWholeFile:
+    """ADR 0023 (ticket 04): the file is rewritten in place, atomically, every
+    export cycle — not appended, and never conditional on the head having
+    changed. Reverting to an append-only file, or to only rewriting on a head
+    change, turns every test in this class red."""
+
+    def test_a_second_cycle_still_holds_exactly_what_is_stored_now(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """A second cycle over unchanged data must not duplicate the row —
+        the tell for "still appending" rather than "always rewriting"."""
         device_id = make_device()
         configure(output_dir=tmp_path)
-        today = local_today()
-        set_watermark(device_id, today - timedelta(days=1))
-        seed_day(device_id, today)
-
-        result = export_device_energy(device_id, require_auto_save=True)
-
-        assert result.rows_written == 0
-        assert not (tmp_path / "SN-1-energy.csv").exists()
-
-    def test_a_second_run_appends_nothing_when_nothing_is_new(self, migrated_db: Settings, tmp_path: Path) -> None:
-        device_id = make_device()
-        configure(output_dir=tmp_path)
-        yesterday = local_today() - timedelta(days=1)
-        set_watermark(device_id, yesterday - timedelta(days=1))
-        seed_day(device_id, yesterday)
+        seed_summary_day(device_id, local_today() - timedelta(days=1))
 
         export_device_energy(device_id, require_auto_save=True)
-        second = export_device_energy(device_id, require_auto_save=True)
+        export_device_energy(device_id, require_auto_save=True)
 
-        assert second.rows_written == 0
         assert len(data_rows(tmp_path / "SN-1-energy.csv")) == 1
 
-
-class TestTheWatermarkMovesPastADayThatProducedNothing:
-    """The trap this codebase has shipped once already: a budgeted walk that
-    never reaches data re-runs the same empty window for ever, silently."""
-
-    def test_a_day_with_no_readings_still_advances_the_watermark(self, migrated_db: Settings, tmp_path: Path) -> None:
-        device_id = make_device()
-        configure(output_dir=tmp_path)
-        yesterday = local_today() - timedelta(days=1)
-        set_watermark(device_id, yesterday - timedelta(days=1))
-        # No readings seeded at all.
-
-        result = export_device_energy(device_id, require_auto_save=True)
-
-        assert result.rows_written == 0
-        assert watermark(device_id) == yesterday
-
-    def test_a_gap_in_the_middle_does_not_stall_the_days_after_it(self, migrated_db: Settings, tmp_path: Path) -> None:
-        """The failure mode is not a missing row — it is every later row never
-        arriving because the walk keeps re-asking about the gap."""
-        device_id = make_device()
-        configure(output_dir=tmp_path)
-        yesterday = local_today() - timedelta(days=1)
-        set_watermark(device_id, yesterday - timedelta(days=3))
-        seed_day(device_id, yesterday - timedelta(days=2))
-        # yesterday - 1 is a genuine gap.
-        seed_day(device_id, yesterday)
-
-        export_device_energy(device_id, require_auto_save=True)
-
-        written = [row[0] for row in data_rows(tmp_path / "SN-1-energy.csv")]
-        assert written == [
-            (yesterday - timedelta(days=2)).isoformat(),
-            yesterday.isoformat(),
-        ]
-        assert watermark(device_id) == yesterday
-
-    def test_the_skipped_day_is_never_revisited(self, migrated_db: Settings, tmp_path: Path) -> None:
-        """Readings that arrive late — through the ninety-day backfill — do not
-        reach the daily file. This is the consequence the ticket names, and the
-        on-demand save is its corrective."""
-        device_id = make_device()
-        configure(output_dir=tmp_path)
-        yesterday = local_today() - timedelta(days=1)
-        gap = yesterday - timedelta(days=1)
-        set_watermark(device_id, gap - timedelta(days=1))
-        seed_day(device_id, yesterday)
-        export_device_energy(device_id, require_auto_save=True)
-
-        seed_day(device_id, gap, kwh=99.0)
-        export_device_energy(device_id, require_auto_save=True)
-
-        written = [row[0] for row in data_rows(tmp_path / "SN-1-energy.csv")]
-        assert gap.isoformat() not in written
-
-
-class TestAHeadChangeRewritesTheFileInPlace:
-    """ADR 0023 (ticket 02): a head that no longer matches what is on disk is
-    rewritten in place, atomically, with the whole 90-day window — not closed
-    under a dated name the way M13's amendment did (now reversed)."""
-
-    def test_renaming_the_site_rewrites_the_file_with_every_day_in_window_under_the_new_head(
+    def test_a_row_added_to_the_store_between_cycles_appears_on_the_next_cycle(
         self, migrated_db: Settings, tmp_path: Path
     ) -> None:
         device_id = make_device()
         configure(output_dir=tmp_path)
         first_day = local_today() - timedelta(days=3)
         second_day = local_today() - timedelta(days=1)
-        set_watermark(device_id, first_day - timedelta(days=1))
-        seed_day(device_id, first_day, kwh=11.0)
+        seed_summary_day(device_id, first_day)
+
+        export_device_energy(device_id, require_auto_save=True)
+        seed_summary_day(device_id, second_day)
+        export_device_energy(device_id, require_auto_save=True)
+
+        written = [row[0] for row in data_rows(tmp_path / "SN-1-energy.csv")]
+        assert written == [first_day.isoformat(), second_day.isoformat()]
+
+    def test_renaming_the_site_rewrites_the_one_file_with_no_dated_edition(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        device_id = make_device()
+        configure(output_dir=tmp_path)
+        first_day = local_today() - timedelta(days=3)
+        second_day = local_today() - timedelta(days=1)
+        seed_summary_day(device_id, first_day, total_import_kwh=11.0)
         export_device_energy(device_id, require_auto_save=True)
 
         with session_scope() as session:
             session.get(Device, device_id).site_name = "Plant B"
-        seed_day(device_id, second_day, kwh=22.0)
+        seed_summary_day(device_id, second_day, total_import_kwh=22.0)
         export_device_energy(device_id, require_auto_save=True)
 
         path = tmp_path / "SN-1-energy.csv"
         rows = read_rows(path)
         assert rows[1] == ["Site Name :", "Plant B"]
         written_dates = [row[0] for row in data_rows(path)]
-        assert written_dates == [
-            first_day.isoformat(),
-            second_day.isoformat(),
-        ], "the day already exported under the old head must reappear under the new one"
+        assert written_dates == [first_day.isoformat(), second_day.isoformat()], (
+            "the day already written under the old head must still be in the rewritten file"
+        )
         assert list(tmp_path.glob("SN-1-energy.*.csv")) == [], "no dated edition may ever be created"
-        assert watermark(device_id) == second_day
 
-    def test_an_unchanged_head_never_creates_a_dated_file(self, migrated_db: Settings, tmp_path: Path) -> None:
+    def test_a_day_removed_from_the_store_is_removed_from_the_file(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """The file mirrors the table, not a history of what was once true —
+        the whole reason a watermark is no longer needed."""
         device_id = make_device()
         configure(output_dir=tmp_path)
-        yesterday = local_today() - timedelta(days=1)
-        set_watermark(device_id, yesterday - timedelta(days=3))
-        seed_day(device_id, yesterday - timedelta(days=2))
-        seed_day(device_id, yesterday)
+        day = local_today() - timedelta(days=1)
+        seed_summary_day(device_id, day)
+        export_device_energy(device_id, require_auto_save=True)
+        assert len(data_rows(tmp_path / "SN-1-energy.csv")) == 1
+
+        with session_scope() as session:
+            row = session.query(EnergySummaryDayRow).filter_by(device_id=device_id, local_date=day).one()
+            session.delete(row)
+        # A device that still has at least one other stored day keeps being
+        # rewritten — seed a second day so the export does not hold quietly.
+        seed_summary_day(device_id, day - timedelta(days=1))
+        export_device_energy(device_id, require_auto_save=True)
+
+        written = [row[0] for row in data_rows(tmp_path / "SN-1-energy.csv")]
+        assert day.isoformat() not in written
+
+
+class TestTheWindow:
+    """ADR 0023: the Energy file carries no day older than 90 days."""
+
+    def test_a_day_exactly_ninety_days_back_is_in_the_window(self, migrated_db: Settings, tmp_path: Path) -> None:
+        device_id = make_device()
+        configure(output_dir=tmp_path)
+        oldest_in_window = local_today() - timedelta(days=RETENTION_DAYS - 1)
+        seed_summary_day(device_id, oldest_in_window)
 
         export_device_energy(device_id, require_auto_save=True)
+
+        written = [row[0] for row in data_rows(tmp_path / "SN-1-energy.csv")]
+        assert oldest_in_window.isoformat() in written
+
+    def test_a_day_one_day_older_than_the_window_is_excluded(self, migrated_db: Settings, tmp_path: Path) -> None:
+        device_id = make_device()
+        configure(output_dir=tmp_path)
+        in_window = local_today() - timedelta(days=1)
+        outside_window = local_today() - timedelta(days=RETENTION_DAYS)
+        seed_summary_day(device_id, in_window)
+        seed_summary_day(device_id, outside_window)
+
         export_device_energy(device_id, require_auto_save=True)
 
-        assert list(tmp_path.glob("SN-1-energy.*.csv")) == []
-        assert len(data_rows(tmp_path / "SN-1-energy.csv")) == 2
+        written = [row[0] for row in data_rows(tmp_path / "SN-1-energy.csv")]
+        assert outside_window.isoformat() not in written
+        assert in_window.isoformat() in written
+
+
+class TestMatchesTheStore:
+    """User story 55 / ticket 04's own acceptance criterion: after a Holiday
+    change and one recompute, the file's rows equal the stored rows for the
+    same days — because both the file and the page now read the same table."""
+
+    def test_a_retroactive_holiday_reaches_the_file_after_one_recompute(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        device_id = make_device()
+        configure(output_dir=tmp_path)
+        # A weekday: a weekend day is already Holiday, so adding one would change nothing.
+        day = local_today() - timedelta(days=2)
+        while day.weekday() >= 5:
+            day -= timedelta(days=1)
+        seed_reading(device_id, day, kwh=40.0, hour_local=10)
+        energy_summary_recompute_cycle()
+
+        holiday_column = ENERGY_EXPORT_HEADERS.index("Holiday Import (kWh)")
+
+        # Write the file once, BEFORE the Holiday exists — this is what makes
+        # the later assertion prove a rewrite happened rather than merely
+        # matching what a first-ever export would have produced anyway.
+        export_device_energy(device_id, require_auto_save=True)
+        before = data_rows(tmp_path / "SN-1-energy.csv")
+        assert before[[row[0] for row in before].index(day.isoformat())][holiday_column] == "0"
+
+        with session_scope() as session:
+            session.add(Holiday(kind="public", date=day, name="Declared late"))
+        energy_summary_recompute_cycle()
+        export_device_energy(device_id, require_auto_save=True)
+
+        with session_scope() as session:
+            expected = stored_energy_summary_rows(
+                session, device_id, local_today() - timedelta(days=RETENTION_DAYS - 1), local_today()
+            )
+        written = data_rows(tmp_path / "SN-1-energy.csv")
+        assert [row[0] for row in written] == [d.date.isoformat() for d in expected]
+        matching = next(d for d in expected if d.date == day)
+        assert written[[d.date for d in expected].index(day)][holiday_column] == "40"
+        assert matching.holiday_import_kwh == 40.0
 
 
 class TestTheOnDemandSave:
@@ -272,7 +307,7 @@ class TestTheOnDemandSave:
         device_id = make_device()
         configure(output_dir=tmp_path)
         day = local_today() - timedelta(days=2)
-        seed_day(device_id, day)
+        seed_summary_day(device_id, day)
 
         result = export_energy_range(device_id, day, day)
 
@@ -280,55 +315,30 @@ class TestTheOnDemandSave:
         assert result.path.name == f"SN-1-energy-{day.isoformat()}-to-{day.isoformat()}.csv"
         assert result.path.exists()
 
-    def test_it_never_touches_the_watermark(self, migrated_db: Settings, tmp_path: Path) -> None:
-        """It is a snapshot somebody asked for, not the archive. Advancing the
-        watermark here would make a corrective save skip the very days the
-        daily file still owes."""
-        device_id = make_device()
-        configure(output_dir=tmp_path)
-        day = local_today() - timedelta(days=2)
-        seed_day(device_id, day)
-
-        export_energy_range(device_id, day, day)
-
-        assert watermark(device_id) is None
-
     def test_it_ignores_the_auto_save_switch(self, migrated_db: Settings, tmp_path: Path) -> None:
         device_id = make_device()
         configure(output_dir=tmp_path, auto_save_enabled=False)
         day = local_today() - timedelta(days=2)
-        seed_day(device_id, day)
+        seed_summary_day(device_id, day)
 
         assert export_energy_range(device_id, day, day).rows_written == 1
 
-    def test_it_corrects_a_day_the_daily_file_already_wrote_under_the_old_rules(
-        self, migrated_db: Settings, tmp_path: Path
-    ) -> None:
-        """The whole reason the button exists: the archive froze one answer, a
-        Holiday changed what the answer should be, and this is how a file that
-        agrees with the screen is produced."""
+    def test_it_reads_the_stored_table_not_a_live_aggregation(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """Ticket 04: **Save to file** now reads `energy_summary_days`, so it
+        agrees with the daily file and the page for the same days — a row
+        that exists only in `load_profile_readings` and has never been
+        recomputed must not appear."""
         device_id = make_device()
         configure(output_dir=tmp_path)
-        # A weekday: a weekend day is already Holiday, so adding one would change nothing.
-        day = local_today() - timedelta(days=1)
-        while day.weekday() >= 5:
-            day -= timedelta(days=1)
-        set_watermark(device_id, day - timedelta(days=1))
-        seed_day(device_id, day, kwh=40.0, hour_local=10)
-        export_device_energy(device_id, require_auto_save=True)
-        archived = data_rows(tmp_path / "SN-1-energy.csv")[0]
+        day = local_today() - timedelta(days=2)
+        seed_reading(device_id, day, kwh=99.0)  # never recomputed into the store
 
-        with session_scope() as session:
-            session.add(Holiday(kind="public", date=day, name="Declared late"))
+        result = export_energy_range(device_id, day, day)
 
-        export_energy_range(device_id, day, day)
+        assert result.rows_written == 0
+        assert list(tmp_path.glob("*.csv")) == []
 
-        corrected = data_rows(tmp_path / f"SN-1-energy-{day.isoformat()}-to-{day.isoformat()}.csv")[0]
-        holiday_column = ENERGY_EXPORT_HEADERS.index("Holiday Import (kWh)")
-        assert archived[holiday_column] != corrected[holiday_column]
-        assert corrected[holiday_column] == "40"
-
-    def test_a_range_with_no_readings_writes_no_file(self, migrated_db: Settings, tmp_path: Path) -> None:
+    def test_a_range_with_no_stored_rows_writes_no_file(self, migrated_db: Settings, tmp_path: Path) -> None:
         device_id = make_device()
         configure(output_dir=tmp_path)
         day = local_today() - timedelta(days=2)
@@ -343,18 +353,25 @@ class TestHoldsAreQuiet:
     def test_auto_save_off_holds_the_daily_file(self, migrated_db: Settings, tmp_path: Path) -> None:
         device_id = make_device()
         configure(output_dir=tmp_path, auto_save_enabled=False)
-        yesterday = local_today() - timedelta(days=1)
-        set_watermark(device_id, yesterday - timedelta(days=1))
-        seed_day(device_id, yesterday)
+        seed_summary_day(device_id, local_today() - timedelta(days=1))
 
         assert export_device_energy(device_id, require_auto_save=True).rows_written == 0
-        assert watermark(device_id) == yesterday - timedelta(days=1), "a hold must not advance the watermark"
+        assert not (tmp_path / "SN-1-energy.csv").exists()
 
     def test_no_meter_serial_holds(self, migrated_db: Settings, tmp_path: Path) -> None:
         device_id = make_device(serial=None)
         configure(output_dir=tmp_path)
 
         assert export_device_energy(device_id, require_auto_save=True).rows_written == 0
+        assert list(tmp_path.glob("*.csv")) == []
+
+    def test_a_device_with_nothing_stored_holds_quietly(self, migrated_db: Settings, tmp_path: Path) -> None:
+        device_id = make_device()
+        configure(output_dir=tmp_path)
+
+        result = export_device_energy(device_id, require_auto_save=True)
+
+        assert result.rows_written == 0
         assert list(tmp_path.glob("*.csv")) == []
 
 
@@ -365,7 +382,7 @@ class TestSaveToFileThroughTheApi:
         device_id = make_device()
         configure(output_dir=tmp_path)
         day = local_today() - timedelta(days=2)
-        seed_day(device_id, day)
+        seed_summary_day(device_id, day)
 
         response = admin_client.post(f"/api/energy/export?device_id={device_id}&start_date={day}&end_date={day}")
 
@@ -375,7 +392,7 @@ class TestSaveToFileThroughTheApi:
     def test_an_unconfigured_output_dir_is_a_422(self, migrated_db: Settings, admin_client) -> None:
         device_id = make_device()
         day = local_today() - timedelta(days=2)
-        seed_day(device_id, day)
+        seed_summary_day(device_id, day)
 
         response = admin_client.post(f"/api/energy/export?device_id={device_id}&start_date={day}&end_date={day}")
 
@@ -411,7 +428,7 @@ class TestSaveToFileThroughTheApi:
         device_id = make_device()
         configure(output_dir=tmp_path)
         day = local_today() - timedelta(days=2)
-        seed_day(device_id, day)
+        seed_summary_day(device_id, day)
 
         response = user_client.post(f"/api/energy/export?device_id={device_id}&start_date={day}&end_date={day}")
 
@@ -424,123 +441,3 @@ class TestSaveToFileThroughTheApi:
         response = admin_client.post(f"/api/energy/export?device_id=999&start_date={day}&end_date={day}")
 
         assert response.status_code == 404, response.text
-
-
-class TestAHolidayChangeReportsTheEnergyFilesItMayHaveLeftBehind:
-    """M13, issue 03. The Energy Summary is derived on every request precisely
-    so a Holiday entered today changes what last January reports tomorrow
-    (ADR 0012). The daily file froze one night's answer, and nothing else in the
-    product would ever say so."""
-
-    def test_a_past_public_holiday_reports_the_meters_whose_files_passed_it(
-        self, migrated_db: Settings, admin_client
-    ) -> None:
-        device_id = make_device()
-        past = local_today() - timedelta(days=3)
-        set_watermark(device_id, local_today() - timedelta(days=1))
-
-        response = admin_client.post(
-            "/api/holidays", json={"kind": "public", "name": "Declared late", "date": past.isoformat()}
-        )
-
-        assert response.status_code == 201, response.text
-        data = response.json()["data"]
-        assert data["affected_date"] == past.isoformat()
-        assert data["energy_files_written_past"] == 1
-
-    def test_a_future_holiday_reports_nothing_at_all(self, migrated_db: Settings, admin_client) -> None:
-        """The silence is the feature: a warning that fired on every holiday
-        entered in advance would stop meaning anything."""
-        device_id = make_device()
-        set_watermark(device_id, local_today() - timedelta(days=1))
-        future = local_today() + timedelta(days=30)
-
-        response = admin_client.post(
-            "/api/holidays", json={"kind": "public", "name": "Next month", "date": future.isoformat()}
-        )
-
-        data = response.json()["data"]
-        assert data["affected_date"] is None
-        assert data["energy_files_written_past"] == 0
-
-    def test_a_machine_whose_files_have_not_reached_the_day_reports_zero(
-        self, migrated_db: Settings, admin_client
-    ) -> None:
-        device_id = make_device()
-        past = local_today() - timedelta(days=3)
-        set_watermark(device_id, past - timedelta(days=1))
-
-        response = admin_client.post(
-            "/api/holidays", json={"kind": "public", "name": "Declared late", "date": past.isoformat()}
-        )
-
-        assert response.json()["data"]["energy_files_written_past"] == 0
-
-    def test_a_device_that_has_never_exported_is_never_counted(self, migrated_db: Settings, admin_client) -> None:
-        make_device()
-        past = local_today() - timedelta(days=3)
-
-        response = admin_client.post(
-            "/api/holidays", json={"kind": "public", "name": "Declared late", "date": past.isoformat()}
-        )
-
-        assert response.json()["data"]["energy_files_written_past"] == 0
-
-    def test_an_annual_holiday_reports_its_most_recent_occurrence(self, migrated_db: Settings, admin_client) -> None:
-        """An annual holiday recurs, so the day that matters is the last one
-        that has already happened — not the abstract month and day."""
-        device_id = make_device()
-        set_watermark(device_id, local_today())
-        yesterday = local_today() - timedelta(days=1)
-
-        response = admin_client.post(
-            "/api/holidays",
-            json={"kind": "annual", "name": "Every year", "month": yesterday.month, "day": yesterday.day},
-        )
-
-        assert response.status_code == 201, response.text
-        data = response.json()["data"]
-        assert data["affected_date"] == yesterday.isoformat()
-        assert data["energy_files_written_past"] == 1
-
-    def test_deleting_a_holiday_warns_the_same_way_adding_one_does(self, migrated_db: Settings, admin_client) -> None:
-        """Removing a Holiday changes what an already-written day should say
-        exactly as much as adding one does."""
-        device_id = make_device()
-        past = local_today() - timedelta(days=3)
-        set_watermark(device_id, local_today() - timedelta(days=1))
-        created = admin_client.post(
-            "/api/holidays", json={"kind": "public", "name": "Wrong call", "date": past.isoformat()}
-        ).json()["data"]["holiday"]
-
-        response = admin_client.delete(f"/api/holidays/{created['id']}")
-
-        assert response.status_code == 200, response.text
-        data = response.json()["data"]
-        assert data["holiday"] is None
-        assert data["affected_date"] == past.isoformat()
-        assert data["energy_files_written_past"] == 1
-
-    def test_editing_a_holiday_reports_against_its_new_day(self, migrated_db: Settings, admin_client) -> None:
-        device_id = make_device()
-        set_watermark(device_id, local_today() - timedelta(days=1))
-        far_past = local_today() - timedelta(days=40)
-        created = admin_client.post(
-            "/api/holidays", json={"kind": "public", "name": "Moved", "date": far_past.isoformat()}
-        ).json()["data"]["holiday"]
-        moved_to = local_today() - timedelta(days=2)
-
-        response = admin_client.patch(
-            f"/api/holidays/{created['id']}",
-            json={"kind": "public", "name": "Moved", "date": moved_to.isoformat()},
-        )
-
-        assert response.json()["data"]["affected_date"] == moved_to.isoformat()
-
-    def test_the_created_holiday_still_comes_back_on_the_response(self, migrated_db: Settings, admin_client) -> None:
-        """The count rides alongside the row; it does not replace it."""
-        response = admin_client.post("/api/holidays", json={"kind": "annual", "name": "New Year", "month": 1, "day": 1})
-
-        holiday = response.json()["data"]["holiday"]
-        assert holiday["name"] == "New Year"
-        assert holiday["kind"] == "annual"
