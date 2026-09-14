@@ -13,9 +13,9 @@ reason beside it. If any of them is wrong for you, say so and we will change it.
 
 | File | What it holds | When it is written |
 |---|---|---|
-| `<meter>.csv` | Load Profile — one row per interval, **25 columns** | every export cycle, appended |
-| `<meter>-billing.csv` | Billing — one row per closed period, **24 columns** | every export cycle, appended |
-| `<meter>-energy.csv` | Energy Summary — one row per day, 9 columns | daily, appended, **plus a Save button** |
+| `<meter>.csv` | Load Profile — one row per interval, **25 columns** | appended every export cycle · **keeps the last 90 days** |
+| `<meter>-billing.csv` | Billing — one row per closed period, **24 columns** | rewritten every export cycle · **keeps every closed period** |
+| `<meter>-energy.csv` | Energy Summary — one row per day, 9 columns | rewritten every export cycle · **keeps the last 90 days** · **plus a Save button** |
 
 All three share one folder, one on/off switch and one date format — the settings you
 already have. Only the filename pattern is per-file, so the three cannot overwrite each
@@ -95,41 +95,34 @@ file it is a 13-bit word the meter sets per interval.
 
 ## 4. What is in the Energy Summary file
 
-`Date` plus the eight Time-of-Use columns the screen shows. **No total row** — a running
-file cannot have one, and the total belongs on the screen.
+`Date` plus the eight Time-of-Use columns the screen shows, for the last 90 days. **No total
+row** — the total belongs on the screen.
 
-**Two things can make this file stale, and one button fixes both.**
+**The file is rewritten from the program's own stored summary every export cycle**, so it
+always matches the Energy Summary page. When you add, edit or delete a Holiday, or a meter sends
+readings late after being offline, every affected day is recalculated within fifteen minutes —
+on the page and in this file together. Each Holiday change is recorded with who made it and when.
 
-1. Interval readings that arrive late, through the 90-day catch-up, never reach the daily
-   file — the day was already written.
-2. A holiday entered *after* the fact changes what an earlier day should have reported.
-
-The **Save to file** button on the Energy Summary page re-saves any range you pick, which
-corrects either case. And when you add, edit or delete a Holiday, the screen now tells you
-how many meters' files already hold the affected day, and points you at that button. That
-notice stays on screen until you dismiss it — it is asking you to do something later, not
-just telling you something happened.
+The **Save to file** button still saves any range you pick, into a file of its own.
 
 ---
 
-## 5. Your existing Load Profile file has been closed, and a new one opened
+## 5. Every file keeps 90 days, not forever
 
-The column set changed, so the file that was being appended to is **renamed** with the date
-the update reached your machine — `<meter>.<date>.csv` — and a fresh `<meter>.csv` starts
-with the new 25-column header.
+You told us disk space on the machine is limited, so the export files keep what the program
+itself keeps: **the last 90 days** of Load Profile and Energy Summary rows, and **every closed
+billing period** — billing is small, and the program never discards it. Older Load Profile rows
+are removed once a day; the other two files are rewritten every cycle.
 
-Nothing in the old file is altered, and **no row is ever written under a header that does
-not describe it.** That is the rule the whole delivery is built on: a file that appends is a
-contract, so when the contract changes the old file closes rather than being rewritten.
+A file is always rewritten safely: written in full to a temporary file first, then swapped in, so
+nothing reading the folder ever sees half a file.
 
-If your tooling reads a fixed filename it will find the new file. If it scans the folder it
-will now see two files with different column counts — the dated one is history, the
-undated one is current.
+**If you mirror the folder to another computer with Syncthing, that computer also holds only 90
+days**, because it receives the trimmed files. If you need a longer history there, it has to keep
+its own copy.
 
-This happens **once**. Normal cycles append as before. It will happen again only if the
-column set or the header block changes again, or if you edit the meter's Customer, Site
-Name or Serial — those three are in the file header block, so changing them starts a new
-edition too.
+When the column set changes — as it does in this update, from 14 to 25 columns — the file is simply
+rewritten under the new header. No dated copies are left in the folder.
 
 ---
 
@@ -179,6 +172,6 @@ reached your machine, so it waits for the update; the questions do not have to.
 2. **`Setting : 1`** appears in every one of your samples with no explanation. We reproduce
    the line exactly so your tooling's line offsets stay right, but nobody on either side
    knows what it means. If it matters, we would like to know what it is.
-3. **Does anything read the dated, closed files?** If your tooling globs the folder, §5 will
-   give it two shapes. We can put closed editions in a subfolder instead if that is easier.
+3. **Does anything need more than 90 days of history?** See §5 — a mirrored folder loses the
+   older rows too.
 4. **Is `M/D/YYYY HH:MM` actually required**, or is the current default fine? See §6.

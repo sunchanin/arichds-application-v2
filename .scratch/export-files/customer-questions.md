@@ -41,20 +41,18 @@ copy.
 
 ---
 
-## 3. Does anything read the closed, dated files? — **this one changes what we build**
+## 3. Does anything need more than 90 days of history? — **this one changes what we build**
 
-When the columns in a file change, we do **not** rewrite the file you already have. We close it
-under a name carrying the date — `<meter>.2026-09-15.csv` — and open a fresh file beside it under
-the new header. Nothing is ever appended under a header that does not describe it.
+Because you told us disk space on the machine is limited, the export files keep only what the
+program keeps: the last 90 days of Load Profile and Energy Summary rows, and every closed billing
+period. Older rows are removed.
 
-This matters to you the first time you take an update, because the Load Profile file grows from
-14 to 25 columns: your current file closes, a new one starts.
+If the folder is mirrored to a second computer with Syncthing, **that computer receives the trimmed
+files and loses the older rows too.**
 
-- If your tooling reads a **fixed filename**, it finds the new file and nothing changes for you.
-- If your tooling **scans the folder**, it will now find two files with different column counts.
-
-**What we need from you:** which of those it is. If it scans, we can put closed files in a
-subfolder instead — that is a small change now and an awkward one later.
+**What we need from you:** whether anything — a report, a spreadsheet, the second computer — needs
+history older than 90 days. If it does, deciding now how that copy is kept costs far less than
+discovering the gap later.
 
 ---
 

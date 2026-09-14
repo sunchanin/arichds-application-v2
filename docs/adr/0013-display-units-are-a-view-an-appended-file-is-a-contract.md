@@ -1,6 +1,8 @@
 # Display units are a view setting; an appended file is a contract
 
-Status: accepted (2026-08-11). The machine-wide kW/W setting **is implemented** (Billing, Load
+Status: accepted (2026-08-11). **The M13 amendment below is superseded by ADR 0023** (2026-09-14):
+export files now mirror our 90-day window and are rewritten, so Closed Editions no longer exist.
+The core rule — display units never reach a file — stands. The machine-wide kW/W setting **is implemented** (Billing, Load
 Profile, Records, and the two capture renderers — commit `bbdd6b7`); the boundary this ADR
 draws **landed on the Load Profile CSV with issue #30 (M7 slice 3)** — `arichds.export` never
 imports the render-time scale machinery, enforced by a source-level guard in the test suite —
@@ -70,6 +72,10 @@ a server across time, so it is base-unit-fixed by the same test, and the unit be
 contract rather than in a setting the site can change.
 
 ## Amendment (M13, issue 01) — what happens when the contract itself changes
+
+> **Superseded by ADR 0023 (2026-09-14).** The customer's limited disk space, already recorded in
+> ADR 0020, rules out a folder that accumulates dated editions. Kept below as the history of why
+> Closed Editions existed; do not implement from it.
 
 The rule above says an appended file has a fixed unit because its past is on disk and cannot
 be revised. That answered *may this artifact follow a setting?* It did not answer the question

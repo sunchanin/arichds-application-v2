@@ -591,6 +591,11 @@ fetch ต่อรอบเท่าเดิม
 ที่ M13 issue 07 นี้เอง ไม่ใช่ก่อนหน้า เพราะการเพิ่ม block คือการเปลี่ยนหัวไฟล์ ทำก่อนจะม้วนไฟล์ของ
 operator สองรอบแทนที่จะรอบเดียว
 
+> ⚠️ **กฎม้วนไฟล์ข้างบนถูกแทนที่ที่ grill M14 (2026-09-14) — ADR 0023**: ไฟล์ export สะท้อนหน้าต่าง
+> 90 วันของเราและถูกเขียนทับแบบ atomic · หัวไฟล์เปลี่ยน = เขียนทั้งหน้าต่างใหม่ใต้หัวใหม่ ·
+> **ไม่มีไฟล์ที่มีวันที่อีกแล้ว** · เหตุผลคือพื้นที่ดิสก์ของลูกค้า ซึ่ง ADR 0020 บันทึกไว้ตั้งแต่ 24 ส.ค.
+> แต่ M13 ไม่ได้นำมาใช้กับไฟล์
+
 **ชื่อคอลัมน์ใช้ธรรมเนียมของ v2 ไม่ใช่การสะกดของลูกค้า** (ต่อจากคำวินิจฉัย 2026-08-11 ที่แก้หน่วยผิด
 สี่คอลัมน์) — ตัวอย่างของลูกค้าสะกด `Import kVar Reactive` ซึ่งผิดหน่วยแบบเดียวกับที่แก้ไปแล้ว และมี
 ช่องว่างเกิน · **ยกเว้นคอลัมน์สถานะ** ที่คงคำว่า `Record Status` ของลูกค้าไว้: ไฟล์พูดภาษาของเขา
@@ -626,7 +631,8 @@ per-logger watermark** (D4, ADR 0008's amendment) — ไม่ใช่ MAX ร
 การตัดสินใจด้านล่างยังใช้ได้ แค่ไปเกิดที่ M7 — รวมถึงคอลัมน์ `csv_exported_through`
 ที่**ไม่ต้องอยู่ใน migration ของ M5a อีกต่อไป**:
 
-**CSV export (M7)** — ไฟล์ต่อมิเตอร์ เขียนต่อท้าย · UTF-8 BOM (Excel บนวินโดวส์) ·
+**CSV export (M7)** — ไฟล์ต่อมิเตอร์ เขียนต่อท้าย (**ตั้งแต่ M14: ตัดเหลือ 90 วันและเขียนทับวันละครั้ง
+พร้อมงาน retention — ADR 0023**) · UTF-8 BOM (Excel บนวินโดวส์) ·
 `flush()` + `fsync()` แล้วค่อย commit watermark ⇒ เขียนพลาด watermark ไม่ขยับ แถวลองใหม่รอบหน้า ·
 lock ต่อ device ให้ scheduler กับ Manual Read ไม่เขียนชนกัน · watermark เป็น **คอลัมน์
 `csv_exported_through` บน `devices`** (แบบเดียวกับ `status_checked_at` — **ไม่เพิ่มตาราง คง 12**)
@@ -771,6 +777,11 @@ job จับ lock แบบ `background=True` — ชนแล้ว**ข้า
 > รอวันที่ว่าง จะกลายเป็นการวนหาหน้าต่างเดิมตลอดไป · ผลที่ตามมาและเขียนกำกับไว้: ข้อมูลที่มาถึง
 > ทีหลังผ่าน backfill 90 วันจะไม่เข้าไฟล์รายวัน · **ปุ่มบันทึกเองคือทางแก้เดียวของทั้งสองสาเหตุ**
 > (วันหยุดที่ใส่ย้อนหลัง และ backfill) — กลไกเดียว ไม่ใช่สอง
+>
+> ⚠️ **ทั้งกล่องนี้ถูกแทนที่ที่ grill M14 (2026-09-14)**: Energy Summary **ถูกเก็บลงตาราง** และคำนวณใหม่
+> ทั้ง 90 วันทุกรอบ (ADR 0022 แทน 0012) · ไฟล์ energy **เขียนทับทั้งไฟล์ทุกรอบจากตาราง** เก็บ 90 วัน
+> (ADR 0023) ⇒ ล้าสมัยได้ไม่เกินหนึ่งรอบ · watermark `energy_exported_through` และบทบาททางแก้เดียว
+> ของปุ่มบันทึกหมดความหมาย · ปุ่มยังอยู่สำหรับบันทึกช่วงที่เลือกเป็นไฟล์ของมันเอง
 
 > ✅ **ไฟล์ export ของ billing — เพิ่มที่ M13 (grill 2026-09-09, issue 01)**
 >
@@ -778,7 +789,8 @@ job จับ lock แบบ `background=True` — ชนแล้ว**ข้า
 > (ADR 0010/0015) · ไฟล์ตัวอย่างที่ลูกค้าส่งมาเป็นผลผลิตของโปรแกรมที่สามที่เรากำลังแทนที่ ⇒
 > **ไม่มีพันธะ Output Parity** และสัญญาเดียวที่มีคือไฟล์ตัวอย่างนั้น
 >
-> **CSV ต่อท้าย หนึ่งไฟล์ต่อมิเตอร์ · 24 คอลัมน์เสมอ · เฉพาะรอบปิด** — Open Period เข้าไม่ได้
+> **CSV หนึ่งไฟล์ต่อมิเตอร์ · 24 คอลัมน์เสมอ · เฉพาะรอบปิด** (M13 เขียนต่อท้าย · **ตั้งแต่ M14 เขียนทับ
+> ทั้งไฟล์ทุกรอบ เก็บทุกงวดที่ปิด — ADR 0023**) — Open Period เข้าไม่ได้
 > เพราะ `bill_date` ของมันขยับทุกครั้งที่อ่าน (ADR 0018) · `Record No` คือลำดับในชุดรอบปิดทั้งหมด
 > ของมิเตอร์นั้น คำนวณจาก DB ไม่ใช่การนับบรรทัดในไฟล์ · **ไม่มี Rate D** (สามอัตราตามสัญญาลูกค้า) ·
 > เซลล์เวลาที่มิเตอร์ไม่เคยตั้งเขียนเป็น `-` ทั้งกรณี NULL และกรณี sentinel `2000-01-01` ของ TCC ·
@@ -990,7 +1002,7 @@ M6 เติม job `billing` เข้า list เดิม (§3.3) โดย *
 
 | แท็บ | คือ | เก็บที่ไหน |
 |---|---|---|
-| **Summary Report** | Energy Summary — TOU buckets รวมสดจาก `load_profile_readings` | **ไม่เก็บ** |
+| **Summary Report** | Energy Summary — TOU buckets จาก `load_profile_readings` | ~~ไม่เก็บ~~ **ตาราง Energy Summary รายวัน** คำนวณใหม่ทุกรอบ (ADR 0022, M14) |
 | **Meter Registers** | Energy Registers — ทะเบียนสะสม `D=8` อ่านจากมิเตอร์ | `energy_register_readings` |
 
 **ทำไมต้องมีแท็บ Meter Registers ทั้งที่ `billing_readings` เก็บ `1.0.1.8.E` ไว้แล้ว**: เพราะ
@@ -1006,7 +1018,8 @@ M6 เติม job `billing` เข้า list เดิม (§3.3) โดย *
 
 **TOU**: หน้าต่าง Peak **เป็นค่าคงที่ ตั้งไม่ได้** (local 09:00–22:00 เท่า v1) · นับ **active
 อย่างเดียว** import + export = 6 ช่อง เท่า v1 (reactive มีข้อมูลแต่ไม่มีใครขอ และไม่มีอะไรให้เทียบ
-parity) · ⚠️ **ผลลัพธ์ย้อนหลังไม่นิ่ง** — ดู `CONTEXT.md` → Energy Summary
+parity) · ~~ผลลัพธ์ย้อนหลังไม่นิ่ง~~ **ตั้งแต่ M14**: วันหยุดที่แก้มีผลย้อนหลังภายในหนึ่งรอบ และทุกจุดอ่านตารางเดียวกัน
+(ADR 0022) — ดู `CONTEXT.md` → Energy Summary
 
 ⚠️ **SQL ต้องเขียนใหม่ และ ADR 0016 (v1) เขียนไว้ไม่ครบ — อย่าทำตามตัว ADR** (พบตอน scrutinize แผน M7):
 ตัว ADR ระบุ predicate ว่า `DAYOFWEEK(read_at) ∈ {1,7}` ซึ่ง **ตกการแปลงเขตเวลา** ที่โค้ดจริงมี —
@@ -1157,18 +1170,29 @@ one header.
 - **หน้า monitor ไม่เคยอยู่ในบัญชีนี้** — มันเป็นนั่งร้าน M1 ที่ §3.1 สร้างขึ้นเอง ไม่ใช่หน้าของ v1
   ถูกถอดที่ M3-3 (ADR 0007) · ตัวเลข 14 → 12 จึงไม่ขยับเพราะเรื่องนั้น
 
-### 3.8 Data-out / Sync (M8)
+### 3.8 Data-out / Sync (M8) — grill ใหม่ 2026-09-14 (M14, E4) → ADR 0022 · 0023 · 0024
 
-- โปรแกรม **push** ขึ้น server เดิมของทีม (เพิ่ม endpoint รับ) — outbound HTTPS ทางเดียว
-  ไม่เปิด inbound port ที่ไซต์
-- ข้อมูลที่ส่ง: **billing · load profile · energy summary · รายชื่อมิเตอร์ + สถานะ online/offline**
-- Contract: JSON · รอบ 15 นาที · JWT ผูกกับ activation (site identity = machine token จาก portal
-  — เฟสนี้ฝังใน license/config ตอน activate แบบ offline)
-- ทนเน็ตหลุด: watermark เลื่อนเมื่อ server ACK เท่านั้น · ส่งย้อนหลัง **ครบทุกแถวเสมอ** ·
-  `load_profile_readings`/energy ใช้ watermark append-only · `billing_readings` track ด้วย `updated_at`
-  (open period ถูก upsert ที่เดิม + backfill แทรกย้อนหลัง — watermark ธรรมดาใช้ไม่ได้) ·
-  รายชื่อมิเตอร์ + สถานะ = **snapshot ทั้งชุดทุกรอบ** (ข้อมูลเล็ก ไม่ต้อง track diff)
-- เมื่อ M8 เสร็จ: ถอน API ตัวกลางออกจากเครื่องลูกค้า
+- โปรแกรม **push** ขึ้น server ของทีม — outbound HTTPS ทางเดียว ไม่เปิด inbound port ที่ไซต์ ·
+  **ไซต์ที่ไม่กรอก URL = ไม่ส่ง** (ไซต์เดียวที่ห้ามข้อมูลออก cloud ใช้ Syncthing ตามเดิม · ไม่มี licence key แยก)
+- ข้อมูลที่ส่ง: **billing · load profile · energy summary · รายชื่อมิเตอร์ + สถานะ** · JSON · ทุกรอบ 15 นาที
+- **สัญญาเป็นของเรา** มี version · spec แสดงบนหน้าเมนู **API** สร้างจาก model ตัวเดียวกับที่โค้ด
+  serialize payload ⇒ spec กับของที่ส่งจริงแยกกันไม่ได้ · หน้าเดียวกันมีช่อง URL + Push Token และสถานะรอบล่าสุด
+- **ตัวระบุ**: มิเตอร์ = **Meter Serial** ไม่เคยเป็น `device_id` (rowid ใช้ซ้ำหลังลบ ชนกันข้ามไซต์) ·
+  เวลา = **ISO 8601 มี offset** (`2026-09-14T09:15:00+07:00`)
+- **ยืนยันตัวตน = Push Token** — JWT เซ็น **EdDSA** ด้วย Ed25519 key เดิมของ vendor ผ่าน subcommand ใหม่
+  ของ `tools/arichds_vendor.py` · มี Machine ID · claim ของตัวเองที่ทำให้ verify เป็น Activation Code
+  ไม่ได้และกลับกันก็ไม่ได้ · server ถือ public key + denylist ตาม Machine ID · **ห้ามรัน `keygen`**
+- **ไม่ถือ state ฝั่งเรา** (ADR 0008) — ต้นรอบถาม server ว่ามีถึงไหน: LP = `read_at` ล่าสุดต่อ
+  (Meter Serial, logger) · billing + energy summary = `updated_at` ล่าสุดต่อ Meter Serial · รายชื่อมิเตอร์ =
+  snapshot ทั้งชุด · endpoint "มีอะไรแล้ว" เป็นส่วนหนึ่งของสัญญาที่เราเผยแพร่ · **ไม่มี `sync_state`**
+- **ต่อไม่ติด**: connect/read timeout · เพดานเวลาต่อรอบ · วางท้ายคิว scheduler · ไม่ตอบ = ข้ามรอบ ·
+  สถานะเก็บใน memory แบบ `dataout/status.py` · เครื่องออฟไลน์ = ไม่ส่ง ไม่มีคิวออฟไลน์ รอบหน้าถามใหม่เอง
+- **server เก็บตลอด** · แถวที่เก่ากว่าหน้าต่าง 90 วันของเรา **แข็งที่ค่าที่ push ครั้งสุดท้าย** — เขียนไว้ใน spec
+- ฝั่งรับต้อง **upsert** ไม่ใช่ append — แถว billing และ energy summary เปลี่ยนค่าได้หลังส่งไปแล้ว
+- **Energy Summary ถูกเก็บเป็นตาราง** และคำนวณใหม่ทั้ง 90 วันทุกรอบ (**ADR 0022 — แทน ADR 0012**) ·
+  ไฟล์ export สะท้อนหน้าต่าง 90 วันและถูกเขียนทับ ไม่มี Closed Edition (**ADR 0023**)
+- ~~ถอน API ตัวกลางออกจากเครื่องลูกค้า~~ — **แก้ 2026-09-11**: sweep v1 ทั้งรีโปไม่พบ service ตัวกลาง
+  สิ่งที่มีคือ FastAPI ของ v1 เองรับ `X-API-Key` ⇒ ถ้าทีมมีโปรแกรมที่อ่านผ่านช่องนั้นอยู่ ให้ย้ายมารับ push
 
 ### 3.9 Licensing (คร่อมทุกโมดูล — enforcement ตั้งแต่ M1)
 
@@ -1342,18 +1366,20 @@ watermark ที่เลื่อนเมื่อ ACK · หัวข้อ�
   transport endpoint) + scheduler thread เดียวรันทุก periodic job จาก registry
   `[(name, interval, fn)]` (LP scheduler, billing auto-read, retention, backup, sync, license recheck)
   — **ไม่มี health-check job**: สถานะมิเตอร์เป็นผลพลอยได้จาก poller tick (ADR 0004)
-- **Data model** (11 ตาราง): `devices` (`transport` เป็น JSON column เดียว — status/strike เป็นคอลัมน์มีชนิด) ·
+- **Data model** (12 ตาราง): `devices` (`transport` เป็น JSON column เดียว — status/strike เป็นคอลัมน์มีชนิด) ·
   `device_events` · `load_profile_readings` (COSEM shape **23 คอลัมน์วัดค่า** ที่ M13 — เดิม 12 — บวก
   `interval_status_flag` + `source` + `interval_sec`; §3.5 คือที่มา) ·
   `billing_readings` · `energy_register_readings` · `battery_readings` ·
-  `holidays` · `settings` (key/value) · `users` · `user_tokens` · `sync_state`
+  `holidays` · `settings` (key/value) · `users` · `user_tokens` · **ตาราง Energy Summary รายวัน** ·
+  **ตาราง Holiday Change** (ADR 0022 — ชื่อตารางตัดสินตอน `/to-spec`) · ~~`sync_state`~~ **ตัดทิ้ง** (ADR 0024 —
+  push ถาม server แทนการจำ · ไม่เคยถูกสร้าง)
   — **`billing_captures` ถูกตัดออกที่ grill M6 (2026-08-09)**: มัน**ไม่เคยมีอยู่ใน v1** (grep ทั้งรีโป
   ได้ศูนย์ผลลัพธ์) และถูกนับเข้ามาตอนวางแผนโดยเข้าใจผิดว่ายกมาจาก v1 · v1 ตัดสินไว้ที่
   `billing/docs/adr/0003` ว่า *"ไม่เก็บ path ใน DB — derive จาก convention ทุกครั้ง"* แล้วเดินแบบนั้นจริง
   ⇒ v2 ทำตาม พร้อมเช็คว่าไฟล์มีอยู่จริงตอน list
 - **Interfaces**:
-  - ขาออก: push endpoint บน server เดิมของทีม (JSON/15min/JWT) — field-level contract ออกแบบร่วม
-    ฝั่ง server ที่ M8 · portal v2 (`/activate` `/renew` `/redeem`) — contract นิยามที่ M0 ใช้จริง M9
+  - ขาออก: push ขึ้น server ของทีม (JSON/15min/Push Token) — **สัญญาเป็นของเรา** เผยแพร่บนหน้า API
+    (ADR 0024) · portal v2 (`/activate` `/renew` `/redeem`) — contract นิยามที่ M0 ใช้จริง M9
   - ขาเข้า: ไม่มี (REST ของโปรแกรมเป็น internal สำหรับ SPA เท่านั้น)
 - **ข้อจำกัด**: Windows-first แต่โค้ด portable (ไม่ผูก Windows API นอกชั้น installer/service) ·
   transport = TCP + Serial · เวลาใน DB = UTC เสมอ · พลังงาน = kWh เสมอ · UI อังกฤษล้วน ·
@@ -1378,9 +1404,9 @@ watermark ที่เลื่อนเมื่อ ACK · หัวข้อ�
 - **Mapping modbus→COSEM** — เดินหน้าด้วย mapping DERIVED ของ ADR 0005 ระหว่างรอลูกค้ายืนยัน
   (โดยเฉพาะช่องว่างของ SMW110) · ต้องปิดก่อนเฟส modbus เขียนข้อมูลจริง — และตอนนั้นค่อยตัดสินว่า
   ต้องมีตารางตาข่าย raw modbus (retention 7 วัน) ไหม
-- **Field-level contract ของ push** — โครงตัดสินแล้ว (JSON/15min/JWT/ครบทุกแถว) แต่รายชื่อ field
-  ต่อ payload ออกแบบร่วมฝั่ง server ตอน M8 — รวมถึง **วิธีที่ server verify JWT ที่ออกแบบ offline**
-  (ช่วงไม่มี portal, vendor CLI เป็นผู้ออก token → server ต้องมี key สำหรับ verify)
+- ~~**Field-level contract ของ push**~~ — ✅ **ปิดแล้วที่ grill M14 (2026-09-14)**: สัญญาเป็นของเรา
+  เผยแพร่บนหน้า API สร้างจาก model · server verify Push Token ด้วย public key ของ vendor (ADR 0024) ·
+  รายชื่อ field ต่อ payload ตัดสินตอน `/to-spec`
 - ~~**`billing_captures`**~~ — ✅ **ปิดแล้วที่ grill M6 (2026-08-09): ไม่สร้างตาราง** · derive path
   จาก convention เหมือน v1 ADR 0003 · จำนวนตารางใน §4 ลดจาก 12 เป็น 11
 - **ชะตาของ modbus billing cut** (เปิดที่ grill M6, 2026-08-09) — เจ้าของระบุว่า *"เราไม่มีตรรกะ

@@ -249,26 +249,25 @@ _Avoid_: Bill total (the customer's word — it reads as a sum of money), overvi
 
 **Energy Summary**:
 Interval Readings added up into **Time-of-Use buckets** — Peak, Off-Peak and Holiday — per
-device and local calendar day. It is **derived, never stored and never read from a meter**:
-the numbers are aggregated out of `load_profile_readings` on every request, exactly as the
-Records page counts its cells live. Peak is a local clock window on days that are not Holiday;
-Holiday is one bucket that swallows weekends and both kinds of Holiday alike, so a Saturday
-inside the peak window is Holiday energy, not Peak energy (**v1's** ADR 0016 — v2's own 0016 is
-an unrelated decision). Only **active** energy is
-counted, import and export; the reactive columns exist on the row and are deliberately ignored.
-Because nothing is stored, **an Energy Summary is not reproducible over time**: adding a Holiday
-today changes what last January reports tomorrow. That is a property of the design, not a
-fault — the Holiday table is the one knob that moves it, and it moves it toward the truth. The
-peak window is a constant for the same reason: a second retroactive knob would move the
-numbers with nothing in the world to justify the move.
-Since M13 the buckets also reach an **Energy Export File**, and that does not make them
-stored: a row in that file is a snapshot of the derivation at the moment it was written, never
-a document of record (ADR 0012, amendment). **If the file and the page disagree, the page is
-right** — the file is old, and a Holiday entered since is the usual reason. Rows the meter
-flagged `ALL_INVALID` are excluded from the buckets, which is an **Output Parity** obligation,
-not an optimisation (see *Interval Status*).
-_Avoid_: TOU report, energy report, meter energy (that's Energy Registers), the energy file as
-"the record" (it is a snapshot — Billing holds records)
+device and local calendar day, **stored as one row per meter per day and recomputed over the
+whole 90-day window every cycle** (ADR 0022). Peak is a local clock window on days that are not
+Holiday; Holiday is one bucket that swallows weekends and both kinds of Holiday alike, so a
+Saturday inside the peak window is Holiday energy, not Peak energy (**v1's** ADR 0016 — v2's own
+0016 is an unrelated decision). Only **active** energy is counted, import and export.
+Because every cycle recomputes, **a Holiday change and a late Interval Reading both reach every
+stored day within one cycle**, and the page, the **Energy Export File** and the **Central Push**
+read the same rows, so they cannot disagree. It lives as long as the readings it comes from: 90
+days. Rows the meter flagged `ALL_INVALID` are excluded — an **Output Parity** obligation (see
+*Interval Status*). The peak window is a constant, so the Holiday table stays the only thing that
+moves a past day's numbers.
+_Avoid_: TOU report, energy report, meter energy (that's Energy Registers)
+
+**Holiday Change**:
+One recorded addition, edit or deletion of a Holiday — who, when, and which day — through any of
+the five ways a Holiday moves: add, edit, delete, CSV import, Import from meter. Kept 90 days, as
+long as the Energy Summary rows it explains, because it answers "why did this day's numbers
+change".
+_Avoid_: user log, audit log (it records one kind of change)
 
 **Energy Registers**:
 A meter's **cumulative** energy counters (COSEM `D=8` — import/export, active/reactive) read
@@ -385,46 +384,34 @@ have them overwrite each other. A second output folder or a second auto-save swi
 value somebody has to keep in step with the first by hand.
 
 **The files they govern are always kWh/kvarh — they never follow the Display unit setting**
-(ADR 0013). A file is a contract an operator's downstream tooling appends to for months; the
-Display unit setting is a view, re-rendered on every request. A destination with a past on disk
-cannot retroactively agree with a switch flipped today.
+(ADR 0013). A file is a contract an operator's downstream tooling reads; the Display unit
+setting is a view, re-rendered on every request, and a file must not change meaning because a
+switch was flipped.
 
-**A file whose head changes is closed, not rewritten** (ADR 0013, amendment): when the file
-header block or the column header row no longer matches what would be written today, the file
-is renamed with the date appended and a new one opens beside it. **Dated files in an export
-folder are correct, not clutter** — they hold rows the live file does not.
+**An export file mirrors our window and carries exactly one head** (ADR 0023): the Load
+Profile CSV and the Energy Export File hold 90 days, the Billing Export File holds every closed
+period, and a changed head is written over the whole window rather than closing the file.
+Nothing accumulates in the folder — the customer's reason for a window at all is disk space.
 _Avoid_: divide by 1000 (v1's setting; not ported — write-time normalization already made it
 vacuous), per-meter format (rejected — see above), a second output folder (rejected — see
 above)
 
-**Closed Edition**:
-A dated export file that will never receive another row — `<name>.2026-09-15.csv`. It is
-closed *because* its head stopped describing what we would write today: the column set
-changed, or a device row field inside the file header block was edited. The live file beside
-it is the **Open Edition**, the only one that is ever appended to. Nothing rewrites a Closed
-Edition, so an export folder accumulates editions the way a filing cabinet accumulates
-volumes. One writer opens and closes all of them for all three export files
-(`export/writer.py`) — that is why the rule cannot hold for one file and not another.
-_Avoid_: archive, backup, rolled file, old file (all of them suggest something replaceable or
-deletable — a Closed Edition holds rows no other file has)
-
 **Billing Export File**:
-One row per **closed** billing period per meter, appended — `<meter>-billing.csv`, 24 columns
-in the customer's order. The Open Period is never exported: its `bill_date` advances on every
-read (see *Open Period*), so exporting it would append the same period again under a moving
-date. `Record No` counts closed periods for that meter oldest-first, **not** lines in the
-file, because a line count would reset at every Closed Edition. Its `Record Status` column
+One row per **closed** billing period per meter — `<meter>-billing.csv`, 24 columns in the
+customer's order — holding **every** closed period and rewritten whole every cycle, because
+billing is never purged from our store (ADR 0023). The Open Period is never exported: its
+`bill_date` advances on every read (see *Open Period*). `Record No` counts closed periods for
+that meter oldest-first, **not** lines in the file. Its `Record Status` column
 reads `closed` on every row and is **not the same column** as `Record Status` in the Load
 Profile CSV, which is an *Interval Status* word.
 _Avoid_: billing CSV, billing file, bill export (one name, so a grep finds every mention)
 
 **Energy Export File**:
-One row per device and local calendar day — `<meter>-energy.csv`, the
-`Date` plus the eight Time-of-Use columns the page shows. Written daily by the export job and
-on demand by **Save to file**, which re-saves a chosen range and is the fix for both ways the
-file goes stale (a late interval, a Holiday entered after the fact). It carries **no total
-row**: a file that keeps growing cannot have one, and the total belongs on the page. A row is
-a snapshot, never a record — see *Energy Summary*.
+One row per device and local calendar day for the last 90 days — `<meter>-energy.csv`, the
+`Date` plus the eight Time-of-Use columns the page shows — **rewritten whole every cycle from the
+stored Energy Summary** (ADR 0023), so it is never more than one cycle behind the page. **Save to
+file** writes a chosen range to its own file. It carries **no total row**; the total belongs on
+the page.
 _Avoid_: energy CSV, TOU file, summary export
 
 **Output Parity**:
@@ -516,6 +503,18 @@ architecture: it has chosen a different Destination. A Destination **never becom
 unreachable one costs a retry, never a reading (ADR 0016).
 _Avoid_: endpoint (that's the **Transport Endpoint** — the meter side, and the lock keys on it),
 sync target, backend, database connection
+
+**Central Push**:
+The **Data-out Destination** that sends Billing, Load Profile, the Energy Summary and the meter
+roster with its status to the team's own server every cycle. It keeps no record of what it sent:
+each cycle begins by asking the server what it already holds (ADR 0024). The contract is ours,
+published on the **API** page, and a site with no server URL configured sends nothing.
+_Avoid_: sync, upload, API (that is the menu's name, not the mechanism), webhook
+
+**Push Token**:
+The secret a machine presents to the team's server — signed by the vendor with the same key as
+an Activation Code, carrying the Machine ID, and built so it can never be accepted as one.
+_Avoid_: machine token (the portal's word, for M9), API key, Activation Code
 
 **Database Destination**:
 The customer's own SQL database, written to as one kind of **Data-out Destination**. We create

@@ -1,6 +1,7 @@
 # The Energy Summary is derived on every request, and is deliberately not reproducible
 
-Status: accepted (2026-08-11, owner decision during M7 grilling). **Implemented**, M7-1 (issue
+Status: **superseded by ADR 0022** (2026-09-14, M14 grill: the Energy Summary is now stored and
+recomputed over the whole window every cycle). Originally accepted (2026-08-11, owner decision during M7 grilling). **Implemented**, M7-1 (issue
 #28): `GET /api/energy/summary` (`app/src/arichds/api/energy.py`) aggregates the TOU buckets live
 from `load_profile_readings` on every request, bounded to 31 local days exactly as this ADR's
 Consequences section requires. No `energy_summary` table, no cache, no invalidation shipped. The

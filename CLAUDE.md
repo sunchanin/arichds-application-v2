@@ -63,7 +63,8 @@ MySQL, and ~30 tables.
   `MeterDriver`, implemented on the three CEWE models, with `supports_battery` corrected from
   all nine models to exactly those three; `test_catalog.py` now asserts the driver-catalog
   correspondence for all three flags instead of a hardcoded list) ·
-  0012 (the Energy Summary is **derived on every request and deliberately not reproducible** —
+  0012 (**SUPERSEDED by ADR 0022, decided 2026-09-14 and not yet implemented** — until M14 lands the
+  code below still describes the shipped behaviour) (the Energy Summary is **derived on every request and deliberately not reproducible** —
   adding a Holiday today changes what last January reports tomorrow, and that is the point,
   because holidays are rules a human enters late; no summary table, no cache; the peak window
   stays a constant so there is only ever **one** retroactive knob and it tracks reality;
@@ -78,14 +79,13 @@ MySQL, and ~30 tables.
   stays a **recorded shipped gap** — now filed as `docs/issues/019`, because GitHub #32 was
   filed for it and closed without the fix; the code is still unchanged, so believe the ADR's
   Outstanding section over the tracker.
-  **Amended at M13 (issue 01, `19b68ac`) — read that amendment before touching any export
-  file**: a contract does not change, it is *replaced*. When a file's head — the file header
-  block **or** the column header row — no longer matches what we would write today, the file
-  is **closed** under a name carrying the date (`<name>.2026-09-15.csv`) and a new one opens
-  beside it; nothing is rewritten and no row is ever appended under a head that does not
-  describe it. Dated files in an export folder are **correct, not clutter**. The rule governs
-  all three export files through one shared writer (`export/writer.py`), so it cannot hold in
-  one place and not another) ·
+  **Amended at M13 (issue 01, `19b68ac`), and that amendment is SUPERSEDED by ADR 0023**
+  (2026-09-14, not yet implemented): M13 closed a file under a dated name when its head changed
+  and let those Closed Editions accumulate; ADR 0023 makes every export file mirror our 90-day
+  window instead (billing: every closed period), rewritten atomically, one head per file, no
+  editions — because the customer's stated constraint is disk space (ADR 0020). The core rule
+  above — units never reach a file — stands. Until M14 lands, `export/writer.py` still implements
+  the amendment) ·
   0014 (the capture image is **drawn, never screenshotted** — Pillow as a third renderer over
   `_render_shared`; shipped with issue #35 and **REVERSED by ADR 0017** — read 0017 first, and do
   not cite 0014's "no screen to photograph" premise or its 250 MB browser costing, both of which
@@ -212,7 +212,26 @@ MySQL, and ~30 tables.
   not the C client's 2002 — so the Test connection check keys on neither; and SQLAlchemy's
   `CreateTable` renders a `UniqueConstraint` inline but emits a plain `Index` as a **separate**
   statement, so `reconcile` must create the secondary indexes itself or the destination silently
-  gets none).
+  gets none) ·
+  0022 (the Energy Summary is **stored and recomputed over the whole 90-day window every cycle** —
+  **supersedes 0012**: one row per meter per local day that the page, the Energy Export File and
+  the central push all read, so the three cannot disagree; a Holiday change and a late Interval
+  Reading both land within one cycle with no trigger for either; `updated_at` moves only when
+  values change; a **Holiday Change** log (who/when/which day, all five paths) kept 90 days;
+  measured at ~0.07 s per meter for the full window, and the owner's largest site is under 20
+  meters; **decided, not yet implemented**) ·
+  0023 (export files **mirror our window and are rewritten, never archived** — **supersedes 0013's
+  M13 amendment**, extends 0020 to the export folder: Load Profile CSV and Energy file hold 90
+  days, the Billing file every closed period; LP appends and is trimmed daily with retention, the
+  two small files are rewritten whole every cycle; every rewrite is temp-then-replace; Closed
+  Editions are gone; **decided, not yet implemented**) ·
+  0024 (the **central push holds no state and is signed** — customer requirement E4: billing, load
+  profile, energy summary and the meter roster, JSON every 15 min; **our** versioned contract,
+  published on the in-app API page from the same models that serialize the payload; no
+  `sync_state` — each cycle asks the server what it holds; Meter Serial not `device_id`; ISO 8601
+  with offset; a **Push Token** JWT signed EdDSA with the existing vendor key, domain-separated from
+  an Activation Code, verified by public key with a server-side denylist — **never run `keygen`**;
+  no URL configured = no push; **decided, not yet implemented**).
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
@@ -238,7 +257,8 @@ MySQL, and ~30 tables.
   job-registry scheduler · licensing · `auth/` (bcrypt + PyJWT, Role enum, token service —
   HTTP-free; the guard dependencies live in `api/deps.py`) · `export/` (the three
   **export files** — Load Profile CSV (issue #30), billing CSV and Energy Summary file (M13) —
-  behind **one shared writer**, `export/writer.py`, which owns ADR 0013's closed-edition rule;
+  behind **one shared writer**, `export/writer.py`, which owns the file-head rule — ADR 0013's closed
+  editions today, replaced by ADR 0023's rewrite-the-90-day-window once M14 lands;
   `format.py` holds row/filename formatting. A fourth export file means a new renderer *over
   that writer*, never a second writer) · `dataout/` (the
   **Database Destination** — the customer's own MariaDB/MySQL written through SQLAlchemy Core +
