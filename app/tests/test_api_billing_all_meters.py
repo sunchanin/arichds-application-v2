@@ -323,7 +323,15 @@ class TestTheAttentionCount:
         response = fetch(admin_client)
 
         assert response.status_code == 200, response.text
-        assert response.json()["data"] == {"items": [], "needs_attention": 0}
+        assert response.json()["data"] == {
+            "items": [],
+            "needs_attention": 0,
+            "total_devices": 0,
+            "devices_with_issues": 0,
+            "complete": 0,
+            "auto_interval_sec": 900,
+            "auto_last_cycle_at": None,
+        }
 
 
 class TestOrdering:
@@ -390,6 +398,58 @@ class TestOrdering:
         items = rows(admin_client)
 
         assert [row["device_name"] for row in items] == ["Alpha", "Zulu"]
+
+
+class TestTheToolbarCounters:
+    """ui-audit ticket 10 — Total / Devices with Issues / Complete come from the
+    same rows the tab shows, and always sum."""
+
+    @pytest.fixture(autouse=True)
+    def _forget_the_change_check(self):
+        from arichds.acquisition.billing import reset_billing_change_check
+
+        reset_billing_change_check()
+        yield
+        reset_billing_change_check()
+
+    def test_one_behind_and_one_never_billed_count_two_issues(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        ok = add_device(admin_client, fake_meter, serial="SN-OK", name="Fine")
+        seed_closed(ok, NOW - timedelta(days=2))
+        behind = add_device(admin_client, fake_meter, serial="SN-B", name="Behind")
+        seed_closed(behind, NOW - timedelta(days=400))
+        add_device(admin_client, fake_meter, serial="SN-N", name="Never")
+
+        data = fetch(admin_client).json()["data"]
+
+        assert data["total_devices"] == 3
+        assert data["devices_with_issues"] == 2
+        assert data["complete"] == 1
+        assert {row["status"] for row in data["items"]} == {"ok", "behind", "never_billed"}
+
+    def test_a_paused_meter_is_an_issue_for_the_strip_even_though_it_needs_no_attention(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        paused = add_device(admin_client, fake_meter, serial="SN-P", name="Paused")
+        seed_closed(paused, NOW - timedelta(days=2))
+        admin_client.post(f"/api/devices/{paused}/pause")
+
+        data = fetch(admin_client).json()["data"]
+
+        assert data["needs_attention"] == 0
+        assert (data["total_devices"], data["devices_with_issues"], data["complete"]) == (1, 1, 0)
+
+    def test_auto_reads_none_until_the_change_check_has_run_then_its_instant(self, admin_client: TestClient) -> None:
+        from arichds.acquisition.billing import mark_billing_change_check
+
+        assert fetch(admin_client).json()["data"]["auto_last_cycle_at"] is None
+
+        mark_billing_change_check(NOW)
+        data = fetch(admin_client).json()["data"]
+
+        assert datetime.fromisoformat(data["auto_last_cycle_at"]) == NOW
+        assert data["auto_interval_sec"] == 900
 
 
 class TestTheCaptureTimeColumn:

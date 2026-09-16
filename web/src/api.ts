@@ -428,6 +428,18 @@ export interface AllMetersRow {
 export interface AllMetersView {
   items: AllMetersRow[];
   needs_attention: number;
+  /** The Billing toolbar strip (ui-audit ticket 10) — computed from `items`
+   * on the server so the strip and the tab share one definition of "issue".
+   * `devices_with_issues + complete === total_devices` always; `paused`
+   * counts as an issue here even though it needs no attention. */
+  total_devices: number;
+  devices_with_issues: number;
+  complete: number;
+  /** The Billing Change Check rides the Load Profile cycle (ADR 0018). */
+  auto_interval_sec: number;
+  /** UTC ISO-8601, or null until the first cycle since the service started
+   * — the scheduler keeps no persisted state (ADR 0008). */
+  auto_last_cycle_at: string | null;
 }
 
 /**

@@ -310,6 +310,30 @@ def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> int
     return written
 
 
+#: When the Billing Change Check (ADR 0018) last ran, on any device — the
+#: Billing page's **Auto** indicator (ui-audit ticket 10). In memory only: the
+#: scheduler holds no persisted state (ADR 0008), so it reads None after a
+#: restart until the first Load Profile cycle rides past.
+_last_change_check_at: datetime | None = None
+
+
+def mark_billing_change_check(now_utc: datetime) -> None:
+    """Record that the change check ran at *now_utc*."""
+    global _last_change_check_at  # noqa: PLW0603 — one process-wide slot, same shape as dataout/status.py
+    _last_change_check_at = now_utc
+
+
+def last_billing_change_check_at() -> datetime | None:
+    """When the change check last ran since the service started, or None."""
+    return _last_change_check_at
+
+
+def reset_billing_change_check() -> None:
+    """Forget the stamp — for tests, which share one process."""
+    global _last_change_check_at  # noqa: PLW0603
+    _last_change_check_at = None
+
+
 def billing_change_check(driver: MeterDriver, device_id: int) -> bool:
     """The Billing Change Check (ADR 0018, corrected by issue #43's D1/D2) —
     decides whether the whole-buffer billing read should run this Load
@@ -352,6 +376,7 @@ def billing_change_check(driver: MeterDriver, device_id: int) -> bool:
         unreadable buffer, a DB error — is logged and swallowed, returning
         False: the daily full read stays the backstop (D9).
     """
+    mark_billing_change_check(datetime.now(UTC))
     try:
         newest_closed = driver.billing_newest_closed_bill_date()
     except Exception:  # noqa: BLE001 — D9: an optional trigger must never break the walk it rides on.

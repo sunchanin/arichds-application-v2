@@ -36,7 +36,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from arichds.acquisition.billing import read_and_store_billing
+from arichds.acquisition.billing import last_billing_change_check_at, read_and_store_billing
 from arichds.acquisition.status import DeviceStatus, display_status
 from arichds.api.deps import (
     AdminDep,
@@ -51,7 +51,7 @@ from arichds.capture.paths import validate_capture_dir_setting
 from arichds.capture.screenshot import BrowserCaptureError
 from arichds.capture.service import capture_target_paths, write_pdf_capture, write_png_capture, write_xlsx_capture
 from arichds.config import get_settings
-from arichds.constants import BILLING_BEHIND_DAYS, O_BINARY, O_NOFOLLOW
+from arichds.constants import BILLING_BEHIND_DAYS, LOAD_PROFILE_INTERVAL_SEC, O_BINARY, O_NOFOLLOW
 from arichds.db.app_settings import (
     CAPTURE_DIR_DEFAULT,
     CAPTURE_DIR_KEY,
@@ -435,6 +435,19 @@ class AllMetersOut(BaseModel):
     Attributes:
         items: One row per device, worst status first, then device name.
         needs_attention: How many rows are neither ``OK`` nor ``PAUSED``.
+        total_devices: Every device on the machine — ``len(items)``, because
+            the row set comes from ``devices``, not from readings.
+        devices_with_issues: Rows whose status is ``paused``,
+            ``not_answering``, ``never_billed`` or ``behind`` (ui-audit ticket
+            10 — v1's counter of the same name was hard-coded ``0``). Unlike
+            ``needs_attention`` it counts ``paused``: the customer's strip asks
+            "how many are not billing normally", and a paused meter is not.
+        complete: Rows whose status is ``ok``. ``devices_with_issues +
+            complete == total_devices`` always.
+        auto_interval_sec: How often the Billing Change Check runs — it rides
+            the Load Profile cycle (ADR 0018).
+        auto_last_cycle_at: When it last ran since the service started (UTC),
+            or None — nothing is persisted (ADR 0008).
 
     **Not paged**, unlike :class:`BillingPage`. This view is bounded by the
     device count (10–30 meters on a machine), not by reading volume, so
@@ -443,6 +456,16 @@ class AllMetersOut(BaseModel):
 
     items: list[AllMetersRowOut]
     needs_attention: int
+    total_devices: int
+    devices_with_issues: int
+    complete: int
+    auto_interval_sec: int
+    auto_last_cycle_at: datetime | None
+
+    @field_validator("auto_last_cycle_at")
+    @classmethod
+    def _ensure_utc_or_none(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else _as_utc(value)
 
 
 def _resolve_status(
@@ -528,7 +551,20 @@ def list_all_meters(
 
     items.sort(key=lambda row: (_STATUS_SORT_RANK[row.status], row.device_name))
     needs_attention = sum(1 for row in items if row.status in _ATTENTION_STATUSES)
-    return ApiResponse.ok(AllMetersOut(items=items, needs_attention=needs_attention))
+    # The strip's counters come from the same rows the tab shows (ui-audit
+    # ticket 10) — one definition of "issue", so the two can never disagree.
+    complete = sum(1 for row in items if row.status == "ok")
+    return ApiResponse.ok(
+        AllMetersOut(
+            items=items,
+            needs_attention=needs_attention,
+            total_devices=len(items),
+            devices_with_issues=len(items) - complete,
+            complete=complete,
+            auto_interval_sec=LOAD_PROFILE_INTERVAL_SEC,
+            auto_last_cycle_at=last_billing_change_check_at(),
+        )
+    )
 
 
 class BillingReadOut(BaseModel):

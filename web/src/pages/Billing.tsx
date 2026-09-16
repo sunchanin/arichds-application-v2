@@ -10,6 +10,7 @@ import {
   Input,
   Select,
   Space,
+  Statistic,
   Table,
   Tabs,
   Tag,
@@ -679,6 +680,19 @@ export function Billing({ role }: { role: "admin" | "user" }) {
 
   const allMetersCols = useMemo(() => allMetersColumns(scale), [scale]);
 
+  // The toolbar strip (ui-audit ticket 10): the counters the customer pointed
+  // at in the v1 screenshot, with real definitions — served beside the
+  // All-Meters rows so the strip and the tab can never disagree. `Auto` is an
+  // indicator, never a Stop button: the scheduler holds no state to stop (ADR
+  // 0008), and pausing is a per-device action on the Devices page.
+  const autoText =
+    allMeters === null
+      ? NOTHING
+      : allMeters.auto_last_cycle_at === null
+        ? "Not yet run since start"
+        : `Every ${Math.round(allMeters.auto_interval_sec / 60)} min · last cycle ${dayjs(allMeters.auto_last_cycle_at).format("HH:mm")}`;
+  const selectedDevice = deviceId === undefined ? undefined : devices.find((device) => device.id === deviceId);
+
   // The All-Meters tab is hidden in capture mode for the same reason the
   // capture-folder form and Read now are (issues #38/#44): the headless
   // renderer photographs one device's History, and a fleet-wide tab has no
@@ -706,6 +720,33 @@ export function Billing({ role }: { role: "admin" | "user" }) {
       {/* Hidden in capture mode (decision 8, issue #38): the folder path is
           for a human admin, not for what the headless renderer photographs. */}
       {role === "admin" && !captureRequest ? <CaptureSettingsCard surface={surface} /> : null}
+      {/* Hidden in capture mode like the other operator controls (D13): the
+          PNG stays the table the customer's screenshot shows. */}
+      {captureRequest ? null : (
+        <Card size="small">
+          <Flex gap="large" wrap align="center">
+            <Statistic title="Total Devices" value={allMeters?.total_devices ?? NOTHING} />
+            <Statistic title="Devices with Issues" value={allMeters?.devices_with_issues ?? NOTHING} />
+            <Statistic title="Complete" value={allMeters?.complete ?? NOTHING} />
+            <Space direction="vertical" size={0}>
+              <Text type="secondary">Auto</Text>
+              <Text>{autoText}</Text>
+            </Space>
+            {selectedDevice ? (
+              <>
+                <Space direction="vertical" size={0}>
+                  <Text type="secondary">Site Name</Text>
+                  <Text>{selectedDevice.site_name || NOTHING}</Text>
+                </Space>
+                <Space direction="vertical" size={0}>
+                  <Text type="secondary">Site Code</Text>
+                  <Text>{selectedDevice.site_code || NOTHING}</Text>
+                </Space>
+              </>
+            ) : null}
+          </Flex>
+        </Card>
+      )}
       <Tabs activeKey={tab} onChange={onTabChange} items={tabItems} />
       {/* Open Periods are not closed bills (CONTEXT.md — Open Period); the
           caption says so once, above the table (ui-audit ticket 07). */}
