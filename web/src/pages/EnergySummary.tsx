@@ -172,6 +172,7 @@ function SummaryReportTab({
             value={deviceId}
             onChange={setDeviceId}
             options={deviceOptions}
+            notFoundContent="No meter on this machine exposes Energy Registers"
             placeholder="Select a device"
             style={{ minWidth: 260 }}
             aria-label="Device"
@@ -184,10 +185,10 @@ function SummaryReportTab({
               // (issue #36, D5): always <= today (D4), and the day the
               // operator was already looking at the edge of.
               if (next === "single") setRange([range[1], range[1]]);
-              // Single day -> Range needs no state change: single-day mode
-              // already keeps range as [d, d] (see the DatePicker onChange
-              // below), so switching out of it never changes the numbers on
-              // screen — the operator widens from there.
+              // Single day -> Range restores the 7-day default window
+              // (ui-audit ticket 07): leaving the range at [d, d] opened Range
+              // mode collapsed to one day, which read as a bug.
+              if (next === "range") setRange([dayjs().subtract(6, "day"), dayjs()]);
               setMode(next);
             }}
             aria-label="Mode"
@@ -383,6 +384,7 @@ function MeterRegistersTab({
             value={deviceId}
             onChange={setDeviceId}
             options={deviceOptions}
+            notFoundContent="No meter on this machine exposes Energy Registers"
             placeholder="Select a device"
             style={{ minWidth: 260 }}
             aria-label="Device"

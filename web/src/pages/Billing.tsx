@@ -1,4 +1,21 @@
-import { App, Badge, Button, Card, DatePicker, Empty, Flex, Form, Input, Select, Space, Table, Tabs, Tag, Tooltip } from "antd";
+import {
+  App,
+  Badge,
+  Button,
+  Card,
+  DatePicker,
+  Empty,
+  Flex,
+  Form,
+  Input,
+  Select,
+  Space,
+  Table,
+  Tabs,
+  Tag,
+  Tooltip,
+  Typography,
+} from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { TabsProps } from "antd/es/tabs";
 import dayjs, { type Dayjs } from "dayjs";
@@ -26,6 +43,7 @@ const { RangePicker } = DatePicker;
 /** Shown wherever the meter never captured a quantity. A genuine 0 must still
  * render as `0` — see `num()` below. */
 const NOTHING = "—";
+const { Text } = Typography;
 
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
 const DEFAULT_PAGE_SIZE = 100;
@@ -169,31 +187,53 @@ type BillingTab = BillingStatus | typeof ALL_METERS;
 
 const ALL_METERS = "all";
 
-/** How each All-Meters status renders (issue 01).
+/** How each All-Meters status renders (issue 01; colours and meanings from
+ * ui-audit ticket 07, §7.3's order `paused > not answering > never billed /
+ * behind > ok`).
  *
- * Uncoloured for the two that need no alarm, matching `Battery.tsx`'s rule
- * that a Tag carries colour only when the colour means something. `Paused` is
- * deliberately as quiet as `OK`: it is a state an operator chose, not a fault,
- * and it is excluded from the attention counter for the same reason. */
-const STATUS_PRESENTATION: Record<AllMetersStatus, { color?: string; label: string }> = {
-  not_answering: { color: "error", label: "Not answering" },
-  never_billed: { color: "warning", label: "Never billed" },
-  behind: { color: "warning", label: "Behind" },
-  ok: { label: "OK" },
-  paused: { label: "Paused" },
+ * `OK` is green so it is never the same grey as a problem; `Paused` stays
+ * uncoloured because it is a state an operator chose, not a fault, and it is
+ * excluded from the attention counter for the same reason. `meaning` is the
+ * chip's tooltip — the one sentence that says what the state is. */
+const STATUS_PRESENTATION: Record<AllMetersStatus, { color?: string; label: string; meaning: string }> = {
+  paused: {
+    label: "Paused",
+    meaning: "Polling is paused for this meter on the Devices page; nothing is read until it is resumed.",
+  },
+  not_answering: {
+    color: "error",
+    label: "Not answering",
+    meaning: "The most recent reads of this meter failed one after another — the number is how many in a row.",
+  },
+  never_billed: {
+    color: "warning",
+    label: "Never billed",
+    meaning: "No closed billing period has ever been read from this meter.",
+  },
+  behind: {
+    color: "warning",
+    label: "Behind",
+    meaning: "The newest closed period is older than the 35-day threshold — the number is how many days old it is.",
+  },
+  ok: { color: "success", label: "OK", meaning: "A closed billing period was read within the last 35 days." },
 };
 
 /** The chip for one row — the label plus the number the status carries, if
- * it carries one (consecutive failures, or whole days behind). */
+ * it carries one (consecutive failures, or whole days behind), with the
+ * state's meaning as its tooltip. */
 function statusChip(row: AllMetersRow) {
-  const { color, label } = STATUS_PRESENTATION[row.status];
+  const { color, label, meaning } = STATUS_PRESENTATION[row.status];
   const suffix =
     row.status === "not_answering"
       ? ` · ${row.status_value} failed read${row.status_value === 1 ? "" : "s"}`
       : row.status === "behind"
         ? ` · ${row.status_value} days`
         : "";
-  return <Tag color={color}>{`${label}${suffix}`}</Tag>;
+  return (
+    <Tooltip title={meaning}>
+      <Tag color={color}>{`${label}${suffix}`}</Tag>
+    </Tooltip>
+  );
 }
 
 /** Format an instant, or an em dash where there is none. */
@@ -649,6 +689,14 @@ export function Billing({ role }: { role: "admin" | "user" }) {
           for a human admin, not for what the headless renderer photographs. */}
       {role === "admin" && !captureRequest ? <CaptureSettingsCard surface={surface} /> : null}
       <Tabs activeKey={tab} onChange={onTabChange} items={tabItems} />
+      {/* Open Periods are not closed bills (CONTEXT.md — Open Period); the
+          caption says so once, above the table (ui-audit ticket 07). */}
+      {tab === "open" ? (
+        <Text type="secondary">
+          These are Open Periods — each meter&rsquo;s running period. Its bill date moves on every read; it is
+          not a closed bill and is never captured or exported.
+        </Text>
+      ) : null}
       {/* The whole filter card is **hidden** on the All-Meters tab (issue
           01): the device picker, the date range and the per-meter capture
           control all contradict a tab that is every device, the latest
@@ -672,26 +720,55 @@ export function Billing({ role }: { role: "admin" | "user" }) {
               disabledDate={(current) => current.isAfter(dayjs().endOf("day"))}
               aria-label="Bill date range"
             />
-            <Tooltip title="Saves the ten most recent closed periods to the capture folder and downloads a copy.">
-              <Button onClick={onDownloadImage} disabled={deviceId === undefined} loading={imageDownloading}>
-                Capture image
-              </Button>
+            {/* Each Tooltip wraps a <span>, not the Button: AntD attaches its
+                hover handlers to the child, and a disabled button fires none,
+                so the tooltip never rendered (ui-audit ticket 07). */}
+            <Tooltip
+              title={
+                deviceId === undefined
+                  ? "Choose one device first."
+                  : "Saves the ten most recent closed periods to the capture folder and downloads a copy."
+              }
+            >
+              <span>
+                <Button onClick={onDownloadImage} disabled={deviceId === undefined} loading={imageDownloading}>
+                  Capture image
+                </Button>
+              </span>
             </Tooltip>
             {/* Hidden in capture mode (D13, issue #44) — a button offering to
                 talk to a meter has no place in a headless screenshot a human
                 carries to a customer (ADR 0015/0017). */}
             {captureRequest ? null : (
-              <Tooltip title="Appends this meter's closed periods to its billing file in the export folder.">
-                <Button onClick={onSaveFile} loading={exporting} disabled={deviceId === undefined}>
-                  Save billing file now
-                </Button>
+              <Tooltip
+                title={
+                  deviceId === undefined
+                    ? "Choose one device first."
+                    : "Rewrites this meter's billing file in the export folder with every closed period now."
+                }
+              >
+                <span>
+                  <Button onClick={onSaveFile} loading={exporting} disabled={deviceId === undefined}>
+                    Save billing file now
+                  </Button>
+                </span>
               </Tooltip>
             )}
             {captureRequest ? null : (
-              <Button type="primary" onClick={onReadNow} loading={reading} disabled={deviceId === undefined}>
-                Read now
-              </Button>
-      )}
+              <Tooltip
+                title={
+                  deviceId === undefined
+                    ? "Choose one device first."
+                    : "Reads this meter's whole billing buffer now and refreshes the table."
+                }
+              >
+                <span>
+                  <Button type="primary" onClick={onReadNow} loading={reading} disabled={deviceId === undefined}>
+                    Read now
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
         </Flex>
       </Card>
       )}

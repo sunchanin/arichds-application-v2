@@ -243,6 +243,10 @@ export function DatabaseDestination() {
                   the sync will use — so save first, then test.
                 </Text>
               )}
+              <Text type="secondary">
+                The sync is off while Host is empty. Save a host and a database to start it; it then runs every
+                fifteen minutes.
+              </Text>
             </Space>
           </Form>
 

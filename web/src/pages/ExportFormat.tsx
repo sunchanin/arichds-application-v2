@@ -93,12 +93,13 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
       <Card size="small" title="Export Format">
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           <Text type="secondary">
-            These settings govern every export file — the Load Profile CSV and the billing file — and all of them
-            are written to the output folder set on the Load Profile page. Energy values are always exported in
-            kWh/kvarh: they do not follow the Display unit setting on the Settings page. A file's header is written
-            once when it is created and rows append to it for months, so its units can never change. If a header
-            ever does change, the file is rewritten in place under the new header, so no row is ever written under a
-            header that does not describe it.
+            These settings govern every export file — the Load Profile CSV, the billing file and the Energy file —
+            and all of them are written to the output folder set on the Load Profile page. Energy values are always
+            exported in kWh/kvarh: they do not follow the Display unit setting on the Settings page. Each file holds
+            the same window ARICHDS holds: the Load Profile CSV appends new intervals every cycle and is trimmed to
+            the last 90 days once a day; the billing file (every closed period) and the Energy file (the last 90
+            days) are rewritten whole every cycle. A file is always replaced atomically, so a reader never sees a
+            half-written one, and a header change rewrites the file under the new header rather than mixing two.
           </Text>
           <Form
             form={form}

@@ -108,6 +108,7 @@ export function SpecialDays() {
             value={deviceId}
             onChange={setDeviceId}
             options={deviceOptions}
+            notFoundContent="No meter on this machine exposes Special Days"
             placeholder="Select a device"
             style={{ minWidth: 260 }}
             aria-label="Device"
