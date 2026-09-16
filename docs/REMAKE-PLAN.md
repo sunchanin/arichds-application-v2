@@ -1071,6 +1071,18 @@ attribute 3 กับ 4 แล้วตัดสาย) เมื่อ 2026-09-
 > **Syncthing โดยไม่มีโค้ดฝั่งเราเลย** (§7.4 ย่อหน้า 🔀) ⇒ ยังไม่มีลูกค้าที่ยืนยันว่าต้องใช้ FTPS/SFTP
 > จริง ๆ ถ้าไม่มี ข้อนี้คือ **scope ที่ตัดได้** ไม่ใช่งานค้าง
 >
+> ✅ **File Upload — เริ่มแล้ว 2026-09-16 (คืนเดียวกัน)** เจ้าของตัดสินให้ทำ: grill 18 คำถาม →
+> `.scratch/file-upload/spec.md` + **ADR 0025** (สามโปรโตคอล SFTP/FTPS/HTTPS · server จำด้วย
+> Upload Manifest เครื่องไม่จำ · ไม่ลบ remote · เมนูชื่อ **FTP**) → `/to-tickets` 5 ใบ
+> (`.scratch/file-upload/issues/`) → `/run-batch 1-5` แต่เจ้าของสั่งหยุดหลังใบ 02 ·
+> **เสร็จ:** 01 หน้า FTP + settings + endpoint + licence key `file_upload_destination` ขายได้
+> (`803684c`) · 02 cycle + manifest + transport seam + job ที่ 11 + Upload now ทดสอบผ่าน transport
+> ในหน่วยความจำ (`9cb424f`) — ยัง**ไม่มี** transport จริง หน้าที่ตั้งค่าครบก็ยังไม่ส่งอะไร ·
+> **ค้าง:** 03 HTTPS · 04 SFTP (paramiko — dependency ตัวเดียวที่เพิ่ม) · 05 FTPS — ทั้งสามรอ
+> `/run-batch 3-5 file-upload` · ledger: `.claude/run-logs/issue-file-upload-0{1,2}.md` ·
+> finding ระหว่างทาง: `logger.exception` ใน push/dbdest cycle เลี่ยง redaction filter →
+> `docs/issues/020` · ย่อหน้าบน (89 บรรทัด shell, `kind: "never"`, ไม่มี endpoint) เป็นสถานะ**ก่อน**คืนนี้
+>
 > สองข้อที่ตารางเคยนับว่าเหลือแต่จริง ๆ ไม่เหลือคือ **B1 และ E3** — ทั้งคู่ปิดไปแล้วโดยไม่มีใคร
 > กลับมาขีด ซึ่งเป็นเหตุผลที่ backlog อ่านแล้วรู้สึกว่างานเหลือมากกว่าความจริง
 >
