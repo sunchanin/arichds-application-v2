@@ -31,7 +31,7 @@ import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, func, select
 
 from arichds.acquisition.special_days import read_special_days
@@ -170,6 +170,18 @@ class HolidayChangeOut(BaseModel):
     holiday_month: int | None
     holiday_day: int | None
     count: int | None
+
+    @field_validator("created_at")
+    @classmethod
+    def _ensure_utc(cls, value: dt.datetime) -> dt.datetime:
+        """Re-attach UTC to the naive datetime SQLite hands back.
+
+        The house pattern (``BillingRowOut._ensure_utc``, `docs/issues/006`):
+        SQLite has no timezone type, so a ``DateTime(timezone=True)`` column
+        comes back naive and the drawer would otherwise print 04:10 for a
+        change made at 11:10 (+07:00) — ui-audit ticket 02.
+        """
+        return value.replace(tzinfo=dt.UTC) if value.tzinfo is None else value.astimezone(dt.UTC)
 
 
 class HolidayChangePage(BaseModel):

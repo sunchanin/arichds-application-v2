@@ -203,6 +203,17 @@ class TestHolidayChanges:
         assert rows[0]["holiday_day"] == 1
         assert rows[0]["count"] is None
 
+    def test_created_at_is_an_aware_utc_instant(self, admin_client: TestClient) -> None:
+        """ui-audit ticket 02 — the drawer formats the instant browser-local, so
+        the string must carry its offset (`docs/issues/006`)."""
+        from datetime import UTC, datetime
+
+        admin_client.post("/api/holidays", json={"kind": "annual", "name": "New Year", "month": 1, "day": 1})
+
+        created_at = datetime.fromisoformat(holiday_changes(admin_client)[0]["created_at"])
+        assert created_at.tzinfo is not None
+        assert created_at.utcoffset() == UTC.utcoffset(None)
+
     def test_edit_records_one_change_with_the_new_day(self, admin_client: TestClient) -> None:
         created = admin_client.post(
             "/api/holidays", json={"kind": "annual", "name": "Old", "month": 5, "day": 5}
