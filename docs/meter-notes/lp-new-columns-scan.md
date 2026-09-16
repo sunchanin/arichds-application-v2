@@ -139,3 +139,40 @@ vacuous case vacuous. That flaw was in the instrument, not the meter.
 - Scaler values are `1.0` *on this meter*. A site with CT/VT ratios configured
   into the meter could report otherwise, and the resolver reads them rather than
   assuming (ADR 0002) — but no such site has been scanned.
+
+## 4. 2026-09-16 — `avg_geo_pf` re-probed on both Prometer 100 units (ui-audit ticket 05)
+
+The ticket was raised from the dev machine's App Log, which carried 960 copies of
+*"prometer100: could not resolve a scaler for 1.0.13.24.0.255 (avg_geo_pf)"*. Every one of
+them is stamped **before 11:00 (+07:00) on 2026-09-16** — the build running until then was
+0.5.0, which predates the `NO_UNIT` correction in §1 item 3. Build 0.6.0 was installed at
+10:58 and has logged the line **zero** times since.
+
+`scripts/probe_lp_new_column_scalers.py`, one association per unit, same day:
+
+```
+prometer100 @ 203.170.151.152:4059  (WP079074)  -> every mapped column resolves a scaler
+prometer100 @ 147.50.94.190:4060    (WP080652)  -> every mapped column resolves a scaler
+```
+
+`avg_geo_pf` resolves through its declared sibling `1.0.13.7.0.255` as a Register with
+`NO_UNIT (255)` / scaler `1.0` on **both** units — the first time the second unit has been
+measured at all (§"Limitations" above said "one meter, one firmware").
+
+And the column fills, end to end, on the rows 0.6.0 has stored (read-only query against
+`%ProgramData%\ARICHDS\arichds.db`, rows created after the install):
+
+```
+WP079074  logger 1   18 rows   18/18 avg_geo_pf non-NULL   range -0.352 .. 0.795
+WP080652  logger 1   18 rows   18/18 avg_geo_pf non-NULL   range -0.250 .. 0.999
+          logger 2   54 rows    0/54 — logger 2 does not capture this column (by design)
+```
+
+Plausible power factors (−1..1) on every Logger-1 row. **No code changed for this ticket**:
+the fix was M13 issue 05's, and the evidence that it holds on the second unit is this section.
+The "warn once per process" branch the ticket reserved for the no-scaler case is not needed,
+because the case does not occur on either unit we can reach.
+
+`docs/issues/018` (`export_active_kw`, the sibling that borrows the same way) stays open: it
+needs a site that exports active power, which this re-probe does not supply.
+

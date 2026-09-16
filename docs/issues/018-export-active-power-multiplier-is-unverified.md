@@ -64,3 +64,14 @@ scalers.
 
 Do not "fix" this by reading the column's own address for a scaler. It has none — that is the
 whole reason a sibling is borrowed (ADR 0002, and `docs/meter-notes/lp-new-columns-scan.md`).
+
+## Note 2026-09-16 — the `avg_geo_pf` pair was re-checked and holds (ui-audit ticket 05)
+
+`avg_geo_pf` borrows its scaler the same way this column does (a declared sibling, ADR 0002),
+and the dev machine's log suggested it had stopped resolving. It had not: the 960 warnings
+were all from build 0.5.0, before M13 issue 05's `NO_UNIT` correction; the re-probe on
+2026-09-16 resolves the sibling on **both** Prometer 100 units and the column fills 18/18
+Logger-1 rows on each (`docs/meter-notes/lp-new-columns-scan.md` §4). That closes the sibling
+question, not this one: `export_active_kw` still needs a site that exports, exactly as the
+acceptance criteria above say.
+
