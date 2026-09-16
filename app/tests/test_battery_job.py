@@ -177,6 +177,17 @@ class TestAFailingMeterWarnsOncePerDay:
 
         assert len(self.battery_records(caplog, logging.WARNING)) == 2
 
+    def test_the_remembered_reason_is_redacted(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        """The reason reaches the browser through GET /api/battery, which no log
+        handler filters — so it is redacted where it is built."""
+        fake_meter.battery_error = RuntimeError("refused with password=ABCD0001 on the wire")
+        read_and_store_battery(device_id, now=NOW)
+
+        remembered = last_battery_failure(device_id)
+        assert remembered is not None
+        assert "ABCD0001" not in remembered.reason
+        assert "[REDACTED]" in remembered.reason
+
     def test_the_last_failure_is_remembered_until_a_read_succeeds(
         self, device_id: int, fake_meter: FakeMeterState
     ) -> None:

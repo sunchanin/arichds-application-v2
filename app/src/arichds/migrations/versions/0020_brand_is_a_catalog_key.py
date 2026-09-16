@@ -32,8 +32,6 @@ down_revision: str | None = "0019"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-BRAND_KEYS: tuple[str, ...] = ("cewe", "mitsu", "smart_tcc")
-
 
 def upgrade() -> None:
     op.execute(

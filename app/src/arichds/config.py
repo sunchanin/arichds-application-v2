@@ -68,6 +68,20 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ARICHDS_", env_file=".env", extra="ignore")
 
     data_dir: Path = Path("./data")
+
+    @field_validator("data_dir")
+    @classmethod
+    def _absolute_data_dir(cls, value: Path) -> Path:
+        """Resolve ``data_dir`` once, against the cwd the process **started**
+        in. Every derived path (``db_path``, ``log_dir``, …) is built from it,
+        and the lifespan changes the working directory into ``log_dir``
+        right after startup (ui-audit ticket 06, for the vendored Gurux
+        ``logFile.txt``); a relative default re-resolved per access would
+        follow that chdir and ``fastapi dev`` would migrate a brand-new empty
+        database under ``data/logs/data/`` (found in review). Resolving here
+        makes the derived paths chdir-independent by construction."""
+        return value.resolve()
+
     port: int = 8000
     host: str = "0.0.0.0"
     log_level: str = "INFO"

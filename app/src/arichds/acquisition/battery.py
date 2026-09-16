@@ -62,6 +62,7 @@ from arichds.acquisition.status import DeviceStatus
 from arichds.db.models import BatteryReading as BatteryReadingRow
 from arichds.db.models import Device
 from arichds.db.session import session_scope
+from arichds.logging_config import CredentialRedactionFilter
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,9 @@ def _record_failure(device_id: int, device_name: str, endpoint: str, exc: BaseEx
     """Remember the failure and log it **once per device per UTC day** as a
     WARNING with the reason and no traceback; every further failure that day
     is a DEBUG line. The next hourly retry is the day-guard's business."""
-    reason = f"{type(exc).__name__}: {exc}"
+    # Redacted here, not only at the log handler: the reason also leaves the
+    # process through GET /api/battery, which no logging filter sees.
+    reason = CredentialRedactionFilter.redact(f"{type(exc).__name__}: {exc}")
     previous = _failures.get(device_id)
     today = now_utc.date()
     if previous is None or previous.warned_on != today:

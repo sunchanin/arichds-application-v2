@@ -509,7 +509,6 @@ def _resolve_status(
 @router.get("/all-meters")
 def list_all_meters(
     session: SessionDep,
-    license_service: LicenseServiceDep,
 ) -> ApiResponse[AllMetersOut]:
     """The All-Meters View — every meter's latest closed period, one row each.
 
@@ -553,7 +552,7 @@ def list_all_meters(
     needs_attention = sum(1 for row in items if row.status in _ATTENTION_STATUSES)
     # The strip's counters come from the same rows the tab shows (ui-audit
     # ticket 10) — one definition of "issue", so the two can never disagree.
-    complete = sum(1 for row in items if row.status == "ok")
+    complete = sum(1 for row in items if row.status == AllMetersStatus.OK)
     return ApiResponse.ok(
         AllMetersOut(
             items=items,

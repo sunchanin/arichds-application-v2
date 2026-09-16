@@ -41,3 +41,22 @@ class TestStartupChangesTheWorkingDirectory:
         assert log_path.parent == settings.log_dir.resolve()
         assert log_path.name == "logFile.txt"
         log_path.unlink(missing_ok=True)
+
+
+class TestTheDataDirDoesNotFollowTheChdir:
+    """Review finding on ticket 06: `Settings.data_dir` defaults to the relative
+    `./data` and the derived paths re-resolve it per access, so without this
+    the chdir above would silently point `fastapi dev` at an empty database
+    under `data/logs/data/`."""
+
+    def test_a_relative_data_dir_is_pinned_to_the_starting_cwd(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        settings = Settings(data_dir=Path("./data"))
+        before = (settings.db_path, settings.log_dir, settings.license_path)
+        assert before[0] == (tmp_path / "data" / "arichds.db").resolve()
+
+        elsewhere = tmp_path / "somewhere-else"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        assert (settings.db_path, settings.log_dir, settings.license_path) == before

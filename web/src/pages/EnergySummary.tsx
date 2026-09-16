@@ -172,7 +172,6 @@ function SummaryReportTab({
             value={deviceId}
             onChange={setDeviceId}
             options={deviceOptions}
-            notFoundContent="No meter on this machine exposes Energy Registers"
             placeholder="Select a device"
             style={{ minWidth: 260 }}
             aria-label="Device"

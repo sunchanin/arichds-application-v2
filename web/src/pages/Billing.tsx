@@ -36,7 +36,7 @@ import {
   type BillingStatus,
   type Device,
 } from "../api";
-import { latestBillDate } from "../billingHighlight";
+import { latestBillRowId } from "../billingHighlight";
 import { captureRequest } from "../capture";
 import { type DisplayUnitScale, type UnitKind, scaleValue, unitLabel, useDisplayUnitScale } from "../units";
 
@@ -492,7 +492,9 @@ export function Billing({ role }: { role: "admin" | "user" }) {
       .then((capturedAt) => {
         // The toast names the instant the server stamped on the anchor period
         // (ui-audit ticket 03); the refresh makes the All-Meters row show it.
-        if (capturedAt !== null) message.success(`Captured ${stamp(capturedAt)}`);
+        // A file that predates the stamp (ui-audit ticket 03) carries no
+        // instant; say the download happened rather than nothing at all.
+        message.success(capturedAt === null ? "Capture image downloaded." : `Captured ${stamp(capturedAt)}`);
         setRefreshTick((tick) => tick + 1);
       })
       .catch((err: unknown) => surface(err, "Could not download the capture image."))
@@ -609,16 +611,17 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   const scope = `${tab}|${deviceId ?? ALL}|${startIso ?? ""}|${endIso ?? ""}|${meterSerial ?? ""}`;
   const shown = loaded?.scope === scope ? loaded.page : null;
 
-  // The newest closed period in the current result, by bill date — never by
-  // row index (ui-audit ticket 09): a page sorted oldest-first, or a range
-  // that hides the newest, still tints the newest period *shown*, and an
-  // empty table tints nothing. History only — an Open Period's bill date
-  // moves on every read (CONTEXT.md), so the Current tab has no "latest".
+  // The row holding the newest closed period in the current result, by bill
+  // date — never by row index (ui-audit ticket 09): a page sorted oldest-first,
+  // or a range that hides the newest, still tints the newest period *shown*,
+  // and an empty table tints nothing. History only — an Open Period's bill
+  // date moves on every read (CONTEXT.md), so the Current tab has no "latest".
   // With "All devices" it is the single newest closed period across devices
-  // (v1 #49), one row, not one per device. In capture mode the same rule runs
-  // on the ten seeded periods, so the anchor row is tinted in the PNG.
-  const latestClosedBillDate = useMemo(
-    () => (tab !== "closed" || !shown ? null : latestBillDate(shown.items.map((row) => row.bill_date))),
+  // (v1 #49), one row, not one per device — meters that close on the same
+  // instant tie, and the helper breaks the tie. In capture mode the same rule
+  // runs on the ten seeded periods, so the anchor row is tinted in the PNG.
+  const latestClosedRowId = useMemo(
+    () => (tab !== "closed" || !shown ? null : latestBillRowId(shown.items)),
     [tab, shown],
   );
 
@@ -851,7 +854,7 @@ export function Billing({ role }: { role: "admin" | "user" }) {
           <Table<BillingRow>
             size="small"
             rowKey={(row) => row.id}
-            rowClassName={(row) => (row.bill_date === latestClosedBillDate ? LATEST_BILL_ROW_CLASS : "")}
+            rowClassName={(row) => (row.id === latestClosedRowId ? LATEST_BILL_ROW_CLASS : "")}
             loading={loading}
             dataSource={shown?.items ?? []}
             columns={columns}
