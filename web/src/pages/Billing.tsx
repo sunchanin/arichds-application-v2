@@ -35,6 +35,7 @@ import {
   type BillingStatus,
   type Device,
 } from "../api";
+import { latestBillDate } from "../billingHighlight";
 import { captureRequest } from "../capture";
 import { type DisplayUnitScale, type UnitKind, scaleValue, unitLabel, useDisplayUnitScale } from "../units";
 
@@ -43,6 +44,10 @@ const { RangePicker } = DatePicker;
 /** Shown wherever the meter never captured a quantity. A genuine 0 must still
  * render as `0` — see `num()` below. */
 const NOTHING = "—";
+/** The History row carrying the newest closed period (ui-audit ticket 09) —
+ * the class `index.css` tints in v1's exact lavender, so the capture PNG (a
+ * screenshot of this page, ADR 0017) matches the customer's v1 screenshot. */
+const LATEST_BILL_ROW_CLASS = "latest-bill-row";
 const { Text } = Typography;
 
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
@@ -603,6 +608,19 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   const scope = `${tab}|${deviceId ?? ALL}|${startIso ?? ""}|${endIso ?? ""}|${meterSerial ?? ""}`;
   const shown = loaded?.scope === scope ? loaded.page : null;
 
+  // The newest closed period in the current result, by bill date — never by
+  // row index (ui-audit ticket 09): a page sorted oldest-first, or a range
+  // that hides the newest, still tints the newest period *shown*, and an
+  // empty table tints nothing. History only — an Open Period's bill date
+  // moves on every read (CONTEXT.md), so the Current tab has no "latest".
+  // With "All devices" it is the single newest closed period across devices
+  // (v1 #49), one row, not one per device. In capture mode the same rule runs
+  // on the ten seeded periods, so the anchor row is tinted in the PNG.
+  const latestClosedBillDate = useMemo(
+    () => (tab !== "closed" || !shown ? null : latestBillDate(shown.items.map((row) => row.bill_date))),
+    [tab, shown],
+  );
+
   useEffect(() => {
     // The All-Meters tab is a different endpoint with no parameters — its own
     // effect below owns it, and this paged list has nothing to fetch for it.
@@ -792,6 +810,7 @@ export function Billing({ role }: { role: "admin" | "user" }) {
           <Table<BillingRow>
             size="small"
             rowKey={(row) => row.id}
+            rowClassName={(row) => (row.bill_date === latestClosedBillDate ? LATEST_BILL_ROW_CLASS : "")}
             loading={loading}
             dataSource={shown?.items ?? []}
             columns={columns}
