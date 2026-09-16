@@ -35,6 +35,11 @@ class CredentialRedactionFilter(logging.Filter):
         re.compile(r"(password\s*[=:]\s*)\S+", re.IGNORECASE),
         re.compile(r"(pwd\s*[=:]\s*)\S+", re.IGNORECASE),
         re.compile(r"(passwd\s*[=:]\s*)\S+", re.IGNORECASE),
+        # File Upload Destination SFTP key-file passphrase (ticket 01, ADR
+        # 0025). NOT covered by the `password` pattern above — "passphrase"
+        # does not contain the substring "password" — so this is a genuinely
+        # new pattern, despite the ticket's own text claiming none was needed.
+        re.compile(r"(passphrase\s*[=:]\s*)\S+", re.IGNORECASE),
         re.compile(r"(authentication_key\s*[=:]\s*)\S+", re.IGNORECASE),
         re.compile(r"(block_cipher_key\s*[=:]\s*)\S+", re.IGNORECASE),
         # SMART TCC HighGMAC system title — accepts system_title, system-title,

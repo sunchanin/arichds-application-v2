@@ -1,0 +1,322 @@
+"""``/api/settings/file-upload`` — the File Upload Destination configuration
+and the last cycle's status (SPEC §3.8, ADR 0025, ticket 01).
+
+**Admin only, for every route including ``GET``** — the same choice
+``arichds.api.central_push`` makes and for the same reason: three sets of
+credentials (a password or a key file, a certificate's trust, a Bearer
+token) are machine-internal configuration, not meter data. Unlike Central
+Push, this module **is** gated by a licence feature key
+(``file_upload_destination``, ADR 0025) — the same shape
+``database_destination`` uses in ``arichds.api.settings``.
+
+Nothing here talks to a server. That is ticket 02's
+:mod:`arichds.fileupload.cycle` (not yet written); this module only owns the
+settings, the write-only credential handling, and the in-memory status read,
+which always answers "no cycle has run" until ticket 02 lands.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from arichds.api.deps import AdminDep, SessionDep, get_current_user, require_feature
+from arichds.api.envelope import ApiResponse
+from arichds.db.app_settings import (
+    FILEUPLOAD_ACTIVE_PROTOCOL_KEY,
+    FILEUPLOAD_FTPS_HOST_KEY,
+    FILEUPLOAD_FTPS_PASSWORD_KEY,
+    FILEUPLOAD_FTPS_PORT_KEY,
+    FILEUPLOAD_FTPS_REMOTE_ROOT_KEY,
+    FILEUPLOAD_FTPS_USERNAME_KEY,
+    FILEUPLOAD_HTTPS_REMOTE_ROOT_KEY,
+    FILEUPLOAD_HTTPS_TOKEN_KEY,
+    FILEUPLOAD_HTTPS_URL_KEY,
+    FILEUPLOAD_SFTP_HOST_KEY,
+    FILEUPLOAD_SFTP_KEY_PASSPHRASE_KEY,
+    FILEUPLOAD_SFTP_KEY_PATH_KEY,
+    FILEUPLOAD_SFTP_PASSWORD_KEY,
+    FILEUPLOAD_SFTP_PORT_KEY,
+    FILEUPLOAD_SFTP_REMOTE_ROOT_KEY,
+    FILEUPLOAD_SFTP_USERNAME_KEY,
+    set_setting,
+)
+from arichds.fileupload.config import load_config
+from arichds.fileupload.status import CycleStatus, last_cycle
+
+router = APIRouter(
+    prefix="/api/settings/file-upload",
+    tags=["file-upload"],
+    dependencies=[Depends(get_current_user), Depends(require_feature("file_upload_destination"))],
+)
+
+
+class FileUploadSftpOut(BaseModel):
+    """The SFTP tab as the API reports it. **No ``password`` or
+    ``key_passphrase`` field, and neither must ever be added** — both are
+    write-only, the ``db_dest_password`` precedent."""
+
+    host: str
+    port: int
+    username: str
+    password_set: bool
+    key_path: str
+    key_passphrase_set: bool
+    remote_root: str
+    host_key_fingerprint: str
+
+
+class FileUploadFtpsOut(BaseModel):
+    """The FTPS tab as the API reports it. No ``password`` field, same rule."""
+
+    host: str
+    port: int
+    username: str
+    password_set: bool
+    remote_root: str
+
+
+class FileUploadHttpsOut(BaseModel):
+    """The HTTPS tab as the API reports it. No ``token`` field, same rule."""
+
+    url: str
+    token_set: bool
+    remote_root: str
+
+
+class FileUploadStatusOut(BaseModel):
+    """One completed cycle — see :class:`arichds.fileupload.status.CycleStatus`."""
+
+    ran_at: datetime
+    protocol: str
+    outcome: str
+    files_sent: int
+    bytes_sent: int
+    files_skipped: int
+    duration_sec: float
+    error: str | None
+
+
+class FileUploadOut(BaseModel):
+    """What ``GET /api/settings/file-upload`` returns — every tab's settings
+    (credentials as ``…_set`` booleans only) plus the last cycle's status.
+
+    Attributes:
+        active_protocol: ``""`` (nothing saved yet), ``"sftp"``, ``"ftps"``
+            or ``"https"`` — the tab saved last. The other two tabs' settings
+            are still returned, unchanged, so a form can be pre-filled even
+            while inactive (ADR 0025 decision 1).
+        status: ``None`` until a cycle has run. Ticket 01 never runs one, so
+            this is always ``None`` today.
+    """
+
+    active_protocol: str
+    sftp: FileUploadSftpOut
+    ftps: FileUploadFtpsOut
+    https: FileUploadHttpsOut
+    status: FileUploadStatusOut | None
+
+
+class FileUploadSftpIn(BaseModel):
+    """The body ``PUT …/sftp`` takes.
+
+    Attributes:
+        password: **Omitted or ``null`` keeps the stored one; an explicit
+            empty string clears it** — the ``db_dest_password`` convention.
+        key_path: Not write-only — a file path is not a secret. Always
+            replaced in full, like *host*.
+        key_passphrase: Omit/null-keeps, empty-clears, the same as
+            *password*.
+    """
+
+    host: str
+    port: int
+    username: str
+    password: str | None = None
+    key_path: str
+    key_passphrase: str | None = None
+    remote_root: str
+
+
+class FileUploadFtpsIn(BaseModel):
+    """The body ``PUT …/ftps`` takes. *password* follows the same
+    omit-keeps/empty-clears rule as :class:`FileUploadSftpIn`."""
+
+    host: str
+    port: int
+    username: str
+    password: str | None = None
+    remote_root: str
+
+
+class FileUploadHttpsIn(BaseModel):
+    """The body ``PUT …/https`` takes. *token* follows the same
+    omit-keeps/empty-clears rule as :class:`FileUploadSftpIn.password`."""
+
+    url: str
+    token: str | None = None
+    remote_root: str
+
+
+def _validate_port(port: int) -> int:
+    """Reject a port outside ``1..65535``, naming the offending value —
+    ``arichds.api.settings._validate_port``'s own shape, kept local rather
+    than imported: each settings sub-module owns its own validators, the
+    convention ``arichds.dataout.destination`` and ``arichds.api.settings``
+    already set independently of each other.
+
+    Raises:
+        ValueError: When *port* is outside the range.
+    """
+    if not 1 <= port <= 65535:
+        raise ValueError(f"port must be between 1 and 65535 - got {port}")
+    return port
+
+
+def _status_out(cycle_status: CycleStatus | None) -> FileUploadStatusOut | None:
+    """Project an in-memory :class:`CycleStatus` onto the API shape."""
+    if cycle_status is None:
+        return None
+    return FileUploadStatusOut(
+        ran_at=cycle_status.ran_at,
+        protocol=cycle_status.protocol,
+        outcome=cycle_status.outcome,
+        files_sent=cycle_status.files_sent,
+        bytes_sent=cycle_status.bytes_sent,
+        files_skipped=cycle_status.files_skipped,
+        duration_sec=cycle_status.duration_sec,
+        error=cycle_status.error,
+    )
+
+
+def _current_settings(session: Session) -> FileUploadOut:
+    """Read every File Upload Destination row plus the in-memory status."""
+    config = load_config(session)
+    return FileUploadOut(
+        active_protocol=config.active_protocol,
+        sftp=FileUploadSftpOut(
+            host=config.sftp.host,
+            port=config.sftp.port,
+            username=config.sftp.username,
+            password_set=bool(config.sftp.password),
+            key_path=config.sftp.key_path,
+            key_passphrase_set=bool(config.sftp.key_passphrase),
+            remote_root=config.sftp.remote_root,
+            host_key_fingerprint=config.sftp.host_key_fingerprint,
+        ),
+        ftps=FileUploadFtpsOut(
+            host=config.ftps.host,
+            port=config.ftps.port,
+            username=config.ftps.username,
+            password_set=bool(config.ftps.password),
+            remote_root=config.ftps.remote_root,
+        ),
+        https=FileUploadHttpsOut(
+            url=config.https.url,
+            token_set=bool(config.https.token),
+            remote_root=config.https.remote_root,
+        ),
+        status=_status_out(last_cycle()),
+    )
+
+
+@router.get("")
+def get_file_upload_settings(session: SessionDep, _admin: AdminDep) -> ApiResponse[FileUploadOut]:
+    """Return every tab's settings and the last cycle's status. Admin only."""
+    return ApiResponse.ok(_current_settings(session))
+
+
+@router.put("/sftp")
+def put_file_upload_sftp(body: FileUploadSftpIn, session: SessionDep, _admin: AdminDep) -> ApiResponse[FileUploadOut]:
+    """Save the SFTP tab and make it the active protocol. Admin only.
+
+    **Refused when neither a password nor a key-file path would be
+    configured after this save** — the *effective* value, not just what this
+    request sent: an omitted *password* keeps whatever is already stored, so
+    a save that only edits *host* must not be judged against an empty body
+    field. A plain FTP or implicit-FTPS value cannot reach this endpoint at
+    all — there is no such field on this tab.
+    """
+    try:
+        port = _validate_port(body.port)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    key_path = body.key_path.strip()
+    stored_password = load_config(session).sftp.password
+    effective_password = body.password if body.password is not None else stored_password
+    if not effective_password and not key_path:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Provide either a password or a key file path.",
+        )
+
+    set_setting(session, FILEUPLOAD_SFTP_HOST_KEY, body.host)
+    set_setting(session, FILEUPLOAD_SFTP_PORT_KEY, str(port))
+    set_setting(session, FILEUPLOAD_SFTP_USERNAME_KEY, body.username)
+    if body.password is not None:
+        set_setting(session, FILEUPLOAD_SFTP_PASSWORD_KEY, body.password)
+    set_setting(session, FILEUPLOAD_SFTP_KEY_PATH_KEY, key_path)
+    if body.key_passphrase is not None:
+        set_setting(session, FILEUPLOAD_SFTP_KEY_PASSPHRASE_KEY, body.key_passphrase)
+    set_setting(session, FILEUPLOAD_SFTP_REMOTE_ROOT_KEY, body.remote_root)
+    set_setting(session, FILEUPLOAD_ACTIVE_PROTOCOL_KEY, "sftp")
+    session.commit()
+
+    return ApiResponse.ok(_current_settings(session))
+
+
+@router.put("/ftps")
+def put_file_upload_ftps(body: FileUploadFtpsIn, session: SessionDep, _admin: AdminDep) -> ApiResponse[FileUploadOut]:
+    """Save the FTPS tab and make it the active protocol. Admin only.
+
+    Only *port* is validated at save time (``1..65535``) — an unreachable
+    host or a self-signed certificate is what ticket 05's Test connection
+    reports, not a 422, the same split ``database-destination`` makes.
+    """
+    try:
+        port = _validate_port(body.port)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    set_setting(session, FILEUPLOAD_FTPS_HOST_KEY, body.host)
+    set_setting(session, FILEUPLOAD_FTPS_PORT_KEY, str(port))
+    set_setting(session, FILEUPLOAD_FTPS_USERNAME_KEY, body.username)
+    if body.password is not None:
+        set_setting(session, FILEUPLOAD_FTPS_PASSWORD_KEY, body.password)
+    set_setting(session, FILEUPLOAD_FTPS_REMOTE_ROOT_KEY, body.remote_root)
+    set_setting(session, FILEUPLOAD_ACTIVE_PROTOCOL_KEY, "ftps")
+    session.commit()
+
+    return ApiResponse.ok(_current_settings(session))
+
+
+@router.put("/https")
+def put_file_upload_https(body: FileUploadHttpsIn, session: SessionDep, _admin: AdminDep) -> ApiResponse[FileUploadOut]:
+    """Save the HTTPS tab and make it the active protocol. Admin only.
+
+    **Refused when the URL is blank** — unlike the other two tabs, HTTPS has
+    no second way to name a server, so an empty URL is unambiguously
+    nothing to save.
+    """
+    if not body.url.strip():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="url is required.")
+
+    set_setting(session, FILEUPLOAD_HTTPS_URL_KEY, body.url)
+    if body.token is not None:
+        set_setting(session, FILEUPLOAD_HTTPS_TOKEN_KEY, body.token)
+    set_setting(session, FILEUPLOAD_HTTPS_REMOTE_ROOT_KEY, body.remote_root)
+    set_setting(session, FILEUPLOAD_ACTIVE_PROTOCOL_KEY, "https")
+    session.commit()
+
+    return ApiResponse.ok(_current_settings(session))
+
+
+@router.get("/status")
+def get_file_upload_status(_admin: AdminDep) -> ApiResponse[FileUploadStatusOut | None]:
+    """Return the last cycle's status — ``None`` until ticket 02 lands the
+    scheduler job that calls ``arichds.fileupload.status.set_last_cycle``."""
+    return ApiResponse.ok(_status_out(last_cycle()))

@@ -682,10 +682,16 @@ Examples:
         "--features",
         default=None,
         help="Comma-separated licensed feature names, validated against the sellable set "
-        "(an unrecognised name is refused, not signed). Some sellable names are reserved "
-        "and not for sale yet: naming one warns but still signs. Omit for every sellable "
-        "feature — an empty value is refused, because omitting and emptying mean "
-        "opposite things.",
+        "(an unrecognised name is refused, not signed). "
+        + (
+            f"Reserved (not yet for sale) right now: {', '.join(sorted(reserved_feature_keys()))} — naming "
+            "one warns but still signs."
+            if reserved_feature_keys()
+            else "A name can be marked reserved (not yet for sale); naming one would warn but still sign. "
+            "None are reserved today."
+        )
+        + " Omit for every sellable feature — an empty value is refused, because omitting and "
+        "emptying mean opposite things.",
     )
     sign.add_argument(
         "--require-meter-activation",

@@ -112,17 +112,16 @@ export const PAGE_ENTITLEMENT: Record<Page, PageEntitlement> = {
   // wrong, and its License card is how support says "read what you have" (D9).
   settings: { kind: "always" },
   "database-destination": { kind: "feature", key: "database_destination" },
-  // Presentation-only, with no transport, so there is nothing a customer can
-  // do with it (D7, issue 012; ADR 0016, issue #37). A `file_upload_destination`
-  // key *does* exist now (issue 013) — and this row stays `never` anyway, on
-  // purpose. The key was **reserved** before the first licence is signed, not
-  // sold: there is no endpoint, no settings row and no job behind the page, and
-  // the page still says nothing typed on it is saved. `feature` would mean
-  // *advertised while the key is enabled*, putting a menu entry in front of a
-  // paying customer that leads to a form which discards their input. Flip it
-  // when M8 / SPEC §3.8 gives the page a transport, not before —
-  // `app/tests/test_nav_feature_contract.py` fails if you flip it sooner.
-  "file-upload-destination": { kind: "never" },
+  // ADR 0025, ticket 01 — the File Upload Destination (menu label **FTP**,
+  // CONTEXT.md's glossary term stays *File Upload Destination*; the two
+  // disagree on purpose) has a real configuration surface now: settings
+  // rows, endpoints, the round-trip. `file_upload_destination` left
+  // `RESERVED_FEATURE_KEYS` the moment that landed and is sold exactly like
+  // `database_destination`, even though the upload cycle itself (ticket 02)
+  // has not shipped yet — an empty page already sends nothing, the same
+  // opt-out the Central Push offers, so there is something real for a
+  // licence to gate.
+  "file-upload-destination": { kind: "feature", key: "file_upload_destination" },
   // Ticket 07 (ADR 0024) — admin-only (`AppShell` gates it the way
   // App Log/Users/the Data-out group are), but carries **no** licence
   // feature key: "visible regardless of licence features" is the spec's

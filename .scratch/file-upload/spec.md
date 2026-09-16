@@ -137,9 +137,12 @@ cycle as `skipped` with the failure's class name; no retry inside the cycle.
 **Configuration.** Settings rows: active protocol, and per protocol its host/port/URL,
 username, password or key path + passphrase, token, remote root, and the pinned SFTP host-key
 fingerprint. Password, passphrase and token are write-only: the API reports `set`/`not set`,
-never the value, and the setting keys end in `password` / `passphrase` / `token` so the existing
-redaction filter covers every log line with no new pattern. Saving a tab makes it the active
-protocol; the other tabs keep their values and send nothing.
+never the value, and the setting keys end in `password` / `passphrase` / `token` so the redaction
+filter covers every log line — **corrected by ticket 01**: `password` and `token` were already
+covered, but `passphrase` was not (the filter's `password` pattern matches the literal substring
+`password`, which `passphrase` does not contain), so ticket 01 added a dedicated `passphrase`
+pattern to `logging_config.py` rather than finding "no new pattern" true as written here. Saving
+a tab makes it the active protocol; the other tabs keep their values and send nothing.
 
 **Endpoints.** Under settings, gated by `require_feature("file_upload_destination")`: get/put
 the configuration, post test-connection (per protocol, returns the server's identity), post

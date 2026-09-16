@@ -122,6 +122,67 @@ CENTRAL_PUSH_URL_DEFAULT = ""
 CENTRAL_PUSH_TOKEN_KEY = "central_push_token"
 CENTRAL_PUSH_TOKEN_DEFAULT = ""
 
+#: The File Upload Destination (SPEC §3.8, ADR 0025, ticket 01) — the menu's
+#: **FTP** — a **third** Data-out Destination, distinct from both keys above
+#: (SPEC §3.10 — "two transports, do not conflate them" — now three). Machine
+#: -wide, same as every key in this module.
+#:
+#: `""` means "no protocol saved yet" — the same convention `db_dest_host` and
+#: `central_push_url` use, and it is what the status endpoint reads to say
+#: nothing is sent. Saving one protocol tab sets this to that tab's name; the
+#: other two tabs keep whatever they hold and are simply not the one read.
+FILEUPLOAD_ACTIVE_PROTOCOL_KEY = "fileupload_active_protocol"
+FILEUPLOAD_ACTIVE_PROTOCOL_DEFAULT = ""
+
+#: SFTP tab (ADR 0025 — paramiko, password *or* key file, ticket 04 wires the
+#: transport). `key_passphrase` and `password` both end in a word the
+#: redaction filter already covers (`password` directly; `passphrase` needed
+#: its own pattern, added alongside this key in `logging_config.py` — the
+#: ticket's own claim that no new pattern was needed was wrong, measured by
+#: `test_fileupload_config_api.py`). `host_key_fingerprint` is not a secret;
+#: the row exists from ticket 01 so ticket 04 has somewhere to pin it.
+FILEUPLOAD_SFTP_HOST_KEY = "fileupload_sftp_host"
+FILEUPLOAD_SFTP_HOST_DEFAULT = ""
+FILEUPLOAD_SFTP_PORT_KEY = "fileupload_sftp_port"
+FILEUPLOAD_SFTP_PORT_DEFAULT = "22"
+FILEUPLOAD_SFTP_USERNAME_KEY = "fileupload_sftp_username"
+FILEUPLOAD_SFTP_USERNAME_DEFAULT = ""
+FILEUPLOAD_SFTP_PASSWORD_KEY = "fileupload_sftp_password"
+FILEUPLOAD_SFTP_PASSWORD_DEFAULT = ""
+FILEUPLOAD_SFTP_KEY_PATH_KEY = "fileupload_sftp_key_path"
+FILEUPLOAD_SFTP_KEY_PATH_DEFAULT = ""
+FILEUPLOAD_SFTP_KEY_PASSPHRASE_KEY = "fileupload_sftp_key_passphrase"
+FILEUPLOAD_SFTP_KEY_PASSPHRASE_DEFAULT = ""
+FILEUPLOAD_SFTP_REMOTE_ROOT_KEY = "fileupload_sftp_remote_root"
+FILEUPLOAD_SFTP_REMOTE_ROOT_DEFAULT = ""
+FILEUPLOAD_SFTP_HOSTKEY_FINGERPRINT_KEY = "fileupload_sftp_host_key_fingerprint"
+FILEUPLOAD_SFTP_HOSTKEY_FINGERPRINT_DEFAULT = ""
+
+#: FTPS tab (ADR 0025 — explicit `AUTH TLS`, standard library, ticket 05 wires
+#: the transport). Port defaults to 21, the standard FTP control port — this
+#: product never offers implicit FTPS (990).
+FILEUPLOAD_FTPS_HOST_KEY = "fileupload_ftps_host"
+FILEUPLOAD_FTPS_HOST_DEFAULT = ""
+FILEUPLOAD_FTPS_PORT_KEY = "fileupload_ftps_port"
+FILEUPLOAD_FTPS_PORT_DEFAULT = "21"
+FILEUPLOAD_FTPS_USERNAME_KEY = "fileupload_ftps_username"
+FILEUPLOAD_FTPS_USERNAME_DEFAULT = ""
+FILEUPLOAD_FTPS_PASSWORD_KEY = "fileupload_ftps_password"
+FILEUPLOAD_FTPS_PASSWORD_DEFAULT = ""
+FILEUPLOAD_FTPS_REMOTE_ROOT_KEY = "fileupload_ftps_remote_root"
+FILEUPLOAD_FTPS_REMOTE_ROOT_DEFAULT = ""
+
+#: HTTPS tab (ADR 0025 — the same stdlib split-timeout client the Central
+#: Push already has, ticket 03 wires the transport). No `username`: the HTTPS
+#: file endpoints authenticate with `Authorization: Bearer <token>` alone,
+#: the same shape `central_push_token` uses.
+FILEUPLOAD_HTTPS_URL_KEY = "fileupload_https_url"
+FILEUPLOAD_HTTPS_URL_DEFAULT = ""
+FILEUPLOAD_HTTPS_TOKEN_KEY = "fileupload_https_token"
+FILEUPLOAD_HTTPS_TOKEN_DEFAULT = ""
+FILEUPLOAD_HTTPS_REMOTE_ROOT_KEY = "fileupload_https_remote_root"
+FILEUPLOAD_HTTPS_REMOTE_ROOT_DEFAULT = ""
+
 
 def get_setting(session: Session, key: str, default: str) -> str:
     """Return *key*'s stored value, or *default* if the row is absent."""

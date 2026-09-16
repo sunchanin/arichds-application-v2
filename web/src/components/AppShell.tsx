@@ -132,17 +132,17 @@ type NavGroup = { type: "group"; label: string; children: NavEntry[] };
  * under the same split: every role reads what the machine is licensed to,
  * only an admin can paste a replacement Activation Code.
  *
- * Issue #37 adds the **Data-out Destination** group — Database and File
- * Upload — after Settings. **Admin-only, for the same reason App Log is**:
- * the fields are machine-internal credentials, not meter data, so the group
- * and both entries are *absent* for a `user`, not disabled. **The two now
- * differ**: Database carries a real transport since issue #46 (SPEC §3.10 —
- * the `dbdest_sync` job writes into the customer's own MariaDB every fifteen
- * minutes), while File Upload is still presentation-only, waiting on the
- * Data-out module (SPEC §3.8) that is a later milestone — and since issue 012
- * that is why File Upload is not advertised to anyone, admin included, which
- * in turn is what lets the group header disappear entirely when the licence
- * omits `database_destination`.
+ * Issue #37 adds the **Data-out Destination** group — Database and FTP —
+ * after Settings. **Admin-only, for the same reason App Log is**: the fields
+ * are machine-internal credentials, not meter data, so the group and both
+ * entries are *absent* for a `user`, not disabled. **Database and FTP now
+ * match**: both are licence-gated `feature` entries (`database_destination`
+ * / `file_upload_destination`) with a real settings round-trip, though FTP's
+ * own upload cycle (ADR 0025 ticket 02) has not shipped yet — an unconfigured
+ * page sends nothing either way, the same opt-out the Central Push offers.
+ * The group header disappears only when a licence grants none of the three
+ * entries below (Central Push's `always` kind holds it up on its own even
+ * then, so in practice the header is never fully gone for an admin).
  *
  * Ticket 07 (ADR 0024) adds the group's third entry, **API** — the Central
  * Push configuration, status and published contract. Admin-only like its two
@@ -228,7 +228,10 @@ export function AppShell({
             label: "Data-out Destination",
             children: [
               { key: "database-destination", icon: <CloudServerOutlined />, label: "Database" },
-              { key: "file-upload-destination", icon: <CloudUploadOutlined />, label: "File Upload" },
+              // The customer's own word for this Destination (ADR 0025
+              // decision 1) — CONTEXT.md's glossary term stays *File Upload
+              // Destination*; the menu and the glossary disagree on purpose.
+              { key: "file-upload-destination", icon: <CloudUploadOutlined />, label: "FTP" },
               { key: "central-push", icon: <ApiOutlined />, label: "API" },
             ],
           },

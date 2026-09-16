@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from arichds.constants import FEATURE_KEYS, SELLABLE_FEATURE_KEYS
+from arichds.constants import FEATURE_KEYS, RESERVED_FEATURE_KEYS, SELLABLE_FEATURE_KEYS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FEATURES_TS = REPO_ROOT / "web" / "src" / "features.ts"
@@ -73,6 +73,7 @@ PAGE_API_PATHS: dict[str, str] = {
     "battery": "/api/battery",
     "export-format": "/api/settings/export-format",
     "database-destination": "/api/settings/database-destination",
+    "file-upload-destination": "/api/settings/file-upload",
 }
 
 #: Feature-gated pages deliberately left out of the sweep, and why. `app_log`
@@ -84,22 +85,21 @@ PAGE_API_PATHS: dict[str, str] = {
 #: a way of dodging the sweep.
 UNSWEPT_PAGES: frozenset[str] = frozenset({"app-log"})
 
-#: Pages no licence governs — `always` or `never` — so they never reach the
-#: sweep. Pinned for the same reason: flipping a page to `always` would
-#: silently drop it out of every assertion below.
+#: Pages no licence governs — `always` — so they never reach the sweep.
+#: Pinned for the same reason: flipping a page to `always` would silently
+#: drop it out of every assertion below.
 #:
-#: `file-upload-destination` is here because it has no transport (D7, issue
-#: 012). Issue 013 revisited this row, as 012 asked it to, and **left the
-#: membership unchanged**: the `file_upload_destination` key now exists, but it
-#: is reserved rather than sold, so the page stays `kind: "never"` and therefore
-#: stays ungoverned. See `TestTheReservedFileUploadKeyGatesNothing` below.
-#: ``central-push`` joins this set with ticket 07 (ADR 0024): the API page
+#: `file-upload-destination` **left** this set with ADR 0025's ticket 01: the
+#: page grew a real configuration surface (settings rows, endpoints, a
+#: round-trip), `file_upload_destination` left `RESERVED_FEATURE_KEYS`, and
+#: the page is now `kind: "feature"` — gated and swept like every other paid
+#: page, even though the upload cycle itself (ticket 02) has not shipped.
+#: See `TestTheFileUploadKeyIsSoldAndGatesThePage` below.
+#: ``central-push`` is in this set since ticket 07 (ADR 0024): the API page
 #: is admin-only but carries no licence feature key at all — "visible
 #: regardless of licence features" is the spec's own wording — so it is
 #: ``always``, not ``feature``, and never reaches the sweep below.
-UNGOVERNED_PAGES: frozenset[str] = frozenset(
-    {"devices", "users", "settings", "file-upload-destination", "central-push"}
-)
+UNGOVERNED_PAGES: frozenset[str] = frozenset({"devices", "users", "settings", "central-push"})
 
 
 def _source() -> str:
@@ -150,11 +150,18 @@ class TestTheRegexesFindSomething:
     def test_the_entitlement_line_regex_finds_every_page(self) -> None:
         """`PAGE_ENTITLEMENT` is `Record<Page, …>`, so its size is the page
         count — a regex that skipped the quoted (hyphenated) keys would make
-        `TestThePagesALicenceMayNeverHide` assert over a half-empty dict."""
+        `TestThePagesALicenceMayNeverHide` assert over a half-empty dict.
+
+        `"never"` is no longer among the kinds present: `file-upload-destination`
+        was the only `never` page, and ADR 0025's ticket 01 made it `feature`.
+        The `never` arm of `PageEntitlement` stays declared in `features.ts` for
+        the next page that needs it — this assertion covers what is *used*
+        today, not what the type permits.
+        """
         kinds = page_entitlement_kinds()
 
         assert len(kinds) == 15, kinds
-        assert set(kinds.values()) == {"feature", "always", "never"}, kinds
+        assert set(kinds.values()) == {"feature", "always"}, kinds
 
 
 class TestEveryMappedKeyIsReal:
@@ -220,49 +227,34 @@ class TestThePagesALicenceMayNeverHide:
     def test_it_is_marked_always(self, page: str) -> None:
         assert page_entitlement_kinds().get(page) == "always", page_entitlement_kinds()
 
-    def test_file_upload_is_marked_never_rather_than_gated_on_a_key(self) -> None:
-        """D7 — it has no transport (ADR 0016, issue #37), so it is
-        *unadvertised*, which is a different thing from *unlicensed*: `never`
-        keeps the page rendering normally when reached.
 
-        A `file_upload_destination` key exists since issue 013, which removed
-        D7's *other* stated reason ("no feature key") without touching this
-        conclusion — the key is reserved, not sold.
-        """
-        assert page_entitlement_kinds().get("file-upload-destination") == "never"
+class TestTheFileUploadKeyIsSoldAndGatesThePage:
+    """`file_upload_destination` is sold, not reserved, as of ADR 0025's
+    ticket 01: the page grew a real configuration surface (settings rows,
+    admin-only endpoints under ``require_feature``, a round-trip), so a
+    licence granting the key now gates something real — the same footing
+    `database_destination` has had since issue #46.
 
-
-class TestTheReservedFileUploadKeyGatesNothing:
-    """`file_upload_destination` is a **reserved** sellable key (issue 013): it
-    exists so a licence signed today can carry it, and it gates nothing at all.
-
-    Reserved rather than sold because `licensing/features.py`'s ceiling
-    grandfathers a late-added key only onto licences signed with
-    `features: null` — a licence with an explicit list would silently lack it
-    forever — so the window in which adding a key is free closes at the first
-    customer licence, not at M8.
-
-    Both directions are asserted and the second carries the weight. A test that
-    only checked the key exists would stay green through exactly the edit issue
-    013 forbids (issue 010's lesson: assert the *wrong* thing is absent, not
-    only that the right thing is present). And nothing can prove this
-    reservation is the *right* key until M8 picks a transport (issue 012's
-    lesson), so the negative assertion is the only real guard available here.
+    Both directions are asserted, mirroring the reserved-key test this
+    replaces: a test that only checked the key is sellable would stay green
+    through leaving it un-gated, and a test that only checked it gates a page
+    would stay green through leaving it reserved.
     """
 
-    def test_the_key_is_reserved_in_the_sellable_set(self) -> None:
+    def test_the_key_is_sellable(self) -> None:
         assert "file_upload_destination" in SELLABLE_FEATURE_KEYS
 
-    def test_the_reserved_key_gates_no_page(self) -> None:
-        assert "file_upload_destination" not in mapped_feature_keys(), (
-            "features.ts gates a page on 'file_upload_destination'. Reserving the key did "
-            "not build the feature (D1, issue 013): there is no endpoint, no settings row "
-            "and no job behind the File Upload Destination page, and the page itself still "
-            "says nothing typed on it is saved, sent, or stored. Gating on the key means "
-            "*advertised while the key is enabled*, so this would put a menu entry in front "
-            "of a paying customer that leads to a form which discards what they type. Leave "
-            'PAGE_ENTITLEMENT["file-upload-destination"] at { kind: "never" } until M8 / '
-            "SPEC §3.8 gives the page a transport, and give it a key then."
+    def test_the_key_is_no_longer_reserved(self) -> None:
+        assert "file_upload_destination" not in RESERVED_FEATURE_KEYS
+
+    def test_the_key_gates_the_page(self) -> None:
+        assert page_feature_keys().get("file-upload-destination") == "file_upload_destination", (
+            "features.ts does not gate 'file-upload-destination' on 'file_upload_destination'. "
+            "The page has a real configuration surface since ADR 0025's ticket 01 (settings rows, "
+            "endpoints, a round-trip) even though the upload cycle itself (ticket 02) has not "
+            'shipped — an empty page already sends nothing, so PAGE_ENTITLEMENT["file-upload-destination"] '
+            'must be { kind: "feature", key: "file_upload_destination" }, the same shape '
+            "database-destination uses."
         )
 
 

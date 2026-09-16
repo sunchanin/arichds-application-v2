@@ -114,14 +114,16 @@ MySQL, and ~30 tables.
   partial unique indexes ADR 0009's invariant rests on, and making their database the store
   would make their downtime our downtime; FTP upload, a customer MySQL and a replicated folder
   are all the same shape, a **Data-out Destination**, which is SPEC §3.8's surface; the
-  presentation-only pages landed with issue #37. **Two transports, do not conflate them**:
+  presentation-only pages landed with issue #37. **Three transports, do not conflate them**:
   the **Database Destination** (the customer's own MariaDB/MySQL, SPEC §3.10) **landed with
   issue #46** — `dataout/`, the `dbdest_sync` scheduler job, the three
   `/api/settings/database-destination` endpoints and a working
   `web/src/pages/DatabaseDestination.tsx`; the **central-server push** (SPEC §3.8, JSON + JWT,
   no watermark — each cycle asks the server what it holds, ADR 0024) **landed with M14 ticket
-  08**, its own queue, separate contract, separate module (`centralpush/`); `FileUploadDestination.tsx`
-  remains a presentation-only shell) ·
+  08**, its own queue, separate contract, separate module (`centralpush/`); the **File Upload
+  Destination** (menu **FTP**, SPEC §3.8, ADR 0025) had its configuration land with ticket 01 —
+  `fileupload/`, `api/file_upload.py` and a working `web/src/pages/FileUploadDestination.tsx`
+  with its three protocol tabs — while the upload cycle itself waits on ticket 02) ·
   0017 (the capture image is a **headless screenshot of our own page** — **reverses 0014**:
   Edge ships with Windows and `websockets` already arrives via `uvicorn[standard]`, so driving
   the installed browser over CDP costs **0 MB** and makes fidelity an identity rather than an
@@ -370,7 +372,34 @@ MySQL, and ~30 tables.
   `fake_central_push_receiver.py`, an in-process `ThreadingHTTPServer` implementing contract
   version 1 on `127.0.0.1:0` — an ephemeral port so `pytest -n auto` workers never collide —
   verifying the Push Token with `verify_push_token` and upserting on the contract's own natural
-  keys; every test asserts only on what it holds.
+  keys; every test asserts only on what it holds. ·
+  0025 (the **File Upload Destination speaks three protocols and keeps its state in a
+  server-side manifest** — menu label **FTP**, the customer's own word (CONTEXT.md's glossary
+  term stays *File Upload Destination*; the two disagree on purpose) — a third Data-out
+  Destination beside the customer's database (ADR 0016/0020/0021) and the Central Push (ADR
+  0024): SFTP (paramiko, ticket 04), FTPS (explicit TLS, standard library, ticket 05) and HTTPS
+  (the push's own split-timeout `urllib` client, ticket 03) copy the export files and the Billing
+  capture documents to a server the operator names, one protocol active at a time, and an
+  **Upload Manifest** — plain JSON on the *server*, not this machine (ADR 0008) — is what lets a
+  cycle send only what changed; nothing is ever deleted remotely, unlike the Database
+  Destination's Mirror Window (ADR 0020). **Ticket 01 landed the configuration only**: `fileupload/`
+  (`config.py`'s settings loader, `status.py`'s in-memory last-cycle slot, always `None` until
+  ticket 02 lands a cycle) and `api/file_upload.py` — `GET`/`PUT .../sftp`/`PUT .../ftps`/
+  `PUT .../https`/`GET .../status`, all admin-only and gated by `require_feature`
+  (`"file_upload_destination"`), the same shape `database-destination`'s endpoints use; saving a
+  tab makes it the active protocol and the other two keep what they hold; a password/passphrase/
+  token is write-only (`…_set` booleans only, never echoed) and an omitted or `null` one keeps
+  the stored value the same way `db_dest_password` does; the SFTP tab is refused when neither a
+  password nor a key-file path would be configured after the save, and the HTTPS tab is refused
+  with no URL — both checked against the *effective* value, not just what the request sent.
+  `file_upload_destination` left `RESERVED_FEATURE_KEYS` (now empty) and is sold exactly like
+  `database_destination`; `web/src/features.ts` gates the page `kind: "feature"` on that key with
+  on-screen label **FTP**, and `AppShell`'s nav entry follows. **One correction the
+  implementation forced**: the ticket's own text claimed the existing credential redaction filter
+  already covered a key ending in `passphrase` "with no new pattern" — false, because
+  `passphrase` does not contain the substring `password`, the only thing the filter's `password`
+  pattern matches; `logging_config.py` gained a dedicated `passphrase` pattern in this same
+  change, proven by `test_fileupload_config_api.py`'s `TestSecretsNeverReachALog`.)
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
@@ -403,7 +432,11 @@ MySQL, and ~30 tables.
   writer) · `dataout/` (the
   **Database Destination** — the customer's own MariaDB/MySQL written through SQLAlchemy Core +
   PyMySQL on the `dbdest_sync` job, issue #46; deliberately **not** part of `export/`, which
-  ADR 0021 forbids it from sharing a local-time helper with) · `interval_status.py` (the one
+  ADR 0021 forbids it from sharing a local-time helper with) · `fileupload/` (the **File Upload
+  Destination**, menu **FTP** — SPEC §3.8, ADR 0025; `config.py`'s settings loader and
+  `status.py`'s in-memory last-cycle slot landed with ticket 01, imports nothing from `export/`
+  for the same reason `dataout/` does not; the cycle and the three transports are tickets 02-05)
+  · `interval_status.py` (the one
   Interval Status decoder, at the package top because `api/` must not import `export/` — that
   direction closes a cycle through `api/deps` -> `jobs/scheduler` -> `export/csv_export`).
   Venv at `app/.venv`, `pyproject.toml` + pip.
@@ -485,13 +518,14 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
   `MeterDriver` capability methods (v1 ADR 0004 principle).
 - **OBIS/register maps and vendored Gurux (`GX*.py`) are copied from v1 verbatim** — they
   are field-proven; never "improve", rename, or reformat their APIs.
-- **Credential redaction filter on every log handler** — keys like `password=`, `*_key=`,
-  `token=` become `[REDACTED]`.
+- **Credential redaction filter on every log handler** — keys like `password=`, `passphrase=`,
+  `*_key=`, `token=` become `[REDACTED]`.
 - **Auth is user JWT only** — no API keys, no inbound M2M surface. Data leaves the box only
   through a **Data-out Destination we drive outbound** — the Database Destination
-  (ADR 0016/0020/0021, issue #46, `dataout/`) and the central-server push (SPEC §3.8, ADR
-  0024, `centralpush/`, M14 ticket 08), which are **two transports and two contracts, not
-  one** (SPEC §3.10). Nothing external reads our tables.
+  (ADR 0016/0020/0021, issue #46, `dataout/`), the central-server push (SPEC §3.8, ADR
+  0024, `centralpush/`, M14 ticket 08) and the File Upload Destination (menu **FTP**, SPEC
+  §3.8, ADR 0025, `fileupload/`, ticket 01 for configuration), which are **three transports
+  and three contracts, not one** (SPEC §3.10). Nothing external reads our tables.
 - **English-only UI** — no Thai strings in `web/` (v1 had them; do not carry them over).
 
 ## v1 as reference (read-only)

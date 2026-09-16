@@ -423,29 +423,26 @@ SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
 )
 FEATURE_KEYS: Final[frozenset[str]] = SELLABLE_FEATURE_KEYS | frozenset({"app_log"})
 
-#: Sellable keys that are **reserved, not for sale** (issue 013). Signable, so
-#: a licence cut today already carries them — but nothing implements them yet.
-#: Do not quote one to a customer and do not put one on an invoice.
+#: Sellable keys that are **reserved, not for sale**. Signable, so a licence
+#: cut today already carries them — but nothing implements them yet. Do not
+#: quote one to a customer and do not put one on an invoice.
 #:
-#: `file_upload_destination`: there is no endpoint, no settings row and no job
-#: behind the File Upload Destination page, and the page still tells the
-#: operator that nothing typed on it is saved. It stays unadvertised in the nav
-#: (`web/src/features.ts` keeps it at `kind: "never"`) until M8 / SPEC §3.8
-#: gives it a transport. Empty this set when that lands; the key itself stays.
+#: Empty since ticket 01 of the File Upload Destination
+#: (`.scratch/file-upload/issues/01-…`, ADR 0025): `file_upload_destination`
+#: was the one member of this set (issue 013) and it left it the moment the
+#: page grew a real configuration surface — settings rows, endpoints, the
+#: nav entry gated `kind: "feature"` in `web/src/features.ts` — even though
+#: the upload cycle itself (ticket 02) has not landed yet. The key is now
+#: sold exactly like `database_destination`: it gates something real, and a
+#: licence granting it is not paying for nothing.
 #:
 #: Read by ``tools/arichds_vendor.py``, which **imports** it rather than
 #: restating it (issue 010's rule) and warns — never refuses — when
-#: ``sign --features`` names one. The seller is the only person who can put a
-#: key on an invoice, so the warning has to reach them where they type it
-#: rather than only here, in a file they never open.
-#:
-#: What this deliberately is *not* (D2): machinery to hide the key from the
-#: customer. A licence signed **without** ``--features`` grants every sellable
-#: key, so Settings → License lists a **File Upload Destination** tag for a
-#: page the nav does not show. Nothing filters that out. The control is the
-#: vendor naming keys explicitly, and this set is what makes that choice an
-#: informed one.
-RESERVED_FEATURE_KEYS: Final[frozenset[str]] = frozenset({"file_upload_destination"})
+#: ``sign --features`` names a reserved key. The seller is the only person
+#: who can put a key on an invoice, so the warning has to reach them where
+#: they type it rather than only here, in a file they never open. Left as a
+#: mechanism rather than deleted: the next reserved key uses it unchanged.
+RESERVED_FEATURE_KEYS: Final[frozenset[str]] = frozenset()
 
 # ─── Capture write hardening (ADR 0010, M6b issue #22; v1 constants.py:13-21) ─
 # Windows lacks O_NOFOLLOW (the symlink-open guard) — it degrades to 0 there.

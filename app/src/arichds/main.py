@@ -36,6 +36,7 @@ from arichds.api import (
     central_push,
     devices,
     energy,
+    file_upload,
     health,
     holidays,
     license,
@@ -143,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(settings_router.router)
     app.include_router(central_push.router)
+    app.include_router(file_upload.router)
 
     @app.exception_handler(FeatureDisabledError)
     async def handle_feature_disabled(_request: Request, exc: FeatureDisabledError) -> JSONResponse:

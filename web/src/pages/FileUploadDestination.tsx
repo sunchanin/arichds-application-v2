@@ -1,89 +1,511 @@
-import { App, Alert, Button, Card, Form, Input, Select } from "antd";
+import { Alert, App, Button, Card, Descriptions, Form, Input, Space, Tabs, Tag, Typography } from "antd";
+import type { DescriptionsItemType } from "antd/es/descriptions";
+import { useCallback, useEffect, useState } from "react";
 
-interface FormValues {
-  protocol: "FTPS" | "SFTP";
+import {
+  ApiRequestError,
+  api,
+  isLicenseLapsed,
+  type FileUploadFtpsUpdate,
+  type FileUploadHttpsUpdate,
+  type FileUploadSettings,
+  type FileUploadSftpUpdate,
+} from "../api";
+
+const { Text, Paragraph } = Typography;
+
+type Protocol = "sftp" | "ftps" | "https";
+
+interface SftpFormValues {
   host: string;
   port: string;
-  user: string;
+  username: string;
   password: string;
-  remote_path: string;
+  key_path: string;
+  key_passphrase: string;
+  remote_root: string;
 }
 
-// Module-private: react-refresh/only-export-components' allowConstantExport
-// only exempts literal/unary/template/binary exports, not an array of
-// objects (see Devices.tsx:71-74's note on the same constraint).
-const PROTOCOL_OPTIONS = [
-  { value: "FTPS", label: "FTPS" },
-  { value: "SFTP", label: "SFTP" },
-];
+interface FtpsFormValues {
+  host: string;
+  port: string;
+  username: string;
+  password: string;
+  remote_root: string;
+}
+
+interface HttpsFormValues {
+  url: string;
+  token: string;
+  remote_root: string;
+}
+
+const PROTOCOL_LABELS: Record<Protocol, string> = { sftp: "SFTP", ftps: "FTPS", https: "HTTPS" };
+
+function TabLabel({ protocol, active }: { protocol: Protocol; active: boolean }) {
+  return (
+    <Space size="small">
+      {PROTOCOL_LABELS[protocol]}
+      {active && (
+        <Tag color="green" style={{ marginInlineEnd: 0 }}>
+          Active
+        </Tag>
+      )}
+    </Space>
+  );
+}
+
+/** What every tab's server side needs to know, and what this machine will never do — shared verbatim across tabs
+ * (SPEC story 23) so the three cannot drift apart in wording. */
+function HowTo({ prerequisites }: { prerequisites: string[] }) {
+  return (
+    <Space direction="vertical" size="small" style={{ width: "100%" }}>
+      <div>
+        <Text strong>Before you save</Text>
+        <ul style={{ marginTop: 4, marginBottom: 0 }}>
+          {prerequisites.map((item) => (
+            <li key={item}>
+              <Text type="secondary">{item}</Text>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div>
+        <Text strong>What this machine will create</Text>
+        <ul style={{ marginTop: 4, marginBottom: 0 }}>
+          <li>
+            <Text type="secondary">
+              <Text code>export/</Text> under the remote root, holding the same export files this machine keeps
+            </Text>
+          </li>
+          <li>
+            <Text type="secondary">
+              <Text code>captures/&lt;Meter Serial&gt;/</Text> under the remote root, holding the Billing capture
+              documents
+            </Text>
+          </li>
+          <li>
+            <Text type="secondary">
+              <Text code>arichds-manifest.json</Text> at the remote root — a plain-JSON inventory of what has
+              arrived, readable without this software
+            </Text>
+          </li>
+        </ul>
+      </div>
+      <div>
+        <Text strong>Not supported</Text>
+        <ul style={{ marginTop: 4, marginBottom: 0 }}>
+          <li>
+            <Text type="secondary">Plain FTP — there is no such protocol choice on this page</Text>
+          </li>
+          <li>
+            <Text type="secondary">Implicit FTPS (port 990) — only explicit TLS on the standard port</Text>
+          </li>
+          <li>
+            <Text type="secondary">A self-signed certificate — the connection is refused, not trusted</Text>
+          </li>
+          <li>
+            <Text type="secondary">Deleting anything on the server — this machine only adds and replaces</Text>
+          </li>
+        </ul>
+      </div>
+    </Space>
+  );
+}
 
 /**
- * File Upload Destination (issue #37) — a presentation-only page for an
- * encrypted-transfer Data-out Destination (CONTEXT.md). Plain FTP is
- * excluded by design (ADR 0016's Consequences block): only FTPS and SFTP are
- * offered, because a site's stated reason for choosing a file destination
- * over cloud upload is confidentiality, and plain FTP puts credentials and
- * data on the wire in clear text.
+ * File Upload Destination (SPEC §3.8, ADR 0025, ticket 01) — menu label
+ * **FTP** (CONTEXT.md's glossary term stays *File Upload Destination*; the
+ * two disagree on purpose, ADR 0025 decision 1).
  *
- * There is no transport behind this page: the Data-out module (SPEC §3.8)
- * has not shipped, so nothing typed here is saved, sent, or read back.
+ * Three tabs, one active protocol — the tab saved last. **No transport yet**:
+ * ticket 02 adds the cycle that actually sends anything, so the status card
+ * always reads "no cycle has run" today. The configuration round-trips in
+ * full, which is what this ticket delivers.
+ *
+ * No `role` prop threaded in — `App.tsx` already redirects non-admins away
+ * from `file-upload-destination` before this renders, the same guard
+ * `DatabaseDestination`/`CentralPush` get.
  */
 export function FileUploadDestination() {
   const { message } = App.useApp();
-  const [form] = Form.useForm<FormValues>();
+  const [sftpForm] = Form.useForm<SftpFormValues>();
+  const [ftpsForm] = Form.useForm<FtpsFormValues>();
+  const [httpsForm] = Form.useForm<HttpsFormValues>();
+
+  const [settings, setSettings] = useState<FileUploadSettings | null>(null);
+  const [activeTab, setActiveTab] = useState<Protocol>("sftp");
+  const [savingSftp, setSavingSftp] = useState(false);
+  const [savingFtps, setSavingFtps] = useState(false);
+  const [savingHttps, setSavingHttps] = useState(false);
+  const [sftpError, setSftpError] = useState<string | null>(null);
+  const [ftpsError, setFtpsError] = useState<string | null>(null);
+  const [httpsError, setHttpsError] = useState<string | null>(null);
+
+  const surface = useCallback(
+    (err: unknown, fallback: string) => {
+      if (isLicenseLapsed(err)) {
+        window.location.reload();
+        return;
+      }
+      message.error(err instanceof ApiRequestError ? err.message : fallback);
+    },
+    [message],
+  );
+
+  const apply = useCallback(
+    (data: FileUploadSettings, firstLoad: boolean) => {
+      setSettings(data);
+      if (firstLoad && (data.active_protocol === "sftp" || data.active_protocol === "ftps" || data.active_protocol === "https")) {
+        setActiveTab(data.active_protocol);
+      }
+
+      sftpForm.setFieldsValue({
+        host: data.sftp.host,
+        port: String(data.sftp.port),
+        username: data.sftp.username,
+        password: "",
+        key_path: data.sftp.key_path,
+        key_passphrase: "",
+        remote_root: data.sftp.remote_root,
+      });
+      sftpForm.resetFields(["password", "key_passphrase"]);
+      sftpForm.setFieldValue("password", "");
+      sftpForm.setFieldValue("key_passphrase", "");
+
+      ftpsForm.setFieldsValue({
+        host: data.ftps.host,
+        port: String(data.ftps.port),
+        username: data.ftps.username,
+        password: "",
+        remote_root: data.ftps.remote_root,
+      });
+      ftpsForm.resetFields(["password"]);
+      ftpsForm.setFieldValue("password", "");
+
+      httpsForm.setFieldsValue({ url: data.https.url, token: "", remote_root: data.https.remote_root });
+      httpsForm.resetFields(["token"]);
+      httpsForm.setFieldValue("token", "");
+    },
+    [sftpForm, ftpsForm, httpsForm],
+  );
+
+  const load = useCallback(
+    (firstLoad: boolean) => {
+      api
+        .fileUploadSettings()
+        .then((data) => apply(data, firstLoad))
+        .catch((err: unknown) => surface(err, "Could not load the File Upload Destination settings."));
+    },
+    [apply, surface],
+  );
+
+  useEffect(() => {
+    load(true);
+    // Loaded once on mount, the same as `DatabaseDestination`/`CentralPush` —
+    // no polling timer for a fifteen-minute cadence.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onFinishSftp = (values: SftpFormValues) => {
+    const body: FileUploadSftpUpdate = {
+      host: values.host?.trim() ?? "",
+      port: Number(values.port),
+      username: values.username?.trim() ?? "",
+      key_path: values.key_path?.trim() ?? "",
+      remote_root: values.remote_root?.trim() ?? "",
+    };
+    if (sftpForm.isFieldTouched("password")) body.password = values.password ?? "";
+    if (sftpForm.isFieldTouched("key_passphrase")) body.key_passphrase = values.key_passphrase ?? "";
+
+    setSavingSftp(true);
+    setSftpError(null);
+    api
+      .updateFileUploadSftp(body)
+      .then((data) => {
+        apply(data, false);
+        message.success("SFTP settings saved. SFTP is now the active protocol.");
+      })
+      .catch((err: unknown) => {
+        if (isLicenseLapsed(err)) {
+          window.location.reload();
+          return;
+        }
+        setSftpError(err instanceof ApiRequestError ? err.message : "Could not save the SFTP settings.");
+      })
+      .finally(() => setSavingSftp(false));
+  };
+
+  const onFinishFtps = (values: FtpsFormValues) => {
+    const body: FileUploadFtpsUpdate = {
+      host: values.host?.trim() ?? "",
+      port: Number(values.port),
+      username: values.username?.trim() ?? "",
+      remote_root: values.remote_root?.trim() ?? "",
+    };
+    if (ftpsForm.isFieldTouched("password")) body.password = values.password ?? "";
+
+    setSavingFtps(true);
+    setFtpsError(null);
+    api
+      .updateFileUploadFtps(body)
+      .then((data) => {
+        apply(data, false);
+        message.success("FTPS settings saved. FTPS is now the active protocol.");
+      })
+      .catch((err: unknown) => {
+        if (isLicenseLapsed(err)) {
+          window.location.reload();
+          return;
+        }
+        setFtpsError(err instanceof ApiRequestError ? err.message : "Could not save the FTPS settings.");
+      })
+      .finally(() => setSavingFtps(false));
+  };
+
+  const onFinishHttps = (values: HttpsFormValues) => {
+    const body: FileUploadHttpsUpdate = { url: values.url?.trim() ?? "", remote_root: values.remote_root?.trim() ?? "" };
+    if (httpsForm.isFieldTouched("token")) body.token = values.token ?? "";
+
+    setSavingHttps(true);
+    setHttpsError(null);
+    api
+      .updateFileUploadHttps(body)
+      .then((data) => {
+        apply(data, false);
+        message.success("HTTPS settings saved. HTTPS is now the active protocol.");
+      })
+      .catch((err: unknown) => {
+        if (isLicenseLapsed(err)) {
+          window.location.reload();
+          return;
+        }
+        setHttpsError(err instanceof ApiRequestError ? err.message : "Could not save the HTTPS settings.");
+      })
+      .finally(() => setSavingHttps(false));
+  };
+
+  const portRules = [
+    { required: true, message: "A port is required." },
+    {
+      validator: (_rule: unknown, value: string) => {
+        const port = Number(value);
+        return Number.isInteger(port) && port >= 1 && port <= 65535
+          ? Promise.resolve()
+          : Promise.reject(new Error("The port must be a whole number between 1 and 65535."));
+      },
+    },
+  ];
+
+  const status = settings?.status ?? null;
 
   return (
-    <div>
-      <div style={{ position: "sticky", top: 0, zIndex: 1, marginBlockEnd: 16 }}>
-        <Alert
-          type="warning"
-          showIcon
-          title="Not connected yet"
-          description={
-            <div style={{ display: "grid", gap: 8 }}>
-              <p style={{ margin: 0 }}>
-                Only encrypted transfers are offered. Plain FTP is not an option: it puts the credentials and the
-                data on the wire in clear text, and confidentiality is the stated reason a site chooses a file
-                destination over cloud upload in the first place.
-              </p>
-              <p style={{ margin: 0 }}>
-                Nothing typed on this page is saved, sent, or stored. The transport that will use these settings
-                ships with the Data-out module.
-              </p>
-            </div>
-          }
-        />
-      </div>
+    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Alert
+        type="info"
+        showIcon
+        title="FTP"
+        description={
+          <Text>
+            Copies this machine&rsquo;s export files and Billing capture documents to a server of your team&rsquo;s
+            choosing, over SFTP, FTPS or HTTPS — one active at a time. <strong>Nothing is sent while this page is
+            empty.</strong>
+          </Text>
+        }
+      />
+
       <Card size="small" title="File Upload Destination">
-        <Form form={form} layout="vertical">
-          <Form.Item name="protocol" label="Protocol">
-            <Select placeholder="Select a protocol" options={PROTOCOL_OPTIONS} />
-          </Form.Item>
-          <Form.Item name="host" label="Host">
-            <Input />
-          </Form.Item>
-          <Form.Item name="port" label="Port">
-            <Input inputMode="numeric" placeholder="990 (FTPS) or 22 (SFTP)" />
-          </Form.Item>
-          <Form.Item name="user" label="User">
-            <Input autoComplete="off" />
-          </Form.Item>
-          <Form.Item name="password" label="Password">
-            <Input.Password autoComplete="off" />
-          </Form.Item>
-          <Form.Item name="remote_path" label="Remote path">
-            <Input />
-          </Form.Item>
-          <Button
-            onClick={() => {
-              form.resetFields();
-              message.success("Form cleared.");
-            }}
-          >
-            Clear
-          </Button>
-        </Form>
+        <Tabs
+          activeKey={activeTab}
+          onChange={(key) => setActiveTab(key as Protocol)}
+          items={[
+            {
+              key: "sftp",
+              label: <TabLabel protocol="sftp" active={settings?.active_protocol === "sftp"} />,
+              children: (
+                <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                  <Form
+                    form={sftpForm}
+                    layout="vertical"
+                    onFinish={onFinishSftp}
+                    onValuesChange={() => setSftpError(null)}
+                    disabled={settings === null || savingSftp}
+                  >
+                    <Form.Item name="host" label="Host" rules={[{ required: true, whitespace: true, message: "A host is required." }]}>
+                      <Input placeholder="sftp.example.com" />
+                    </Form.Item>
+                    <Form.Item name="port" label="Port" rules={portRules}>
+                      <Input inputMode="numeric" placeholder="22" />
+                    </Form.Item>
+                    <Form.Item name="username" label="User">
+                      <Input autoComplete="off" />
+                    </Form.Item>
+                    <Form.Item
+                      name="password"
+                      label="Password"
+                      extra={settings?.sftp.password_set ? "A password is set. Leave this box alone to keep it." : "No password is set."}
+                    >
+                      <Input.Password autoComplete="off" placeholder={settings?.sftp.password_set ? "Unchanged" : ""} />
+                    </Form.Item>
+                    <Form.Item name="key_path" label="Key file path" extra="A private-key file's path on this machine (RSA or Ed25519). Provide a password, a key file path, or both.">
+                      <Input placeholder="C:\path\to\id_ed25519" />
+                    </Form.Item>
+                    <Form.Item
+                      name="key_passphrase"
+                      label="Key file passphrase"
+                      extra={
+                        settings?.sftp.key_passphrase_set
+                          ? "A passphrase is set. Leave this box alone to keep it."
+                          : "No passphrase is set. Leave empty if the key file has none."
+                      }
+                    >
+                      <Input.Password autoComplete="off" placeholder={settings?.sftp.key_passphrase_set ? "Unchanged" : ""} />
+                    </Form.Item>
+                    <Form.Item name="remote_root" label="Remote root">
+                      <Input placeholder="/home/arichds" />
+                    </Form.Item>
+                    {settings?.sftp.host_key_fingerprint && (
+                      <Form.Item label="Pinned host key fingerprint">
+                        <Text code>{settings.sftp.host_key_fingerprint}</Text>
+                      </Form.Item>
+                    )}
+                    <Button type="primary" htmlType="submit" loading={savingSftp}>
+                      Save
+                    </Button>
+                  </Form>
+                  {sftpError !== null && <Alert type="error" showIcon title="Could not save the SFTP settings" description={sftpError} />}
+                  <HowTo
+                    prerequisites={[
+                      "An SFTP (SSH) account and its home folder, ready to receive files.",
+                      "The SSH port your team's server listens on (usually 22).",
+                      "Either a password for that account, or a private-key file placed on this machine.",
+                    ]}
+                  />
+                </Space>
+              ),
+            },
+            {
+              key: "ftps",
+              label: <TabLabel protocol="ftps" active={settings?.active_protocol === "ftps"} />,
+              children: (
+                <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                  <Form
+                    form={ftpsForm}
+                    layout="vertical"
+                    onFinish={onFinishFtps}
+                    onValuesChange={() => setFtpsError(null)}
+                    disabled={settings === null || savingFtps}
+                  >
+                    <Form.Item name="host" label="Host" rules={[{ required: true, whitespace: true, message: "A host is required." }]}>
+                      <Input placeholder="ftps.example.com" />
+                    </Form.Item>
+                    <Form.Item name="port" label="Port" rules={portRules}>
+                      <Input inputMode="numeric" placeholder="21" />
+                    </Form.Item>
+                    <Form.Item name="username" label="User">
+                      <Input autoComplete="off" />
+                    </Form.Item>
+                    <Form.Item
+                      name="password"
+                      label="Password"
+                      extra={settings?.ftps.password_set ? "A password is set. Leave this box alone to keep it." : "No password is set."}
+                    >
+                      <Input.Password autoComplete="off" placeholder={settings?.ftps.password_set ? "Unchanged" : ""} />
+                    </Form.Item>
+                    <Form.Item name="remote_root" label="Remote root">
+                      <Input placeholder="/home/arichds" />
+                    </Form.Item>
+                    <Button type="primary" htmlType="submit" loading={savingFtps}>
+                      Save
+                    </Button>
+                  </Form>
+                  {ftpsError !== null && <Alert type="error" showIcon title="Could not save the FTPS settings" description={ftpsError} />}
+                  <HowTo
+                    prerequisites={[
+                      "An FTP account and its home folder, ready to receive files.",
+                      "Explicit FTPS on the standard control port (21) — implicit FTPS on 990 is not offered.",
+                      "A certificate issued by a trusted authority — a self-signed certificate is refused.",
+                    ]}
+                  />
+                </Space>
+              ),
+            },
+            {
+              key: "https",
+              label: <TabLabel protocol="https" active={settings?.active_protocol === "https"} />,
+              children: (
+                <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                  <Form
+                    form={httpsForm}
+                    layout="vertical"
+                    onFinish={onFinishHttps}
+                    onValuesChange={() => setHttpsError(null)}
+                    disabled={settings === null || savingHttps}
+                  >
+                    <Form.Item name="url" label="Server URL" rules={[{ required: true, whitespace: true, message: "A URL is required." }]}>
+                      <Input placeholder="https://files.example.com" />
+                    </Form.Item>
+                    <Form.Item
+                      name="token"
+                      label="Token"
+                      extra={settings?.https.token_set ? "A token is set. Leave this box alone to keep it." : "No token is set."}
+                    >
+                      <Input.Password autoComplete="off" placeholder={settings?.https.token_set ? "Unchanged" : "Paste the token"} />
+                    </Form.Item>
+                    <Form.Item name="remote_root" label="Remote root">
+                      <Input placeholder="/arichds" />
+                    </Form.Item>
+                    <Button type="primary" htmlType="submit" loading={savingHttps}>
+                      Save
+                    </Button>
+                  </Form>
+                  {httpsError !== null && <Alert type="error" showIcon title="Could not save the HTTPS settings" description={httpsError} />}
+                  <HowTo
+                    prerequisites={[
+                      "A server implementing the published Files contract (see the API page).",
+                      "A Bearer token the server will accept — the Push Token can be reused, or issue a different one.",
+                      "A certificate issued by a trusted authority — a self-signed certificate is refused.",
+                    ]}
+                  />
+                </Space>
+              ),
+            },
+          ]}
+        />
       </Card>
-    </div>
+
+      <Card size="small" title="Last cycle" extra={<Button size="small" onClick={() => load(false)}>Refresh</Button>}>
+        {status === null ? (
+          <Text type="secondary">
+            No cycle has run since ARICHDS last started. Uploads have not shipped yet — saving a tab above only
+            stores the configuration.
+          </Text>
+        ) : (
+          <Space direction="vertical" size="small" style={{ width: "100%" }}>
+            <Descriptions
+              size="small"
+              column={1}
+              bordered
+              items={
+                [
+                  { key: "ran_at", label: "Ran at", children: new Date(status.ran_at).toLocaleString() },
+                  { key: "protocol", label: "Protocol", children: status.protocol },
+                  { key: "outcome", label: "Outcome", children: status.outcome },
+                  { key: "files_sent", label: "Files sent", children: status.files_sent },
+                  { key: "bytes_sent", label: "Bytes sent", children: status.bytes_sent },
+                  { key: "files_skipped", label: "Files skipped", children: status.files_skipped },
+                  { key: "took", label: "Took", children: `${status.duration_sec.toFixed(2)} s` },
+                ] satisfies DescriptionsItemType[]
+              }
+            />
+            {status.error !== null && <Alert type="error" showIcon title="The last cycle failed" description={status.error} />}
+          </Space>
+        )}
+      </Card>
+
+      <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+        Nothing is sent while this page is empty.
+      </Paragraph>
+    </Space>
   );
 }

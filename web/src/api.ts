@@ -921,6 +921,108 @@ export interface CentralPushContract {
   notes: string[];
 }
 
+/**
+ * What the last File Upload Destination cycle did (ADR 0025, ticket 01).
+ *
+ * In memory on the service only (ADR 0008), `null` until a cycle has run
+ * since the last restart. Ticket 01 lands no cycle, so this reads `null`
+ * until ticket 02's scheduler job starts writing it.
+ */
+export interface FileUploadStatus {
+  ran_at: string;
+  protocol: string;
+  outcome: string;
+  files_sent: number;
+  bytes_sent: number;
+  files_skipped: number;
+  duration_sec: number;
+  error: string | null;
+}
+
+/**
+ * The SFTP tab as the API reports it (ADR 0025).
+ *
+ * **There is no `password` or `key_passphrase` field, by design** — both are
+ * write-only, the `db_dest_password` precedent. `password_set` /
+ * `key_passphrase_set` are what let the form show "set" rather than an
+ * empty box that reads as cleared.
+ */
+export interface FileUploadSftpSettings {
+  host: string;
+  port: number;
+  username: string;
+  password_set: boolean;
+  /** Not a secret — a file path, always echoed back in full. */
+  key_path: string;
+  key_passphrase_set: boolean;
+  remote_root: string;
+  /** `""` until a first successful connection pins one (ticket 04). */
+  host_key_fingerprint: string;
+}
+
+/** The FTPS tab as the API reports it — no `password` field, same rule. */
+export interface FileUploadFtpsSettings {
+  host: string;
+  port: number;
+  username: string;
+  password_set: boolean;
+  remote_root: string;
+}
+
+/** The HTTPS tab as the API reports it — no `token` field, same rule. */
+export interface FileUploadHttpsSettings {
+  url: string;
+  token_set: boolean;
+  remote_root: string;
+}
+
+/**
+ * `GET /api/settings/file-upload` (ADR 0025, ticket 01).
+ *
+ * `active_protocol` is `""` (nothing saved yet), `"sftp"`, `"ftps"` or
+ * `"https"` — the tab saved last. The other two tabs' settings are still
+ * returned, unchanged, so their forms can render even while inactive.
+ */
+export interface FileUploadSettings {
+  active_protocol: "" | "sftp" | "ftps" | "https";
+  sftp: FileUploadSftpSettings;
+  ftps: FileUploadFtpsSettings;
+  https: FileUploadHttpsSettings;
+  status: FileUploadStatus | null;
+}
+
+/**
+ * The body `PUT /api/settings/file-upload/sftp` takes.
+ *
+ * **Omit `password`/`key_passphrase` to keep the stored one; send `""` to
+ * clear it.** `key_path` is not write-only — always send the full value.
+ */
+export interface FileUploadSftpUpdate {
+  host: string;
+  port: number;
+  username: string;
+  password?: string;
+  key_path: string;
+  key_passphrase?: string;
+  remote_root: string;
+}
+
+/** The body `PUT /api/settings/file-upload/ftps` takes — same `password` rule as SFTP. */
+export interface FileUploadFtpsUpdate {
+  host: string;
+  port: number;
+  username: string;
+  password?: string;
+  remote_root: string;
+}
+
+/** The body `PUT /api/settings/file-upload/https` takes — same rule for `token`. */
+export interface FileUploadHttpsUpdate {
+  url: string;
+  token?: string;
+  remote_root: string;
+}
+
 /** What `POST /api/load-profile/export` ("Save CSV now") did. */
 export interface LoadProfileExportResult {
   rows_written: number;
@@ -1569,6 +1671,35 @@ export const api = {
 
   /** The published Central Push contract — admin-only. */
   centralPushContract: () => request<CentralPushContract>("/api/settings/central-push/contract"),
+
+  /**
+   * The File Upload Destination's three tabs and the last cycle's status —
+   * admin-only (ADR 0025, ticket 01), the same reasoning Central Push's own
+   * `GET` uses: the settings are machine-internal configuration.
+   */
+  fileUploadSettings: () => request<FileUploadSettings>("/api/settings/file-upload"),
+
+  /** Save the SFTP tab and make it the active protocol — admin-only. */
+  updateFileUploadSftp: (settings: FileUploadSftpUpdate) =>
+    request<FileUploadSettings>("/api/settings/file-upload/sftp", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
+
+  /** Save the FTPS tab and make it the active protocol — admin-only. */
+  updateFileUploadFtps: (settings: FileUploadFtpsUpdate) =>
+    request<FileUploadSettings>("/api/settings/file-upload/ftps", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
+
+  /** Save the HTTPS tab and make it the active protocol — admin-only. */
+  updateFileUploadHttps: (settings: FileUploadHttpsUpdate) =>
+    request<FileUploadSettings>("/api/settings/file-upload/https", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
+
 
   /**
    * "Save CSV now" — export one device's pending Interval Readings at once,

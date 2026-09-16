@@ -204,8 +204,9 @@ export default function App() {
   // role guard above is: a role demotion means "this is not yours", where an
   // unlicensed feature means "this machine does not have this" — and silently
   // landing on Devices would leave the operator wondering what happened.
-  // A "never advertised" page (File Upload) has no feature key, so it renders
-  // normally; only a `feature` entitlement can produce this message.
+  // Only a `feature` entitlement can produce this message — `always`/`never`
+  // pages (Central Push; none today) answer `null` from `pageFeatureKey` and
+  // always render normally.
   const requiredFeature = pageFeatureKey(active);
   const featureMissing = requiredFeature !== null && !status.enabled_features.includes(requiredFeature);
 

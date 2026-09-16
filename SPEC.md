@@ -1220,19 +1220,16 @@ one header.
   `billing_excel_export` `billing_image_export` **`database_destination`**
   **`file_upload_destination`** ·
   ops-only (ใน .env เท่านั้น): `app_log`
-  — ⚠️ **`file_upload_destination` เป็นคีย์ที่ "จอง" ไว้ ยังไม่ขาย** (issue 013): ยังไม่มีอะไรอยู่หลังหน้า
-  File Upload Destination เลย — ไม่มี endpoint ไม่มีแถวใน `settings` ไม่มี job และตัวหน้าเองยังบอกว่า
-  สิ่งที่พิมพ์ลงไปไม่ถูกบันทึกหรือส่งที่ไหน · **ห้ามเสนอราคาคีย์นี้ให้ลูกค้าและห้ามใส่ในใบแจ้งหนี้**
-  จนกว่า M8/§3.8 จะให้ transport กับหน้านี้ · จองไว้ตอนนี้เพราะยังไม่มี license ใบไหนออก — คีย์ที่เพิ่ม
-  ทีหลังจะไปถึงเฉพาะใบที่เซ็นด้วย `features: null` เท่านั้น ใบที่ระบุรายการชัดเจนจะขาดคีย์ใหม่เงียบ ๆ
-  ตลอดไป · เมนูซ้าย **ยังซ่อนหน้านี้อยู่แม้ license จะให้คีย์นี้ก็ตาม** (`features.ts` คงไว้ที่
-  `kind: "never"`) — การจองคีย์ไม่ใช่การส่งมอบฟีเจอร์ · ผลข้างเคียงที่ยอมรับแล้ว: license ที่เซ็นโดย
-  ไม่ระบุ `--features` จะโชว์แท็ก **File Upload Destination** บนการ์ด License ใน Settings ·
-  ไม่มีตัวกรองใด ๆ มาซ่อนโดยตั้งใจ — ฝั่งผู้ขายคุมด้วยการระบุคีย์ใน `--features` เอง · และ
-  **`arichds_vendor.py sign` เตือนเมื่อมีการระบุคีย์ที่จองไว้** (เตือนอย่างเดียว ยัง sign ให้ปกติ —
-  ต้อง sign ได้ ไม่งั้นการจองก็ไม่มีความหมาย) และรายการชื่อคีย์ที่ถูกต้องจะกำกับว่าตัวไหนยังไม่ขาย ·
-  รายชื่อคีย์ที่จองอยู่ที่ `RESERVED_FEATURE_KEYS` ใน `constants.py` — `tools/` **import** ไปใช้
-  ไม่ได้เขียนซ้ำ (กฎของ issue 010) วันที่ M8 ปล่อยฟีเจอร์จริงจึงแก้ที่เดียว
+  — ✅ **`file_upload_destination` ขายแล้ว** (ADR 0025, ticket 01, `.scratch/file-upload/issues/01-…`):
+  เดิมเป็นคีย์ที่ "จอง" ไว้ยังไม่ขาย (issue 013) — ตอนนี้ไม่ใช่แล้ว เพราะหน้า **FTP**
+  (เมนูเรียกว่า FTP, glossary ยังคงเป็น *File Upload Destination* — ตั้งใจให้ต่างกัน, ADR 0025)
+  มี endpoint จริง (`GET`/`PUT .../sftp`/`PUT .../ftps`/`PUT .../https`/`GET .../status`,
+  admin-only, gate ด้วย `require_feature`), มีแถวใน `settings` ครบสามโปรโตคอล และฟอร์ม
+  round-trip ได้จริงแล้ว — แม้ cycle ที่ส่งไฟล์จริง (ticket 02) และสาม transport (ticket 03-05)
+  จะยังไม่ลง ก็ตาม · เมนูซ้าย **โชว์หน้านี้แล้วเมื่อ license ให้คีย์นี้** (`features.ts` เปลี่ยนเป็น
+  `kind: "feature", key: "file_upload_destination"`) เหมือน `database_destination` ทุกประการ ·
+  `RESERVED_FEATURE_KEYS` ใน `constants.py` ว่างเปล่าแล้ว (คีย์นี้เป็นสมาชิกตัวสุดท้าย) — กลไกยังอยู่
+  เผื่อคีย์ต่อไปที่ต้องจอง, `tools/` ยัง **import** ไม่เขียนซ้ำ (กฎของ issue 010)
   (`api_config` ของ v1 ตายไปกับหน้า ApiConfig)
   — ✅ **`instantaneous` → `records` (เจ้าของตัดสิน grill M6, 2026-08-09)**: หน้าที่คีย์นี้คุมชื่อ
   **Records** ตั้งแต่ grill M3 · คีย์ชื่อเดิมขัด `CONTEXT.md` (ซึ่ง `_Avoid_: instantaneous records`

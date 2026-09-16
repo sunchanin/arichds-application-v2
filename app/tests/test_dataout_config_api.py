@@ -36,8 +36,9 @@ class TestFeatureKey:
 
         The size assertion is pinned on purpose rather than brittle: it is the
         tripwire that forces a repo-wide sweep of everything enumerating or
-        counting the keys each time one is added. Eleven since issue 013
-        reserved `file_upload_destination`.
+        counting the keys each time one is added. Eleven since issue 013 added
+        `file_upload_destination` — reserved at first, sold like this key since
+        ADR 0025's ticket 01 (the count itself never changed).
         """
         assert "database_destination" in SELLABLE_FEATURE_KEYS
         assert len(SELLABLE_FEATURE_KEYS) == 11

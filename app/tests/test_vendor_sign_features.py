@@ -252,60 +252,93 @@ class TestCaseSensitivity:
         assert "Billing" in captured.err
 
 
+@pytest.fixture
+def reserved_key(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Temporarily reserve one real sellable key.
+
+    `RESERVED_FEATURE_KEYS` is empty in production as of ADR 0025's ticket
+    01 — `file_upload_destination` was its last member, and it left the set
+    the moment the File Upload Destination grew a real configuration
+    surface. The warn-never-refuse *mechanism* below is still a real
+    behaviour the CLI must have the next time a key is reserved, so this
+    fixture exercises it against a stand-in rather than letting the whole
+    class go untested for want of a live example (issue 010's own "never
+    restate the list" rule cuts the other way here: `billing` is picked
+    because it is a real member of `SELLABLE_FEATURE_KEYS`, not a literal
+    copied into the CLI).
+    """
+    key = "billing"
+    monkeypatch.setattr("arichds.constants.RESERVED_FEATURE_KEYS", frozenset({key}))
+    return key
+
+
 class TestAReservedKeyIsSignableButAnnounced:
     """A reserved key signs, and says so — issue 013, fix round.
 
-    `file_upload_destination` **must stay signable** (criterion 3): a refusal
-    here would break the thing the reservation is for, which is that a licence
-    signed today can already carry it. But nothing implements it, and this CLI
-    is the only path by which a customer can come to own it. The product side
-    of *"a customer who bought this key would be buying a form that discards
-    what they type"* has five guards; without this the purchase side had none,
-    and the CLI presented the key as an ordinary thing to sell.
+    A reserved key **must stay signable** (criterion 3): a refusal here would
+    break the thing the reservation is for, which is that a licence signed
+    today can already carry it. But nothing implements it, and this CLI is
+    the only path by which a customer can come to own it. The product side of
+    *"a customer who bought this key would be buying a form that discards
+    what they type"* has five guards; without this the purchase side had
+    none, and the CLI presented the key as an ordinary thing to sell.
 
     So: warn, never refuse, and warn at the moment the name is typed rather
     than in a source comment the person making the sale does not open.
+
+    Exercised against the `reserved_key` fixture's stand-in rather than a
+    real production key — see that fixture's docstring for why.
     """
 
-    def test_a_reserved_key_still_signs_and_reaches_the_payload(self, vendor_cli, key_path: Path, capsys) -> None:
-        exit_code = sign(vendor_cli, key_path, "--features", "file_upload_destination")
+    def test_a_reserved_key_still_signs_and_reaches_the_payload(
+        self, vendor_cli, key_path: Path, reserved_key: str, capsys
+    ) -> None:
+        exit_code = sign(vendor_cli, key_path, "--features", reserved_key)
 
         captured = capsys.readouterr()
         assert exit_code == 0
-        assert payload_of(captured.out.strip())["features"] == ["file_upload_destination"]
+        assert payload_of(captured.out.strip())["features"] == [reserved_key]
 
-    def test_naming_a_reserved_key_warns_on_stderr(self, vendor_cli, key_path: Path, capsys) -> None:
+    def test_naming_a_reserved_key_warns_on_stderr(self, vendor_cli, key_path: Path, reserved_key: str, capsys) -> None:
         """stderr, so the Activation Code on stdout still pipes cleanly."""
-        sign(vendor_cli, key_path, "--features", "file_upload_destination")
+        sign(vendor_cli, key_path, "--features", reserved_key)
 
         captured = capsys.readouterr()
         assert "WARNING" in captured.err
-        assert "file_upload_destination" in captured.err
+        assert reserved_key in captured.err
         assert "reserved" in captured.err.lower()
         assert "invoice" in captured.err.lower()
         # The warning must not contaminate the one line the customer pastes.
         assert "WARNING" not in captured.out
 
-    def test_selling_only_implemented_keys_is_not_warned_about(self, vendor_cli, key_path: Path, capsys) -> None:
+    def test_selling_only_implemented_keys_is_not_warned_about(
+        self, vendor_cli, key_path: Path, reserved_key: str, capsys
+    ) -> None:
         """Otherwise the warning is noise on every sale, and the next person
-        learns to ignore it — which is the failure mode, not the guard."""
-        exit_code = sign(vendor_cli, key_path, "--features", "billing,records")
+        learns to ignore it — which is the failure mode, not the guard.
+        `records` rather than *reserved_key* itself, so this asserts the
+        negative against a genuinely un-reserved key."""
+        exit_code = sign(vendor_cli, key_path, "--features", "records")
 
         assert exit_code == 0
         assert "reserved" not in capsys.readouterr().err.lower()
 
-    def test_the_valid_name_list_marks_which_key_is_reserved(self, vendor_cli, key_path: Path, capsys) -> None:
+    def test_the_valid_name_list_marks_which_key_is_reserved(
+        self, vendor_cli, key_path: Path, reserved_key: str, capsys
+    ) -> None:
         """The refusal path prints every sellable name as a menu to choose
         from. A reader choosing off that menu must be able to see which entry
         is not actually for sale."""
         sign(vendor_cli, key_path, "--features", "nope")
 
         captured = capsys.readouterr()
-        assert "file_upload_destination" in captured.err
+        assert reserved_key in captured.err
         assert "reserved" in captured.err.lower()
 
     def test_the_features_help_mentions_the_reserved_set(self, vendor_cli, capsys) -> None:
-        """`--help` is read before the name is typed, the error only after."""
+        """`--help` is read before the name is typed, the error only after.
+        Static help text — needs no *reserved_key* fixture, since it names
+        the mechanism, not a member."""
         with pytest.raises(SystemExit):
             vendor_cli.main(["sign", "--help"])
 
@@ -323,12 +356,27 @@ class TestWhereTheReservedSetLives:
     def test_every_reserved_key_is_also_sellable(self) -> None:
         """A reserved key outside the sellable set could never be signed at
         all, so the warning would guard a path that does not exist and would
-        rot unnoticed."""
+        rot unnoticed.
+
+        Dormant since ADR 0025's ticket 01: `RESERVED_FEATURE_KEYS` is empty
+        (`file_upload_destination` was its last member), so this is
+        vacuously true — `frozenset() <= SELLABLE_FEATURE_KEYS` — until the
+        next key is reserved. Left in place rather than deleted: the
+        assertion is still the right one the day a key is reserved again,
+        and a vacuous pass here is honest, not a false instrument — there is
+        nothing to violate it while the set is empty.
+        """
         assert RESERVED_FEATURE_KEYS <= SELLABLE_FEATURE_KEYS, sorted(RESERVED_FEATURE_KEYS - SELLABLE_FEATURE_KEYS)
 
     def test_the_cli_never_restates_a_reserved_key_name(self) -> None:
         """A literal in `tools/` is a second copy someone must remember to
-        delete at M8 — exactly what issue 010 removed for the sellable list."""
+        delete at M8 — exactly what issue 010 removed for the sellable list.
+
+        Dormant for the same reason as the test above: with
+        `RESERVED_FEATURE_KEYS` empty, the loop body never runs. Kept rather
+        than deleted so the guard is already in place the next time a key is
+        reserved, rather than needing to be reinvented.
+        """
         source = VENDOR_CLI_PATH.read_text(encoding="utf-8")
 
         for key in sorted(RESERVED_FEATURE_KEYS):
