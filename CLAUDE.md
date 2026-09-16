@@ -548,6 +548,14 @@ Two rules that keep the pipeline honest — apply them when running `/to-issues`
   with nothing local to read.
   Skip the digest for modules that only reuse the established stack (FastAPI, SQLAlchemy 2,
   AntD v6 — those are covered by `.claude/skills/fastapi/` and `antd-ui`).
+- **A ticket that waits on a human is typed, not just labelled.** `/run-batch` and `/run-issue`
+  skip a local ticket only on `Type: HITL` or a `Status:` other than `ready-for-agent` (the
+  local status gate, added 2026-09-16). A placeholder written to hold a slot — "blocked until
+  the grill", "needs the customer's answer" — must carry `Type: HITL` and a non-ready
+  `Status:`; prose alone ("do not run this yet") is invisible to the pipeline, which would lint
+  it, fail it, and hand it to Job A to invent a prompt from. And when several
+  `.scratch/*/issues/` folders exist, always pass the feature slug — the batch now refuses to
+  guess between them.
 
 Issue tracker: GitHub `sunchanin/arichds-application-v2` via `gh` CLI — with `docs/issues/NNN-*.md`
 as the local alternative for small leftovers (a nit an audit log parked for the owner), which

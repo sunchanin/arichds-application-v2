@@ -524,6 +524,24 @@ Distinct from the team's central server, which is a different Destination with a
 transport (SPEC §3.8). ADR 0016 is why it is a Destination at all and not the store.
 _Avoid_: our database, the MySQL backend, the remote DB, external database
 
+**File Upload Destination**:
+The **Data-out Destination** that copies the machine's **files** — the three export files and
+the Billing capture documents — to a server the operator names, over one of three protocols the
+operator picks (SFTP, FTPS or HTTPS to the team's server). It carries the same rows the
+**Central Push** carries, but as the documents a human signs off on rather than as JSON, and it
+is the only Destination that carries the capture documents at all. The menu calls it **FTP**
+because that is the customer's word for it; the menu name is not the protocol.
+_Avoid_: FTP as the mechanism (plain FTP is never offered — ADR 0016), file sync, backup,
+Syncthing (a third-party replicated folder is a different Destination with no code of ours)
+
+**Upload Manifest**:
+The list of files a **File Upload Destination** already holds, with each file's digest, kept
+**on the server** and read back at the start of every cycle so the machine sends only what is
+new or changed. It is the file-side twin of the holdings the **Central Push** asks for: the
+server remembers, the machine does not (ADR 0008/0024). A missing manifest means "send
+everything".
+_Avoid_: watermark, sync state, index, cache
+
 **Mirror Window**:
 How much history a **Data-out Destination** is kept at — exactly what our own store holds, and
 no more. Our sync both writes new rows and deletes rows past retention in the customer's
