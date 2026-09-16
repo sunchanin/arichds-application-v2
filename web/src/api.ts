@@ -1128,7 +1128,7 @@ function formatDetail(detail: unknown): string {
  * on a non-OK response the same way `request()` does, just without the
  * "always JSON" assumption on the success path.
  */
-async function downloadBinary(url: string, fallbackFilename: string): Promise<void> {
+async function downloadBinary(url: string, fallbackFilename: string): Promise<Headers> {
   const session = getSession();
   const response = await fetch(url, {
     headers: session ? { Authorization: `Bearer ${session.token}` } : {},
@@ -1171,6 +1171,7 @@ async function downloadBinary(url: string, fallbackFilename: string): Promise<vo
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(objectUrl);
+  return response.headers;
 }
 
 /**
@@ -1184,7 +1185,7 @@ async function downloadBinary(url: string, fallbackFilename: string): Promise<vo
  * documented part of the API surface.
  */
 export async function downloadBillingCapture(readingId: number, format: "pdf" | "xlsx"): Promise<void> {
-  return downloadBinary(`/api/billing/captures/${readingId}?format=${format}`, `capture.${format}`);
+  await downloadBinary(`/api/billing/captures/${readingId}?format=${format}`, `capture.${format}`);
 }
 
 /**
@@ -1193,8 +1194,15 @@ export async function downloadBillingCapture(readingId: number, format: "pdf" | 
  * issue #35; issue #38, ADR 0017/0015). Device-keyed, not reading-keyed:
  * there is no per-row id to pass, only the device the operator has selected.
  */
-export async function downloadBillingImage(deviceId: number): Promise<void> {
-  return downloadBinary(`/api/billing/captures/image?device_id=${deviceId}`, "capture.png");
+/**
+ * Resolves to the instant the served capture was written (`X-Captured-At`,
+ * ISO 8601 with offset) so the toast can name the same time the All-Meters
+ * row shows (ui-audit ticket 03) — or null for a file the server holds no
+ * stamp for.
+ */
+export async function downloadBillingImage(deviceId: number): Promise<string | null> {
+  const headers = await downloadBinary(`/api/billing/captures/image?device_id=${deviceId}`, "capture.png");
+  return headers.get("x-captured-at");
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

@@ -18,6 +18,7 @@ import pytest
 from conftest import mint_meter_activation_code
 from fakes import FakeMeterState
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from arichds.constants import BILLING_BEHIND_DAYS
 
@@ -392,28 +393,36 @@ class TestOrdering:
 
 
 class TestTheCaptureTimeColumn:
-    def test_it_is_the_readings_own_read_time(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
-        read_at = NOW - timedelta(days=1, hours=3)
+    """`captured_at` is the stored stamp the capture writers set when a
+    document is actually written (ui-audit ticket 03) — never `read_at`, and
+    never inferred from the capture folder being configured."""
+
+    def test_a_period_read_but_never_captured_is_blank_even_with_a_capture_folder(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
         device_id = add_device(admin_client, fake_meter)
-        seed_closed(device_id, NOW - timedelta(days=1), read_at=read_at)
+        seed_closed(device_id, NOW - timedelta(days=1), read_at=NOW - timedelta(days=1, hours=3))
         set_capture_dir("C:/Captures")
 
         items = rows(admin_client)
 
-        assert items[0]["captured_at"] is not None
-        assert items[0]["captured_at"].startswith(read_at.strftime("%Y-%m-%dT%H:%M"))
+        assert items[0]["captured_at"] is None
 
-    def test_it_is_blank_when_the_capture_folder_is_unset(
-        self, admin_client: TestClient, fake_meter: FakeMeterState
-    ) -> None:
-        """Captures are switched off with no folder configured (ADR 0010), so
-        reporting the read time here would name a document nobody wrote."""
+    def test_it_is_the_stored_capture_stamp(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        from arichds.db.models import BillingReading
+        from arichds.db.session import session_scope
+
         device_id = add_device(admin_client, fake_meter)
-        seed_closed(device_id, NOW - timedelta(days=1))
+        seed_closed(device_id, NOW - timedelta(days=1), read_at=NOW - timedelta(days=1, hours=3))
+        captured_at = NOW - timedelta(hours=2)
+        with session_scope() as session:
+            row = session.scalars(select(BillingReading).where(BillingReading.device_id == device_id)).one()
+            row.captured_at = captured_at
 
         items = rows(admin_client)
 
-        assert items[0]["captured_at"] is None
+        assert items[0]["captured_at"] is not None
+        assert items[0]["captured_at"].startswith(captured_at.strftime("%Y-%m-%dT%H:%M"))
 
     def test_it_is_blank_for_a_device_that_has_never_billed(
         self, admin_client: TestClient, fake_meter: FakeMeterState

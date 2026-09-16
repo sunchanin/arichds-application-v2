@@ -99,7 +99,20 @@ LoadProfileItem = create_model(
 #: `record_status` becomes `is_open`, a clearer boolean for a receiver that
 #: never sees the string encoding this store uses internally.
 _BILLING_EXCLUDE: Final[frozenset[str]] = frozenset(
-    {"id", "device_id", "bill_date", "read_at", "record_status", "source", "meter_serial", "created_at", "updated_at"}
+    {
+        "id",
+        "device_id",
+        "bill_date",
+        "read_at",
+        "record_status",
+        "source",
+        "meter_serial",
+        "created_at",
+        "updated_at",
+        # Bookkeeping about this machine's capture folder (ui-audit ticket 03),
+        # not a measurement — contract version 1 must not grow a field for it.
+        "captured_at",
+    }
 )
 
 BillingItem = create_model(

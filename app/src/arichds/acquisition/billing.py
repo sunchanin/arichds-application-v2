@@ -300,6 +300,10 @@ def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> int
                     write_image=write_image,
                     scale=display_unit_scale,
                 )
+                # Stamped only once the document exists (ui-audit ticket 03):
+                # a raise above leaves the row exactly as it was, so the
+                # Captured column never names a file that was not written.
+                row.captured_at = datetime.now(UTC)
                 written += 1
         except Exception:  # noqa: BLE001 — capture must never fail the read that produced the row.
             logger.exception("Capture failed for %s reading id %s", device_name, reading_id)

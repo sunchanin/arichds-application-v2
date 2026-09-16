@@ -55,6 +55,9 @@ class TestAllSectionsCoversEveryMeasurementColumn:
                 "meter_serial",
                 "created_at",
                 "updated_at",
+                # A capture-folder stamp (ui-audit ticket 03), not a measurement —
+                # the document it stamps must not print it.
+                "captured_at",
             }
         }
 

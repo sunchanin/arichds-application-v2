@@ -329,6 +329,44 @@ class TestBillingImageEndpoint:
         assert "2026-07-31" in response.headers["content-disposition"]
         assert "2026-06-30" not in response.headers["content-disposition"]
 
+    def test_a_hand_pressed_capture_stamps_the_anchor_period_and_names_the_instant(
+        self, admin_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ui-audit ticket 03 — Capture image is a capture of the anchor
+        period: it sets `captured_at`, the response header carries the same
+        instant for the toast, and the All-Meters row shows it."""
+        stub_render_billing_png(monkeypatch)
+        capture_dir = tmp_path / "captures"
+        capture_dir.mkdir()
+        set_capture_dir(admin_client, capture_dir)
+        device_id = make_device(admin_client)
+        seed_closed(device_id)
+
+        response = admin_client.get("/api/billing/captures/image", params={"device_id": device_id})
+
+        assert response.status_code == 200, response.text
+        stamped = response.headers["x-captured-at"]
+        assert datetime.fromisoformat(stamped).tzinfo is not None
+        row = admin_client.get("/api/billing/all-meters").json()["data"]["items"][0]
+        assert row["captured_at"] is not None
+        assert datetime.fromisoformat(row["captured_at"]) == datetime.fromisoformat(stamped)
+
+    def test_serving_a_file_that_already_exists_does_not_move_the_stamp(
+        self, admin_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub_render_billing_png(monkeypatch)
+        capture_dir = tmp_path / "captures"
+        capture_dir.mkdir()
+        set_capture_dir(admin_client, capture_dir)
+        device_id = make_device(admin_client)
+        seed_closed(device_id)
+
+        first = admin_client.get("/api/billing/captures/image", params={"device_id": device_id})
+        second = admin_client.get("/api/billing/captures/image", params={"device_id": device_id})
+
+        assert second.status_code == 200, second.text
+        assert second.headers["x-captured-at"] == first.headers["x-captured-at"]
+
     def test_t16_zero_closed_periods_is_404_not_a_500(self, admin_client: TestClient, tmp_path: Path) -> None:
         """T16 — a device with zero closed periods must be a clean 404 with
         the specific sentence, not a 500."""

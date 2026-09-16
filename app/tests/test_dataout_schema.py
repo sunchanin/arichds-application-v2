@@ -34,15 +34,21 @@ class TestDerivedFromTheOrm:
         assert {c.name for c in LOAD_PROFILE_TABLE.columns} == source | {"meter_serial"}
 
     def test_billing_carries_every_source_column_but_the_two_ids(self) -> None:
-        source = {c.name for c in BillingReading.__table__.columns} - {"id", "device_id"}
+        """Minus `captured_at` too since ui-audit ticket 03 — a stamp about this
+        machine's capture folder, not a measurement the customer's database
+        mirrors (ADR 0016/0020)."""
+        source = {c.name for c in BillingReading.__table__.columns} - {"id", "device_id", "captured_at"}
 
         assert {c.name for c in BILLING_TABLE.columns} == source
 
     def test_billing_really_does_have_the_sixty_seven_columns_m4c_left(self) -> None:
-        """69 model columns minus `id` and `device_id`. A number, so a silent
-        loss of a column shows up as a number rather than as a set."""
-        assert len(BillingReading.__table__.columns) == 69
+        """70 model columns minus `id`, `device_id` and `captured_at` (a
+        capture-folder stamp, ui-audit ticket 03 — not a measurement). A
+        number, so a silent loss of a column shows up as a number rather than
+        as a set."""
+        assert len(BillingReading.__table__.columns) == 70
         assert len(BILLING_TABLE.columns) == 67
+        assert "captured_at" not in BILLING_TABLE.columns
 
     def test_device_id_appears_nowhere(self) -> None:
         """`devices.id` is a SQLite rowid alias and is **reused** after the

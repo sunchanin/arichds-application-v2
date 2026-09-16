@@ -433,6 +433,9 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   const tableWidth = totalLeafWidth(columns);
 
   const [imageDownloading, setImageDownloading] = useState(false);
+  // One shared refresh trigger for the fetch effects below — bumped by Read
+  // now (issue #44) and by Capture image (ui-audit ticket 03).
+  const [refreshTick, setRefreshTick] = useState(0);
 
   // Capture image (M7 slice 4, issue #35, D12) — device-keyed, so it needs a
   // specific device selected; "All devices" has no anchor to render from.
@@ -440,9 +443,15 @@ export function Billing({ role }: { role: "admin" | "user" }) {
     if (deviceId === undefined) return;
     setImageDownloading(true);
     downloadBillingImage(deviceId)
+      .then((capturedAt) => {
+        // The toast names the instant the server stamped on the anchor period
+        // (ui-audit ticket 03); the refresh makes the All-Meters row show it.
+        if (capturedAt !== null) message.success(`Captured ${stamp(capturedAt)}`);
+        setRefreshTick((tick) => tick + 1);
+      })
       .catch((err: unknown) => surface(err, "Could not download the capture image."))
       .finally(() => setImageDownloading(false));
-  }, [deviceId, surface]);
+  }, [deviceId, message, surface]);
 
   // "Save billing file now" (M13, issue 01) — the same shape "Save CSV now"
   // has on the Load Profile page, and for the same reason it is worth having:
@@ -474,7 +483,6 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   // effect below needed added to it — neither this page nor LoadProfile.tsx
   // had one before this issue.
   const [reading, setReading] = useState(false);
-  const [refreshTick, setRefreshTick] = useState(0);
 
   const onReadNow = useCallback(() => {
     if (deviceId === undefined) return;

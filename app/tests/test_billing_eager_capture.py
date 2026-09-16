@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from fakes import FakeMeterState
+from sqlalchemy import select
 
 from arichds.acquisition.billing import read_and_store_billing
 from arichds.acquisition.drivers.base import BillingReading
@@ -23,6 +24,7 @@ from arichds.acquisition.locks import EndpointLocks
 from arichds.config import Settings
 from arichds.constants import SOURCE_DLMS
 from arichds.db.app_settings import CAPTURE_DIR_KEY, DISPLAY_UNIT_SCALE_KEY, set_setting
+from arichds.db.models import BillingReading as BillingReadingRow
 from arichds.db.session import session_scope
 from arichds.licensing.current import set_current_license_service
 from arichds.licensing.service import LicenseState
@@ -163,6 +165,25 @@ class TestOnlyAutoCaptureOn:
         assert any(f.suffix == ".pdf" for f in files)
         assert not any(f.suffix == ".xlsx" for f in files)
 
+    def test_the_captured_period_is_stamped_with_the_write_time(
+        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features
+    ) -> None:
+        """ui-audit ticket 03 — `captured_at` is set once the document exists,
+        and it is the write moment, not the bill's `read_at`."""
+        license_features(["billing", "auto_capture"])
+        set_capture_dir(capture_dir)
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+        before = datetime.now(UTC)
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert captured_files(capture_dir), "precondition: a document was written"
+        with session_scope() as session:
+            row = session.scalars(select(BillingReadingRow).where(BillingReadingRow.record_status.is_(None))).one()
+            assert row.captured_at is not None
+            assert _utc(row.captured_at) >= before.replace(microsecond=0)
+            assert _utc(row.captured_at) != _utc(row.read_at)
+
 
 class TestNeitherFeatureOn:
     def test_nothing_is_written(
@@ -244,6 +265,32 @@ class TestCaptureFailureNeverFailsTheRead:
         assert result.error is None
         assert result.stored == 1
         assert any("capture" in record.message.lower() for record in caplog.records)
+
+    def test_a_capture_that_fails_to_write_leaves_captured_at_unset(
+        self,
+        device_id: int,
+        fake_meter: FakeMeterState,
+        capture_dir: Path,
+        license_features,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ui-audit ticket 03 — the stamp follows the document; no document, no stamp."""
+        import arichds.acquisition.billing as billing_module
+
+        license_features(["billing", "auto_capture"])
+        set_capture_dir(capture_dir)
+        fake_meter.billing_rows = [ENTRY_CLOSED]
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise OSError("the share went away")
+
+        monkeypatch.setattr(billing_module, "capture_reading", boom)
+
+        read_and_store_billing(device_id, now=NOW)
+
+        with session_scope() as session:
+            row = session.scalars(select(BillingReadingRow).where(BillingReadingRow.record_status.is_(None))).one()
+            assert row.captured_at is None
 
 
 class TestNoLicenseServicePublished:

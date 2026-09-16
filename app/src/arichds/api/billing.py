@@ -504,14 +504,6 @@ def list_all_meters(
     the planned billing export calls directly.
     """
     now = datetime.now(UTC)
-    # One setting read and one entitlement check for the whole view, not per
-    # row: `captured_at` answers "was a document written", and with captures
-    # switched off the answer is no for every row at once. Mirrors the same
-    # two gates `acquisition/billing.py::_capture_new_closed_periods` applies
-    # before it writes anything.
-    captures_on = bool(get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT).strip()) and feature_enabled(
-        "auto_capture", license_service=license_service, settings=get_settings()
-    )
 
     items: list[AllMetersRowOut] = []
     for device, reading in session.execute(latest_closed_per_device()).all():
@@ -522,7 +514,11 @@ def list_all_meters(
                 device_name=device.name,
                 meter_serial=device.meter_serial,
                 bill_date=reading.bill_date if reading is not None else None,
-                captured_at=reading.read_at if reading is not None and captures_on else None,
+                # The stored stamp and nothing else (ui-audit ticket 03): it is
+                # written when a Capture is actually written, so a period that
+                # was read but never captured stays blank however captures
+                # are configured.
+                captured_at=reading.captured_at if reading is not None else None,
                 import_active_kwh_total=reading.import_active_kwh_total if reading is not None else None,
                 export_active_kwh_total=reading.export_active_kwh_total if reading is not None else None,
                 status=resolved,
@@ -869,7 +865,8 @@ def download_billing_image(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
-    if not _is_regular_file(png_target):
+    wrote_now = not _is_regular_file(png_target)
+    if wrote_now:
         try:
             write_png_capture(anchor, device_name, png_target, capture_dir, display_unit_scale)
         except FileExistsError:
@@ -892,11 +889,19 @@ def download_billing_image(
     if not _is_regular_file(png_target):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The capture could not be created.")
 
-    return StreamingResponse(
-        _stream_file(png_target),
-        media_type="image/png",
-        headers={"Content-Disposition": f'attachment; filename="{png_target.name}"'},
-    )
+    if wrote_now:
+        # A hand-pressed Capture image is a capture of the anchor period
+        # (ADR 0015), so it stamps the same column the automatic path does
+        # (ui-audit ticket 03) — after the file is confirmed on disk, never
+        # before. A file that already existed leaves the earlier stamp alone.
+        anchor.captured_at = datetime.now(UTC)
+        session.commit()
+
+    headers = {"Content-Disposition": f'attachment; filename="{png_target.name}"'}
+    if anchor.captured_at is not None:
+        # The toast names the same instant the All-Meters row will show.
+        headers["X-Captured-At"] = _as_utc(anchor.captured_at).isoformat()
+    return StreamingResponse(_stream_file(png_target), media_type="image/png", headers=headers)
 
 
 @router.get("/captures/{reading_id}")

@@ -333,6 +333,11 @@ class BillingReading(Base):
         source: Which acquisition path produced it (``dlms``) — a property of
             the reading, never a branch in read-path code.
         meter_serial: Snapshot per row (SPEC §3.6).
+        captured_at: When the Capture for this period was last written to the
+            capture folder (UTC) — stamped by the automatic path when a new
+            closed period is captured and by a hand-pressed Capture image; None
+            until a document exists (ui-audit ticket 03). Never backfilled
+            from file timestamps.
         created_at: When this row was first written (UTC).
         updated_at: When this row last changed (UTC). Required because the
             Open Period slot is upserted **in place** on every read (SPEC
@@ -366,6 +371,7 @@ class BillingReading(Base):
     record_status: Mapped[str | None] = mapped_column(String(16), default=None)
     source: Mapped[str] = mapped_column(String(16))
     meter_serial: Mapped[str | None] = mapped_column(String(64), default=None)
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

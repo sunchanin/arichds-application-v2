@@ -45,7 +45,10 @@ METADATA = sa.MetaData()
 #: delete, and two meters' data would silently merge under one number. Rows are
 #: keyed on **Meter Serial** instead, which is globally unique per meter and is
 #: why two installs may safely share one destination database (ADR 0020).
-_EXCLUDED_COLUMNS = frozenset({"id", "device_id"})
+# `captured_at` is bookkeeping about *our* capture folder (ui-audit ticket
+# 03), not a meter measurement — a customer's database mirrors what the meter
+# said (ADR 0016/0020), never where a document landed on this machine.
+_EXCLUDED_COLUMNS = frozenset({"id", "device_id", "captured_at"})
 
 #: Meter Serial's width, taken from ``devices.meter_serial`` /
 #: ``billing_readings.meter_serial`` (``String(64)``) rather than chosen here,
