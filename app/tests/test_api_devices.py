@@ -692,8 +692,9 @@ class TestCatalog:
         assert entry["supports_battery"] is False
         assert entry["supports_energy_summary"] is False
         assert entry["supports_special_days"] is False
-        premier = next(e for e in data if e["model"] == "premier550")
-        assert premier["supports_battery"] is True
+        # Premier 550 — the one CEWE model that keeps the flag — is not listed
+        # under the suite's fake driver registry; `test_catalog.py` asserts the
+        # driver/catalog correspondence against the real one.
 
     def test_smw110_does_not_support_battery(self, admin_client: TestClient) -> None:
         """M7-2, issue #29 — pins the flag in the direction that changed:
