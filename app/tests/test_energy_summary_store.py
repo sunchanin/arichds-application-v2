@@ -12,6 +12,7 @@ readings produces no row".
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -196,6 +197,64 @@ class TestLateReadings:
         assert stored_rows(device_id)[today]["total_import_kwh"] == pytest.approx(4.0), (
             "the late-arriving row was never counted on the next recompute"
         )
+
+
+class TestTheCycleLogsWhatItDid:
+    """One INFO line per cycle, always (ui-audit ticket 08) — the counts the
+    recompute already computes, never a second query."""
+
+    @staticmethod
+    def cycle_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.INFO and record.getMessage().startswith("Energy Summary recompute walked")
+        ]
+
+    def test_a_cycle_that_changed_nothing_still_logs_exactly_one_line_carrying_zero(
+        self, migrated_db: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        device_id = make_device()
+        today = date(2026, 8, 6)
+        seed(device_id, [(datetime(2026, 8, 6, 10, 0, tzinfo=UTC), 2.5, 0.0)])
+        energy_summary_recompute_cycle(today=today, now=NOW)
+        # An earlier test's app startup may have left the root logger at INFO,
+        # in which case the first cycle's line was captured too — only the
+        # second cycle is under measurement.
+        caplog.clear()
+
+        with caplog.at_level(logging.INFO, logger="arichds.db.energy_summary_store"):
+            energy_summary_recompute_cycle(today=today, now=NOW + timedelta(hours=1))
+
+        lines = self.cycle_lines(caplog)
+        assert len(lines) == 1, lines
+        assert "walked 1 device(s): 0 day(s) upserted, 0 deleted" in lines[0]
+
+    def test_the_counts_are_the_days_written_and_removed(
+        self, migrated_db: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        device_id = make_device()
+        today = date(2026, 8, 7)
+        seed(
+            device_id,
+            [
+                (datetime(2026, 8, 6, 10, 0, tzinfo=UTC), 2.5, 0.0),
+                (datetime(2026, 8, 7, 10, 0, tzinfo=UTC), 1.0, 0.0),
+            ],
+        )
+        with caplog.at_level(logging.INFO, logger="arichds.db.energy_summary_store"):
+            energy_summary_recompute_cycle(today=today, now=NOW)
+        assert "2 day(s) upserted, 0 deleted" in self.cycle_lines(caplog)[-1]
+
+        # Take one day's readings away: that stored day is now stale.
+        with session_scope() as session:
+            session.execute(
+                delete(LoadProfileReading).where(LoadProfileReading.read_at == datetime(2026, 8, 6, 10, 0, tzinfo=UTC))
+            )
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="arichds.db.energy_summary_store"):
+            energy_summary_recompute_cycle(today=today, now=NOW + timedelta(hours=1))
+        assert "0 day(s) upserted, 1 deleted" in self.cycle_lines(caplog)[-1]
 
 
 class TestQuietRecompute:

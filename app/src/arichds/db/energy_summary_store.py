@@ -41,6 +41,7 @@ window.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
@@ -96,21 +97,43 @@ def energy_summary_recompute_cycle(*, today: date | None = None, now: datetime |
     local_today_ = local_today() if today is None else today
     now_utc = datetime.now(UTC) if now is None else now
     window_start = local_today_ - timedelta(days=RETENTION_DAYS - 1)
+    started = time.monotonic()
 
     with session_scope() as session:
         device_ids = list(session.scalars(select(Device.id).order_by(Device.id)))
 
+    upserted = deleted = 0
     for device_id in device_ids:
         try:
-            _recompute_device(device_id, window_start, local_today_, now_utc)
+            device_upserted, device_deleted = _recompute_device(device_id, window_start, local_today_, now_utc)
         except Exception:  # noqa: BLE001 — one device must never strand the rest of the site.
             logger.exception("Energy Summary recompute failed for device id %s", device_id)
+            continue
+        upserted += device_upserted
+        deleted += device_deleted
+
+    # One line per cycle, always — a cycle that changed nothing says so too
+    # (ui-audit ticket 08). Until this landed the job was silent, and the only
+    # proof it had run was `updated_at` in the database.
+    logger.info(
+        "Energy Summary recompute walked %d device(s): %d day(s) upserted, %d deleted, in %.2f s",
+        len(device_ids),
+        upserted,
+        deleted,
+        time.monotonic() - started,
+    )
 
 
-def _recompute_device(device_id: int, window_start: date, window_end: date, now_utc: datetime) -> None:
+def _recompute_device(device_id: int, window_start: date, window_end: date, now_utc: datetime) -> tuple[int, int]:
     """Recompute one device's window: upsert every day that changed, and
     delete every stored day in the window the live aggregation no longer
-    produces."""
+    produces.
+
+    Returns:
+        ``(upserted, deleted)`` — how many stored days were written (new or
+        changed) and how many stale ones were removed, for the cycle's log line.
+    """
+    upserted = 0
     with session_scope() as session:
         computed = {day.date: day for day in energy_summary_rows(session, device_id, window_start, window_end)}
         existing_rows = {
@@ -135,6 +158,7 @@ def _recompute_device(device_id: int, window_start: date, window_end: date, now_
                         **{field: getattr(day, field) for field in _BUCKET_FIELDS},
                     )
                 )
+                upserted += 1
                 continue
             # Only touched when at least one bucket genuinely differs — this
             # is what keeps `updated_at` from moving on a row nothing changed
@@ -143,6 +167,7 @@ def _recompute_device(device_id: int, window_start: date, window_end: date, now_
                 for field in _BUCKET_FIELDS:
                     setattr(existing, field, getattr(day, field))
                 existing.updated_at = now_utc
+                upserted += 1
 
         # A stored day inside the window that the live aggregation no longer
         # produces (its readings are gone, or a re-read reclassified every
@@ -150,8 +175,10 @@ def _recompute_device(device_id: int, window_start: date, window_end: date, now_
         # everything, every time, rather than leaving a wrong number on the
         # page until Retention. Nothing outside `[window_start, window_end]`
         # is touched; that is `purge_expired`'s job, not this one's.
-        for stale_date in set(existing_rows) - set(computed):
+        stale_dates = set(existing_rows) - set(computed)
+        for stale_date in stale_dates:
             session.delete(existing_rows[stale_date])
+        return upserted, len(stale_dates)
 
 
 def stored_energy_summary_rows(
