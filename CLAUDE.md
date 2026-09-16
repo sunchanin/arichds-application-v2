@@ -62,7 +62,12 @@ MySQL, and ~30 tables.
   two — and issue #29/M7-2 landed the third: `supports_battery()`/`read_battery_status()` on
   `MeterDriver`, implemented on the three CEWE models, with `supports_battery` corrected from
   all nine models to exactly those three; `test_catalog.py` now asserts the driver-catalog
-  correspondence for all three flags instead of a hardcoded list) ·
+  correspondence for all three flags instead of a hardcoded list. **Narrowed again 2026-09-16, ui-audit
+  ticket 04**: the register is "undefined object" on both Prometer 100 units and the Saral 305 and answers
+  only on the Premier 550 (`docs/meter-notes/cewe-battery-scan.md`, `scripts/probe_battery.py`), so
+  `supports_battery` is now true for **Premier 550 alone**; a flagged meter whose read still fails is one
+  WARNING per device per day kept in memory, and the Battery page names that failure instead of an empty
+  table) ·
   0012 (**SUPERSEDED by ADR 0022** — `GET /api/energy/summary` no longer aggregates
   `load_profile_readings` live; the paragraph below records what 0012 decided and why, kept for
   history rather than because it is still the shipped read path. The Energy Export File and Save to

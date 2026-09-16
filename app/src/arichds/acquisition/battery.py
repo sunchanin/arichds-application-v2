@@ -37,13 +37,21 @@ against ``read_at`` (D2) — plumbing, not a reported figure, so no
 **Never touches device status** (ADR 0004) — a skipped, failed, or
 unsupported battery read is a log line, exactly like the load-profile and
 billing jobs.
+
+**A meter that keeps failing is one WARNING per device per day, not an ERROR
+with a traceback per cycle** (ui-audit ticket 04). The first real install
+logged a full traceback every hour for two meters whose firmware simply lacks
+the register — noise that would bury a real fault. The last failure per device
+is kept in memory (:func:`last_battery_failure`) so the Battery page can say
+why a meter has no rows; nothing is persisted (ADR 0008) and it resets on
+restart, which is the same shape ``dataout/status.py`` chose.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 
@@ -61,6 +69,60 @@ logger = logging.getLogger(__name__)
 #: (D8). A module constant here, not read off the ORM column, because the
 #: writer needs it before it ever touches a Session.
 _STATUS_MAX_LEN = 20
+
+
+@dataclass(frozen=True)
+class BatteryFailure:
+    """The last failed battery read of one device — in memory only.
+
+    Attributes:
+        at: When the read failed (UTC).
+        reason: The failure's class and text — the meter's own sentence,
+            never a password (the exception text comes from Gurux, not from
+            our connection parameters).
+        warned_on: The UTC calendar day a WARNING was last emitted for this
+            device — the same day the cycle's day-guard uses (D2).
+    """
+
+    at: datetime
+    reason: str
+    warned_on: date
+
+
+_failures: dict[int, BatteryFailure] = {}
+
+
+def last_battery_failure(device_id: int) -> BatteryFailure | None:
+    """The last failed read of *device_id* since the service started, or None
+    when its last read succeeded (or none has run). Read by
+    ``GET /api/battery`` so the page can name the reason a meter has no rows."""
+    return _failures.get(device_id)
+
+
+def reset_battery_failures() -> None:
+    """Forget every remembered failure — for tests, which share one process."""
+    _failures.clear()
+
+
+def _record_failure(device_id: int, device_name: str, endpoint: str, exc: BaseException, now_utc: datetime) -> None:
+    """Remember the failure and log it **once per device per UTC day** as a
+    WARNING with the reason and no traceback; every further failure that day
+    is a DEBUG line. The next hourly retry is the day-guard's business."""
+    reason = f"{type(exc).__name__}: {exc}"
+    previous = _failures.get(device_id)
+    today = now_utc.date()
+    if previous is None or previous.warned_on != today:
+        logger.warning(
+            "Battery read of %s at %s failed: %s — retried hourly; one warning per device per day",
+            device_name,
+            endpoint,
+            reason,
+        )
+        warned_on = today
+    else:
+        logger.debug("Battery read of %s at %s failed again: %s", device_name, endpoint, reason)
+        warned_on = previous.warned_on
+    _failures[device_id] = BatteryFailure(at=now_utc, reason=reason, warned_on=warned_on)
 
 
 @dataclass(frozen=True)
@@ -152,7 +214,7 @@ def _read_while_holding(
     try:
         driver.connect()
     except Exception as exc:  # noqa: BLE001 — every meter failure becomes a sentence, never a 500.
-        logger.exception("Battery read of %s at %s failed to connect", device_name, endpoint)
+        _record_failure(device_id, device_name, endpoint, exc, read_at)
         return None, f"The read of {endpoint} stopped after a {type(exc).__name__}."
 
     try:
@@ -162,11 +224,12 @@ def _read_while_holding(
         status = driver.read_battery_status()
         row_id = _store(device_id, status, read_at, device_name)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Battery read of %s at %s failed", device_name, endpoint)
+        _record_failure(device_id, device_name, endpoint, exc, read_at)
         return None, f"The read of {endpoint} stopped after a {type(exc).__name__}."
     finally:
         driver.disconnect()
 
+    _failures.pop(device_id, None)
     return row_id, None
 
 

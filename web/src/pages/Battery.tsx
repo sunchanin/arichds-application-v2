@@ -135,6 +135,19 @@ export function Battery() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId, startIso, endIso, page, pageSize, surface]);
 
+  // Why the table is empty, in one sentence (ui-audit ticket 04): the picker
+  // offers only battery-capable models, so "no option but All" means no meter
+  // on this machine exposes the register; a chosen meter with no rows names
+  // its last failure when the server remembers one.
+  const emptyText =
+    deviceOptions.length === 1
+      ? "No meter on this machine exposes a battery reading"
+      : deviceId !== undefined && shown?.failure
+        ? `The last read failed at ${dayjs(shown.failure.at).format("YYYY-MM-DD HH:mm")} — ${shown.failure.reason}`
+        : deviceId !== undefined
+          ? "No battery reading stored for this meter yet — the hourly read has not completed since the service started"
+          : "No battery readings stored yet";
+
   const columns: ColumnsType<BatteryRow> = [
     { title: "Device", dataIndex: "device_name", key: "device_name", width: 180 },
     {
@@ -187,7 +200,7 @@ export function Battery() {
           loading={loading}
           dataSource={shown?.items ?? []}
           columns={columns}
-          locale={{ emptyText: <Empty description="No battery readings stored yet" /> }}
+          locale={{ emptyText: <Empty description={emptyText} /> }}
           pagination={{
             current: page,
             pageSize,

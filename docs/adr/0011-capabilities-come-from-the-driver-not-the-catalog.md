@@ -123,3 +123,19 @@ the call site — v1's second gate protected a background daemon, not a UI.
 **Implement all three features on all nine models.** Rejected because five of the nine cannot
 be reached from this machine at all, so it means inventing OBIS addresses for meters we cannot
 test — the practice `docs/meter-notes/` exists to prevent.
+
+## Amended 2026-09-16 — the battery flag narrows to Premier 550 (ui-audit ticket 04)
+
+M7-2 (issue #29) turned `supports_battery` on for the three CEWE models because the driver
+implemented the read, and this ADR's own rule — *a flag turns on from a meter, never a
+datasheet* — was applied to the driver rather than to the meters. The first real install
+showed the difference: `0.0.96.6.1.255` is *"Device reports a undefined object"* on both
+Prometer 100 units and on the Saral 305, and answers only on the Premier 550
+(`docs/meter-notes/cewe-battery-scan.md`, probed with `app/scripts/probe_battery.py`). The
+flag is therefore `False` on Prometer 100 and Saral 305 — driver and catalog together, as the
+correspondence test requires — and `True` on Premier 550 alone. The Prometer 100 exposes the
+group's `E=0` use-time counter instead; it is recorded and deliberately not read as a "status".
+
+The runtime consequence lands beside it: a flagged meter whose read still fails is one WARNING
+per device per day with the meter's own reason, kept in memory (ADR 0008 — never persisted) and
+shown on the Battery page, not an ERROR with a traceback every hour.

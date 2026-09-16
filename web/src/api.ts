@@ -666,12 +666,15 @@ export interface BatteryRow {
   status: string | null;
 }
 
-/** One page of Battery Readings. `total` is the unpaged count the pager needs. */
+/** One page of Battery Readings. `total` is the unpaged count the pager needs.
+ * `failure` is present only for a single-device request whose last hourly
+ * read failed — kept in memory on the server since it started, never stored. */
 export interface BatteryPage {
   items: BatteryRow[];
   total: number;
   limit: number;
   offset: number;
+  failure: { at: string; reason: string } | null;
 }
 
 /**

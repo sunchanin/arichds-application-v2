@@ -12,13 +12,19 @@ every test below is ultimately protecting.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 import pytest
 from fakes import FakeMeterState
 from sqlalchemy import select
 
-from arichds.acquisition.battery import battery_cycle, read_and_store_battery
+from arichds.acquisition.battery import (
+    battery_cycle,
+    last_battery_failure,
+    read_and_store_battery,
+    reset_battery_failures,
+)
 from arichds.acquisition.locks import EndpointLocks
 from arichds.acquisition.status import DeviceStatus
 from arichds.config import Settings
@@ -27,6 +33,15 @@ from arichds.db.models import Device
 from arichds.db.session import session_scope
 
 pytestmark = pytest.mark.usefixtures("fake_meter")
+
+
+@pytest.fixture(autouse=True)
+def _forget_failures():
+    """The failure memo is process-wide (ADR 0008: in memory, never stored)."""
+    reset_battery_failures()
+    yield
+    reset_battery_failures()
+
 
 NOW = datetime(2026, 8, 11, 10, 0, 0, tzinfo=UTC)
 ENDPOINT = "127.0.0.1:4059"
@@ -125,6 +140,59 @@ class TestAFailedReadWritesNoRow:
         assert result.row_id is None
         assert result.error is not None
         assert stored_rows(device_id) == []
+
+
+class TestAFailingMeterWarnsOncePerDay:
+    """ui-audit ticket 04 — a meter whose firmware lacks the register must not
+    fill the App Log with a traceback every hour."""
+
+    @staticmethod
+    def battery_records(caplog: pytest.LogCaptureFixture, level: int) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == "arichds.acquisition.battery" and r.levelno == level]
+
+    def test_two_failing_reads_on_one_day_emit_one_warning_and_no_error(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake_meter.battery_error = RuntimeError("Access Error : Device reports a undefined object.")
+
+        with caplog.at_level(logging.DEBUG, logger="arichds.acquisition.battery"):
+            read_and_store_battery(device_id, now=NOW)
+            read_and_store_battery(device_id, now=NOW.replace(hour=11))
+
+        warnings = self.battery_records(caplog, logging.WARNING)
+        assert len(warnings) == 1, [r.getMessage() for r in warnings]
+        assert "Main Incomer" in warnings[0].getMessage()
+        assert "undefined object" in warnings[0].getMessage()
+        assert warnings[0].exc_info is None, "no traceback"
+        assert self.battery_records(caplog, logging.ERROR) == []
+
+    def test_the_next_day_warns_again(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake_meter.battery_error = RuntimeError("boom")
+
+        with caplog.at_level(logging.WARNING, logger="arichds.acquisition.battery"):
+            read_and_store_battery(device_id, now=NOW)
+            read_and_store_battery(device_id, now=NOW.replace(day=12))
+
+        assert len(self.battery_records(caplog, logging.WARNING)) == 2
+
+    def test_the_last_failure_is_remembered_until_a_read_succeeds(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.battery_error = TimeoutError("the meter went away")
+        read_and_store_battery(device_id, now=NOW)
+
+        remembered = last_battery_failure(device_id)
+        assert remembered is not None
+        assert remembered.at == NOW
+        assert remembered.reason == "TimeoutError: the meter went away"
+
+        fake_meter.battery_error = None
+        fake_meter.battery_status = "OK"
+        read_and_store_battery(device_id, now=NOW.replace(hour=11))
+
+        assert last_battery_failure(device_id) is None
 
 
 class TestStatusTruncation:

@@ -687,14 +687,18 @@ class TestCatalog:
     def test_it_carries_the_capability_flags(self, admin_client: TestClient) -> None:
         data = admin_client.get("/api/devices/catalog").json()["data"]
         entry = next(e for e in data if e["model"] == "prometer100")
-        assert entry["supports_battery"] is True
+        # False since ui-audit ticket 04: 0.0.96.6.1.255 is "undefined object"
+        # on both Prometer 100 units (docs/meter-notes/cewe-battery-scan.md).
+        assert entry["supports_battery"] is False
         assert entry["supports_energy_summary"] is False
         assert entry["supports_special_days"] is False
+        premier = next(e for e in data if e["model"] == "premier550")
+        assert premier["supports_battery"] is True
 
     def test_smw110_does_not_support_battery(self, admin_client: TestClient) -> None:
         """M7-2, issue #29 — pins the flag in the direction that changed:
         `smw110` has no `read_battery_status()` driver behind it, unlike the
-        three CEWE models above."""
+        Premier 550 above."""
         data = admin_client.get("/api/devices/catalog").json()["data"]
         entry = next(e for e in data if e["model"] == "smw110")
         assert entry["supports_battery"] is False

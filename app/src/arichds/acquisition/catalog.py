@@ -197,7 +197,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "prometer100": ModelSpec(
         brand=Brand.CEWE,
         ui_label="Prometer 100",
-        supports_battery=True,  # read_battery_status 0.0.96.6.1.255
+        supports_battery=False,  # 0.0.96.6.1.255 is "undefined object" on WP079074/WP080652 (2026-09-16, ui-audit 04)
         supports_energy_summary=False,
         supports_special_days=False,
         fixed_password=CEWE_FIXED_PASSWORD,
@@ -205,7 +205,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "saral305": ModelSpec(
         brand=Brand.CEWE,
         ui_label="Saral 305",
-        supports_battery=True,  # read_battery_status 0.0.96.6.1.255
+        supports_battery=False,  # the whole 0.0.96.6.x group is "undefined object" on SS21996979 (2026-09-16, ui-audit 04)
         supports_energy_summary=False,
         supports_special_days=False,
         fixed_password=CEWE_FIXED_PASSWORD,

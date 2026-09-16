@@ -38,7 +38,6 @@ from gurux_dlms.enums import Unit
 from gurux_dlms.objects import GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers._dlms import read_battery_status_via
 from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver, LpColumn
 from arichds.acquisition.obis import INSTANTANEOUS_OBIS
 from arichds.constants import TCP_READ_TIMEOUT_SEC
@@ -126,14 +125,9 @@ class Saral305Driver(DlmsProfileDriver):
         """
         return dict(INSTANTANEOUS_OBIS)
 
-    def supports_battery(self) -> bool:
-        """Yes — the CEWE battery-status register (``0.0.96.6.1.255``, M7-2,
-        issue #29)."""
-        return True
-
-    def read_battery_status(self) -> str | None:
-        """Read the battery status — the shared
-        :func:`~arichds.acquisition.drivers._dlms.read_battery_status_via`
-        mechanism; this model needs no override of the read itself, only of
-        the capability flag."""
-        return read_battery_status_via(self)
+    # No battery capability (ADR 0011 — a flag turns on from a meter). Every
+    # object in the ``0.0.96.6.x`` group, the status register ``E=1``
+    # included, answers "Device reports a undefined object" on SS21996979,
+    # probed 2026-09-16 (``docs/meter-notes/cewe-battery-scan.md``, ui-audit
+    # ticket 04). The base class's ``supports_battery()`` (False) and its
+    # raising ``read_battery_status()`` stand; M7-2's override is gone.

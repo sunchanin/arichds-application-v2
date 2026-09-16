@@ -17,6 +17,16 @@ from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.usefixtures("fake_meter")
 
+
+@pytest.fixture(autouse=True)
+def _forget_failures():
+    from arichds.acquisition.battery import reset_battery_failures
+
+    reset_battery_failures()
+    yield
+    reset_battery_failures()
+
+
 DEVICE = {
     "name": "Main Incomer",
     "brand": "cewe",
@@ -50,6 +60,43 @@ def seed(device_id: int, read_at: datetime, status: str | None = "4321") -> None
 
 def fetch(client: TestClient, **params: object):
     return client.get("/api/battery", params=params)
+
+
+class TestTheLastFailureIsNamed:
+    """ui-audit ticket 04 — the page says why a chosen meter has no rows."""
+
+    def test_no_failure_means_null(self, admin_client: TestClient) -> None:
+        device_id = add_device(admin_client)
+
+        body = fetch(admin_client, device_id=device_id).json()["data"]
+
+        assert body["failure"] is None
+
+    def test_a_failed_read_is_reported_with_its_reason(self, admin_client: TestClient) -> None:
+        from fakes import fake_meter_state
+
+        from arichds.acquisition.battery import read_and_store_battery
+
+        device_id = add_device(admin_client)
+        fake_meter_state().battery_error = TimeoutError("the meter went away")
+        read_and_store_battery(device_id, now=BASE)
+
+        body = fetch(admin_client, device_id=device_id).json()["data"]
+
+        assert body["items"] == []
+        assert body["failure"]["reason"] == "TimeoutError: the meter went away"
+        assert datetime.fromisoformat(body["failure"]["at"]) == BASE
+
+    def test_the_fleet_wide_page_carries_no_failure(self, admin_client: TestClient) -> None:
+        from fakes import fake_meter_state
+
+        from arichds.acquisition.battery import read_and_store_battery
+
+        device_id = add_device(admin_client)
+        fake_meter_state().battery_error = TimeoutError("boom")
+        read_and_store_battery(device_id, now=BASE)
+
+        assert fetch(admin_client).json()["data"]["failure"] is None
 
 
 class TestEmptyIsNotAnError:

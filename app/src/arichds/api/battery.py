@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
+from arichds.acquisition.battery import last_battery_failure
 from arichds.api.deps import SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
 from arichds.db.models import BatteryReading, Device
@@ -58,6 +59,19 @@ class BatteryRowOut(BaseModel):
     status: str | None
 
 
+class BatteryFailureOut(BaseModel):
+    """Why one device's last battery read failed (ui-audit ticket 04) — in
+    memory since the service started, never persisted (ADR 0008).
+
+    Attributes:
+        at: When the read failed (UTC).
+        reason: The failure's class and the meter's own sentence.
+    """
+
+    at: datetime
+    reason: str
+
+
 class BatteryPage(BaseModel):
     """One page of Battery Readings.
 
@@ -66,12 +80,15 @@ class BatteryPage(BaseModel):
         total: How many rows match the filters, ignoring paging.
         limit: The page size that was applied.
         offset: How many rows were skipped.
+        failure: Present only when ``device_id`` was given and that device's
+            last read failed — what the page shows instead of an empty table.
     """
 
     items: list[BatteryRowOut]
     total: int
     limit: int
     offset: int
+    failure: BatteryFailureOut | None = None
 
 
 def _as_utc(moment: datetime) -> datetime:
@@ -134,6 +151,11 @@ def list_battery_readings(
     ).all()
     total = session.scalar(select(func.count()).select_from(BatteryReading).where(*matching)) or 0
 
+    failure = None
+    if device_id is not None:
+        remembered = last_battery_failure(device_id)
+        if remembered is not None:
+            failure = BatteryFailureOut(at=_as_utc(remembered.at), reason=remembered.reason)
     items = [
         BatteryRowOut(
             id=reading.id,
@@ -146,4 +168,4 @@ def list_battery_readings(
         for reading, device_name, meter_serial in rows
     ]
 
-    return ApiResponse.ok(BatteryPage(items=items, total=total, limit=limit, offset=offset))
+    return ApiResponse.ok(BatteryPage(items=items, total=total, limit=limit, offset=offset, failure=failure))
