@@ -67,6 +67,12 @@ replacing files (`PrepareToInstall`), reinstalls, and starts it again. The
 database, the license and the logs are untouched, and the service brings the
 schema to head on its next start.
 
+The service runs with its working directory set to `%ProgramData%\ARICHDS\logs`
+(the application does this itself at startup, so `fastapi dev` behaves the same
+way). The one file that cares is the vendored Gurux reader's `logFile.txt`,
+which it opens relative to the working directory — it now lands in that folder
+instead of failing with `PermissionError` under `Program Files`.
+
 **Bump `AppVersion` in `arichds.iss` before every release.** It is hardcoded
 (`#define AppVersion "0.3.0"`) and drives both the output filename and what
 "Programs and Features" reports. Ship two different builds under one number and

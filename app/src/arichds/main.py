@@ -20,6 +20,7 @@ Run it with ``fastapi dev`` / ``fastapi run`` (the entrypoint is declared in
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -66,6 +67,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Bring the process up, then tear it down cleanly."""
     settings: Settings = get_settings()
     settings.ensure_directories()
+    # The vendored Gurux reader opens `logFile.txt` relative to the working
+    # directory (`vendor/gurux/GXDLMSReader.py`, copied from v1 verbatim and
+    # never edited), and under the installed service that directory is
+    # `Program Files`, which LocalSystem-run code is not meant to write into —
+    # every poll failed with `PermissionError: 'logFile.txt'` on the first real
+    # install (ui-audit ticket 06). Moving the process into the data dir's
+    # `logs` folder — it *is* a log, and that folder already exists for ours —
+    # covers the service and `fastapi dev` alike, with no installer step. Every
+    # path of our own is absolute via `settings`, so nothing else notices.
+    os.chdir(settings.log_dir)
     configure_logging(level=settings.log_level, log_dir=settings.log_dir)
 
     logger.info("ARICHDS %s starting — data dir %s", __version__, settings.data_dir.resolve())

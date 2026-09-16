@@ -17,6 +17,7 @@ The client fixtures form a ladder, each step adding one thing:
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -187,7 +188,12 @@ def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     get_settings.cache_clear()
     settings = get_settings()
     settings.ensure_directories()
+    # The app's lifespan changes the working directory into the data dir
+    # (ui-audit ticket 06); put it back so one test's data dir is never the
+    # next test's cwd.
+    cwd = os.getcwd()
     yield target
+    os.chdir(cwd)
     get_settings.cache_clear()
 
 
