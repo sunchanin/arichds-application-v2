@@ -21,7 +21,7 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 
 #define AppName        "ARICHDS"
-#define AppVersion     "0.5.3"
+#define AppVersion     "0.6.0"
 #define AppPublisher   "ARICHDS"
 #define ServiceName    "arichds"
 #define AppPort        "8000"
