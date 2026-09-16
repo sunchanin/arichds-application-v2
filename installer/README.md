@@ -11,8 +11,8 @@ ARICHDS install — with no database questions (SPEC §2: install in under
 | Program files | `C:\Program Files\ARICHDS` (the PyInstaller onedir build + `nssm.exe`) |
 | Data | `C:\ProgramData\ARICHDS\` — `arichds.db`, `license\`, `logs\`, `secret\` (the generated JWT signing key — ADR 0003; deleting it signs every user out), `backup\` (seven daily `VACUUM INTO` copies, M5c), `captures\`, `tmp\` (the capture browser's one reused Edge profile directory — issue #40) |
 | Service | `arichds`, wrapped by NSSM: auto-start, restart on exit, stdout/stderr to `logs\service.log` rotated at 50 MB |
-| Port | TCP **8000**, bound on all interfaces |
-| Firewall | Inbound allow rule `ARICHDS Web UI (TCP 8000)` so other machines on the site LAN can open `http://<ip>:8000` |
+| Port | TCP **8000** by default, **chosen on a wizard page** (remembered for the next upgrade), bound on all interfaces — the installer warns when another program already listens on the chosen port, which is what a WCF service on one customer machine did on 2026-09-16 |
+| Firewall | Inbound allow rule `ARICHDS Web UI (TCP <port>)` so other machines on the site LAN can open `http://<ip>:<port>`; an upgrade that changes the port removes the previous port's rule |
 | Migrations | **None here.** The service runs `alembic upgrade head` itself before serving, so install and upgrade both converge with no extra step |
 | Activation | **None here.** The machine boots into Limited Mode; the operator activates from the web page, and it applies live with no restart (ADR 0001) |
 
@@ -235,7 +235,7 @@ upgrade.
 
 ## After installing
 
-1. Open `http://localhost:8000/` (the installer offers this at the end).
+1. Open `http://localhost:<port>/` — 8000 unless you chose another on the wizard page (the installer offers this at the end).
 2. The **Setup** page appears while the machine has no accounts. Create the
    administrator (username + password, 8 characters minimum), then sign in.
    Setup closes permanently once that account exists.
@@ -262,7 +262,8 @@ deleted or edited by hand.
 | Symptom | Check |
 |---|---|
 | Service will not start | `C:\ProgramData\ARICHDS\logs\service.log` (NSSM's capture) and `arichds.log` (the app's own rotating, credential-redacted log) |
-| Web UI unreachable from another machine | The firewall rule exists (`netsh advfirewall firewall show rule name="ARICHDS Web UI (TCP 8000)"`) and nothing else holds port 8000 |
+| Web UI unreachable from another machine | The firewall rule exists (`netsh advfirewall firewall show rule name="ARICHDS Web UI (TCP <port>)"`) and nothing else holds the port |
+| The browser shows a **.NET "Service" page** ("Windows Communication Foundation service … metadata publishing … disabled") instead of ARICHDS | Another program holds the port (`netstat -ano \| findstr :<port>`, then `tasklist /FI "PID eq <pid>"`; a WCF service through HTTP.sys shows as PID 4 and in `netsh http show servicestate`). Re-run the installer and choose a free port on the wizard page — it rewrites the service's `ARICHDS_PORT`, the firewall rule and the shortcut; nothing else changes |
 | Uninstall hangs | An `nssm remove` without `confirm` opens a GUI dialog. The script always passes `confirm`; if you removed it by hand, put it back |
 | The only `admin` forgot the password | **There is no recovery on the machine — this is the one lockout the product cannot undo.** Nothing installed can rewrite a bcrypt hash: the installer ships no `python.exe` and no `sqlite3.exe`, and `arichds.exe` takes no subcommands. See **Give every install two admins** above, and do it before handover rather than after a lockout |
 | Activation refused with `WRONG_MACHINE` | The Machine ID sent to the vendor does not match this machine. Re-copy it from the Activation page — it is bound to the hardware |

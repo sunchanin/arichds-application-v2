@@ -4,7 +4,10 @@
 ; One setup.exe with wizard, upgrade and uninstall built in. It installs the
 ; frozen onedir build to Program Files\ARICHDS, creates the data tree under
 ; %ProgramData%\ARICHDS, registers arichds.exe as a Windows service via NSSM,
-; and opens TCP 8000 so other machines on the site LAN can reach the web UI.
+; and opens the chosen TCP port (default 8000) so other machines on the site LAN
+; can reach the web UI. The port is a wizard page: a site where another program
+; already holds 8000 (a WCF service was found on one, 2026-09-16) picks a free one
+; without a rebuild, and the choice is remembered for the next upgrade.
 ;
 ; What it deliberately does NOT do:
 ;   * No database questions. SQLite lives in %ProgramData%\ARICHDS and needs no
@@ -24,8 +27,10 @@
 #define AppVersion     "0.6.1"
 #define AppPublisher   "ARICHDS"
 #define ServiceName    "arichds"
-#define AppPort        "8000"
-#define FirewallRule   "ARICHDS Web UI (TCP 8000)"
+; Default only — the effective port is {code:GetPort}, chosen on the wizard page
+; (or remembered from the previous install), and the firewall rule is named after it.
+#define DefaultPort    "8000"
+#define FirewallPrefix "ARICHDS Web UI (TCP "
 ; Must match arichds.capture.task.CAPTURE_TASK_NAME exactly — pinned by
 ; tests/test_capture_task_contract.py (issue #40).
 #define CaptureTaskName "ARICHDS Capture Browser"
@@ -93,7 +98,7 @@ Name: "{commonappdata}\{#AppName}\captures"
 Name: "{commonappdata}\{#AppName}\tmp"; Permissions: service-modify
 
 [Icons]
-Name: "{group}\{#AppName} Web UI"; Filename: "http://localhost:{#AppPort}/"
+Name: "{group}\{#AppName} Web UI"; Filename: "http://localhost:{code:GetPort}/"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
 [Run]
@@ -109,7 +114,7 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} AppDirectory ""{app}
 ; The service reads its configuration from the environment. Setting it on the
 ; service (rather than machine-wide) keeps a dev checkout on the same box
 ; independent of the installed instance.
-Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} AppEnvironmentExtra ARICHDS_DATA_DIR={commonappdata}\{#AppName} ARICHDS_PORT={#AppPort}"; \
+Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} AppEnvironmentExtra ARICHDS_DATA_DIR={commonappdata}\{#AppName} ARICHDS_PORT={code:GetPort}"; \
     Flags: runhidden waituntilterminated
 ; ── Run as LocalSystem, not LocalService (issue #40, replaces #38's Part A) ──
 ; #38 concluded the whole *service* had to leave LocalSystem because
@@ -159,13 +164,17 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} Start SERVICE_AUTO_S
 Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} AppExit Default Restart"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} DisplayName ""{#AppName} Meter Monitoring"""; \
     Flags: runhidden waituntilterminated
-Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} Description ""Reads electricity meters, stores readings locally, and serves the {#AppName} web UI on port {#AppPort}."""; \
+Filename: "{app}\nssm.exe"; Parameters: "set {#ServiceName} Description ""Reads electricity meters, stores readings locally, and serves the {#AppName} web UI on port {code:GetPort}."""; \
     Flags: runhidden waituntilterminated
 
 ; ── Firewall: let other machines on the site LAN reach the web UI ────────────
-Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""{#FirewallRule}"""; \
+; The rule is named after the port, so an upgrade that changes the port must
+; drop the rule of the PREVIOUS port too, or the old hole stays open.
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""{#FirewallPrefix}{code:GetPreviousPort})"""; \
     Flags: runhidden waituntilterminated; StatusMsg: "Configuring the firewall..."
-Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow protocol=TCP localport={#AppPort}"; \
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""{#FirewallPrefix}{code:GetPort})"""; \
+    Flags: runhidden waituntilterminated
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""{#FirewallPrefix}{code:GetPort})"" dir=in action=allow protocol=TCP localport={code:GetPort}"; \
     Flags: runhidden waituntilterminated
 
 ; ── Register the capture browser scheduled task (issue #40) ─────────────────
@@ -184,7 +193,7 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
 ; ── Start ────────────────────────────────────────────────────────────────────
 Filename: "{app}\nssm.exe"; Parameters: "start {#ServiceName}"; \
     Flags: runhidden waituntilterminated; StatusMsg: "Starting the {#AppName} service..."
-Filename: "http://localhost:{#AppPort}/"; Description: "Open the {#AppName} web UI to activate this machine"; \
+Filename: "http://localhost:{code:GetPort}/"; Description: "Open the {#AppName} web UI to activate this machine"; \
     Flags: postinstall shellexec nowait
 
 [UninstallRun]
@@ -193,7 +202,7 @@ Filename: "http://localhost:{#AppPort}/"; Description: "Open the {#AppName} web 
 ; uninstall hangs forever.
 Filename: "{app}\nssm.exe"; Parameters: "stop {#ServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "StopService"
 Filename: "{app}\nssm.exe"; Parameters: "remove {#ServiceName} confirm"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveService"
-Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""{#FirewallRule}"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFirewallRule"
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""{#FirewallPrefix}{code:GetPort})"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFirewallRule"
 Filename: "{sys}\schtasks.exe"; Parameters: "/delete /TN ""{#CaptureTaskName}"" /F"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveCaptureTask"
 
 [UninstallDelete]
@@ -203,6 +212,60 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /TN ""{#CaptureTaskName}"" 
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+
+var
+  { The web UI port page (InitializeWizard). Nil in the uninstaller, where
+    GetPort falls back to the value the installer remembered. }
+  PortPage: TInputQueryWizardPage;
+
+{ The port the previous install chose, or the default on a fresh machine.
+  Inno keeps it under the app's uninstall key (SetPreviousData below). }
+function GetPreviousPort(Param: String): String;
+begin
+  Result := GetPreviousData('Port', '{#DefaultPort}');
+end;
+
+{ The effective port — what NSSM's ARICHDS_PORT, the firewall rule, the Start
+  Menu shortcut and the post-install URL all read. One function, so the four
+  can never disagree. }
+function GetPort(Param: String): String;
+begin
+  if Assigned(PortPage) then
+    Result := Trim(PortPage.Values[0])
+  else
+    Result := GetPreviousPort('');
+end;
+
+{ Remember the port for the next upgrade (and for the uninstaller's firewall
+  rule delete). }
+procedure RegisterPreviousData(PreviousDataKey: Integer);
+begin
+  SetPreviousData(PreviousDataKey, 'Port', GetPort(''));
+end;
+
+procedure InitializeWizard();
+begin
+  PortPage := CreateInputQueryPage(wpSelectDir,
+    'Web UI port',
+    'Which TCP port should the {#AppName} web UI listen on?',
+    'Other machines on the site open http://<this machine>:<port>/. Keep {#DefaultPort} unless ' +
+    'another program on this machine already uses it — then choose a free port (1024–65535). ' +
+    'The firewall rule and the Start Menu shortcut follow this choice.');
+  PortPage.Add('TCP port:', False);
+  PortPage.Values[0] := GetPreviousPort('');
+end;
+
+{ True when something on this machine is already LISTENING on the port. A
+  `netstat` line ending in LISTENING with ":<port> " is that something; the
+  exit code of findstr says whether one exists. }
+function PortInUse(const Port: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{cmd}'),
+                 '/C netstat -ano -p TCP | findstr /R /C:":' + Port + ' .*LISTENING"', '',
+                 SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
 
 { True when a service of this name is registered. Uses `sc query`, which needs
   no extra dependency and returns a non-zero exit code for an unknown service.
@@ -255,6 +318,35 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
     VerifyCaptureTask();
+end;
+
+{ Validate the port page: an integer in 1..65535, and a warning — not a
+  refusal — when another program already listens there. On an upgrade the
+  previous {#AppName} service is still running at this point (PrepareToInstall
+  stops it later), so its own port is not reported as a conflict. }
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Port: Integer;
+  PortText: String;
+begin
+  Result := True;
+  if CurPageID <> PortPage.ID then
+    Exit;
+  PortText := Trim(PortPage.Values[0]);
+  Port := StrToIntDef(PortText, -1);
+  if (Port < 1) or (Port > 65535) then
+  begin
+    MsgBox('Enter a TCP port between 1 and 65535 (default {#DefaultPort}).', mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+  if ServiceExists('{#ServiceName}') and (PortText = GetPreviousPort('')) then
+    Exit;
+  if PortInUse(PortText) then
+    Result := MsgBox('Port ' + PortText + ' is already in use by another program on this machine.' + #13#10 + #13#10 +
+                     'If {#AppName} is installed on it, the web UI will not be reachable — the other program ' +
+                     'answers instead (or {#AppName} fails to start).' + #13#10 + #13#10 +
+                     'Use this port anyway?', mbConfirmation, MB_YESNO) = IDYES;
 end;
 
 { Stop an existing service BEFORE [Files] replaces the exe. Without this an
