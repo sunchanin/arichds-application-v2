@@ -1048,6 +1048,17 @@ attribute 3 กับ 4 แล้วตัดสาย) เมื่อ 2026-09-
 > **E2 · E5** แล้วจึงส่งมอบ · ยังไม่เคยคุยกับ server จริง: ทีมปลายทางต้องมี `GET /v1/holdings` และ
 > `POST /v1/push` ตามสัญญาที่หน้า API ก่อนรอบแรกจะส่งได้
 >
+> ✅ **ui-audit 2026-09-16 — สิบใบใน `.scratch/ui-audit/issues/` ลงครบบน `feature/light-modules`**
+> (`ec3126b` … `255c13b`, gate สุดท้าย 2285 passed): brand เป็น catalog key เสมอ (migration 0020) ·
+> Holiday Change แสดงเวลาท้องถิ่น · **Captured** = เวลาเขียนไฟล์จริง (`captured_at`, migration 0021,
+> ไม่เข้า Database Destination / push contract / เอกสาร capture) · battery: probe จริงพบ
+> `0.0.96.6.1.255` เป็น "undefined object" บน Prometer 100 ทั้งสองตัวและ Saral 305 → flag เหลือ
+> Premier 550 ตัวเดียว (`docs/meter-notes/cewe-battery-scan.md`, ADR 0011 แก้เพิ่ม) + WARNING วันละครั้ง
+> ต่อเครื่อง · avg_geo_pf: warning 960 บรรทัดมาจาก 0.5.0 ทั้งหมด 0.6.0 resolve ครบทั้งสองตัว — ไม่แก้โค้ด ·
+> service ทำงานใน `logs\` (Gurux `logFile.txt`) · หน้าเว็บบอกสิ่งที่รู้ 8 จุด · recompute log INFO ต่อรอบ ·
+> แถวบิลล่าสุดสี `#f3e8ff` บน History และในรูป cap · แถบ Total/Issues/Complete · Auto · Site Name/Code
+> **ยังไม่ได้ทำ:** ติดตั้ง 0.6.1 บนเครื่องนี้เพื่อยืนยันใบ 06/07/09/10 ด้วยตา (คาดไว้หลัง batch ตามแผน)
+>
 > ⚠️ **แก้ 2026-09-16 — บรรทัดบนนับไม่ครบ** เจ้าของเป็นคนชี้เอง: **File Upload Destination
 > (FTPS/SFTP) ยังไม่ได้ทำเลย** §7.4 บรรทัดเดียวกับที่เขียนว่า "transport ที่เหลือยังไม่ได้ทำ"
 > ระบุไว้ตั้งแต่ต้นว่ามีสองตัวคือ push ขึ้น server ของทีม **และ File Upload** — M14 ปิดไปตัวเดียว

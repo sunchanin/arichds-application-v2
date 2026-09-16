@@ -351,7 +351,11 @@ convention every time — `<capture_dir>/<meter_serial>/<bill_date>.<ext>` — a
 the database, so changing `capture_dir` orphans every existing capture by design: old files stay
 exactly where they are and simply stop being reachable from the Billing page. Created eagerly,
 synchronously, the moment a closed period is inserted; a missing one is rendered again on
-download rather than tracked as a failure. The Open Period never has one.
+download rather than tracked as a failure. The Open Period never has one. The Billing page's
+**Captured** column is the moment a document for that period was last written — the automatic
+capture of a new closed period, or a hand-pressed Capture image — stamped on the period only
+once the file exists, and blank until then; it is never the bill's own read time, and never
+inferred from the folder being configured (ui-audit ticket 03).
 
 Three formats share that one filename stem, and **they do not cover the same span** (ADR 0015):
 `.pdf` and `.xlsx` hold **that one period**, while `.png` holds **the ten most recent closed
