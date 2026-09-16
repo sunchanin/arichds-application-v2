@@ -47,9 +47,11 @@ from arichds.constants import (
     CSV_EXPORT_INTERVAL_SEC,
     DBDEST_SYNC_INTERVAL_SEC,
     ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
+    FILEUPLOAD_INTERVAL_SEC,
     JOB_CENTRAL_PUSH,
     JOB_DBDEST_SYNC,
     JOB_ENERGY_SUMMARY_RECOMPUTE,
+    JOB_FILE_UPLOAD,
     JOB_LP_CSV_TRIM,
     LOAD_PROFILE_INTERVAL_SEC,
     LP_CSV_TRIM_INTERVAL_SEC,
@@ -64,6 +66,7 @@ from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 from arichds.db.retention import purge_expired
 from arichds.db.session import session_scope
 from arichds.export.csv_export import csv_export_cycle, csv_trim_cycle
+from arichds.fileupload.cycle import file_upload_cycle
 from arichds.jobs.scheduler import Job, Scheduler, default_jobs
 from arichds.licensing.service import STATE_ACTIVE, STATE_LIMITED, LicenseState
 
@@ -554,12 +557,12 @@ class TestTheDefaultRegistry:
     one behind `dbdest_sync` — the second job that talks to a machine we do
     not own)."""
 
-    def test_it_holds_all_ten_jobs_in_order(self) -> None:
+    def test_it_holds_all_eleven_jobs_in_order(self) -> None:
         jobs = default_jobs()
 
         # Asserted deliberately so that whoever adds the next job has to come
         # here and update the count on purpose.
-        assert len(jobs) == 10
+        assert len(jobs) == 11
         assert [job.name for job in jobs] == [
             "load_profile",
             "energy_summary_recompute",
@@ -571,6 +574,7 @@ class TestTheDefaultRegistry:
             "lp_csv_trim",
             "dbdest_sync",
             "central_push",
+            "file_upload",
         ]
         assert [job.interval_sec for job in jobs] == [
             LOAD_PROFILE_INTERVAL_SEC,
@@ -583,6 +587,7 @@ class TestTheDefaultRegistry:
             LP_CSV_TRIM_INTERVAL_SEC,
             DBDEST_SYNC_INTERVAL_SEC,
             CENTRAL_PUSH_INTERVAL_SEC,
+            FILEUPLOAD_INTERVAL_SEC,
         ]
         assert [job.fn for job in jobs] == [
             load_profile_cycle,
@@ -595,13 +600,21 @@ class TestTheDefaultRegistry:
             csv_trim_cycle,
             database_destination_cycle,
             central_push_cycle,
+            file_upload_cycle,
         ]
 
-    def test_central_push_is_registered_last_behind_dbdest_sync(self) -> None:
+    def test_central_push_is_registered_behind_dbdest_sync(self) -> None:
         names = [job.name for job in default_jobs()]
 
         assert names.index(JOB_CENTRAL_PUSH) == names.index(JOB_DBDEST_SYNC) + 1
-        assert names[-1] == JOB_CENTRAL_PUSH
+
+    def test_file_upload_is_registered_last_behind_central_push(self) -> None:
+        """ADR 0025 decision 5 — the third job that talks to a machine we do
+        not own, registered one behind the Central Push."""
+        names = [job.name for job in default_jobs()]
+
+        assert names.index(JOB_FILE_UPLOAD) == names.index(JOB_CENTRAL_PUSH) + 1
+        assert names[-1] == JOB_FILE_UPLOAD
 
     def test_lp_csv_trim_is_registered_immediately_behind_retention(self) -> None:
         """Ticket 05 — the daily trim runs right behind the daily purge, at
@@ -650,19 +663,23 @@ class TestTheDefaultRegistry:
         """A function, not a module constant — one ``setattr`` swaps it whole."""
         assert default_jobs() is not default_jobs()
 
-    def test_the_database_destination_sync_is_registered_second_to_last(self) -> None:
-        """Issue #46, **superseded by M14 ticket 08** (ADR 0024): the
-        Database Destination sync was last until `central_push` (below) took
-        that slot — it is still the last **local-vs-customer** network job,
-        one ahead of the second machine we do not own, and everything ahead
-        of both is a meter read or a local disk job that should not queue
-        behind either within a pass (jobs run sequentially on one thread).
+    def test_the_database_destination_sync_is_registered_third_to_last(self) -> None:
+        """Issue #46, **superseded by M14 ticket 08** (ADR 0024) and again by
+        ticket 02 (ADR 0025): the Database Destination sync was last until
+        `central_push` took that slot, and `central_push` was last until
+        `file_upload` took it — it is still the first of the three network
+        jobs that talk to a machine we do not own, and everything ahead of
+        all three is a meter read or a local disk job that should not queue
+        behind any of them within a pass (jobs run sequentially on one
+        thread).
         """
         jobs = default_jobs()
+        names = [job.name for job in jobs]
+        index = names.index(JOB_DBDEST_SYNC)
 
-        assert jobs[-2].name == JOB_DBDEST_SYNC
-        assert jobs[-2].interval_sec == DBDEST_SYNC_INTERVAL_SEC
-        assert jobs[-2].fn is database_destination_cycle
+        assert index == len(jobs) - 3
+        assert jobs[index].interval_sec == DBDEST_SYNC_INTERVAL_SEC
+        assert jobs[index].fn is database_destination_cycle
 
     def test_the_sync_interval_is_its_own_constant_not_the_load_profile_one(self) -> None:
         """`CSV_EXPORT_INTERVAL_SEC` aliases `LOAD_PROFILE_INTERVAL_SEC`

@@ -24,10 +24,11 @@ file, because this module never imports that tuple.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from arichds.constants import METER_LOCAL_UTC_OFFSET_HOURS
+from arichds.filename_tokens import render_filename_tokens
 from arichds.interval_status import decode_interval_status
 
 #: F1 — the column headers, order frozen so a row appended to an existing file
@@ -230,6 +231,13 @@ def format_rows(
 def render_filename(template: str, meter_token: str) -> str:
     """Substitute the ``[meter]``/``[serial]``/``[date]`` filename tokens (F4).
 
+    **Delegates to** :func:`arichds.filename_tokens.render_filename_tokens`
+    rather than reimplementing the substitution — that module is the one
+    place this product's filename tokens are defined, precisely so this
+    function and :mod:`arichds.fileupload.cycle`'s own file-matching (which
+    must not import ``export/``, ADR 0021's reasoning) cannot drift apart
+    (reviewer finding, File Upload Destination ticket 02 round 1).
+
     Args:
         template: The operator's ``export_csv_filename_tmpl`` value, e.g.
             ``"[meter].csv"``.
@@ -240,10 +248,7 @@ def render_filename(template: str, meter_token: str) -> str:
     Returns:
         The rendered filename with every token substituted.
     """
-    filename = template.replace("[meter]", meter_token)
-    filename = filename.replace("[serial]", meter_token)
-    filename = filename.replace("[date]", date.today().isoformat())
-    return filename
+    return render_filename_tokens(template, meter_token)
 
 
 # ─── The file header block (M13, issue 01) ────────────────────────────────────

@@ -297,6 +297,26 @@ CENTRAL_PUSH_ITEM_CAP: Final[int] = 5000
 CENTRAL_PUSH_LOAD_PROFILE_REWIND_SEC: Final[int] = 60
 JOB_CENTRAL_PUSH: Final[str] = "central_push"
 
+# ─── File Upload Destination (SPEC §3.8, ADR 0025, ticket 02) ─────────────────
+# The third Data-out Destination — copies export files and Billing capture
+# documents to a server over SFTP/FTPS/HTTPS (menu label **FTP**). Its own
+# interval and budget, deliberately NOT aliased to LOAD_PROFILE_INTERVAL_SEC /
+# DBDEST_SYNC_BUDGET_SEC / CENTRAL_PUSH_BUDGET_SEC even though the values match
+# today — the same argument DBDEST_SYNC_INTERVAL_SEC and
+# CENTRAL_PUSH_LOAD_PROFILE_REWIND_SEC already make: retuning one network
+# destination must not silently retune another. Registered LAST, one job
+# behind central_push (ADR 0025 decision 5) — it is the THIRD job that talks
+# to a machine we do not own, so putting it earlier would let it delay a
+# meter read or either of the other two Destinations within the same pass.
+FILEUPLOAD_INTERVAL_SEC: Final[int] = 900
+# The wall-clock ceiling on one cycle, the shape DBDEST_SYNC_BUDGET_SEC /
+# CENTRAL_PUSH_BUDGET_SEC establish. Checked **before every file**, never only
+# between the export and capture groups (the exact lesson M14 ticket 08's own
+# review caught for CENTRAL_PUSH_ITEM_CAP's chunking) — a slow or hanging
+# server never holds the scheduler thread past this many seconds.
+FILEUPLOAD_BUDGET_SEC: Final[float] = 60.0
+JOB_FILE_UPLOAD: Final[str] = "file_upload"
+
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"
 SOURCE_MODBUS: Final[str] = "modbus"

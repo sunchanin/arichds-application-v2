@@ -1225,8 +1225,14 @@ one header.
   (เมนูเรียกว่า FTP, glossary ยังคงเป็น *File Upload Destination* — ตั้งใจให้ต่างกัน, ADR 0025)
   มี endpoint จริง (`GET`/`PUT .../sftp`/`PUT .../ftps`/`PUT .../https`/`GET .../status`,
   admin-only, gate ด้วย `require_feature`), มีแถวใน `settings` ครบสามโปรโตคอล และฟอร์ม
-  round-trip ได้จริงแล้ว — แม้ cycle ที่ส่งไฟล์จริง (ticket 02) และสาม transport (ticket 03-05)
-  จะยังไม่ลง ก็ตาม · เมนูซ้าย **โชว์หน้านี้แล้วเมื่อ license ให้คีย์นี้** (`features.ts` เปลี่ยนเป็น
+  round-trip ได้จริงแล้ว · **ticket 02 ลงแล้ว**: cycle จริง (`fileupload/cycle.py`), Upload
+  Manifest model (`fileupload/manifest.py`) และ transport seam เดียว (`fileupload/transport.py`
+  — `Transport` Protocol + `TransportError` ที่พก class name อย่างเดียว ไม่พก message เพราะ
+  `logger.exception` จะรั่ว secret ผ่าน `exc_info` ซึ่ง redaction filter ไม่กรอง) ลงทะเบียนเป็น
+  scheduler job `file_upload` ตัวสุดท้าย ต่อจาก `central_push`, มีปุ่ม **Upload now** บนหน้าเว็บแล้ว
+  (`POST .../upload-now`) — พิสูจน์กับ in-memory transport เท่านั้น เพราะสาม transport จริง
+  (SFTP/FTPS/HTTPS, ticket 03-05) ยังไม่ลง หน้าที่ตั้งค่าครบแล้วจึงยังไม่ส่งไฟล์จริงสักตัว ·
+  เมนูซ้าย **โชว์หน้านี้แล้วเมื่อ license ให้คีย์นี้** (`features.ts` เปลี่ยนเป็น
   `kind: "feature", key: "file_upload_destination"`) เหมือน `database_destination` ทุกประการ ·
   `RESERVED_FEATURE_KEYS` ใน `constants.py` ว่างเปล่าแล้ว (คีย์นี้เป็นสมาชิกตัวสุดท้าย) — กลไกยังอยู่
   เผื่อคีย์ต่อไปที่ต้องจอง, `tools/` ยัง **import** ไม่เขียนซ้ำ (กฎของ issue 010)

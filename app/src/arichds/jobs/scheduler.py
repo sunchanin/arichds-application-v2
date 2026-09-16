@@ -34,6 +34,7 @@ from arichds.constants import (
     CSV_EXPORT_INTERVAL_SEC,
     DBDEST_SYNC_INTERVAL_SEC,
     ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
+    FILEUPLOAD_INTERVAL_SEC,
     JOB_BACKUP,
     JOB_BATTERY,
     JOB_BILLING,
@@ -41,6 +42,7 @@ from arichds.constants import (
     JOB_CSV_EXPORT,
     JOB_DBDEST_SYNC,
     JOB_ENERGY_SUMMARY_RECOMPUTE,
+    JOB_FILE_UPLOAD,
     JOB_LOAD_PROFILE,
     JOB_LP_CSV_TRIM,
     JOB_RETENTION,
@@ -55,6 +57,7 @@ from arichds.db.backup import backup_database
 from arichds.db.energy_summary_store import energy_summary_recompute_cycle
 from arichds.db.retention import purge_expired
 from arichds.export.csv_export import csv_export_cycle, csv_trim_cycle
+from arichds.fileupload.cycle import file_upload_cycle
 from arichds.licensing.service import LicenseState
 
 logger = logging.getLogger(__name__)
@@ -451,4 +454,12 @@ def default_jobs() -> list[Job]:
         # anywhere earlier would let a slow team server delay the customer's
         # own database sync (or a meter read) within the same pass.
         Job(name=JOB_CENTRAL_PUSH, interval_sec=CENTRAL_PUSH_INTERVAL_SEC, fn=central_push_cycle),
+        # The File Upload Destination (ADR 0025, SPEC §3.8, ticket 02) —
+        # **last**, one job behind the Central Push, deliberately: it is the
+        # THIRD job that talks to a machine we do not own, and jobs run
+        # sequentially in registry order on the one thread, so putting it
+        # anywhere earlier would let a slow file server delay the Central
+        # Push, the Database Destination sync, or a meter read within the
+        # same pass.
+        Job(name=JOB_FILE_UPLOAD, interval_sec=FILEUPLOAD_INTERVAL_SEC, fn=file_upload_cycle),
     ]

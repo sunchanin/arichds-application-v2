@@ -1,15 +1,20 @@
 """The File Upload Destination settings endpoints (SPEC §3.8, ADR 0025,
-ticket 01) — ``/api/settings/file-upload`` and its three per-protocol
-``PUT``s, plus the (still-empty) status.
+tickets 01-02) — ``/api/settings/file-upload`` and its three per-protocol
+``PUT``s, the status, and (ticket 02) the manual ``POST .../upload-now``
+trigger.
 
-Ticket 01 builds no upload cycle: :mod:`arichds.fileupload.status` is never
-written to here, so every status assertion below is "no cycle has run".
-Ticket 02 is what starts populating it.
+``TestUploadNow`` owns the manual trigger; every other class here predates
+the cycle and stays "no cycle has run" (:mod:`arichds.fileupload.cycle`
+still moves no bytes in production — the real transports land in tickets
+03-05, so a bare `POST /upload-now` on an otherwise-untouched app cannot
+populate the status either). :mod:`test_fileupload_cycle` owns the cycle's
+own behaviour against an in-memory transport.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -308,6 +313,14 @@ class TestFeatureGate:
         assert response.status_code == 403, response.text
         assert response.json()["error"]["reason"] == "file_upload_destination"
 
+    def test_upload_now_refuses_without_the_feature(self, admin_client: TestClient, relicense) -> None:
+        relicense(admin_client, features=["billing", "load_profile"])
+
+        response = admin_client.post("/api/settings/file-upload/upload-now")
+
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["reason"] == "file_upload_destination"
+
 
 class TestStatus:
     def test_no_cycle_has_run_yet(self, admin_client: TestClient) -> None:
@@ -417,3 +430,130 @@ class TestSecretsNeverReachALog:
             assert secret not in caplog.text
             for record in caplog.records:
                 assert secret not in record.getMessage()
+
+
+class _SynchronousScheduler:
+    """A stand-in for the process Scheduler whose ``run_soon`` runs the
+    callable immediately, on the calling thread — the ``RecordingScheduler``
+    pattern ``test_api_devices.py`` uses for the *other* ``run_soon`` caller,
+    adapted to actually execute the one-shot rather than merely record it.
+
+    Required here and not optional: every ``admin_client`` fixture sets
+    ``ARICHDS_POLL_ENABLED=false`` (``conftest.py``'s ``unlicensed_client``),
+    so the real Scheduler's one-shot thread never runs — a test that hit
+    ``POST .../upload-now`` against the real (unstarted) Scheduler would
+    block for the endpoint's own bounded wait
+    (``FILEUPLOAD_BUDGET_SEC + 10`` seconds) before timing out.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def run_soon(self, name, fn) -> None:  # noqa: ANN001
+        self.calls.append(name)
+        fn()
+
+
+class TestUploadNow:
+    """``POST /api/settings/file-upload/upload-now`` (ticket 02)."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_status(self):
+        from arichds.fileupload.status import set_last_cycle
+
+        set_last_cycle(None)
+        yield
+        set_last_cycle(None)
+
+    def test_it_runs_on_the_schedulers_one_shot_lane(self, admin_client: TestClient) -> None:
+        """Nothing is configured on this app, so the cycle it triggers is a
+        genuine no-op that still reports itself unconfigured
+        (`file_upload_cycle`'s own "not configured" branch, ticket 02
+        round 1 problem 3) — this test proves the wiring, not the cycle's
+        behaviour, which `test_fileupload_cycle.py` owns."""
+        scheduler = _SynchronousScheduler()
+        admin_client.app.state.scheduler = scheduler
+
+        response = admin_client.post("/api/settings/file-upload/upload-now")
+
+        assert response.status_code == 200, response.text
+        assert scheduler.calls == ["file_upload_manual"]
+        data = response.json()["data"]
+        assert data["finished"] is True
+        assert data["status"]["outcome"] == "not_configured"
+
+    def test_it_returns_the_status_the_cycle_just_set(
+        self, admin_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The endpoint's own contract — "returns that cycle's status" —
+        proven independent of ticket 02's own real-transport gap: the cycle
+        function the endpoint calls is monkeypatched to publish a known
+        status, which the response must reflect, with `finished: true`
+        since the (synchronous, in this test) one-shot lane actually ran it
+        before the wait returned."""
+        import arichds.api.file_upload as file_upload_api
+        from arichds.fileupload.status import CycleStatus, set_last_cycle
+
+        def _fake_cycle() -> None:
+            set_last_cycle(
+                CycleStatus(
+                    ran_at=datetime.now(UTC),
+                    protocol="sftp",
+                    outcome="success",
+                    files_sent=3,
+                    bytes_sent=42,
+                    files_skipped_unchanged=1,
+                    files_skipped_budget=0,
+                    files_skipped_no_serial=0,
+                    duration_sec=0.1,
+                    error=None,
+                )
+            )
+
+        monkeypatch.setattr(file_upload_api, "file_upload_cycle", _fake_cycle)
+        scheduler = _SynchronousScheduler()
+        admin_client.app.state.scheduler = scheduler
+
+        response = admin_client.post("/api/settings/file-upload/upload-now")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["finished"] is True
+        status = data["status"]
+        assert status["outcome"] == "success"
+        assert status["files_sent"] == 3
+        assert status["bytes_sent"] == 42
+        assert status["files_skipped_unchanged"] == 1
+
+    def test_a_timed_out_wait_reports_unfinished_rather_than_a_stale_status(
+        self, admin_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reviewer finding, ticket 02 round 1, problem 2 — a one-shot the
+        scheduler never gets to (the real Scheduler is disabled under every
+        `admin_client`, `ARICHDS_POLL_ENABLED=false`, so `run_soon` only
+        ever queues and `_run` — and its `done.set()` — never runs) must
+        not be reported as `finished: true` with whatever stale status
+        happens to be published. Both halves of the endpoint's wait are
+        shrunk to milliseconds so this test genuinely times out — for
+        real, on the real (disabled) Scheduler — without sitting out the
+        endpoint's real ~70s budget."""
+        import arichds.api.file_upload as file_upload_api
+        from arichds.fileupload.status import CycleStatus, set_last_cycle
+
+        stale = CycleStatus(ran_at=datetime.now(UTC), protocol="sftp", outcome="success", files_sent=99)
+        set_last_cycle(stale)
+        monkeypatch.setattr(file_upload_api, "FILEUPLOAD_BUDGET_SEC", 0.01)
+        monkeypatch.setattr(file_upload_api, "_UPLOAD_NOW_WAIT_MARGIN_SEC", 0.01)
+
+        response = admin_client.post("/api/settings/file-upload/upload-now")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["finished"] is False
+        # The stale status is still returned (it is the best answer
+        # available), but the caller is told not to trust it as this
+        # cycle's own result.
+        assert data["status"]["files_sent"] == 99
+
+    def test_it_is_admin_only(self, user_client: TestClient) -> None:
+        assert user_client.post("/api/settings/file-upload/upload-now").status_code == 403

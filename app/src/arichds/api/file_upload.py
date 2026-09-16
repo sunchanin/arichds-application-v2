@@ -1,5 +1,6 @@
-"""``/api/settings/file-upload`` — the File Upload Destination configuration
-and the last cycle's status (SPEC §3.8, ADR 0025, ticket 01).
+"""``/api/settings/file-upload`` — the File Upload Destination configuration,
+the last cycle's status, and the manual ``Upload now`` trigger (SPEC §3.8,
+ADR 0025, tickets 01-02).
 
 **Admin only, for every route including ``GET``** — the same choice
 ``arichds.api.central_push`` makes and for the same reason: three sets of
@@ -9,22 +10,28 @@ Push, this module **is** gated by a licence feature key
 (``file_upload_destination``, ADR 0025) — the same shape
 ``database_destination`` uses in ``arichds.api.settings``.
 
-Nothing here talks to a server. That is ticket 02's
-:mod:`arichds.fileupload.cycle` (not yet written); this module only owns the
-settings, the write-only credential handling, and the in-memory status read,
-which always answers "no cycle has run" until ticket 02 lands.
+Ticket 02 lands :mod:`arichds.fileupload.cycle` and the ``POST
+.../upload-now`` endpoint below. It still moves no bytes today — the three
+real transports land in tickets 03-05, and :func:`~arichds.fileupload.cycle._build_transport`
+returns ``None`` before ``_run_cycle`` ever runs — so the status this module
+reads stays ``None`` only until a cycle actually runs; the one outcome
+reachable before tickets 03-05 land is ``"not_configured"`` (an unset
+protocol, or one with no host/URL) — a *configured* page still publishes
+nothing today.
 """
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from arichds.api.deps import AdminDep, SessionDep, get_current_user, require_feature
+from arichds.api.deps import AdminDep, SchedulerDep, SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
+from arichds.constants import FILEUPLOAD_BUDGET_SEC
 from arichds.db.app_settings import (
     FILEUPLOAD_ACTIVE_PROTOCOL_KEY,
     FILEUPLOAD_FTPS_HOST_KEY,
@@ -45,6 +52,7 @@ from arichds.db.app_settings import (
     set_setting,
 )
 from arichds.fileupload.config import load_config
+from arichds.fileupload.cycle import file_upload_cycle
 from arichds.fileupload.status import CycleStatus, last_cycle
 
 router = APIRouter(
@@ -95,7 +103,9 @@ class FileUploadStatusOut(BaseModel):
     outcome: str
     files_sent: int
     bytes_sent: int
-    files_skipped: int
+    files_skipped_unchanged: int
+    files_skipped_budget: int
+    files_skipped_no_serial: int
     duration_sec: float
     error: str | None
 
@@ -109,8 +119,8 @@ class FileUploadOut(BaseModel):
             or ``"https"`` — the tab saved last. The other two tabs' settings
             are still returned, unchanged, so a form can be pre-filled even
             while inactive (ADR 0025 decision 1).
-        status: ``None`` until a cycle has run. Ticket 01 never runs one, so
-            this is always ``None`` today.
+        status: ``None`` until a cycle has run — ticket 02's scheduler job
+            (or ``POST .../upload-now``) is what runs the first one.
     """
 
     active_protocol: str
@@ -186,7 +196,9 @@ def _status_out(cycle_status: CycleStatus | None) -> FileUploadStatusOut | None:
         outcome=cycle_status.outcome,
         files_sent=cycle_status.files_sent,
         bytes_sent=cycle_status.bytes_sent,
-        files_skipped=cycle_status.files_skipped,
+        files_skipped_unchanged=cycle_status.files_skipped_unchanged,
+        files_skipped_budget=cycle_status.files_skipped_budget,
+        files_skipped_no_serial=cycle_status.files_skipped_no_serial,
         duration_sec=cycle_status.duration_sec,
         error=cycle_status.error,
     )
@@ -317,6 +329,73 @@ def put_file_upload_https(body: FileUploadHttpsIn, session: SessionDep, _admin: 
 
 @router.get("/status")
 def get_file_upload_status(_admin: AdminDep) -> ApiResponse[FileUploadStatusOut | None]:
-    """Return the last cycle's status — ``None`` until ticket 02 lands the
-    scheduler job that calls ``arichds.fileupload.status.set_last_cycle``."""
+    """Return the last cycle's status."""
     return ApiResponse.ok(_status_out(last_cycle()))
+
+
+class FileUploadUploadNowOut(BaseModel):
+    """What ``POST .../upload-now`` returns.
+
+    Attributes:
+        finished: Whether the triggered cycle actually completed before
+            this request's bounded wait ran out. When ``False``, *status*
+            is whatever was already published before this request — it may
+            be ``None``, or an unrelated earlier cycle's — and must not be
+            read as "this cycle's result" (reviewer finding, ticket 02
+            round 1, problem 2: the one-shot lane runs behind every
+            registered job on the scheduler's single thread, and a
+            load-profile pass alone can exceed this endpoint's own wait —
+            ADR 0018 records a 95.5 s association on a Premier 550 — so a
+            press during a normal pass must not be told "finished" while
+            nothing has actually run yet).
+        status: The last published cycle status, whether or not it belongs
+            to the cycle this request triggered.
+    """
+
+    finished: bool
+    status: FileUploadStatusOut | None
+
+
+#: How much longer than the cycle's own budget this endpoint waits, to give
+#: the one-shot a moment to be picked up after `run_soon` wakes the
+#: scheduler thread. A named module constant (not an inline literal)
+#: specifically so a test can shrink the whole wait to milliseconds without
+#: monkeypatching `threading.Event` itself, which would affect every other
+#: `Event` in the process (reviewer finding, ticket 02 round 1, problem 2 —
+#: an earlier draft of this test file's own probe did exactly that and broke
+#: unrelated `Thread` startup machinery).
+_UPLOAD_NOW_WAIT_MARGIN_SEC = 10.0
+
+
+@router.post("/upload-now")
+def upload_file_upload_now(scheduler: SchedulerDep, _admin: AdminDep) -> ApiResponse[FileUploadUploadNowOut]:
+    """Run one File Upload Destination cycle immediately and report whether
+    it actually finished. Admin only.
+
+    Runs on the Scheduler's one-shot lane
+    (:meth:`~arichds.jobs.scheduler.Scheduler.run_soon`) — never inline in
+    the request, since a cycle can read megabytes off disk and talk to a
+    server — the same lane ``POST /devices`` queues a device's first
+    load-profile read on. Unlike that fire-and-forget use, this request
+    **waits** for the cycle to finish (bounded by
+    :data:`~arichds.constants.FILEUPLOAD_BUDGET_SEC` plus a margin for the
+    one-shot to be picked up): the entire point of an "Upload now" button is
+    to show what happened, not merely that a request landed. **The wait can
+    still time out** — the one-shot lane runs behind every job already due
+    on the scheduler's one thread, so a slow meter read ahead of it can
+    outlast this endpoint's own budget — and when it does, ``finished`` is
+    ``False`` rather than silently reporting a stale or absent status as
+    if it were this cycle's own (reviewer finding, ticket 02 round 1,
+    problem 2).
+    """
+    done = threading.Event()
+
+    def _run() -> None:
+        try:
+            file_upload_cycle()
+        finally:
+            done.set()
+
+    scheduler.run_soon("file_upload_manual", _run)
+    finished = done.wait(timeout=FILEUPLOAD_BUDGET_SEC + _UPLOAD_NOW_WAIT_MARGIN_SEC)
+    return ApiResponse.ok(FileUploadUploadNowOut(finished=finished, status=_status_out(last_cycle())))

@@ -922,11 +922,14 @@ export interface CentralPushContract {
 }
 
 /**
- * What the last File Upload Destination cycle did (ADR 0025, ticket 01).
+ * What the last File Upload Destination cycle did (ADR 0025, tickets 01-02).
  *
  * In memory on the service only (ADR 0008), `null` until a cycle has run
- * since the last restart. Ticket 01 lands no cycle, so this reads `null`
- * until ticket 02's scheduler job starts writing it.
+ * since the last restart. The three real transports (SFTP/FTPS/HTTPS) land
+ * in tickets 03-05, so today the one `outcome` reachable is
+ * `"not_configured"` (an unset protocol, or one with no host/URL) — a
+ * *configured* page still publishes nothing, because the backend has no
+ * transport to build yet.
  */
 export interface FileUploadStatus {
   ran_at: string;
@@ -934,9 +937,27 @@ export interface FileUploadStatus {
   outcome: string;
   files_sent: number;
   bytes_sent: number;
-  files_skipped: number;
+  files_skipped_unchanged: number;
+  files_skipped_budget: number;
+  files_skipped_no_serial: number;
   duration_sec: number;
   error: string | null;
+}
+
+/**
+ * What `POST /api/settings/file-upload/upload-now` returns (ADR 0025,
+ * ticket 02).
+ *
+ * `finished` is `false` when the endpoint's own bounded wait ran out before
+ * the triggered cycle actually completed — the one-shot lane runs behind
+ * every job already due on the scheduler's one thread, so a slow meter read
+ * ahead of it can outlast the wait. When `false`, `status` is whatever was
+ * already published before this request (possibly `null`, possibly an
+ * unrelated earlier cycle) and must not be read as this cycle's own result.
+ */
+export interface FileUploadUploadNowResult {
+  finished: boolean;
+  status: FileUploadStatus | null;
 }
 
 /**
@@ -1699,6 +1720,16 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(settings),
     }),
+
+  /**
+   * "Upload now" (ADR 0025, ticket 02) — run one File Upload Destination
+   * cycle immediately. Admin-only. Waits for the cycle to finish (bounded
+   * by the cycle's own time budget), so this can take a while — the caller
+   * should show a loading state. `result.finished` tells the caller
+   * whether the wait actually caught the cycle finishing, or timed out.
+   */
+  uploadFileUploadNow: () =>
+    request<FileUploadUploadNowResult>("/api/settings/file-upload/upload-now", { method: "POST" }),
 
 
   /**

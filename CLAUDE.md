@@ -123,7 +123,11 @@ MySQL, and ~30 tables.
   08**, its own queue, separate contract, separate module (`centralpush/`); the **File Upload
   Destination** (menu **FTP**, SPEC §3.8, ADR 0025) had its configuration land with ticket 01 —
   `fileupload/`, `api/file_upload.py` and a working `web/src/pages/FileUploadDestination.tsx`
-  with its three protocol tabs — while the upload cycle itself waits on ticket 02) ·
+  with its three protocol tabs — and the upload cycle itself, the Upload Manifest model and the
+  one transport seam landed with ticket 02, registered as the `file_upload` scheduler job, last
+  and one behind `central_push`; proven against an in-memory transport only — the three real
+  transports (SFTP/FTPS/HTTPS) are tickets 03-05, so a fully configured page still moves no
+  bytes) ·
   0017 (the capture image is a **headless screenshot of our own page** — **reverses 0014**:
   Edge ships with Windows and `websockets` already arrives via `uvicorn[standard]`, so driving
   the installed browser over CDP costs **0 MB** and makes fidelity an identity rather than an
@@ -435,7 +439,27 @@ MySQL, and ~30 tables.
   ADR 0021 forbids it from sharing a local-time helper with) · `fileupload/` (the **File Upload
   Destination**, menu **FTP** — SPEC §3.8, ADR 0025; `config.py`'s settings loader and
   `status.py`'s in-memory last-cycle slot landed with ticket 01, imports nothing from `export/`
-  for the same reason `dataout/` does not; the cycle and the three transports are tickets 02-05)
+  for the same reason `dataout/` does not; the **Upload Manifest** model (`manifest.py`), the one
+  transport seam (`transport.py`'s `Transport` Protocol + `TransportError`, carrying only a
+  failure's class name — never its message, since `logger.exception` would otherwise leak it
+  through `exc_info`, which the redaction filter does not scrub) and the `file_upload_cycle`
+  itself (`cycle.py`) landed with ticket 02, registered **last** in the scheduler, one job behind
+  `central_push` — proven against an in-memory transport only; the three real transports
+  (SFTP/FTPS/HTTPS) are tickets 03-05, so a fully configured page still moves no bytes.
+  **Corrected at ticket 02 round 1** (reviewer findings): the export group is found by
+  **listing** `export_dir` and matching each entry against the three filename templates —
+  never by predicting a name and hoping it exists, which a mutation to `render_filename`
+  proved could drift silently and which permanently hid an earlier day's `[date]`-templated
+  file; `POST .../upload-now` returns `{finished, status}` rather than a bare status, since the
+  one-shot lane can outlast the endpoint's own wait (a load-profile pass alone can exceed it,
+  ADR 0018); an unconfigured cycle now publishes an explicit `"not_configured"` outcome instead
+  of leaving the status `None`; and a quiet cycle (the manifest read back intact, nothing to
+  send) skips the manifest write entirely rather than re-writing an identical copy every fifteen
+  minutes)
+  · `filename_tokens.py` (the one place the `[meter]`/`[serial]`/`[date]` export-filename tokens
+  are defined — landed at ticket 02 round 1, at the package top for the same reason
+  `interval_status.py` is: `fileupload/cycle.py` must not import `export/`, so
+  `export/format.py::render_filename` delegates to it instead of duplicating the substitution)
   · `interval_status.py` (the one
   Interval Status decoder, at the package top because `api/` must not import `export/` — that
   direction closes a cycle through `api/deps` -> `jobs/scheduler` -> `export/csv_export`).
@@ -524,8 +548,10 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
   through a **Data-out Destination we drive outbound** — the Database Destination
   (ADR 0016/0020/0021, issue #46, `dataout/`), the central-server push (SPEC §3.8, ADR
   0024, `centralpush/`, M14 ticket 08) and the File Upload Destination (menu **FTP**, SPEC
-  §3.8, ADR 0025, `fileupload/`, ticket 01 for configuration), which are **three transports
-  and three contracts, not one** (SPEC §3.10). Nothing external reads our tables.
+  §3.8, ADR 0025, `fileupload/`, ticket 01 for configuration, ticket 02 for the cycle itself —
+  proven against an in-memory transport, moving no real bytes until tickets 03-05 land
+  SFTP/FTPS/HTTPS), which are **three transports and three contracts, not one** (SPEC §3.10).
+  Nothing external reads our tables.
 - **English-only UI** — no Thai strings in `web/` (v1 had them; do not carry them over).
 
 ## v1 as reference (read-only)

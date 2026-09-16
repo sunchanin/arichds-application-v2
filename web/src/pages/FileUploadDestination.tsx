@@ -114,14 +114,15 @@ function HowTo({ prerequisites }: { prerequisites: string[] }) {
 }
 
 /**
- * File Upload Destination (SPEC §3.8, ADR 0025, ticket 01) — menu label
+ * File Upload Destination (SPEC §3.8, ADR 0025, tickets 01-02) — menu label
  * **FTP** (CONTEXT.md's glossary term stays *File Upload Destination*; the
  * two disagree on purpose, ADR 0025 decision 1).
  *
- * Three tabs, one active protocol — the tab saved last. **No transport yet**:
- * ticket 02 adds the cycle that actually sends anything, so the status card
- * always reads "no cycle has run" today. The configuration round-trips in
- * full, which is what this ticket delivers.
+ * Three tabs, one active protocol — the tab saved last. **Still no bytes
+ * move**: ticket 02 lands the cycle and the **Upload now** button below,
+ * but the three real transports (SFTP/FTPS/HTTPS) land in tickets 03-05, so
+ * the status card still reads "not yet run" on a fully configured page
+ * today.
  *
  * No `role` prop threaded in — `App.tsx` already redirects non-admins away
  * from `file-upload-destination` before this renders, the same guard
@@ -138,6 +139,7 @@ export function FileUploadDestination() {
   const [savingSftp, setSavingSftp] = useState(false);
   const [savingFtps, setSavingFtps] = useState(false);
   const [savingHttps, setSavingHttps] = useState(false);
+  const [uploadingNow, setUploadingNow] = useState(false);
   const [sftpError, setSftpError] = useState<string | null>(null);
   const [ftpsError, setFtpsError] = useState<string | null>(null);
   const [httpsError, setHttpsError] = useState<string | null>(null);
@@ -199,6 +201,28 @@ export function FileUploadDestination() {
     },
     [apply, surface],
   );
+
+  const onUploadNow = useCallback(() => {
+    setUploadingNow(true);
+    api
+      .uploadFileUploadNow()
+      .then((result) => {
+        setSettings((prev) => (prev === null ? prev : { ...prev, status: result.status }));
+        if (result.finished) {
+          message.success("Upload cycle finished — see the status below.");
+        } else {
+          // The one-shot lane runs behind every job already due on the
+          // scheduler's one thread — a slow meter read ahead of it can
+          // outlast this request's own wait. `result.status` here is
+          // whatever was already published, not this cycle's own result,
+          // so it must not be shown as success (reviewer finding, ticket
+          // 02 round 1, problem 2).
+          message.info("Still running — press Refresh in a moment.");
+        }
+      })
+      .catch((err: unknown) => surface(err, "Could not run the upload cycle."))
+      .finally(() => setUploadingNow(false));
+  }, [message, surface]);
 
   useEffect(() => {
     load(true);
@@ -474,11 +498,30 @@ export function FileUploadDestination() {
         />
       </Card>
 
-      <Card size="small" title="Last cycle" extra={<Button size="small" onClick={() => load(false)}>Refresh</Button>}>
+      <Card
+        size="small"
+        title="Last cycle"
+        extra={
+          <Space size="small">
+            <Button size="small" onClick={() => load(false)}>
+              Refresh
+            </Button>
+            <Button size="small" type="primary" loading={uploadingNow} onClick={onUploadNow}>
+              Upload now
+            </Button>
+          </Space>
+        }
+      >
         {status === null ? (
           <Text type="secondary">
-            No cycle has run since ARICHDS last started. Uploads have not shipped yet — saving a tab above only
-            stores the configuration.
+            Not yet run since start. Saving a tab above only stores the configuration — press{" "}
+            <Text strong>Upload now</Text> to prove it, or wait for the next scheduled cycle.
+          </Text>
+        ) : status.outcome === "not_configured" ? (
+          <Text type="secondary">
+            The last cycle found this destination not configured — an active protocol needs a host or URL before
+            anything can be sent. Save a tab above, then press <Text strong>Upload now</Text> or wait for the next
+            scheduled cycle.
           </Text>
         ) : (
           <Space direction="vertical" size="small" style={{ width: "100%" }}>
@@ -493,7 +536,13 @@ export function FileUploadDestination() {
                   { key: "outcome", label: "Outcome", children: status.outcome },
                   { key: "files_sent", label: "Files sent", children: status.files_sent },
                   { key: "bytes_sent", label: "Bytes sent", children: status.bytes_sent },
-                  { key: "files_skipped", label: "Files skipped", children: status.files_skipped },
+                  { key: "files_skipped_unchanged", label: "Files skipped (unchanged)", children: status.files_skipped_unchanged },
+                  { key: "files_skipped_budget", label: "Files skipped (budget)", children: status.files_skipped_budget },
+                  {
+                    key: "files_skipped_no_serial",
+                    label: "Devices skipped (no Meter Serial)",
+                    children: status.files_skipped_no_serial,
+                  },
                   { key: "took", label: "Took", children: `${status.duration_sec.toFixed(2)} s` },
                 ] satisfies DescriptionsItemType[]
               }

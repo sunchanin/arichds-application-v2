@@ -8,9 +8,8 @@ It resets on restart, and that is correct rather than a gap: the page's
 status card answers *"is the upload working right now"*, and a service that
 just came up has no answer to that yet.
 
-**Ticket 01 (this) never calls** :func:`set_last_cycle` — there is no cycle
-yet, so :func:`last_cycle` always answers ``None`` until ticket 02 lands the
-scheduler job that populates it.
+**Ticket 02** is what calls :func:`set_last_cycle` —
+:mod:`arichds.fileupload.cycle`'s scheduler job.
 """
 
 from __future__ import annotations
@@ -20,13 +19,18 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-#: What a cycle ended as — the same two-outcome shape
-#: :data:`arichds.centralpush.status.CycleOutcome` uses, for the same reason:
-#: every failure (unreachable, refused, a bad certificate, a rejected host
-#: key) is one fact from the status card's point of view — nothing new
-#: reached the server this pass — and *why* lives in
-#: :attr:`CycleStatus.error`.
-CycleOutcome = Literal["success", "skipped"]
+#: What a cycle ended as. ``"success"``/``"skipped"`` are the same
+#: two-outcome shape :data:`arichds.centralpush.status.CycleOutcome` uses,
+#: for the same reason: every failure (unreachable, refused, a bad
+#: certificate, a rejected host key) is one fact from the status card's
+#: point of view — nothing new reached the server this pass — and *why*
+#: lives in :attr:`CycleStatus.error`. ``"not_configured"`` is this
+#: Destination's own third value (reviewer finding, ticket 02 round 1): an
+#: unset active protocol, or an active protocol with no host/URL, is not a
+#: failure and not a cycle that has never run — the operator has seen the
+#: page and it was judged unconfigured, and the status card needs to say
+#: that rather than default to "Not yet run since start" forever.
+CycleOutcome = Literal["success", "skipped", "not_configured"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,9 +45,16 @@ class CycleStatus:
         files_sent: Files the manifest compare found new or changed and the
             transport actually put.
         bytes_sent: Total bytes across *files_sent*.
-        files_skipped: Files the cycle's time budget left unreached this
-            pass — not a failure, since the manifest already records what did
-            arrive and the next cycle resumes from there (ADR 0025).
+        files_skipped_unchanged: Candidate files whose digest already
+            matched the manifest — not sent because nothing changed.
+        files_skipped_budget: Candidate files the cycle's time budget left
+            unreached this pass — not a failure, since the manifest already
+            records what did arrive and the next cycle resumes from there
+            (ADR 0025).
+        files_skipped_no_serial: Devices with no known Meter Serial, whose
+            export files therefore cannot be attributed and were never
+            considered (SPEC story 12 — "for every device with a Meter
+            Serial").
         duration_sec: Wall clock for the whole cycle.
         error: The failure's class name (never a credential) when *outcome*
             is `"skipped"`, else ``None``.
@@ -54,7 +65,9 @@ class CycleStatus:
     outcome: CycleOutcome
     files_sent: int = 0
     bytes_sent: int = 0
-    files_skipped: int = 0
+    files_skipped_unchanged: int = 0
+    files_skipped_budget: int = 0
+    files_skipped_no_serial: int = 0
     duration_sec: float = 0.0
     error: str | None = None
 
