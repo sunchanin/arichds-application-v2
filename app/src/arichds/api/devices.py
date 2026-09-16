@@ -65,7 +65,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import delete, func, select
 
 from arichds.acquisition.billing import read_and_store_billing
-from arichds.acquisition.catalog import CATALOG, ModelSpec
+from arichds.acquisition.catalog import BRAND_LABELS, CATALOG, Brand, ModelSpec, brand_key
 from arichds.acquisition.connection_params import connection_params_from_transport
 from arichds.acquisition.drivers.factory import supported_models
 from arichds.acquisition.load_profile import read_and_store_load_profile
@@ -462,7 +462,8 @@ class CatalogEntry(BaseModel):
 
     Attributes:
         model: Canonical model identifier — what to submit.
-        brand: Owning brand.
+        brand: Owning brand — the catalog key, what to submit and compare.
+        brand_label: What to show for the brand (ui-audit ticket 01).
         ui_label: What to show in the dropdown.
         fixed_password: Prefill for the Password field, or None when the model
             uses key-based auth.
@@ -473,6 +474,7 @@ class CatalogEntry(BaseModel):
 
     model: str
     brand: str
+    brand_label: str
     ui_label: str
     fixed_password: str | None
     supports_battery: bool
@@ -634,12 +636,35 @@ def _to_catalog_entry(model: str, spec: ModelSpec) -> CatalogEntry:
     return CatalogEntry(
         model=model,
         brand=spec.brand.value,
+        brand_label=BRAND_LABELS[spec.brand],
         ui_label=spec.ui_label,
         fixed_password=spec.fixed_password,
         supports_battery=spec.supports_battery,
         supports_energy_summary=spec.supports_energy_summary,
         supports_special_days=spec.supports_special_days,
     )
+
+
+def _require_known_brand(brand: str) -> str:
+    """Return the catalog key for *brand*, or refuse it.
+
+    A brand is a catalog key (SPEC §3.3, ui-audit ticket 01): the device form
+    compares brands with ``===``, so a row stored as ``"CEWE"`` beside a
+    catalog that says ``"cewe"`` showed its own model as "not licensed on this
+    machine". Accept any casing, store the key.
+
+    Raises:
+        HTTPException: 422 naming the accepted brands when *brand* matches
+            none of them even case-insensitively.
+    """
+    key = brand_key(brand)
+    if key is None:
+        accepted = ", ".join(b.value for b in Brand)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unknown meter brand {brand!r}. Accepted brands: {accepted}.",
+        )
+    return key.value
 
 
 def _require_known_model(model: str) -> None:
@@ -1016,6 +1041,7 @@ def create_device(
         The created device, or a 502 failure envelope naming why the meter
         refused — in which case **nothing was written**.
     """
+    brand = _require_known_brand(payload.brand)
     _require_known_model(payload.model)
     # One read, reused by both gates below (code review, fix round 1) — two
     # separate `current_state()` calls are two separate `RLock` acquisitions
@@ -1048,7 +1074,7 @@ def create_device(
 
     device = Device(
         name=payload.name,
-        brand=payload.brand,
+        brand=brand,
         model=payload.model.lower(),
         meter_serial=probe.meter_serial,
         meter_activation_code=stored_code,
@@ -1175,6 +1201,7 @@ def update_device(
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No device with id {device_id}")
 
+    brand = _require_known_brand(payload.brand)
     _require_known_model(payload.model)
     _require_licensed_model(payload.model, license_service.current_state().models)
     _reject_duplicate_name(session, payload.name, exclude_id=device_id)
@@ -1197,7 +1224,7 @@ def update_device(
     _reject_duplicate_serial(session, probe.meter_serial, exclude_id=device_id)
 
     device.name = payload.name
-    device.brand = payload.brand
+    device.brand = brand
     device.model = payload.model.lower()
     device.meter_serial = probe.meter_serial
     device.site_name = payload.site_name

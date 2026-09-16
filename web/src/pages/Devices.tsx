@@ -507,13 +507,18 @@ export function Devices({
   const noLicensedModels = licensedModels !== null && licensedModels.length === 0;
 
   const brandOptions = useMemo(() => {
-    const brands = new Set(licensedCatalog.map((entry) => entry.brand));
-    // A row created before this build's catalog (SPEC §3.3) — or before the
-    // licence narrowed — keeps its own brand selectable, or opening it would
-    // silently blank the field.
-    if (watchedBrand) brands.add(watchedBrand);
-    return [...brands].sort().map((brand) => ({ value: brand, label: brand }));
-  }, [licensedCatalog, watchedBrand]);
+    // Keyed by the catalog key, labelled by the catalog's display name — a
+    // brand is a key (ui-audit ticket 01), so the label never takes part in a
+    // comparison. A row created before this build's catalog (SPEC §3.3) — or
+    // before the licence narrowed — keeps its own brand selectable, or opening
+    // it would silently blank the field; its key is its own label.
+    const brands = new Map<string, string>();
+    for (const entry of licensedCatalog) brands.set(entry.brand, entry.brand_label);
+    if (watchedBrand && !brands.has(watchedBrand)) {
+      brands.set(watchedBrand, catalog.find((entry) => entry.brand === watchedBrand)?.brand_label ?? watchedBrand);
+    }
+    return [...brands].sort(([a], [b]) => a.localeCompare(b)).map(([value, label]) => ({ value, label }));
+  }, [catalog, licensedCatalog, watchedBrand]);
 
   const modelOptions = useMemo(() => {
     const forBrand = licensedCatalog.filter((entry) => entry.brand === watchedBrand);
@@ -569,7 +574,10 @@ export function Devices({
     for (const device of devices) {
       const key = `${device.brand}|${device.model}`;
       if (pairs.has(key)) continue;
-      const entry = catalog.find((candidate) => candidate.model === device.model && candidate.brand === device.brand);
+      // Model keys are unique across the catalog, so the display name is
+      // found by model alone — a brand stored in a stray casing (ui-audit
+      // ticket 01) can no longer push a raw `brand · model` key into the list.
+      const entry = catalog.find((candidate) => candidate.model === device.model);
       pairs.set(key, entry ? entry.ui_label : `${device.brand} · ${device.model}`);
     }
     return [

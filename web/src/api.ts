@@ -983,7 +983,10 @@ export interface ReadNowResult {
  */
 export interface CatalogEntry {
   model: string;
+  /** The catalog key — the stored value and the one to compare with. */
   brand: string;
+  /** What to show for the brand; never compare with it. */
+  brand_label: string;
   ui_label: string;
   fixed_password: string | null;
   supports_battery: boolean;

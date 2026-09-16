@@ -66,6 +66,30 @@ class Brand(StrEnum):
     SMART_TCC = "smart_tcc"
 
 
+# What the UI prints for a brand key. The key is the stored value and the
+# comparison value everywhere (ui-audit ticket 01); the label is display only.
+BRAND_LABELS: Final[dict[Brand, str]] = {
+    Brand.CEWE: "CEWE",
+    Brand.MITSU: "Mitsubishi",
+    Brand.SMART_TCC: "SMART TCC",
+}
+
+
+def brand_key(value: str) -> Brand | None:
+    """The catalog brand *value* names, compared case-insensitively.
+
+    A brand is a catalog key (SPEC §3.3): Create and Update store the key,
+    never the operator's casing, so ``"CEWE"`` and ``"cewe"`` are the same
+    brand. Returns None when *value* matches no key even case-insensitively —
+    the "no driver in this build" case the device form already names.
+    """
+    lowered = value.strip().lower()
+    for brand in Brand:
+        if brand.value == lowered:
+            return brand
+    return None
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     """Immutable taxonomy entry for one meter model.

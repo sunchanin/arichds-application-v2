@@ -433,9 +433,13 @@ export function LoadProfile({ role }: { role: "admin" | "user" }) {
   const brandOptions = useMemo(
     () => [
       { value: ALL, label: "All brands" },
-      ...unique(bySite.map((device) => device.brand)).map((value) => ({ value, label: value })),
+      ...unique(bySite.map((device) => device.brand)).map((value) => ({
+        value,
+        // The stored brand is the catalog key; the catalog says how to print it.
+        label: catalog.find((entry) => entry.brand === value)?.brand_label ?? value,
+      })),
     ],
-    [bySite],
+    [bySite, catalog],
   );
 
   const modelOptions = useMemo(() => {

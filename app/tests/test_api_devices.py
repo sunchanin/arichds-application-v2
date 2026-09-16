@@ -104,6 +104,21 @@ class TestCreateDevice:
         data = add_device(admin_client, fake_meter, serial="SN-FROM-METER").json()["data"]
         assert data["meter_serial"] == "SN-FROM-METER"
 
+    def test_the_brand_is_stored_as_the_catalog_key_whatever_its_case(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """ui-audit ticket 01 — `CEWE` on the wire is `cewe` in the row."""
+        data = add_device(admin_client, fake_meter, brand="CEWE").json()["data"]
+        assert data["brand"] == "cewe"
+
+    def test_a_brand_matching_no_key_is_422_and_never_probes(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        response = add_device(admin_client, fake_meter, brand="acme")
+        assert response.status_code == 422
+        assert "Accepted brands" in response.json()["detail"]
+        assert fake_meter.connects == 0
+
     def test_it_probes_the_meter_before_inserting(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
         add_device(admin_client, fake_meter)
         assert fake_meter.connects == 1
@@ -386,8 +401,22 @@ class TestUpdateDevice:
         assert self.update(admin_client, 999).status_code == 404
 
     def test_brand_and_model_are_editable(self, admin_client: TestClient, device_id: int) -> None:
-        data = self.update(admin_client, device_id, brand="CEWE Thailand").json()["data"]
-        assert data["brand"] == "CEWE Thailand"
+        data = self.update(admin_client, device_id, brand="mitsu", model="smw110").json()["data"]
+        assert (data["brand"], data["model"]) == ("mitsu", "smw110")
+
+    def test_the_brand_is_stored_as_the_catalog_key_whatever_its_case(
+        self, admin_client: TestClient, device_id: int
+    ) -> None:
+        """ui-audit ticket 01 — a brand is a catalog key, compared by the form with `===`."""
+        data = self.update(admin_client, device_id, brand="CEWE").json()["data"]
+        assert data["brand"] == "cewe"
+
+    def test_a_brand_matching_no_key_is_422_naming_the_accepted_brands(
+        self, admin_client: TestClient, device_id: int
+    ) -> None:
+        response = self.update(admin_client, device_id, brand="acme")
+        assert response.status_code == 422
+        assert "cewe" in response.json()["detail"]
 
     def test_a_name_taken_by_another_device_is_409(
         self, admin_client: TestClient, fake_meter: FakeMeterState, device_id: int
@@ -645,6 +674,7 @@ class TestCatalog:
         assert entry["ui_label"] == "Prometer 100"
         assert entry["fixed_password"] == "ABCD0001"
         assert entry["brand"] == "cewe"
+        assert entry["brand_label"] == "CEWE"
 
     def test_it_carries_no_transport_information(self, admin_client: TestClient) -> None:
         """Issue #9 — transport is a property of the installation, not of the
