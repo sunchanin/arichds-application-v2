@@ -632,7 +632,7 @@ MySQL, and ~30 tables.
 .venv\Scripts\activate            # Windows venv
 fastapi dev                        # dev server (entrypoint in pyproject [tool.fastapi])
 ruff format . && ruff check . --fix
-pytest -n auto                     # full suite in parallel — 143s across 16 cores (2163 tests, measured 2026-09-11)
+pytest -n auto                     # full suite in parallel — 190–290s across 16 workers (2464 tests, measured 2026-09-17; 143s/2163 on 2026-09-11)
 pytest tests/<file>::<test>        # one file/test — plain, NEVER -n auto (workers cost 6.4s, the run costs 0.1s)
 python -m alembic upgrade head     # manual; app also auto-migrates at startup
 

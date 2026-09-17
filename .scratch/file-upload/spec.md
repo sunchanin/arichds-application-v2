@@ -1,6 +1,6 @@
 # Spec — the File Upload Destination (menu: FTP)
 
-**Status:** ready-for-agent · grilled 2026-09-16 (18 questions, 3 rounds) · owner decisions
+**Status:** implemented 2026-09-17 (tickets 01–05, `803684c`…`f011a8e`; CLAUDE.md's ADR 0025 digest is the record of what landed) · grilled 2026-09-16 (18 questions, 3 rounds) · owner decisions
 recorded inline · ADR 0025 accompanies this spec · glossary: CONTEXT.md → *File Upload
 Destination*, *Upload Manifest*.
 

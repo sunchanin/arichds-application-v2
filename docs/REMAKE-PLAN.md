@@ -1074,14 +1074,15 @@ attribute 3 กับ 4 แล้วตัดสาย) เมื่อ 2026-09-
 > ✅ **File Upload — เริ่มแล้ว 2026-09-16 (คืนเดียวกัน)** เจ้าของตัดสินให้ทำ: grill 18 คำถาม →
 > `.scratch/file-upload/spec.md` + **ADR 0025** (สามโปรโตคอล SFTP/FTPS/HTTPS · server จำด้วย
 > Upload Manifest เครื่องไม่จำ · ไม่ลบ remote · เมนูชื่อ **FTP**) → `/to-tickets` 5 ใบ
-> (`.scratch/file-upload/issues/`) → `/run-batch 1-5` แต่เจ้าของสั่งหยุดหลังใบ 02 ·
-> **เสร็จ:** 01 หน้า FTP + settings + endpoint + licence key `file_upload_destination` ขายได้
-> (`803684c`) · 02 cycle + manifest + transport seam + job ที่ 11 + Upload now ทดสอบผ่าน transport
-> ในหน่วยความจำ (`9cb424f`) — ยัง**ไม่มี** transport จริง หน้าที่ตั้งค่าครบก็ยังไม่ส่งอะไร ·
-> **ค้าง:** 03 HTTPS · 04 SFTP (paramiko — dependency ตัวเดียวที่เพิ่ม) · 05 FTPS — ทั้งสามรอ
-> `/run-batch 3-5 file-upload` · ledger: `.claude/run-logs/issue-file-upload-0{1,2}.md` ·
-> finding ระหว่างทาง: `logger.exception` ใน push/dbdest cycle เลี่ยง redaction filter →
-> `docs/issues/020` · ย่อหน้าบน (89 บรรทัด shell, `kind: "never"`, ไม่มี endpoint) เป็นสถานะ**ก่อน**คืนนี้
+> (`.scratch/file-upload/issues/`) → `/run-batch 1-5` (หยุดหลังใบ 02 คืนนั้น รันต่อ 03–05 คืนถัดมา) ·
+> **✅ ครบทั้ง 5 ใบ 2026-09-17:** 01 หน้า FTP + settings + endpoint + licence key `file_upload_destination`
+> ขายได้ (`803684c`) · 02 cycle + Upload Manifest + transport seam + job ที่ 11 + Upload now (`9cb424f`) ·
+> 03 HTTPS + Files (optional) บนหน้า API (`4a39f52` prefactor opener, `c35c3f2`) · 04 SFTP + pin host key
+> (`9a29b9b`; paramiko 5.0.0 + PyNaCl = runtime dep ตัวเดียวที่เพิ่ม, onedir +1.07 MiB) · 05 FTPS explicit TLS
+> (`f011a8e`; pyftpdlib dev-only) — ทุกโปรโตคอลทดสอบกับ server in-process จริง · **ยังไม่เคยลองกับ
+> server จริงของทีม** และยังไม่ได้ build installer · ledger: `.claude/run-logs/issue-file-upload-0{1..5}.md` ·
+> lib-notes: `docs/lib-notes/{paramiko-sftp,pyftpdlib-tls}.md` · issue ที่ออกระหว่างทาง: `docs/issues/020`
+> (`logger.exception` เลี่ยง redaction), `021` (URL `http://` บนแท็บ HTTPS/Central Push) ·
 >
 > สองข้อที่ตารางเคยนับว่าเหลือแต่จริง ๆ ไม่เหลือคือ **B1 และ E3** — ทั้งคู่ปิดไปแล้วโดยไม่มีใคร
 > กลับมาขีด ซึ่งเป็นเหตุผลที่ backlog อ่านแล้วรู้สึกว่างานเหลือมากกว่าความจริง
