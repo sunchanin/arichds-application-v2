@@ -30,10 +30,11 @@ import time
 from datetime import datetime
 from typing import Any
 from urllib.error import URLError
-from urllib.request import HTTPHandler, HTTPSHandler, Request, build_opener
+from urllib.request import Request
 
 from arichds.centralpush.contract import CONTRACT_VERSION, ITEM_KINDS, HoldingsResponse, ItemKind, PushEnvelope
 from arichds.constants import CENTRAL_PUSH_CONNECT_TIMEOUT_SEC, CENTRAL_PUSH_ITEM_CAP, CENTRAL_PUSH_READ_TIMEOUT_SEC
+from arichds.split_timeout_http import build_split_timeout_opener
 
 logger = logging.getLogger(__name__)
 
@@ -49,59 +50,18 @@ class PushRequestError(Exception):
     token."""
 
 
-class _SplitTimeoutHTTPConnection(http.client.HTTPConnection):
-    """A plain HTTP connection with a connect timeout distinct from its read
-    timeout. ``self.timeout`` (read by :meth:`connect` when it creates the
-    socket) is set immediately before calling up, then the live socket's
-    timeout is changed for every read that follows — the recipe the
-    standard library itself documents for a connect/read split, since
-    neither :mod:`http.client` nor :mod:`urllib.request` offers one directly.
-    """
-
-    def connect(self) -> None:
-        self.timeout = CENTRAL_PUSH_CONNECT_TIMEOUT_SEC
-        super().connect()
-        if self.sock is not None:
-            self.sock.settimeout(CENTRAL_PUSH_READ_TIMEOUT_SEC)
-
-
-class _SplitTimeoutHTTPSConnection(http.client.HTTPSConnection):
-    """The HTTPS counterpart of :class:`_SplitTimeoutHTTPConnection` — same
-    split, applied after the TLS handshake `HTTPSConnection.connect` already
-    performs."""
-
-    def connect(self) -> None:
-        self.timeout = CENTRAL_PUSH_CONNECT_TIMEOUT_SEC
-        super().connect()
-        if self.sock is not None:
-            self.sock.settimeout(CENTRAL_PUSH_READ_TIMEOUT_SEC)
-
-
-class _SplitTimeoutHTTPHandler(HTTPHandler):
-    def http_open(self, req):  # noqa: ANN001, ANN201 — matches urllib.request's own untyped signature.
-        return self.do_open(_SplitTimeoutHTTPConnection, req)
-
-
-class _SplitTimeoutHTTPSHandler(HTTPSHandler):
-    """Matches the installed :class:`urllib.request.HTTPSHandler.https_open`
-    exactly (read via ``inspect.getsource`` against this build's stdlib,
-    3.14): only ``context=self._context`` goes to :meth:`do_open` —
-    ``check_hostname`` is not a ``do_open``/``HTTPSConnection`` keyword
-    argument (removed in 3.12) and is instead applied to ``self._context``
-    by ``HTTPSHandler.__init__`` before this method ever runs. Passing it
-    here made every ``https://`` request raise ``TypeError`` before
-    connecting — a blocker a review caught, since the real server is HTTPS
-    (SPEC §3.8) and that ``TypeError`` is not an ``OSError``/``URLError``,
-    so it escaped `_round_trip` uncaught."""
-
-    def https_open(self, req):  # noqa: ANN001, ANN201 — matches urllib.request's own untyped signature.
-        return self.do_open(_SplitTimeoutHTTPSConnection, req, context=self._context)
-
-
 def _opener():
     """A fresh opener per call — stateless, thread-safe, and cheap enough at
-    a fifteen-minute cadence that there is nothing to gain from caching one."""
-    return build_opener(_SplitTimeoutHTTPHandler(), _SplitTimeoutHTTPSHandler())
+    a fifteen-minute cadence that there is nothing to gain from caching one.
+
+    The split-timeout recipe itself (the connect/read subclassing, the
+    ``check_hostname``/``do_open`` hazard) now lives in
+    :mod:`arichds.split_timeout_http`, shared with the File Upload
+    Destination's HTTPS transport (ADR 0025, ticket 03) rather than
+    duplicated — this module keeps only its own timeout constants."""
+    return build_split_timeout_opener(
+        connect_timeout=CENTRAL_PUSH_CONNECT_TIMEOUT_SEC, read_timeout=CENTRAL_PUSH_READ_TIMEOUT_SEC
+    )
 
 
 def _round_trip(url: str, path: str, *, method: str, token: str, body: bytes | None) -> bytes:
