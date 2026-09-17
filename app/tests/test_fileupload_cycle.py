@@ -105,7 +105,7 @@ def _configure_dirs(*, export_dir: Path | None, capture_dir: Path | None) -> Non
 class InMemoryTransport:
     """A test-only :class:`~arichds.fileupload.transport.Transport` — records
     every put and serves whatever manifest it is given, exactly the seam
-    the real transports (tickets 03-05) will fill in for real.
+    the real transports (HTTPS/SFTP/FTPS, tickets 03-05) fill in for real.
 
     Args:
         manifest: What :meth:`read_manifest` answers — ``None`` means "no

@@ -80,6 +80,14 @@ dev = [
     "httpx>=0.28",
     "ruff>=0.6",
     "pyinstaller>=6.6",
+    # In-process FTPS server for the FTPS transport's own tests only (ADR 0025
+    # decision 1, ticket 05) — the product's FTPS client is standard-library
+    # `ftplib.FTP_TLS` alone (docs/lib-notes/pyftpdlib-tls.md). The `ssl`
+    # extra pulls PyOpenSSL, which `TLS_FTPHandler` needs; `pyasynchat`/
+    # `pyasyncore` resolve on their own via pyftpdlib's own conditional
+    # requires_dist for Python 3.12+ (stdlib `asynchat`/`asyncore` removed) —
+    # not declared here explicitly since pip already pulls them in.
+    "pyftpdlib[ssl]>=2.2",
 ]
 
 # FastAPI CLI entrypoint — `fastapi dev` / `fastapi run` read this.

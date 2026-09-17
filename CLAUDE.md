@@ -125,14 +125,15 @@ MySQL, and ~30 tables.
   `fileupload/`, `api/file_upload.py` and a working `web/src/pages/FileUploadDestination.tsx`
   with its three protocol tabs — and the upload cycle itself, the Upload Manifest model and the
   one transport seam landed with ticket 02, registered as the `file_upload` scheduler job, last
-  and one behind `central_push`; proven against an in-memory transport only — the three real
-  transports (SFTP/FTPS/HTTPS) are tickets 03-05. **HTTPS landed with ticket 03**:
+  and one behind `central_push`; proven against an in-memory transport only at first — the three
+  real transports (SFTP/FTPS/HTTPS, tickets 03-05) all landed, so every protocol the page offers
+  now moves real bytes. **HTTPS landed with ticket 03**:
   `fileupload/https_transport.py`'s `HttpsTransport` implements the seam over `urllib` alone
   (no `httpx`/`requests`), reusing the Central Push client's own split-timeout opener — factored
   out first, in its own commit, into `arichds/split_timeout_http.py` (the neutral module both
   now import, parametrised by timeout rather than each hand-copying the connect/read-split
-  recipe) — `_build_transport()` in `cycle.py` now returns a real `HttpsTransport` for
-  `active_protocol == "https"` (FTPS still returns `None`, ticket 05), so a page saved
+  recipe) — `_build_transport()` in `cycle.py` returns a real `HttpsTransport` for
+  `active_protocol == "https"`, so a page saved
   on the HTTPS tab genuinely moves bytes; `POST .../https/test` (mirroring
   `database-destination/test`'s "HTTP 200 on every outcome") reports `ok` /
   `unreachable` / `timed_out` / `unauthorized` / `other` from a manifest `GET` on the short
@@ -471,7 +472,47 @@ MySQL, and ~30 tables.
   PyNaCl (paramiko 5's own hard runtime dependency, not an extra) are the one runtime addition
   this whole feature makes — `pyinstaller-hooks-contrib`'s `hook-nacl.py` already collects
   PyNaCl's compiled `_sodium` cffi extension with no hook of our own needed; a onedir build grew
-  by ~1.07 MiB (75,894,788 → 77,018,224 bytes, measured 2026-09-17).)
+  by ~1.07 MiB (75,894,788 → 77,018,224 bytes, measured 2026-09-17). **FTPS landed with ticket
+  05, the last of the three transports**: `fileupload/ftps_transport.py::FtpsTransport` fills
+  the seam over the standard library's `ftplib.FTP_TLS` alone — explicit `AUTH TLS` (called
+  directly, ahead of `login()`, so the certificate can be read before any credential is sent),
+  passive mode, `PROT P`, `TYPE I` fixed for the whole session (measured: `SIZE`, used to test
+  whether the manifest exists, is refused in ASCII mode — `550 SIZE not allowed in ASCII mode`
+  — on a real server). **No CA-file field** (ADR 0025 Out of Scope): `FtpsTransport` and
+  `check_ftps_connection` both take a keyword-only `ssl_context: ssl.SSLContext | None = None`
+  that defaults to `ssl.create_default_context()` at call time — a constructor seam for tests
+  only, never a setting; the product (the cycle, `POST .../ftps/test`) never passes one, so a
+  self-signed certificate is refused in production exactly as measured against a real
+  `pyftpdlib` `TLS_FTPHandler` (`docs/lib-notes/pyftpdlib-tls.md`): `ssl.SSLCertVerificationError`.
+  Every other measured failure matched the digest's own table without correction: wrong
+  credentials raise `ftplib.error_perm` (`530`), a missing remote directory or manifest the same
+  class (`550`), a refused port `ConnectionRefusedError` — all collapse through one shared
+  classifier (`_classify_exception`, the `https_transport.py`/`sftp_transport.py` shape) into a
+  bare `TransportError` carrying only the original exception's class name. `mkd` is walked one
+  path segment at a time, each `error_perm` swallowed (not idempotent on a real server, the same
+  shape SFTP's `mkdir` has, `docs/lib-notes/pyftpdlib-tls.md` §6). Certificate subject for
+  `POST .../ftps/test` is read off `ftp.sock.getpeercert()["subject"]` right after `auth()`, and
+  rendered as a `CN=…` readable string. Tests (`tests/fake_ftps_server.py`, an in-process
+  `pyftpdlib` `TLS_FTPHandler` with `tls_data_required=True`) cover a self-signed certificate
+  refused, the same certificate trusted through the test's own `load_verify_locations`
+  succeeding byte-equal with the manifest round-tripping, a wrong password surfacing as
+  `TransportError("error_perm")`, and nested `captures/<serial>/` directory creation — no
+  runtime dependency added; `pyftpdlib[ssl]` (PyOpenSSL, plus `pyasynchat`/`pyasyncore` resolved
+  automatically for Python 3.12+) is dev-only. No PyInstaller build was needed for this ticket
+  (nothing runtime changed). **Corrected in round 1 (five reviewer findings)**: Test connection
+  now actually lists the remote root over the *protected, passive* data channel (`ftps.nlst(...)`,
+  never `ftps.cwd(...)`, which is control-channel-only and so never caught a blocked/NAT-broken
+  passive channel — exactly ADR 0025's own reason FTPS was nearly dropped); `ftps.timeout` (not
+  only the socket's own `settimeout`) is set to `FILEUPLOAD_FTPS_READ_TIMEOUT_SEC`, since
+  `ftplib.FTP.ntransfercmd` reads the former, not the latter, for every passive data connection it
+  opens; `_classify_exception` now reads the 3-digit reply code off an `error_perm` and only
+  `530`/`532` become `bad_credentials` — a server refusing `PROT P`/`PBSZ` used to be misreported
+  as a wrong password; `tests/fake_ftps_server.py` refuses `PORT`/`EPRT` outright, so a dropped
+  `set_pasv(True)` is now caught (it previously traced correct but was pinned by no test — a
+  loopback fake tolerates active mode); the same fixture's `passive_ports` pin is gone (it rested
+  on a false premise about what the port range controls, `docs/lib-notes/pyftpdlib-tls.md` §3,
+  corrected in the same round) since the default already binds `127.0.0.1` for both control and
+  data.)
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
@@ -512,10 +553,9 @@ MySQL, and ~30 tables.
   failure's class name — never its message, since `logger.exception` would otherwise leak it
   through `exc_info`, which the redaction filter does not scrub) and the `file_upload_cycle`
   itself (`cycle.py`) landed with ticket 02, registered **last** in the scheduler, one job behind
-  `central_push` — proven against an in-memory transport only; HTTPS (ticket 03) and SFTP
-  (ticket 04) now move real bytes — only FTPS (ticket 05) still leaves `_build_transport()`
-  answering `None`, so a page configured on FTPS still publishes nothing but
-  `"not_configured"`/never runs a real cycle until then.
+  `central_push` — proven against an in-memory transport only; HTTPS (ticket 03), SFTP
+  (ticket 04) and FTPS (ticket 05) now all move real bytes — `_build_transport()` builds a real
+  transport for every protocol the page offers.
   **Corrected at ticket 02 round 1** (reviewer findings): the export group is found by
   **listing** `export_dir` and matching each entry against the three filename templates —
   never by predicting a name and hoping it exists, which a mutation to `render_filename`
@@ -532,17 +572,23 @@ MySQL, and ~30 tables.
   `export/format.py::render_filename` delegates to it instead of duplicating the substitution)
   · `https_transport.py` (the **HTTPS transport**, landed with ticket 03 — `HttpsTransport` fills
   the `Transport` seam over `urllib` alone; `check_https_connection()` is `POST .../https/test`'s
-  own check, sharing the same request logic; `cycle.py::_build_transport()` now returns it for
-  `active_protocol == "https"`, so the scheduler job and `Upload now` genuinely move bytes; FTPS
-  still gets `None` here, ticket 05)
+  own check, sharing the same request logic; `cycle.py::_build_transport()` returns it for
+  `active_protocol == "https"`, so the scheduler job and `Upload now` genuinely move bytes)
   · `sftp_transport.py` (the **SFTP transport**, landed with ticket 04 — `SftpTransport` fills
   the `Transport` seam over paramiko, driving `paramiko.Transport` directly rather than
   `SSHClient` for one-fingerprint-per-row host-key pinning; `check_sftp_connection()` is `POST
   .../sftp/test`'s own check and `describe()`'s own shared classifier, the same split
-  `https_transport.py` uses; `cycle.py::_build_transport()` now returns it for `active_protocol
+  `https_transport.py` uses; `cycle.py::_build_transport()` returns it for `active_protocol
   == "sftp"`; `POST .../sftp/host-key` (`api/file_upload.py`) is the only write path for the
   pinned fingerprint row — see the ADR 0025 digest above for the host-key asymmetry and the
   onedir size delta)
+  · `ftps_transport.py` (the **FTPS transport**, landed with ticket 05, the last of the three —
+  `FtpsTransport` fills the `Transport` seam over the standard library's `ftplib.FTP_TLS` alone;
+  `check_ftps_connection()` is `POST .../ftps/test`'s own check and `describe()`'s own shared
+  classifier, the same split `https_transport.py`/`sftp_transport.py` use;
+  `cycle.py::_build_transport()` returns it for `active_protocol == "ftps"` — every protocol the
+  page offers now moves real bytes; see the ADR 0025 digest above for the measured exception
+  classes and the no-CA-file test seam)
   · `interval_status.py` (the one
   Interval Status decoder, at the package top because `api/` must not import `export/` — that
   direction closes a cycle through `api/deps` -> `jobs/scheduler` -> `export/csv_export`).
@@ -636,8 +682,9 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
   (ADR 0016/0020/0021, issue #46, `dataout/`), the central-server push (SPEC §3.8, ADR
   0024, `centralpush/`, M14 ticket 08) and the File Upload Destination (menu **FTP**, SPEC
   §3.8, ADR 0025, `fileupload/`, ticket 01 for configuration, ticket 02 for the cycle itself,
-  ticket 03 for the first real transport (HTTPS) and ticket 04 for the second (SFTP, host-key
-  pinned) — FTPS still moves no real bytes until ticket 05 lands), which are **three transports
+  ticket 03 for the first real transport (HTTPS), ticket 04 for the second (SFTP, host-key
+  pinned) and ticket 05 for the third (FTPS, explicit TLS, no CA-file field) — every protocol
+  the page offers now moves real bytes), which are **three transports
   and three contracts, not one** (SPEC §3.10). Nothing external reads our tables.
 - **English-only UI** — no Thai strings in `web/` (v1 had them; do not carry them over).
 

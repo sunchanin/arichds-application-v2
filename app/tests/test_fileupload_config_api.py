@@ -4,11 +4,12 @@ tickets 01-02) — ``/api/settings/file-upload`` and its three per-protocol
 trigger.
 
 ``TestUploadNow`` owns the manual trigger; every other class here predates
-the cycle and stays "no cycle has run" (:mod:`arichds.fileupload.cycle`
-still moves no bytes in production — the real transports land in tickets
-03-05, so a bare `POST /upload-now` on an otherwise-untouched app cannot
-populate the status either). :mod:`test_fileupload_cycle` owns the cycle's
-own behaviour against an in-memory transport.
+the cycle and stays "no cycle has run" (a bare `POST /upload-now` on an
+otherwise-untouched, unconfigured app cannot populate the status).
+:mod:`test_fileupload_cycle` owns the cycle's own behaviour against an
+in-memory transport; :mod:`test_fileupload_https_transport`/
+:mod:`test_fileupload_sftp_transport`/:mod:`test_fileupload_ftps_transport`
+own each real transport's own end-to-end proof.
 """
 
 from __future__ import annotations
@@ -414,6 +415,69 @@ class TestSftpTest:
         assert captured.get("connect_timeout") == FILEUPLOAD_SFTP_TEST_CONNECT_TIMEOUT_SEC
 
 
+class TestFtpsTest:
+    """``POST /api/settings/file-upload/ftps/test`` (ticket 05) — connects
+    with the **stored** FTPS settings, `TestHttpsTest`/`TestSftpTest`'s own
+    shape (HTTP 200 on every outcome, the reason lives in ``result``)."""
+
+    @pytest.fixture
+    def ftps_root(self, tmp_path: Path) -> Path:
+        root = tmp_path / "root"
+        root.mkdir()
+        return root
+
+    @pytest.fixture
+    def cert(self, tmp_path: Path):
+        from test_fileupload_ftps_transport import _write_self_signed_cert
+
+        return _write_self_signed_cert(tmp_path)
+
+    @pytest.fixture
+    def server(self, ftps_root: Path, cert):
+        from fake_ftps_server import FakeFtpsServer
+
+        cert_path, key_path = cert
+        s = FakeFtpsServer(ftps_root, cert_path, key_path, password="hunter2")
+        yield s
+        s.shutdown()
+
+    def test_a_self_signed_certificate_is_untrusted(self, admin_client: TestClient, server) -> None:
+        """No trust seam reaches this endpoint by design (ADR 0025: no
+        CA-file field) — the stored settings alone can never make a
+        self-signed certificate pass here, exactly like a real cycle."""
+        _save_ftps(admin_client, host="127.0.0.1", port=server.port, password="hunter2")
+
+        response = admin_client.post("/api/settings/file-upload/ftps/test")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["result"] == "untrusted_certificate"
+
+    def test_it_is_admin_only(self, user_client: TestClient) -> None:
+        assert user_client.post("/api/settings/file-upload/ftps/test").status_code == 403
+
+    def test_it_uses_the_short_connect_timeout(self, admin_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`TestHttpsTest`/`TestSftpTest`'s own shape (ticket 03 round 1's
+        reviewer finding). Mutation: dropping the endpoint's explicit
+        `connect_timeout=` kwarg turns this red."""
+        import arichds.api.file_upload as file_upload_api
+        from arichds.constants import FILEUPLOAD_FTPS_TEST_CONNECT_TIMEOUT_SEC
+        from arichds.fileupload.ftps_transport import FtpsConnectionCheck
+
+        captured: dict[str, object] = {}
+
+        def _fake_check(*args: object, **kwargs: object) -> FtpsConnectionCheck:
+            captured.update(kwargs)
+            return FtpsConnectionCheck("ok", "CN=stub", False, "stub")
+
+        monkeypatch.setattr(file_upload_api, "check_ftps_connection", _fake_check)
+        _save_ftps(admin_client, host="ftps.example.com")
+
+        response = admin_client.post("/api/settings/file-upload/ftps/test")
+
+        assert response.status_code == 200, response.text
+        assert captured.get("connect_timeout") == FILEUPLOAD_FTPS_TEST_CONNECT_TIMEOUT_SEC
+
+
 class TestSftpHostKey:
     """``POST /api/settings/file-upload/sftp/host-key`` (ticket 04) — the
     **only** write path for the pinned fingerprint row (ADR 0025: "a cycle
@@ -537,6 +601,14 @@ class TestFeatureGate:
         relicense(admin_client, features=["billing", "load_profile"])
 
         response = admin_client.post("/api/settings/file-upload/sftp/host-key", json={"fingerprint": "SHA256:abc123"})
+
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["reason"] == "file_upload_destination"
+
+    def test_ftps_test_refuses_without_the_feature(self, admin_client: TestClient, relicense) -> None:
+        relicense(admin_client, features=["billing", "load_profile"])
+
+        response = admin_client.post("/api/settings/file-upload/ftps/test")
 
         assert response.status_code == 403, response.text
         assert response.json()["error"]["reason"] == "file_upload_destination"

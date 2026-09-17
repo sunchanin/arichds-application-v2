@@ -10,10 +10,11 @@ Imports nothing from :mod:`arichds.export` (the same ADR 0021 rule
 :mod:`arichds.dataout` follows, for the same reason): the file on disk is the
 contract, not a shared local-time helper.
 
-Ticket 01 (this) lands the configuration — settings rows, the endpoints, the
+Ticket 01 landed the configuration — settings rows, the endpoints, the
 in-memory status slot always reporting "no cycle has run" — and the nav entry.
-Ticket 02 adds the cycle (:mod:`.cycle`, not yet written); tickets 03-05 add
-the three transports.
+Ticket 02 landed the cycle (:mod:`.cycle`); tickets 03-05 landed the three
+transports (HTTPS, SFTP, FTPS) — every protocol the page offers now moves
+real bytes.
 """
 
 from __future__ import annotations

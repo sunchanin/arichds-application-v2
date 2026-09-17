@@ -6,6 +6,7 @@ import {
   ApiRequestError,
   api,
   isLicenseLapsed,
+  type FileUploadFtpsTest,
   type FileUploadFtpsUpdate,
   type FileUploadHttpsTest,
   type FileUploadHttpsUpdate,
@@ -116,15 +117,14 @@ function HowTo({ prerequisites }: { prerequisites: string[] }) {
 }
 
 /**
- * File Upload Destination (SPEC §3.8, ADR 0025, tickets 01-02) — menu label
+ * File Upload Destination (SPEC §3.8, ADR 0025, tickets 01-05) — menu label
  * **FTP** (CONTEXT.md's glossary term stays *File Upload Destination*; the
  * two disagree on purpose, ADR 0025 decision 1).
  *
- * Three tabs, one active protocol — the tab saved last. **Still no bytes
- * move**: ticket 02 lands the cycle and the **Upload now** button below,
- * but the three real transports (SFTP/FTPS/HTTPS) land in tickets 03-05, so
- * the status card still reads "not yet run" on a fully configured page
- * today.
+ * Three tabs, one active protocol — the tab saved last. All three real
+ * transports (SFTP, ticket 04; FTPS, ticket 05; HTTPS, ticket 03) move real
+ * bytes today, on the cycle ticket 02 landed and on the **Upload now**
+ * button below.
  *
  * No `role` prop threaded in — `App.tsx` already redirects non-admins away
  * from `file-upload-destination` before this renders, the same guard
@@ -150,6 +150,8 @@ export function FileUploadDestination() {
   const [testingSftp, setTestingSftp] = useState(false);
   const [sftpTestResult, setSftpTestResult] = useState<FileUploadSftpTest | null>(null);
   const [pinningSftpHostKey, setPinningSftpHostKey] = useState(false);
+  const [testingFtps, setTestingFtps] = useState(false);
+  const [ftpsTestResult, setFtpsTestResult] = useState<FileUploadFtpsTest | null>(null);
 
   const surface = useCallback(
     (err: unknown, fallback: string) => {
@@ -255,6 +257,18 @@ export function FileUploadDestination() {
       .finally(() => setTestingSftp(false));
   }, [message, surface]);
 
+  const onTestFtps = useCallback(() => {
+    setTestingFtps(true);
+    api
+      .testFileUploadFtps()
+      .then((result) => {
+        setFtpsTestResult(result);
+        if (result.result === "ok") message.success("Connected.");
+      })
+      .catch((err: unknown) => surface(err, "Could not run the connection test."))
+      .finally(() => setTestingFtps(false));
+  }, [message, surface]);
+
   const onPinSftpHostKey = useCallback(() => {
     const fingerprint = sftpTestResult?.fingerprint;
     if (!fingerprint) return;
@@ -321,6 +335,7 @@ export function FileUploadDestination() {
       .updateFileUploadFtps(body)
       .then((data) => {
         apply(data, false);
+        setFtpsTestResult(null);
         message.success("FTPS settings saved. FTPS is now the active protocol.");
       })
       .catch((err: unknown) => {
@@ -520,16 +535,42 @@ export function FileUploadDestination() {
                     <Form.Item name="remote_root" label="Remote root">
                       <Input placeholder="/home/arichds" />
                     </Form.Item>
-                    <Button type="primary" htmlType="submit" loading={savingFtps}>
-                      Save
-                    </Button>
+                    <Space>
+                      <Button type="primary" htmlType="submit" loading={savingFtps}>
+                        Save
+                      </Button>
+                      <Button loading={testingFtps} onClick={onTestFtps}>
+                        Test connection
+                      </Button>
+                    </Space>
                   </Form>
                   {ftpsError !== null && <Alert type="error" showIcon title="Could not save the FTPS settings" description={ftpsError} />}
+                  {ftpsTestResult !== null && (
+                    <Alert
+                      type={ftpsTestResult.result === "ok" ? "success" : "warning"}
+                      showIcon
+                      title={
+                        ftpsTestResult.result === "ok"
+                          ? "Connected"
+                          : `Could not connect (${ftpsTestResult.result.replaceAll("_", " ")})`
+                      }
+                      description={
+                        <Space direction="vertical" size="small" style={{ width: "100%" }}>
+                          <Text>{ftpsTestResult.message}</Text>
+                          {ftpsTestResult.subject !== null && (
+                            <Text type="secondary">
+                              Certificate: <Text code>{ftpsTestResult.subject}</Text>
+                            </Text>
+                          )}
+                        </Space>
+                      }
+                    />
+                  )}
                   <HowTo
                     prerequisites={[
                       "An FTP account and its home folder, ready to receive files.",
                       "Explicit FTPS on the standard control port (21) — implicit FTPS on 990 is not offered.",
-                      "A certificate issued by a trusted authority — a self-signed certificate is refused.",
+                      "A certificate this machine's Windows trust store accepts (issued by a trusted authority) — a self-signed certificate is refused, not trusted.",
                     ]}
                   />
                 </Space>

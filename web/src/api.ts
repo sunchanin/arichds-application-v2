@@ -946,14 +946,13 @@ export interface CentralPushContract {
 }
 
 /**
- * What the last File Upload Destination cycle did (ADR 0025, tickets 01-02).
+ * What the last File Upload Destination cycle did (ADR 0025, tickets 01-05).
  *
  * In memory on the service only (ADR 0008), `null` until a cycle has run
- * since the last restart. The three real transports (SFTP/FTPS/HTTPS) land
- * in tickets 03-05, so today the one `outcome` reachable is
- * `"not_configured"` (an unset protocol, or one with no host/URL) — a
- * *configured* page still publishes nothing, because the backend has no
- * transport to build yet.
+ * since the last restart. All three real transports (HTTPS, SFTP, FTPS)
+ * landed across tickets 03-05, so a configured page now genuinely moves
+ * bytes and every `outcome` (`"success"`, `"skipped"`, `"not_configured"`)
+ * is reachable.
  */
 export interface FileUploadStatus {
   ran_at: string;
@@ -1120,6 +1119,22 @@ export interface FileUploadSftpTest {
  * never derived by the endpoint itself. */
 export interface FileUploadSftpHostKeyPin {
   fingerprint: string;
+}
+
+export type FileUploadFtpsTestResult = "ok" | "unreachable" | "timed_out" | "bad_credentials" | "untrusted_certificate" | "other";
+
+/**
+ * What `POST /api/settings/file-upload/ftps/test` returns (ADR 0025,
+ * ticket 05) — always on a 200, the same "a failed check is data"
+ * convention `FileUploadHttpsTest`/`FileUploadSftpTest` use.
+ */
+export interface FileUploadFtpsTest {
+  result: FileUploadFtpsTestResult;
+  /** The server's certificate subject as observed on this attempt, `null` when the TLS handshake never completed. */
+  subject: string | null;
+  manifest_exists: boolean;
+  /** One operator-actionable English sentence. */
+  message: string;
 }
 
 /** What `POST /api/load-profile/export` ("Save CSV now") did. */
@@ -1827,6 +1842,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  /**
+   * "Test connection" on the FTPS tab (ADR 0025, ticket 05) — connects with
+   * the **stored** FTPS settings (press Save first) and reports which of
+   * `FileUploadFtpsTestResult` it is, `testFileUploadHttps`'s own shape.
+   */
+  testFileUploadFtps: () =>
+    request<FileUploadFtpsTest>("/api/settings/file-upload/ftps/test", { method: "POST" }),
 
   /**
    * "Upload now" (ADR 0025, ticket 02) — run one File Upload Destination

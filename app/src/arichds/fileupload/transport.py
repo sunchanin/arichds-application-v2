@@ -1,10 +1,10 @@
 """The one transport seam every File Upload Destination cycle talks through
 (ADR 0025 decision 5, spec.md "One seam: the transport"): read the manifest,
 put one file, write the manifest, describe yourself. Three real
-implementations land in tickets 03-05 (SFTP/FTPS/HTTPS); this ticket proves
-the cycle (:mod:`arichds.fileupload.cycle`) against an in-memory one that
-lives in the test suite — everything the cycle decides (which files, in
-what order, the budget, the status) is protocol-blind.
+implementations landed across tickets 03-05 (HTTPS, SFTP, FTPS); this ticket
+(02) proved the cycle (:mod:`arichds.fileupload.cycle`) against an in-memory
+one that lives in the test suite — everything the cycle decides (which
+files, in what order, the budget, the status) is protocol-blind.
 """
 
 from __future__ import annotations

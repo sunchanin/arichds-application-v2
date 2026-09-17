@@ -1,11 +1,18 @@
 # pyftpdlib — API digest (v2.2.0, released 2026-02-07, fetched 2026-09-17)
 
-> Not installed in `app/.venv` yet, and never will be as a runtime dependency — it is **dev-only**,
-> the test-side FTPS server. The production client is the standard library's `ftplib.FTP_TLS`
-> (§5-§7 below). Sourced from Context7 (`/websites/pyftpdlib_readthedocs_io_en`) and, where
-> Context7's index didn't surface a file whole, `github.com/giampaolo/pyftpdlib` via `gh api`.
-> **After `pip install`, verify against the installed version** — installed source wins, per this
-> repo's standing rule.
+> **Installed and measured** (ticket 05, 2026-09-17): `pyftpdlib` 2.2.0, `PyOpenSSL` 26.4.0,
+> `pyasynchat`/`pyasyncore` 1.0.5 (resolved automatically via pyftpdlib's own conditional
+> `requires_dist` for Python 3.12+ — nothing declared for them explicitly), all dev-only in
+> `app/.venv` — never a runtime dependency. The production client is the standard library's
+> `ftplib.FTP_TLS` (§5-§7 below). Every exception in §6's table was re-measured against a real
+> in-process `pyftpdlib` `TLS_FTPHandler` and matched exactly; the one correction ticket 04's own
+> paramiko sibling forced (an unmeasured exception-behaviour claim shipping a blocker) did **not**
+> repeat there. **§3's `passive_ports` claim was wrong, though, and was corrected in round 1** of
+> this ticket's own review (reviewer finding, problem 5) — see §3 itself for the correction; the
+> lesson generalises: a claim about *addressing* is not the same claim as one about *exception
+> classes*, and getting the latter right measured did not make the former right by association.
+> Sourced from Context7 (`/websites/pyftpdlib_readthedocs_io_en`) and, where Context7's index
+> didn't surface a file whole, `github.com/giampaolo/pyftpdlib` via `gh api`.
 
 ## Why it is in the tree
 
@@ -105,14 +112,22 @@ server.max_cons, server.max_cons_per_ip = 256, 5
 port = server.socket.getsockname()[1]
 ```
 
-**Unverified**: I did not find the literal `self.socket = …` assignment in what Context7/GitHub
-surfaced — this is pyftpdlib's own well-known tutorial/test idiom (`FTPServer.socket` as the raw
-listening socket), not something read line-by-line out of `servers.py`. Confirm against the
-installed source once `pyftpdlib` is added.
+**Confirmed** (ticket 05, against the installed 2.2.0): `FTPServer.socket` is a real attribute —
+`server.socket.getsockname()[1]` works exactly as the tutorial idiom implies, used in
+`tests/fake_ftps_server.py` and this ticket's own measurement scripts with no surprises.
 
-For a loopback-only passive-mode test, pin the passive range so PASV doesn't advertise a real
-interface IP: `handler.passive_ports = range(60000, 60010)` (`masquerade_address` is NAT-only,
-not needed loopback-only).
+**Corrected, ticket 05 round 1 (reviewer finding, problem 5).** `passive_ports` narrows only the
+**port** PASV offers — the *address* PASV advertises is always the control connection's own local
+address (`pyftpdlib/handlers/ftp/dispatchers.py:45`, `local_ip =
+self.cmd_channel.socket.getsockname()[0]`, used building the `227` reply), which is already
+`127.0.0.1` the moment the server itself binds `("127.0.0.1", 0)`. A loopback-only test needs no
+`passive_ports` pin at all — there was never a real interface IP to advertise in the first place,
+and `masquerade_address` (NAT-only) is not needed for the same reason. `tests/fake_ftps_server.py`
+carried a fixed `passive_ports = range(60200, 60400)` on the strength of this section's original
+(wrong) claim; combined with pyftpdlib's own `set_reuse_addr()` before each bind
+(`dispatchers.py:63-90`), a fixed range made a 16-worker `pytest -n auto` run strictly worse on
+Windows than the default — the fixture now leaves it unset (`None`, kernel-picked, self-healing on
+`EADDRINUSE`).
 
 ---
 
@@ -264,6 +279,30 @@ sending credentials when `secure=True` (the default) — no separate manual `aut
   `DNSName`, and the "trusted" test connecting to a literal IP will fail hostname checking.
 - **Do not build TLS session-reuse handling** (§7) — verified absent from both sides of this
   pairing; speculative code for a hazard neither party's source exhibits.
+- **`getpeercert()` only works after `auth()`, not after `connect()`** — new, measured in ticket
+  05: `ftps.sock` is a bare `socket.socket` until `auth()` wraps it in `ssl.SSLSocket`;
+  `ftps.sock.getpeercert()` right after `connect()` raises `AttributeError` ("'socket' object has
+  no attribute 'getpeercert'"). Call `auth()` explicitly first (§5's own note that `login()` does
+  this internally when `secure=True`, but that is too late to read the certificate before sending
+  credentials), then read the certificate off `ftps.sock`.
+- **`SIZE` is refused in ASCII mode** — new, measured in ticket 05: `ftplib`'s default transfer
+  type is ASCII, and a real server (pyftpdlib included) answers `550 SIZE not allowed in ASCII
+  mode` for `ftps.size(...)` before any `TYPE I` has been sent — even though `storbinary`/
+  `retrbinary` each switch to `TYPE I` internally per call, that switch does not outlive the call.
+  Send `ftps.voidcmd("TYPE I")` once, right after login, before relying on `size()` to check
+  whether a file exists.
+- **`ftplib.FTP.nlst()`/`retrlines()` send `TYPE A` unconditionally** — new, measured in ticket 05
+  round 1 (reviewer finding, problem 1): `nlst()` is implemented as `retrlines('NLST ...')`, and
+  `retrlines()` always does `self.sendcmd('TYPE A')` before transferring, with **no restore
+  afterward**. A `SIZE` call right after an `NLST` fails the same way an `NLST` before any `TYPE I`
+  does (previous bullet) — re-send `ftps.voidcmd("TYPE I")` after any `NLST`/`LIST`/`RETR` in
+  ASCII mode, before the next `SIZE`/`STOR`/`RETR` that needs binary.
+- **An accepted `socket.socket` with no held reference is garbage-collected (and closed)
+  almost immediately** — new, measured in ticket 05 round 1 while building a stalling-server test
+  fixture: `sock.accept()` called for its side effect alone, with the returned connection object
+  never assigned to anything, sends the client an instant `EOFError` rather than the intended
+  stall — a test fixture that wants to hold a connection open and silent must keep a live reference
+  to it (a list, an instance attribute) for as long as it wants the client to keep waiting.
 
 ---
 
@@ -284,5 +323,9 @@ sending credentials when `secure=True` (the default) — no separate manual `aut
   in any; used to correct the TLS-session-reuse premise in §7.
 - Context7 `/pyca/cryptography` — `x509.CertificateBuilder` fluent API,
   `rsa.generate_private_key`, `SubjectAlternativeName`.
-- This repo's `app/.venv` — confirmed `cryptography` 50.0.0 installed; `pyftpdlib`/`pyOpenSSL`
-  not yet installed.
+- This repo's `app/.venv` — confirmed `cryptography` 50.0.0 installed; `pyftpdlib` 2.2.0 /
+  `PyOpenSSL` 26.4.0 / `pyasynchat` 1.0.5 / `pyasyncore` 1.0.5 installed and measured 2026-09-17
+  (ticket 05): every row of §6's exception table re-run against a real in-process
+  `TLS_FTPHandler` and confirmed unchanged; `getpeercert()`-after-`auth()` and the ASCII-mode
+  `SIZE` refusal (both in Gotchas above) were found during this pass and were not in the
+  original digest.

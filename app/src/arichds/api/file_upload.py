@@ -11,12 +11,10 @@ Push, this module **is** gated by a licence feature key
 ``database_destination`` uses in ``arichds.api.settings``.
 
 Ticket 02 lands :mod:`arichds.fileupload.cycle` and the ``POST
-.../upload-now`` endpoint below. HTTPS (ticket 03) and SFTP (ticket 04) both
-move real bytes today — :func:`~arichds.fileupload.cycle._build_transport`
-builds a real transport for ``active_protocol in ("https", "sftp")``; only
-``ftps`` (ticket 05) still makes it answer ``None``, so a page configured on
-FTPS still publishes nothing but ``"not_configured"``/never runs a real
-cycle until then.
+.../upload-now`` endpoint below. HTTPS (ticket 03), SFTP (ticket 04) and
+FTPS (ticket 05) all move real bytes today —
+:func:`~arichds.fileupload.cycle._build_transport` builds a real transport
+for every protocol the page offers.
 """
 
 from __future__ import annotations
@@ -32,6 +30,7 @@ from arichds.api.deps import AdminDep, SchedulerDep, SessionDep, get_current_use
 from arichds.api.envelope import ApiResponse
 from arichds.constants import (
     FILEUPLOAD_BUDGET_SEC,
+    FILEUPLOAD_FTPS_TEST_CONNECT_TIMEOUT_SEC,
     FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC,
     FILEUPLOAD_SFTP_TEST_CONNECT_TIMEOUT_SEC,
 )
@@ -57,6 +56,7 @@ from arichds.db.app_settings import (
 )
 from arichds.fileupload.config import load_config
 from arichds.fileupload.cycle import file_upload_cycle
+from arichds.fileupload.ftps_transport import FtpsTestResult, check_ftps_connection
 from arichds.fileupload.https_transport import FilesTestResult, check_https_connection
 from arichds.fileupload.sftp_transport import SftpTestResult, check_sftp_connection
 from arichds.fileupload.status import CycleStatus, last_cycle
@@ -400,6 +400,59 @@ def put_file_upload_ftps(body: FileUploadFtpsIn, session: SessionDep, _admin: Ad
     session.commit()
 
     return ApiResponse.ok(_current_settings(session))
+
+
+class FileUploadFtpsTestOut(BaseModel):
+    """What ``POST /api/settings/file-upload/ftps/test`` returns — see
+    :class:`arichds.fileupload.ftps_transport.FtpsConnectionCheck`.
+
+    Attributes:
+        result: Which of :data:`~arichds.fileupload.ftps_transport.FtpsTestResult`
+            this is — naming the failure (an untrusted certificate, bad
+            credentials, ...) rather than a bare "Connection failed", the
+            same criterion tickets 03/04 already set for their own tabs.
+        subject: The server's certificate subject as observed on this
+            attempt, or ``None`` when the TLS handshake itself never
+            completed.
+        manifest_exists: Whether the server already holds a manifest.
+        message: One operator-actionable English sentence.
+    """
+
+    result: FtpsTestResult
+    subject: str | None
+    manifest_exists: bool
+    message: str
+
+
+@router.post("/ftps/test")
+def test_file_upload_ftps(session: SessionDep, _admin: AdminDep) -> ApiResponse[FileUploadFtpsTestOut]:
+    """Connect with the **stored** FTPS settings and report which outcome it
+    is. Admin only; gated by the router's own ``file_upload_destination``
+    feature dependency.
+
+    Uses the **short** connect timeout
+    (:data:`~arichds.constants.FILEUPLOAD_FTPS_TEST_CONNECT_TIMEOUT_SEC`),
+    passed explicitly — the same shape `test_file_upload_sftp`/
+    `test_file_upload_https` already use, so a Test button never holds this
+    request for the cycle's own longer timeout against an unreachable
+    server. Never passes an ``ssl_context`` — production behaviour, exactly
+    what a real cycle would do: a self-signed certificate is refused here
+    too.
+    """
+    config = load_config(session).ftps
+    check = check_ftps_connection(
+        host=config.host,
+        port=config.port,
+        username=config.username,
+        password=config.password,
+        remote_root=config.remote_root,
+        connect_timeout=FILEUPLOAD_FTPS_TEST_CONNECT_TIMEOUT_SEC,
+    )
+    return ApiResponse.ok(
+        FileUploadFtpsTestOut(
+            result=check.result, subject=check.subject, manifest_exists=check.manifest_exists, message=check.message
+        )
+    )
 
 
 @router.put("/https")

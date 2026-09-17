@@ -32,11 +32,11 @@ to it) can both reach without either importing the other.
 
 **One transport seam** (:mod:`arichds.fileupload.transport`). Everything
 this module decides — which files, in what order, the budget, the status —
-is protocol-blind; the three real transports land in tickets 03-05. HTTPS
-landed with ticket 03 (:mod:`arichds.fileupload.https_transport`); SFTP
-landed with ticket 04 (:mod:`arichds.fileupload.sftp_transport`). FTPS still
-makes :func:`_build_transport` answer ``None``, so a page configured on it
-still moves no bytes until ticket 05 lands.
+is protocol-blind; the three real transports landed across tickets 03-05.
+HTTPS landed with ticket 03 (:mod:`arichds.fileupload.https_transport`);
+SFTP landed with ticket 04 (:mod:`arichds.fileupload.sftp_transport`); FTPS
+landed with ticket 05 (:mod:`arichds.fileupload.ftps_transport`) — every
+protocol the page offers now moves real bytes.
 """
 
 from __future__ import annotations
@@ -70,6 +70,7 @@ from arichds.db.models import Device
 from arichds.db.session import session_scope
 from arichds.filename_tokens import export_filename_pattern
 from arichds.fileupload.config import FileUploadConfig, load_config
+from arichds.fileupload.ftps_transport import FtpsTransport
 from arichds.fileupload.https_transport import HttpsTransport
 from arichds.fileupload.manifest import MANIFEST_VERSION, Manifest, ManifestEntry
 from arichds.fileupload.sftp_transport import SftpTransport
@@ -130,11 +131,10 @@ def _build_transport(config: FileUploadConfig) -> Transport | None:
     """Build the real transport for *config*'s active protocol.
 
     HTTPS landed with ticket 03 (:class:`~arichds.fileupload.https_transport.HttpsTransport`);
-    SFTP landed with ticket 04 (:class:`~arichds.fileupload.sftp_transport.SftpTransport`).
-    FTPS lands in ticket 05 (ADR 0025) and still returns ``None`` here — a
-    page configured on it still moves no bytes until then; ``https`` and
-    ``sftp`` are reached in production (``Upload now``, or the scheduler
-    job) today, ``ftps`` only through the ``transport`` parameter (tests).
+    SFTP landed with ticket 04 (:class:`~arichds.fileupload.sftp_transport.SftpTransport`);
+    FTPS landed with ticket 05 (:class:`~arichds.fileupload.ftps_transport.FtpsTransport`)
+    — every protocol the page offers now moves real bytes in production
+    (``Upload now``, or the scheduler job).
     """
     if config.active_protocol == "https":
         return HttpsTransport(config.https.url, config.https.token, config.https.remote_root)
@@ -148,6 +148,14 @@ def _build_transport(config: FileUploadConfig) -> Transport | None:
             key_passphrase=config.sftp.key_passphrase,
             remote_root=config.sftp.remote_root,
             pinned_fingerprint=config.sftp.host_key_fingerprint,
+        )
+    if config.active_protocol == "ftps":
+        return FtpsTransport(
+            host=config.ftps.host,
+            port=config.ftps.port,
+            username=config.ftps.username,
+            password=config.ftps.password,
+            remote_root=config.ftps.remote_root,
         )
     return None
 
@@ -316,8 +324,7 @@ def file_upload_cycle(transport: Transport | None = None) -> None:
         transport = _build_transport(config)
     if transport is None:
         logger.debug(
-            "File Upload Destination: protocol %r is configured but no transport implementation exists yet "
-            "(tickets 03-05) — nothing sent",
+            "File Upload Destination: protocol %r is configured but is not one of sftp/ftps/https — nothing sent",
             config.active_protocol,
         )
         return

@@ -340,6 +340,18 @@ FILEUPLOAD_SFTP_READ_TIMEOUT_SEC: Final[int] = 30
 # own shape, reused for both the connect and (short) read timeout there since
 # a Test button never transfers a real file.
 FILEUPLOAD_SFTP_TEST_CONNECT_TIMEOUT_SEC: Final[int] = 5
+# FTPS transport timeouts (ticket 05) — the same connect/read split as the
+# SFTP/HTTPS constants above, deliberately its own pair for the same
+# "retuning one Destination must not silently retune another" reason:
+# *connect_timeout* bounds the TCP connect and the explicit `AUTH TLS`
+# handshake alone (docs/lib-notes/pyftpdlib-tls.md §5), then the socket is
+# loosened to *read_timeout* for login, listing and file transfer.
+FILEUPLOAD_FTPS_CONNECT_TIMEOUT_SEC: Final[int] = 10
+FILEUPLOAD_FTPS_READ_TIMEOUT_SEC: Final[int] = 30
+# Test connection's own short connect timeout — the SFTP/HTTPS siblings' own
+# shape, reused for both the connect and (short) read timeout there since a
+# Test button never transfers a real file.
+FILEUPLOAD_FTPS_TEST_CONNECT_TIMEOUT_SEC: Final[int] = 5
 
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"
