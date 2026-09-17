@@ -1,11 +1,17 @@
 # paramiko — API digest (v5.0.0, released 2026-05-09, fetched 2026-09-17)
 
-> Not installed in `app/.venv` yet. Signatures read from paramiko's own source
-> (`github.com/paramiko/paramiko`, `main` = 5.0.0) via Context7 (`/paramiko/paramiko`),
-> cross-checked with `gh api repos/paramiko/paramiko/contents/…` where Context7's index didn't
-> surface a file whole. **After `pip install`, verify against the installed version**
-> (`pip show paramiko`) — installed source wins, per this repo's standing rule
-> (`docs/lib-notes/m2-auth.md`).
+> Signatures read from paramiko's own source (`github.com/paramiko/paramiko`, `main` = 5.0.0) via
+> Context7 (`/paramiko/paramiko`), cross-checked with `gh api repos/paramiko/paramiko/contents/…`
+> where Context7's index didn't surface a file whole. **Installed with ticket 04 (2026-09-17)** —
+> `pip show paramiko`/`pip show pynacl` confirm `paramiko 5.0.0`/`pynacl 1.6.2` in `app/.venv`. The
+> signatures this digest cites for `Transport.set_subsystem_handler`, `SFTPServer.__init__`,
+> `PKey.from_path`'s call shape, `_convert_status` and `PEP 3151` errno auto-subclassing all match
+> the installed source. **§2's exception claim did not** — round 1 of review caught it against a
+> real encrypted key, not against source reading: `PKey.from_path`'s `password=` kwarg requires
+> `bytes` despite its own `str | None` annotation, and a wrong/missing passphrase never raises
+> `PasswordRequiredException` through that call (`TypeError`/`ValueError` instead) — §2 is
+> corrected in place with the measured exceptions and messages; nothing else in this digest was
+> found stale.
 
 ## Why it is in the tree
 
@@ -40,7 +46,8 @@ fingerprint = server_key.fingerprint      # "SHA256:<base64, no padding>"
 
 if pinned_fingerprint is not None and fingerprint != pinned_fingerprint:
     t.close()
-    raise HostKeyMismatch()               # our own TransportError subclass
+    raise HostKeyMismatchError()          # our own TransportError subclass — shipped name,
+                                           # ticket 04 (ruff N818: exceptions end in "Error")
 # else: first contact (Test connection reports `fingerprint` for the operator to accept)
 
 # authenticate (§2), then SFTPClient.from_transport(t) — §3
@@ -86,11 +93,34 @@ type — useful if the tab doesn't ask which key type was uploaded.
 Read the key file **at connect time**, never at save time — spec.md: "the key file stays on this
 machine" / "never enters the database". Only the path is persisted.
 
-**Exceptions**: a wrong/missing passphrase raises `PasswordRequiredException` (⊂
-`AuthenticationException` ⊂ `SSHException`); a malformed key blob raises plain `SSHException` —
-both should collapse into the same "bad credentials" `TransportError`. A **missing key file**
-raises stdlib `FileNotFoundError` — not a paramiko exception, needs its own `except OSError` arm
-or it leaks past the wrapper.
+**Exceptions — corrected against the real 5.0.0 install (ticket 04 round 1)**: the claim below
+this line originally said a wrong/missing passphrase raises `PasswordRequiredException`. That is
+true of `RSAKey.from_private_key_file`/`Ed25519Key.from_private_key_file` (the classmethods shown
+above), but **false for `PKey.from_path`** — the call the product actually makes (§1's own
+reasoning: auto-detection, no key-type field on the tab).
+
+**`PKey.from_path`'s `password=` argument requires `bytes`, despite its own
+`password: Optional[str] = None` type hint** — internally it passes *password* straight to
+`cryptography.hazmat.primitives.serialization.load_ssh_private_key`/`load_pem_private_key`, both
+of which reject a `str`, *before* paramiko's own `PasswordRequiredException`-raising code (the
+`key_class.from_private_key(fd, password=password)` call later in the same method) is ever
+reached. Measured on the installed 5.0.0, encrypting an Ed25519 key with
+`serialization.BestAvailableEncryption(passphrase.encode())`:
+
+| Call | Result |
+|---|---|
+| `from_path(path, password="rightpass")` (`str`) | `TypeError: password must be bytes` — **regardless of correctness** |
+| `from_path(path, password=b"rightpass")` (`bytes`, correct) | succeeds |
+| `from_path(path)` (no password, key is encrypted) | `TypeError: Key is password-protected, but password was not provided.` |
+| `from_path(path, password=b"wrongpass")` (`bytes`, wrong) | `ValueError: Valid PEM but no BEGIN/END delimiters for a private key found. Are you sure this is a private key?` — `cryptography`'s own generic decrypt-failure message, not "wrong password" |
+
+So the caller must encode the passphrase to UTF-8 bytes before calling `from_path`, and must
+classify **both `TypeError` and `ValueError`** raised from that call as a bad credential — not
+just `AuthenticationException`/`PasswordRequiredException`, which `from_path` never raises. A
+malformed (non-encrypted, unparseable) key file also surfaces as `ValueError` from the same
+`cryptography` call, for the same reason. A **missing key file** raises stdlib
+`FileNotFoundError` — not a paramiko exception, needs its own `except OSError` arm or it leaks
+past the wrapper.
 
 ---
 
@@ -132,8 +162,10 @@ All under `paramiko.ssh_exception` (read directly):
 
 ```
 SSHException                          — protocol/logic errors, catch-all base
- ├─ AuthenticationException           — bad credentials
- │   ├─ PasswordRequiredException     — encrypted key needs a passphrase we lacked
+ ├─ AuthenticationException           — bad credentials (password auth; `t.auth_password`)
+ │   ├─ PasswordRequiredException     — encrypted key needs a passphrase we lacked, IF loaded via
+ │   │                                  RSAKey/Ed25519Key.from_private_key_file — NOT what
+ │   │                                  PKey.from_path raises for the same case (§2 below: TypeError)
  │   ├─ BadAuthenticationType / PartialAuthentication
  ├─ BadHostKeyException               — SSHClient-only path; we compare fingerprints ourselves (§1)
  ├─ ChannelException / ProxyCommandFailure / IncompatiblePeer / ConfigParseError / …
@@ -145,7 +177,8 @@ socket.error (OSError)
 |---|---|
 | refused / unreachable | `ConnectionRefusedError`/`OSError` from `socket.create_connection`, or `NoValidConnectionsError` |
 | timed out | `socket.timeout` (`TimeoutError` on 3.10+) |
-| bad credentials | `AuthenticationException` (incl. `PasswordRequiredException`) |
+| bad credentials (password auth) | `AuthenticationException` |
+| bad credentials (key file, via `PKey.from_path` — §2) | `TypeError` (wrong argument type, or a missing passphrase on an encrypted key) / `ValueError` (wrong passphrase, or a malformed key) — **not** `PasswordRequiredException`, which `from_path` never reaches |
 | host-key mismatch | not a paramiko exception — our own comparison in §1 |
 | missing key file | stdlib `FileNotFoundError` |
 
@@ -242,10 +275,11 @@ Confirmed against this repo's installed `pyinstaller-hooks-contrib` 2026.6
 ships** and collects PyNaCl's compiled cffi extension (`nacl/_lib/*_cffi_*`) as binaries — the
 one thing that matters, since that binding is exactly what PyInstaller's static analysis misses.
 **No `hook-paramiko.py` exists or is needed** — paramiko is pure Python; `cryptography`/`bcrypt`
-already have their own hooks and are already bundled. **Unverified beyond inspection**: this is
-"the hook exists and looks right", not "a onedir build with paramiko in it was produced and run"
-— ticket 04's own acceptance criterion (record onedir size before/after a real build) is what
-actually closes this.
+already have their own hooks and are already bundled. **Verified with a real build (ticket 04,
+2026-09-17)**: `app/dist/arichds/_internal/nacl/_sodium.pyd` (405,504 bytes) and
+`app/dist/arichds/_internal/paramiko-5.0.0.dist-info/` both land in the onedir with no spec
+changes needed; the onedir grew from 75,894,788 to 77,018,224 bytes (+1,123,436 bytes, ~1.07
+MiB) between the same commit with and without this ticket's changes.
 
 ---
 
@@ -256,14 +290,21 @@ actually closes this.
   `SHA256:…` string we want. Both exist on every `PKey`; easy to grab the wrong one.
 - **`PKey.from_path`'s kwarg is `password`, not `passphrase`**, as of 5.0.0 — don't mix it with
   older snippets.
+- **`PKey.from_path`'s `password=` needs `bytes`, not the `str` its own annotation promises**
+  (ticket 04 round 1, measured on the installed 5.0.0) — `key_passphrase.encode("utf-8")`, never
+  the raw configured string. Passing `str` raises `TypeError: password must be bytes` for *every*
+  encrypted key, correct passphrase or not, so this is invisible until a test actually encrypts a
+  key — a plain (unencrypted) key never exercises the `password=` argument at all.
 - **`mkdir` is not idempotent and its "exists" error has no errno** — `stat()` first (§3).
 - **`SSHClient`'s default policy is `RejectPolicy`** — moot here (we bypass `SSHClient`), but
   don't "fix" a copied `SSHClient` example with `AutoAddPolicy`.
 - **A missing key file is a stdlib `FileNotFoundError`**, not a paramiko exception — needs its
   own `except OSError` arm.
 - **paramiko's classifiers stop at Python 3.13** (`requires-python = ">=3.9"` doesn't cap it, so
-  pip installs fine under 3.14.6) — **unverified**: nothing confirms or denies 3.14 compatibility
-  beyond "no version ceiling blocks the install"; do a real import smoke test once added.
+  pip installs fine under 3.14.6) — **verified working, not just installable** (ticket 04): the
+  whole `test_fileupload_sftp_transport.py` suite drives real `Transport`/`SFTPClient`/
+  `SFTPServer` objects (client and server side) under 3.14.6, including Ed25519 key auth through
+  PyNaCl's compiled extension, with no compatibility issue found.
 
 ---
 

@@ -1084,6 +1084,44 @@ export interface FileUploadHttpsTest {
   message: string;
 }
 
+/**
+ * What `POST /api/settings/file-upload/sftp/test` can answer (ADR 0025,
+ * ticket 04) — `"host_key_not_pinned"`/`"host_key_mismatch"` are not quite
+ * failures: both carry `fingerprint`, the value the page offers to pin via
+ * `POST .../sftp/host-key`.
+ */
+export type FileUploadSftpTestResult =
+  | "ok"
+  | "unreachable"
+  | "timed_out"
+  | "bad_credentials"
+  | "host_key_mismatch"
+  | "host_key_not_pinned"
+  | "missing_key_file"
+  | "other";
+
+/**
+ * What `POST /api/settings/file-upload/sftp/test` returns — always on a
+ * 200, the same "a failed check is data" convention `FileUploadHttpsTest`
+ * uses. Never pins `fingerprint` itself — `POST .../sftp/host-key` is the
+ * only write path (ADR 0025: "a cycle never pins on its own").
+ */
+export interface FileUploadSftpTest {
+  result: FileUploadSftpTestResult;
+  /** The server's host-key fingerprint as observed on this attempt, `null` when the handshake never completed. */
+  fingerprint: string | null;
+  manifest_exists: boolean;
+  /** One operator-actionable English sentence. */
+  message: string;
+}
+
+/** The body `POST /api/settings/file-upload/sftp/host-key` takes — the
+ * fingerprint the operator saw on the page (from `testFileUploadSftp`),
+ * never derived by the endpoint itself. */
+export interface FileUploadSftpHostKeyPin {
+  fingerprint: string;
+}
+
 /** What `POST /api/load-profile/export` ("Save CSV now") did. */
 export interface LoadProfileExportResult {
   rows_written: number;
@@ -1769,6 +1807,26 @@ export const api = {
    */
   testFileUploadHttps: () =>
     request<FileUploadHttpsTest>("/api/settings/file-upload/https/test", { method: "POST" }),
+
+  /**
+   * "Test connection" on the SFTP tab (ADR 0025, ticket 04) — connects with
+   * the **stored** SFTP settings (press Save first) and reports which of
+   * `FileUploadSftpTestResult` it is, `testFileUploadHttps`'s own shape.
+   * Never pins a fingerprint itself.
+   */
+  testFileUploadSftp: () =>
+    request<FileUploadSftpTest>("/api/settings/file-upload/sftp/test", { method: "POST" }),
+
+  /**
+   * Pin (or replace) the SFTP tab's trusted host-key fingerprint (ADR 0025,
+   * ticket 04) — the only write path for it. `fingerprint` should be the
+   * value the operator saw from `testFileUploadSftp`.
+   */
+  pinFileUploadSftpHostKey: (body: FileUploadSftpHostKeyPin) =>
+    request<FileUploadSettings>("/api/settings/file-upload/sftp/host-key", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   /**
    * "Upload now" (ADR 0025, ticket 02) — run one File Upload Destination

@@ -10,6 +10,7 @@ import {
   type FileUploadHttpsTest,
   type FileUploadHttpsUpdate,
   type FileUploadSettings,
+  type FileUploadSftpTest,
   type FileUploadSftpUpdate,
 } from "../api";
 
@@ -146,6 +147,9 @@ export function FileUploadDestination() {
   const [httpsError, setHttpsError] = useState<string | null>(null);
   const [testingHttps, setTestingHttps] = useState(false);
   const [httpsTestResult, setHttpsTestResult] = useState<FileUploadHttpsTest | null>(null);
+  const [testingSftp, setTestingSftp] = useState(false);
+  const [sftpTestResult, setSftpTestResult] = useState<FileUploadSftpTest | null>(null);
+  const [pinningSftpHostKey, setPinningSftpHostKey] = useState(false);
 
   const surface = useCallback(
     (err: unknown, fallback: string) => {
@@ -238,6 +242,33 @@ export function FileUploadDestination() {
       .catch((err: unknown) => surface(err, "Could not run the connection test."))
       .finally(() => setTestingHttps(false));
   }, [message, surface]);
+
+  const onTestSftp = useCallback(() => {
+    setTestingSftp(true);
+    api
+      .testFileUploadSftp()
+      .then((result) => {
+        setSftpTestResult(result);
+        if (result.result === "ok") message.success("Connected.");
+      })
+      .catch((err: unknown) => surface(err, "Could not run the connection test."))
+      .finally(() => setTestingSftp(false));
+  }, [message, surface]);
+
+  const onPinSftpHostKey = useCallback(() => {
+    const fingerprint = sftpTestResult?.fingerprint;
+    if (!fingerprint) return;
+    setPinningSftpHostKey(true);
+    api
+      .pinFileUploadSftpHostKey({ fingerprint })
+      .then((data) => {
+        apply(data, false);
+        setSftpTestResult(null);
+        message.success("Host key pinned.");
+      })
+      .catch((err: unknown) => surface(err, "Could not pin the host key."))
+      .finally(() => setPinningSftpHostKey(false));
+  }, [sftpTestResult, apply, message, surface]);
 
   useEffect(() => {
     load(true);
@@ -387,7 +418,7 @@ export function FileUploadDestination() {
                     >
                       <Input.Password autoComplete="off" placeholder={settings?.sftp.password_set ? "Unchanged" : ""} />
                     </Form.Item>
-                    <Form.Item name="key_path" label="Key file path" extra="A private-key file's path on this machine (RSA or Ed25519). Provide a password, a key file path, or both.">
+                    <Form.Item name="key_path" label="Key file path" extra="A private-key file's path on this machine (RSA or Ed25519). Provide a password, a key file path, or both — the key file is used when both are set.">
                       <Input placeholder="C:\path\to\id_ed25519" />
                     </Form.Item>
                     <Form.Item
@@ -404,21 +435,55 @@ export function FileUploadDestination() {
                     <Form.Item name="remote_root" label="Remote root">
                       <Input placeholder="/home/arichds" />
                     </Form.Item>
-                    {settings?.sftp.host_key_fingerprint && (
-                      <Form.Item label="Pinned host key fingerprint">
-                        <Text code>{settings.sftp.host_key_fingerprint}</Text>
-                      </Form.Item>
-                    )}
-                    <Button type="primary" htmlType="submit" loading={savingSftp}>
-                      Save
-                    </Button>
+                    <Form.Item label="Host key">
+                      {settings?.sftp.host_key_fingerprint ? (
+                        <Text code>Pinned: {settings.sftp.host_key_fingerprint}</Text>
+                      ) : (
+                        <Text type="secondary">Not pinned yet — press Test connection to see the server&rsquo;s key.</Text>
+                      )}
+                    </Form.Item>
+                    <Space>
+                      <Button type="primary" htmlType="submit" loading={savingSftp}>
+                        Save
+                      </Button>
+                      <Button loading={testingSftp} onClick={onTestSftp}>
+                        Test connection
+                      </Button>
+                    </Space>
                   </Form>
                   {sftpError !== null && <Alert type="error" showIcon title="Could not save the SFTP settings" description={sftpError} />}
+                  {sftpTestResult !== null && (
+                    <Alert
+                      type={sftpTestResult.result === "ok" ? "success" : "warning"}
+                      showIcon
+                      title={
+                        sftpTestResult.result === "ok"
+                          ? "Connected"
+                          : sftpTestResult.result === "host_key_not_pinned"
+                            ? "Host key not pinned"
+                            : sftpTestResult.result === "host_key_mismatch"
+                              ? "Host key changed"
+                              : `Could not connect (${sftpTestResult.result.replaceAll("_", " ")})`
+                      }
+                      description={
+                        <Space direction="vertical" size="small" style={{ width: "100%" }}>
+                          <Text>{sftpTestResult.message}</Text>
+                          {(sftpTestResult.result === "host_key_not_pinned" ||
+                            sftpTestResult.result === "host_key_mismatch") &&
+                            sftpTestResult.fingerprint !== null && (
+                              <Button size="small" loading={pinningSftpHostKey} onClick={onPinSftpHostKey}>
+                                Pin this key
+                              </Button>
+                            )}
+                        </Space>
+                      }
+                    />
+                  )}
                   <HowTo
                     prerequisites={[
                       "An SFTP (SSH) account and its home folder, ready to receive files.",
                       "The SSH port your team's server listens on (usually 22).",
-                      "Either a password for that account, or a private-key file placed on this machine.",
+                      "Either a password for that account, or a private-key file placed on this machine — the key file stays on this machine and is never uploaded or stored in the database.",
                     ]}
                   />
                 </Space>

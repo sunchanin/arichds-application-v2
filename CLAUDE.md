@@ -132,7 +132,7 @@ MySQL, and ~30 tables.
   out first, in its own commit, into `arichds/split_timeout_http.py` (the neutral module both
   now import, parametrised by timeout rather than each hand-copying the connect/read-split
   recipe) — `_build_transport()` in `cycle.py` now returns a real `HttpsTransport` for
-  `active_protocol == "https"` (SFTP/FTPS still return `None`, tickets 04-05), so a page saved
+  `active_protocol == "https"` (FTPS still returns `None`, ticket 05), so a page saved
   on the HTTPS tab genuinely moves bytes; `POST .../https/test` (mirroring
   `database-destination/test`'s "HTTP 200 on every outcome") reports `ok` /
   `unreachable` / `timed_out` / `unauthorized` / `other` from a manifest `GET` on the short
@@ -437,7 +437,41 @@ MySQL, and ~30 tables.
   page (`central-push`) as a **Files (optional)** Collapse panel, rendered from the same
   path/header constants the transport itself uses — contract version unchanged at 1. Remote root
   reaches the wire only through the file-put path, never the two manifest endpoints — a receiving
-  server scopes a manifest by the token/URL it was issued, not by a path segment.)
+  server scopes a manifest by the token/URL it was issued, not by a path segment. **SFTP landed
+  with ticket 04**: `fileupload/sftp_transport.py::SftpTransport` fills the transport seam for
+  `active_protocol == "sftp"`, driving `paramiko.Transport` directly rather than `SSHClient` —
+  one pinned fingerprint per server row, not a `known_hosts` file, so `SSHClient`'s
+  `MissingHostKeyPolicy` (and the demo-only `AutoAddPolicy` this product must never reach for)
+  never enters the picture; `Transport.get_remote_server_key().fingerprint` is read immediately
+  after the handshake, **before** any authentication attempt, so the fingerprint is always
+  observable whether or not the connection goes on to authenticate. **Host key pinning is
+  asymmetric by design**: a real transport (what the cycle builds) refuses outright —
+  `HostKeyNotPinnedError`/`HostKeyMismatchError`, both `TransportError` subclasses whose class
+  name alone reaches the cycle's status/log — the moment a fingerprint is missing or wrong,
+  never authenticating against an unverified server; `check_sftp_connection` (`POST
+  .../sftp/test`) is the one place allowed to *observe* an unpinned or changed fingerprint and
+  report it, still without authenticating past that point. **`POST .../sftp/host-key` is the
+  only write path for the pinned row** — nothing in `sftp_transport.py` or `cycle.py` ever
+  writes it, proven by `test_fileupload_sftp_transport.py::TestHostKeyPinning::test_a_cycle_never_pins_on_its_own`
+  driving a whole cycle against an unpinned fake server and asserting the stored fingerprint
+  setting stays empty. Password or key-file authentication (key file wins when both are
+  configured); the key is read from disk at connect time under the service account, never at
+  save time, via `PKey.from_path` (paramiko 5.0.0 — auto-detects RSA vs Ed25519 from the file's
+  own contents, no manual "try Ed25519 then RSA" needed). `mkdir` is walked one path segment at
+  a time with a `stat()` first, since a real `sshd`'s "already exists" mkdir failure carries no
+  errno to test (`docs/lib-notes/paramiko-sftp.md` §3). Every paramiko/OS-level failure collapses
+  through one shared classifier (`_classify_exception`, mirroring `https_transport.py`'s own
+  single classifier) into a bare `TransportError` carrying only the original exception's class
+  name — never a host, a credential, or a paramiko message that might carry one. Tests
+  (`tests/fake_sftp_server.py`, an in-process paramiko server — `tests/_stub_sftp.py`'s shapes
+  reimplemented locally, since that file ships with paramiko's source checkout, not the
+  installed package) cover password and key-file auth, the manifest round trip, a changed host
+  key being refused by both the transport and Test connection, and a wrong password surfacing as
+  `TransportError("AuthenticationException")`, never a bare paramiko exception. paramiko and
+  PyNaCl (paramiko 5's own hard runtime dependency, not an extra) are the one runtime addition
+  this whole feature makes — `pyinstaller-hooks-contrib`'s `hook-nacl.py` already collects
+  PyNaCl's compiled `_sodium` cffi extension with no hook of our own needed; a onedir build grew
+  by ~1.07 MiB (75,894,788 → 77,018,224 bytes, measured 2026-09-17).)
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
@@ -478,8 +512,10 @@ MySQL, and ~30 tables.
   failure's class name — never its message, since `logger.exception` would otherwise leak it
   through `exc_info`, which the redaction filter does not scrub) and the `file_upload_cycle`
   itself (`cycle.py`) landed with ticket 02, registered **last** in the scheduler, one job behind
-  `central_push` — proven against an in-memory transport only; the three real transports
-  (SFTP/FTPS/HTTPS) are tickets 03-05, so a fully configured page still moves no bytes.
+  `central_push` — proven against an in-memory transport only; HTTPS (ticket 03) and SFTP
+  (ticket 04) now move real bytes — only FTPS (ticket 05) still leaves `_build_transport()`
+  answering `None`, so a page configured on FTPS still publishes nothing but
+  `"not_configured"`/never runs a real cycle until then.
   **Corrected at ticket 02 round 1** (reviewer findings): the export group is found by
   **listing** `export_dir` and matching each entry against the three filename templates —
   never by predicting a name and hoping it exists, which a mutation to `render_filename`
@@ -497,8 +533,16 @@ MySQL, and ~30 tables.
   · `https_transport.py` (the **HTTPS transport**, landed with ticket 03 — `HttpsTransport` fills
   the `Transport` seam over `urllib` alone; `check_https_connection()` is `POST .../https/test`'s
   own check, sharing the same request logic; `cycle.py::_build_transport()` now returns it for
-  `active_protocol == "https"`, so the scheduler job and `Upload now` genuinely move bytes; SFTP
-  and FTPS still get `None` here, tickets 04-05)
+  `active_protocol == "https"`, so the scheduler job and `Upload now` genuinely move bytes; FTPS
+  still gets `None` here, ticket 05)
+  · `sftp_transport.py` (the **SFTP transport**, landed with ticket 04 — `SftpTransport` fills
+  the `Transport` seam over paramiko, driving `paramiko.Transport` directly rather than
+  `SSHClient` for one-fingerprint-per-row host-key pinning; `check_sftp_connection()` is `POST
+  .../sftp/test`'s own check and `describe()`'s own shared classifier, the same split
+  `https_transport.py` uses; `cycle.py::_build_transport()` now returns it for `active_protocol
+  == "sftp"`; `POST .../sftp/host-key` (`api/file_upload.py`) is the only write path for the
+  pinned fingerprint row — see the ADR 0025 digest above for the host-key asymmetry and the
+  onedir size delta)
   · `interval_status.py` (the one
   Interval Status decoder, at the package top because `api/` must not import `export/` — that
   direction closes a cycle through `api/deps` -> `jobs/scheduler` -> `export/csv_export`).
@@ -591,10 +635,10 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
   through a **Data-out Destination we drive outbound** — the Database Destination
   (ADR 0016/0020/0021, issue #46, `dataout/`), the central-server push (SPEC §3.8, ADR
   0024, `centralpush/`, M14 ticket 08) and the File Upload Destination (menu **FTP**, SPEC
-  §3.8, ADR 0025, `fileupload/`, ticket 01 for configuration, ticket 02 for the cycle itself
-  and ticket 03 for the first real transport, HTTPS — SFTP and FTPS still move no real bytes
-  until tickets 04-05 land), which are **three transports and three contracts, not one**
-  (SPEC §3.10). Nothing external reads our tables.
+  §3.8, ADR 0025, `fileupload/`, ticket 01 for configuration, ticket 02 for the cycle itself,
+  ticket 03 for the first real transport (HTTPS) and ticket 04 for the second (SFTP, host-key
+  pinned) — FTPS still moves no real bytes until ticket 05 lands), which are **three transports
+  and three contracts, not one** (SPEC §3.10). Nothing external reads our tables.
 - **English-only UI** — no Thai strings in `web/` (v1 had them; do not carry them over).
 
 ## v1 as reference (read-only)

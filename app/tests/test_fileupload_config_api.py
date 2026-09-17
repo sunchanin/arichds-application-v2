@@ -15,14 +15,17 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
+from fake_sftp_server import FakeSftpServer
 from fastapi.testclient import TestClient
 
 from arichds.constants import RESERVED_FEATURE_KEYS, SELLABLE_FEATURE_KEYS
 from arichds.db.app_settings import (
     FILEUPLOAD_FTPS_PASSWORD_KEY,
     FILEUPLOAD_HTTPS_TOKEN_KEY,
+    FILEUPLOAD_SFTP_HOSTKEY_FINGERPRINT_KEY,
     FILEUPLOAD_SFTP_KEY_PASSPHRASE_KEY,
     FILEUPLOAD_SFTP_PASSWORD_KEY,
 )
@@ -329,6 +332,118 @@ class TestHttpsTest:
         assert captured.get("connect_timeout") == FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC
 
 
+class TestSftpTest:
+    """``POST /api/settings/file-upload/sftp/test`` (ticket 04) — connects
+    with the **stored** SFTP settings, `TestHttpsTest`'s own shape (HTTP 200
+    on every outcome, the reason lives in ``result``); never writes the
+    pinned fingerprint row itself (`TestSftpHostKey` below owns the one
+    write path)."""
+
+    @pytest.fixture
+    def sftp_root(self, tmp_path: Path) -> Path:
+        root = tmp_path / "root"
+        root.mkdir()
+        return root
+
+    @pytest.fixture
+    def server(self, sftp_root: Path):
+        s = FakeSftpServer(sftp_root, password="hunter2")
+        yield s
+        s.shutdown()
+
+    def test_first_contact_reports_the_fingerprint_and_pins_nothing(
+        self, admin_client: TestClient, server: FakeSftpServer
+    ) -> None:
+        _save_sftp(admin_client, host="127.0.0.1", port=server.port, password="hunter2", key_path="")
+
+        response = admin_client.post("/api/settings/file-upload/sftp/test")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["result"] == "host_key_not_pinned"
+        assert data["fingerprint"] == server.fingerprint
+        assert _stored(admin_client, FILEUPLOAD_SFTP_HOSTKEY_FINGERPRINT_KEY, "") == ""
+
+    def test_a_matching_pin_reports_ok_and_whether_a_manifest_exists(
+        self, admin_client: TestClient, server: FakeSftpServer
+    ) -> None:
+        _save_sftp(admin_client, host="127.0.0.1", port=server.port, password="hunter2", key_path="")
+        admin_client.post("/api/settings/file-upload/sftp/host-key", json={"fingerprint": server.fingerprint})
+
+        response = admin_client.post("/api/settings/file-upload/sftp/test")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["result"] == "ok"
+        assert data["manifest_exists"] is False
+
+    def test_a_wrong_password_is_bad_credentials(self, admin_client: TestClient, server: FakeSftpServer) -> None:
+        _save_sftp(admin_client, host="127.0.0.1", port=server.port, password="wrong", key_path="")
+        admin_client.post("/api/settings/file-upload/sftp/host-key", json={"fingerprint": server.fingerprint})
+
+        response = admin_client.post("/api/settings/file-upload/sftp/test")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["result"] == "bad_credentials"
+
+    def test_it_is_admin_only(self, user_client: TestClient) -> None:
+        assert user_client.post("/api/settings/file-upload/sftp/test").status_code == 403
+
+    def test_it_uses_the_short_connect_timeout(self, admin_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`TestHttpsTest::test_it_uses_the_short_connect_timeout`'s own
+        shape (ticket 03 round 1's reviewer finding, copied per ticket 04's
+        own instructions) — the endpoint's `connect_timeout=` kwarg is
+        pinned directly rather than trusted by trace. Mutation: dropping the
+        endpoint's explicit `connect_timeout=` kwarg turns this red."""
+        import arichds.api.file_upload as file_upload_api
+        from arichds.constants import FILEUPLOAD_SFTP_TEST_CONNECT_TIMEOUT_SEC
+        from arichds.fileupload.sftp_transport import SftpConnectionCheck
+
+        captured: dict[str, object] = {}
+
+        def _fake_check(*args: object, **kwargs: object) -> SftpConnectionCheck:
+            captured.update(kwargs)
+            return SftpConnectionCheck("ok", "SHA256:stub", False, "stub")
+
+        monkeypatch.setattr(file_upload_api, "check_sftp_connection", _fake_check)
+        _save_sftp(admin_client, host="sftp.example.com")
+
+        response = admin_client.post("/api/settings/file-upload/sftp/test")
+
+        assert response.status_code == 200, response.text
+        assert captured.get("connect_timeout") == FILEUPLOAD_SFTP_TEST_CONNECT_TIMEOUT_SEC
+
+
+class TestSftpHostKey:
+    """``POST /api/settings/file-upload/sftp/host-key`` (ticket 04) — the
+    **only** write path for the pinned fingerprint row (ADR 0025: "a cycle
+    never pins on its own")."""
+
+    def test_pinning_a_fingerprint_makes_it_reachable_on_get(self, admin_client: TestClient) -> None:
+        response = admin_client.post("/api/settings/file-upload/sftp/host-key", json={"fingerprint": "SHA256:abc123"})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["sftp"]["host_key_fingerprint"] == "SHA256:abc123"
+
+    def test_pinning_again_replaces_the_previous_fingerprint(self, admin_client: TestClient) -> None:
+        admin_client.post("/api/settings/file-upload/sftp/host-key", json={"fingerprint": "SHA256:old"})
+
+        response = admin_client.post("/api/settings/file-upload/sftp/host-key", json={"fingerprint": "SHA256:new"})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["sftp"]["host_key_fingerprint"] == "SHA256:new"
+
+    def test_a_blank_fingerprint_is_refused(self, admin_client: TestClient) -> None:
+        response = admin_client.post("/api/settings/file-upload/sftp/host-key", json={"fingerprint": "  "})
+
+        assert response.status_code == 422, response.text
+        assert _stored(admin_client, FILEUPLOAD_SFTP_HOSTKEY_FINGERPRINT_KEY, "") == ""
+
+    def test_it_is_admin_only(self, user_client: TestClient) -> None:
+        response = user_client.post("/api/settings/file-upload/sftp/host-key", json={"fingerprint": "SHA256:abc123"})
+        assert response.status_code == 403
+
+
 class TestPlainFtpAndImplicitFtpsAreNotAProtocolValue:
     """ADR 0016/0025 — no field on this API ever accepts either."""
 
@@ -406,6 +521,22 @@ class TestFeatureGate:
         relicense(admin_client, features=["billing", "load_profile"])
 
         response = admin_client.post("/api/settings/file-upload/https/test")
+
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["reason"] == "file_upload_destination"
+
+    def test_sftp_test_refuses_without_the_feature(self, admin_client: TestClient, relicense) -> None:
+        relicense(admin_client, features=["billing", "load_profile"])
+
+        response = admin_client.post("/api/settings/file-upload/sftp/test")
+
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["reason"] == "file_upload_destination"
+
+    def test_sftp_host_key_refuses_without_the_feature(self, admin_client: TestClient, relicense) -> None:
+        relicense(admin_client, features=["billing", "load_profile"])
+
+        response = admin_client.post("/api/settings/file-upload/sftp/host-key", json={"fingerprint": "SHA256:abc123"})
 
         assert response.status_code == 403, response.text
         assert response.json()["error"]["reason"] == "file_upload_destination"

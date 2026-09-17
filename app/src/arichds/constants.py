@@ -327,6 +327,19 @@ FILEUPLOAD_HTTPS_READ_TIMEOUT_SEC: Final[int] = 30
 # own shape: a Test button must fail fast rather than hold the request for
 # the cycle's own long timeout.
 FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC: Final[int] = 5
+# SFTP transport timeouts (ticket 04) — the same connect/read split as the
+# HTTPS constants above, deliberately its own pair rather than an alias for
+# the same "retuning one Destination must not silently retune another"
+# reason: *connect_timeout* bounds the TCP connect and SSH2 banner/kex alone
+# (docs/lib-notes/paramiko-sftp.md §5), then the socket is loosened to
+# *read_timeout* for authentication and file transfer, so a large capture
+# document over a slow link is not mistaken for a stalled connection.
+FILEUPLOAD_SFTP_CONNECT_TIMEOUT_SEC: Final[int] = 10
+FILEUPLOAD_SFTP_READ_TIMEOUT_SEC: Final[int] = 30
+# Test connection's own short connect timeout — DBDEST_TEST_CONNECT_TIMEOUT_SEC's
+# own shape, reused for both the connect and (short) read timeout there since
+# a Test button never transfers a real file.
+FILEUPLOAD_SFTP_TEST_CONNECT_TIMEOUT_SEC: Final[int] = 5
 
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"

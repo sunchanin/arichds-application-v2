@@ -1,6 +1,6 @@
 """``/api/settings/file-upload`` — the File Upload Destination configuration,
 the last cycle's status, and the manual ``Upload now`` trigger (SPEC §3.8,
-ADR 0025, tickets 01-02).
+ADR 0025, tickets 01-04).
 
 **Admin only, for every route including ``GET``** — the same choice
 ``arichds.api.central_push`` makes and for the same reason: three sets of
@@ -11,13 +11,12 @@ Push, this module **is** gated by a licence feature key
 ``database_destination`` uses in ``arichds.api.settings``.
 
 Ticket 02 lands :mod:`arichds.fileupload.cycle` and the ``POST
-.../upload-now`` endpoint below. It still moves no bytes today — the three
-real transports land in tickets 03-05, and :func:`~arichds.fileupload.cycle._build_transport`
-returns ``None`` before ``_run_cycle`` ever runs — so the status this module
-reads stays ``None`` only until a cycle actually runs; the one outcome
-reachable before tickets 03-05 land is ``"not_configured"`` (an unset
-protocol, or one with no host/URL) — a *configured* page still publishes
-nothing today.
+.../upload-now`` endpoint below. HTTPS (ticket 03) and SFTP (ticket 04) both
+move real bytes today — :func:`~arichds.fileupload.cycle._build_transport`
+builds a real transport for ``active_protocol in ("https", "sftp")``; only
+``ftps`` (ticket 05) still makes it answer ``None``, so a page configured on
+FTPS still publishes nothing but ``"not_configured"``/never runs a real
+cycle until then.
 """
 
 from __future__ import annotations
@@ -31,7 +30,11 @@ from sqlalchemy.orm import Session
 
 from arichds.api.deps import AdminDep, SchedulerDep, SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
-from arichds.constants import FILEUPLOAD_BUDGET_SEC, FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC
+from arichds.constants import (
+    FILEUPLOAD_BUDGET_SEC,
+    FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC,
+    FILEUPLOAD_SFTP_TEST_CONNECT_TIMEOUT_SEC,
+)
 from arichds.db.app_settings import (
     FILEUPLOAD_ACTIVE_PROTOCOL_KEY,
     FILEUPLOAD_FTPS_HOST_KEY,
@@ -43,6 +46,7 @@ from arichds.db.app_settings import (
     FILEUPLOAD_HTTPS_TOKEN_KEY,
     FILEUPLOAD_HTTPS_URL_KEY,
     FILEUPLOAD_SFTP_HOST_KEY,
+    FILEUPLOAD_SFTP_HOSTKEY_FINGERPRINT_KEY,
     FILEUPLOAD_SFTP_KEY_PASSPHRASE_KEY,
     FILEUPLOAD_SFTP_KEY_PATH_KEY,
     FILEUPLOAD_SFTP_PASSWORD_KEY,
@@ -54,6 +58,7 @@ from arichds.db.app_settings import (
 from arichds.fileupload.config import load_config
 from arichds.fileupload.cycle import file_upload_cycle
 from arichds.fileupload.https_transport import FilesTestResult, check_https_connection
+from arichds.fileupload.sftp_transport import SftpTestResult, check_sftp_connection
 from arichds.fileupload.status import CycleStatus, last_cycle
 
 router = APIRouter(
@@ -277,6 +282,96 @@ def put_file_upload_sftp(body: FileUploadSftpIn, session: SessionDep, _admin: Ad
         set_setting(session, FILEUPLOAD_SFTP_KEY_PASSPHRASE_KEY, body.key_passphrase)
     set_setting(session, FILEUPLOAD_SFTP_REMOTE_ROOT_KEY, body.remote_root)
     set_setting(session, FILEUPLOAD_ACTIVE_PROTOCOL_KEY, "sftp")
+    session.commit()
+
+    return ApiResponse.ok(_current_settings(session))
+
+
+class FileUploadSftpTestOut(BaseModel):
+    """What ``POST /api/settings/file-upload/sftp/test`` returns — see
+    :class:`arichds.fileupload.sftp_transport.SftpConnectionCheck`.
+
+    Attributes:
+        result: Which of :data:`~arichds.fileupload.sftp_transport.SftpTestResult`
+            this is — naming the failure (host-key mismatch, bad
+            credentials, a missing key file, ...) rather than a bare
+            "Connection failed" (ticket 04's own acceptance criterion, the
+            same one ticket 03 set for HTTPS).
+        fingerprint: The server's host-key fingerprint as observed on this
+            attempt, or ``None`` when the handshake itself never completed.
+        manifest_exists: Whether the server already holds a manifest.
+        message: One operator-actionable English sentence.
+    """
+
+    result: SftpTestResult
+    fingerprint: str | None
+    manifest_exists: bool
+    message: str
+
+
+@router.post("/sftp/test")
+def test_file_upload_sftp(session: SessionDep, _admin: AdminDep) -> ApiResponse[FileUploadSftpTestOut]:
+    """Connect with the **stored** SFTP settings and report which outcome it
+    is. Admin only; gated by the router's own ``file_upload_destination``
+    feature dependency.
+
+    Never writes the pinned fingerprint row itself — a mismatched or
+    first-contact fingerprint is only ever *reported* here (`ADR 0025`/
+    ticket 04: "a cycle never pins on its own", and this endpoint is no
+    exception); ``POST .../sftp/host-key`` below is the one place that
+    writes it, and only when the operator supplies the fingerprint they saw.
+
+    Uses the **short** connect timeout
+    (:data:`~arichds.constants.FILEUPLOAD_SFTP_TEST_CONNECT_TIMEOUT_SEC`),
+    passed explicitly — `test_file_upload_https`'s own reviewer-pinned
+    shape (ticket 03 round 1): a Test button that used the cycle's own
+    longer timeout could hold this request for much longer against an
+    unreachable server.
+    """
+    config = load_config(session).sftp
+    check = check_sftp_connection(
+        host=config.host,
+        port=config.port,
+        username=config.username,
+        password=config.password,
+        key_path=config.key_path,
+        key_passphrase=config.key_passphrase,
+        remote_root=config.remote_root,
+        pinned_fingerprint=config.host_key_fingerprint,
+        connect_timeout=FILEUPLOAD_SFTP_TEST_CONNECT_TIMEOUT_SEC,
+    )
+    return ApiResponse.ok(
+        FileUploadSftpTestOut(
+            result=check.result,
+            fingerprint=check.fingerprint,
+            manifest_exists=check.manifest_exists,
+            message=check.message,
+        )
+    )
+
+
+class FileUploadSftpHostKeyIn(BaseModel):
+    """The body ``POST .../sftp/host-key`` takes — the fingerprint the
+    operator saw on the page (from ``POST .../sftp/test``), never derived by
+    this endpoint itself. This is the **only** write path for the pinned
+    fingerprint row — nothing in :mod:`arichds.fileupload.sftp_transport` or
+    :mod:`arichds.fileupload.cycle` ever writes it (ADR 0025/ticket 04: "a
+    cycle never pins on its own")."""
+
+    fingerprint: str
+
+
+@router.post("/sftp/host-key")
+def pin_file_upload_sftp_host_key(
+    body: FileUploadSftpHostKeyIn, session: SessionDep, _admin: AdminDep
+) -> ApiResponse[FileUploadOut]:
+    """Pin (or replace) the SFTP tab's trusted host-key fingerprint. Admin
+    only. Refused when *fingerprint* is blank — there is nothing to pin."""
+    fingerprint = body.fingerprint.strip()
+    if not fingerprint:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="fingerprint is required.")
+
+    set_setting(session, FILEUPLOAD_SFTP_HOSTKEY_FINGERPRINT_KEY, fingerprint)
     session.commit()
 
     return ApiResponse.ok(_current_settings(session))

@@ -59,6 +59,15 @@ dependencies = [
     # the `mysql+pymysql://` URL scheme resolves to either engine, while
     # `mariadb+pymysql://` refuses a real MySQL 8.
     "pymysql>=1.1",
+    # ─── File Upload Destination — SFTP transport (ADR 0025 decision 1,
+    # SPEC §3.8, ticket 04) ─────────────────────────────────────────────────
+    # paramiko is the one runtime dependency this whole feature adds — FTPS
+    # and HTTPS stay on the standard library (docs/lib-notes/paramiko-sftp.md
+    # §7). PyNaCl is paramiko 5's own hard runtime dependency for Ed25519
+    # (not an extra to opt into); declared honestly here, the same call this
+    # file already makes for Pillow arriving transitively via fpdf2 above.
+    "paramiko>=5.0",
+    "pynacl>=1.5",
 ]
 
 [project.optional-dependencies]
