@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field, create_model
 
 from arichds.acquisition.status import DeviceStatus
 from arichds.db.models import BillingReading, EnergySummaryDay, LoadProfileReading
+from arichds.fileupload.https_transport import FILE_PATH_PREFIX, MANIFEST_PATH, SHA256_HEADER
 
 #: The one contract version this build speaks (ADR 0024). A future change
 #: bumps this and is a new, additively-named version — never a silent
@@ -283,6 +284,32 @@ class ContractHoldingsEntry(BaseModel):
     fields: list[ContractField]
 
 
+class ContractFilesEndpoint(BaseModel):
+    """One of the File Upload Destination's three HTTPS endpoints (ADR 0025,
+    ticket 03)."""
+
+    method: str
+    path: str
+    description: str
+
+
+class ContractFiles(BaseModel):
+    """The **Files (optional)** section (ADR 0025, ticket 03) — a receiving
+    server MAY implement these three endpoints to receive this machine's
+    export files and Billing capture documents over HTTPS, published beside
+    the push contract so a receiving team can build both from one document.
+    "Optional" because the File Upload Destination itself is opt-in
+    (ADR 0025: "leaving the page unconfigured means nothing is sent") —
+    unlike :attr:`Contract.kinds`, nothing here is ever sent unless an
+    administrator turns the HTTPS tab on.
+    """
+
+    endpoints: list[ContractFilesEndpoint]
+    sha256_header: str
+    auth_header: str
+    notes: list[str]
+
+
 class Contract(BaseModel):
     """The whole published document — what ``GET
     /api/settings/central-push/contract`` returns and the API page renders.
@@ -301,6 +328,7 @@ class Contract(BaseModel):
     envelope: list[ContractField]
     kinds: list[ContractKind]
     notes: list[str]
+    files: ContractFiles
 
 
 def _readable_type(annotation: Any) -> str:
@@ -333,6 +361,57 @@ def _fields_of(model: type[BaseModel]) -> list[ContractField]:
         ContractField(name=name, type=_readable_type(info.annotation), description=info.description or "")
         for name, info in model.model_fields.items()
     ]
+
+
+def _render_files_contract() -> ContractFiles:
+    """Build the **Files (optional)** section from the same constants
+    :mod:`arichds.fileupload.https_transport` builds its own requests from
+    (:data:`~arichds.fileupload.https_transport.MANIFEST_PATH`,
+    :data:`~arichds.fileupload.https_transport.FILE_PATH_PREFIX`,
+    :data:`~arichds.fileupload.https_transport.SHA256_HEADER`) — never a
+    hand-typed duplicate of the literal paths/header name, the same
+    guarantee :func:`_fields_of` gives the push kinds above."""
+    return ContractFiles(
+        endpoints=[
+            ContractFilesEndpoint(
+                method="GET",
+                path=f"{{server_url}}{MANIFEST_PATH}",
+                description="The Upload Manifest this server holds for the requesting machine, or 404 if none exists yet.",
+            ),
+            ContractFilesEndpoint(
+                method="PUT",
+                path=f"{{server_url}}{FILE_PATH_PREFIX}{{relative path}}",
+                description=f"Store the file body at `relative path`, carrying its sha256 digest in the `{SHA256_HEADER}` "
+                "header. Any 2xx response means stored.",
+            ),
+            ContractFilesEndpoint(
+                method="PUT",
+                path=f"{{server_url}}{MANIFEST_PATH}",
+                description="Replace the Upload Manifest this server holds for the requesting machine. Any 2xx response "
+                "means stored.",
+            ),
+        ],
+        sha256_header=SHA256_HEADER,
+        auth_header="Authorization: Bearer <token>",
+        notes=[
+            "Optional — implement this only for a site that turns on the File Upload Destination's HTTPS tab "
+            "(menu FTP). No relation to the Push Token: the token here may be the same one or a different one "
+            "entirely, at the operator's choice.",
+            "`relative path` in `PUT .../v1/files/{relative path}` mirrors this machine's own folder layout: "
+            "`export/<file name>` for the three export files, `captures/<Meter Serial>/<file name>` for a "
+            "Billing capture document, prefixed by the operator's own remote root when one is set — that is "
+            "where on the wire remote root actually reaches this contract.",
+            "The Upload Manifest's own keys are always the **un-prefixed** relative path above — never the "
+            "remote root. A server matching a manifest entry to the object it names must prepend whatever "
+            "remote root this machine's files actually arrived under; the manifest does not carry the root "
+            "itself, and two machines sharing one remote root are told apart by where their files land, not "
+            "by their manifest keys.",
+            "Nothing is ever deleted through these endpoints — a file or a manifest entry that stops arriving is "
+            "left exactly as it was last written.",
+            "The manifest endpoints are not scoped by remote root — a receiving server distinguishes machines by "
+            "the URL or the token it was given, not by a path segment.",
+        ],
+    )
 
 
 def render_contract(
@@ -383,6 +462,7 @@ def render_contract(
         holdings_entries=holdings_entries,
         envelope=_fields_of(envelope_model),
         kinds=kinds,
+        files=_render_files_contract(),
         notes=[
             "Every row is identified by Meter Serial, never `device_id` (a SQLite rowid reused after a delete).",
             "Energy is always kWh/kvarh, voltage V, current A — never the machine's own display-unit setting.",

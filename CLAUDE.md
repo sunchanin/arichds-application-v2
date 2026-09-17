@@ -126,8 +126,29 @@ MySQL, and ~30 tables.
   with its three protocol tabs — and the upload cycle itself, the Upload Manifest model and the
   one transport seam landed with ticket 02, registered as the `file_upload` scheduler job, last
   and one behind `central_push`; proven against an in-memory transport only — the three real
-  transports (SFTP/FTPS/HTTPS) are tickets 03-05, so a fully configured page still moves no
-  bytes) ·
+  transports (SFTP/FTPS/HTTPS) are tickets 03-05. **HTTPS landed with ticket 03**:
+  `fileupload/https_transport.py`'s `HttpsTransport` implements the seam over `urllib` alone
+  (no `httpx`/`requests`), reusing the Central Push client's own split-timeout opener — factored
+  out first, in its own commit, into `arichds/split_timeout_http.py` (the neutral module both
+  now import, parametrised by timeout rather than each hand-copying the connect/read-split
+  recipe) — `_build_transport()` in `cycle.py` now returns a real `HttpsTransport` for
+  `active_protocol == "https"` (SFTP/FTPS still return `None`, tickets 04-05), so a page saved
+  on the HTTPS tab genuinely moves bytes; `POST .../https/test` (mirroring
+  `database-destination/test`'s "HTTP 200 on every outcome") reports `ok` /
+  `unreachable` / `timed_out` / `unauthorized` / `other` from a manifest `GET` on the short
+  connect timeout (`FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC`); the three endpoints are
+  published on the API page's **Files (optional)** section, rendered by
+  `centralpush/contract.py::render_contract()` from the same
+  `MANIFEST_PATH`/`FILE_PATH_PREFIX`/`SHA256_HEADER` (`X-ARICHDS-File-Sha256`) constants the
+  transport itself builds requests from, contract version unchanged at 1. **Remote root reaches
+  the wire only through `PUT .../v1/files/{relative path}`, decided rather than left open**: the
+  two manifest endpoints (`GET`/`PUT {url}/v1/files/manifest`) are deliberately un-prefixed,
+  because a receiving server scopes a manifest by the token/URL it issued — each machine gets its
+  own — not by a path segment; spec.md story 10 ("several machines share one server by choosing
+  different roots") is satisfied because it is the *files* that collide when several machines
+  write under one root, and Remote root is exactly what keeps their relative paths apart. A
+  receiving team joining a manifest key to a stored object path must still know the manifest's
+  own keys are the **un-prefixed** relative path — see `_render_files_contract()`'s notes) ·
   0017 (the capture image is a **headless screenshot of our own page** — **reverses 0014**:
   Edge ships with Windows and `websockets` already arrives via `uvicorn[standard]`, so driving
   the installed browser over CDP costs **0 MB** and makes fidelity an identity rather than an
@@ -403,7 +424,20 @@ MySQL, and ~30 tables.
   already covered a key ending in `passphrase` "with no new pattern" — false, because
   `passphrase` does not contain the substring `password`, the only thing the filter's `password`
   pattern matches; `logging_config.py` gained a dedicated `passphrase` pattern in this same
-  change, proven by `test_fileupload_config_api.py`'s `TestSecretsNeverReachALog`.)
+  change, proven by `test_fileupload_config_api.py`'s `TestSecretsNeverReachALog`. **HTTPS landed
+  with ticket 03**: `fileupload/https_transport.py::HttpsTransport` fills the transport seam for
+  `active_protocol == "https"` — `GET`/`PUT {url}/v1/files/manifest` and `PUT
+  {url}/v1/files/{relative path}` (the file body plus its sha256 in the `X-ARICHDS-File-Sha256`
+  header), every request carrying `Authorization: Bearer <token>`, over the Central Push client's
+  own split-timeout `urllib` opener — factored out first into `arichds/split_timeout_http.py` so
+  neither module hand-copies the connect/read-timeout-split recipe (or its `check_hostname`
+  hazard) a second time. `POST .../https/test` mirrors `database-destination/test`: HTTP 200 on
+  every outcome (`ok`/`unreachable`/`timed_out`/`unauthorized`/`other`), the short connect timeout
+  (`FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC`, 5s). The three endpoints are published on the API
+  page (`central-push`) as a **Files (optional)** Collapse panel, rendered from the same
+  path/header constants the transport itself uses — contract version unchanged at 1. Remote root
+  reaches the wire only through the file-put path, never the two manifest endpoints — a receiving
+  server scopes a manifest by the token/URL it was issued, not by a path segment.)
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
@@ -460,9 +494,18 @@ MySQL, and ~30 tables.
   are defined — landed at ticket 02 round 1, at the package top for the same reason
   `interval_status.py` is: `fileupload/cycle.py` must not import `export/`, so
   `export/format.py::render_filename` delegates to it instead of duplicating the substitution)
+  · `https_transport.py` (the **HTTPS transport**, landed with ticket 03 — `HttpsTransport` fills
+  the `Transport` seam over `urllib` alone; `check_https_connection()` is `POST .../https/test`'s
+  own check, sharing the same request logic; `cycle.py::_build_transport()` now returns it for
+  `active_protocol == "https"`, so the scheduler job and `Upload now` genuinely move bytes; SFTP
+  and FTPS still get `None` here, tickets 04-05)
   · `interval_status.py` (the one
   Interval Status decoder, at the package top because `api/` must not import `export/` — that
   direction closes a cycle through `api/deps` -> `jobs/scheduler` -> `export/csv_export`).
+  `split_timeout_http.py` (the package top, ticket 03's own prefactor) is the one place the
+  connect/read-timeout-split `urllib` opener recipe lives — `centralpush/client.py` and
+  `fileupload/https_transport.py` both call `build_split_timeout_opener()` with their own
+  timeout constants rather than each carrying a hand-copied connection-subclass pair.
   Venv at `app/.venv`, `pyproject.toml` + pip.
 - `app/scripts/` — read-only hardware probes, run by hand. **They are acceptance criteria, not
   scratch work**: `fake_meter` is autouse in the suite, so no automated test can prove a driver
@@ -548,10 +591,10 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
   through a **Data-out Destination we drive outbound** — the Database Destination
   (ADR 0016/0020/0021, issue #46, `dataout/`), the central-server push (SPEC §3.8, ADR
   0024, `centralpush/`, M14 ticket 08) and the File Upload Destination (menu **FTP**, SPEC
-  §3.8, ADR 0025, `fileupload/`, ticket 01 for configuration, ticket 02 for the cycle itself —
-  proven against an in-memory transport, moving no real bytes until tickets 03-05 land
-  SFTP/FTPS/HTTPS), which are **three transports and three contracts, not one** (SPEC §3.10).
-  Nothing external reads our tables.
+  §3.8, ADR 0025, `fileupload/`, ticket 01 for configuration, ticket 02 for the cycle itself
+  and ticket 03 for the first real transport, HTTPS — SFTP and FTPS still move no real bytes
+  until tickets 04-05 land), which are **three transports and three contracts, not one**
+  (SPEC §3.10). Nothing external reads our tables.
 - **English-only UI** — no Thai strings in `web/` (v1 had them; do not carry them over).
 
 ## v1 as reference (read-only)

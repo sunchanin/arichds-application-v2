@@ -248,6 +248,87 @@ class TestPutHttps:
         assert _save_https(user_client).status_code == 403
 
 
+class TestHttpsTest:
+    """``POST /api/settings/file-upload/https/test`` (ticket 03) — connects
+    with the **stored** HTTPS settings, the `database-destination/test`
+    convention (HTTP 200 on every outcome, the reason lives in ``result``).
+    """
+
+    @pytest.fixture
+    def receiver(self):
+        from conftest import VENDOR_PUBLIC_KEY_PEM
+        from fake_central_push_receiver import FakeCentralPushReceiver
+
+        r = FakeCentralPushReceiver(public_key_pem=VENDOR_PUBLIC_KEY_PEM)
+        yield r
+        r.shutdown()
+
+    def test_it_reports_ok_against_the_stored_url_and_token(self, admin_client: TestClient, receiver) -> None:
+        _save_https(admin_client, url=receiver.url, token=receiver.files_token)
+
+        response = admin_client.post("/api/settings/file-upload/https/test")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["result"] == "ok"
+        assert data["manifest_exists"] is False
+
+    def test_it_names_an_unreachable_server(self, admin_client: TestClient) -> None:
+        import socket
+
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        closed_port = probe.getsockname()[1]
+        probe.close()
+        _save_https(admin_client, url=f"http://127.0.0.1:{closed_port}", token="anything")
+
+        response = admin_client.post("/api/settings/file-upload/https/test")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["result"] in ("unreachable", "timed_out")
+
+    def test_it_names_a_wrong_token_as_unauthorized(self, admin_client: TestClient, receiver) -> None:
+        _save_https(admin_client, url=receiver.url, token="the-wrong-token")
+
+        response = admin_client.post("/api/settings/file-upload/https/test")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["result"] == "unauthorized"
+
+    def test_it_is_admin_only(self, user_client: TestClient) -> None:
+        assert user_client.post("/api/settings/file-upload/https/test").status_code == 403
+
+    def test_it_uses_the_short_connect_timeout(self, admin_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reviewer finding, ticket 03 round 1 — the code was correct by
+        trace (the default argument already was
+        `FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC`) but nothing pinned it:
+        swapping the call site for a 900s literal left every other test in
+        this class green. Now the endpoint passes it explicitly, and this
+        captures the exact value the endpoint calls
+        `check_https_connection` with — mutation: reverting the endpoint's
+        explicit `connect_timeout=` kwarg turns this red (see the
+        implementation report)."""
+        import arichds.api.file_upload as file_upload_api
+        from arichds.constants import FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC
+        from arichds.fileupload.https_transport import FilesConnectionCheck
+
+        captured: dict[str, object] = {}
+
+        def _fake_check(url: str, token: str, **kwargs: object) -> FilesConnectionCheck:
+            captured.update(kwargs)
+            return FilesConnectionCheck("ok", 200, False, "stub")
+
+        monkeypatch.setattr(file_upload_api, "check_https_connection", _fake_check)
+        _save_https(admin_client, url="https://files.example.com")
+
+        response = admin_client.post("/api/settings/file-upload/https/test")
+
+        assert response.status_code == 200, response.text
+        assert captured.get("connect_timeout") == FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC
+
+
 class TestPlainFtpAndImplicitFtpsAreNotAProtocolValue:
     """ADR 0016/0025 — no field on this API ever accepts either."""
 
@@ -317,6 +398,14 @@ class TestFeatureGate:
         relicense(admin_client, features=["billing", "load_profile"])
 
         response = admin_client.post("/api/settings/file-upload/upload-now")
+
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["reason"] == "file_upload_destination"
+
+    def test_https_test_refuses_without_the_feature(self, admin_client: TestClient, relicense) -> None:
+        relicense(admin_client, features=["billing", "load_profile"])
+
+        response = admin_client.post("/api/settings/file-upload/https/test")
 
         assert response.status_code == 403, response.text
         assert response.json()["error"]["reason"] == "file_upload_destination"

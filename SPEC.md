@@ -1232,6 +1232,16 @@ one header.
   scheduler job `file_upload` ตัวสุดท้าย ต่อจาก `central_push`, มีปุ่ม **Upload now** บนหน้าเว็บแล้ว
   (`POST .../upload-now`) — พิสูจน์กับ in-memory transport เท่านั้น เพราะสาม transport จริง
   (SFTP/FTPS/HTTPS, ticket 03-05) ยังไม่ลง หน้าที่ตั้งค่าครบแล้วจึงยังไม่ส่งไฟล์จริงสักตัว ·
+  **ticket 03 ลงแล้ว — HTTPS ตัวแรก**: `fileupload/https_transport.py::HttpsTransport` ลง
+  transport seam จริงด้วย `urllib` ล้วน (ไม่มี `httpx`/`requests`), ใช้ split-timeout opener
+  ตัวเดียวกับ Central Push client — แยกออกมาเป็น `split_timeout_http.py` ก่อน (prefactor คอมมิตแยก)
+  ให้สองโมดูลเรียกใช้ร่วมกัน · `cycle.py::_build_transport()` คืน `HttpsTransport` จริงเมื่อ
+  `active_protocol == "https"` แล้ว (SFTP/FTPS ยังคืน `None`, ticket 04-05) — หน้าที่ตั้งค่าเป็น
+  HTTPS ครบจึงส่งไฟล์จริงแล้ววันนี้ · `POST .../https/test` (**Test connection**) เลียนแบบ
+  `database-destination/test` — HTTP 200 ทุก outcome, ผลเป็น `ok`/`unreachable`/`timed_out`/
+  `unauthorized`/`other` · สาม endpoint (`GET`/`PUT .../v1/files/manifest`,
+  `PUT .../v1/files/{relative path}`) ประกาศบนหน้า **API** เป็นหมวด **Files (optional)**
+  โดย contract version ยังเป็น 1 เหมือนเดิม ·
   เมนูซ้าย **โชว์หน้านี้แล้วเมื่อ license ให้คีย์นี้** (`features.ts` เปลี่ยนเป็น
   `kind: "feature", key: "file_upload_destination"`) เหมือน `database_destination` ทุกประการ ·
   `RESERVED_FEATURE_KEYS` ใน `constants.py` ว่างเปล่าแล้ว (คีย์นี้เป็นสมาชิกตัวสุดท้าย) — กลไกยังอยู่

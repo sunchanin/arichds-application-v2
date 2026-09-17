@@ -9,6 +9,7 @@ import {
   isLicenseLapsed,
   type CentralPushContract,
   type CentralPushContractField,
+  type CentralPushContractFilesEndpoint,
   type CentralPushSettings,
   type CentralPushUpdate,
 } from "../api";
@@ -23,6 +24,12 @@ interface FormValues {
 const FIELD_COLUMNS: ColumnsType<CentralPushContractField> = [
   { title: "Field", dataIndex: "name", key: "name", width: 260, render: (value: string) => <Text code>{value}</Text> },
   { title: "Type", dataIndex: "type", key: "type", width: 160 },
+  { title: "Description", dataIndex: "description", key: "description" },
+];
+
+const FILES_ENDPOINT_COLUMNS: ColumnsType<CentralPushContractFilesEndpoint> = [
+  { title: "Method", dataIndex: "method", key: "method", width: 90 },
+  { title: "Path", dataIndex: "path", key: "path", width: 320, render: (value: string) => <Text code>{value}</Text> },
   { title: "Description", dataIndex: "description", key: "description" },
 ];
 
@@ -294,6 +301,48 @@ export function CentralPush() {
                     />
                   ),
                 })),
+                {
+                  key: "__files",
+                  label: (
+                    <Space>
+                      <Text strong>Files</Text>
+                      <Tag color="default">optional</Tag>
+                    </Space>
+                  ),
+                  children: (
+                    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                      <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                        The File Upload Destination&rsquo;s HTTPS tab (menu <Text strong>FTP</Text>) — implement these
+                        three endpoints only for a site that turns it on.
+                      </Paragraph>
+                      <Table
+                        size="small"
+                        rowKey="path"
+                        pagination={false}
+                        dataSource={contract.files.endpoints}
+                        columns={FILES_ENDPOINT_COLUMNS}
+                      />
+                      <Descriptions
+                        size="small"
+                        column={1}
+                        bordered
+                        items={
+                          [
+                            { key: "auth", label: "Auth header", children: <Text code>{contract.files.auth_header}</Text> },
+                            { key: "sha256", label: "Sha256 header", children: <Text code>{contract.files.sha256_header}</Text> },
+                          ] satisfies DescriptionsItemType[]
+                        }
+                      />
+                      <ul style={{ marginTop: 0, marginBottom: 0 }}>
+                        {contract.files.notes.map((note) => (
+                          <li key={note}>
+                            <Text type="secondary">{note}</Text>
+                          </li>
+                        ))}
+                      </ul>
+                    </Space>
+                  ),
+                },
               ]}
             />
             <div>

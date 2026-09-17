@@ -32,11 +32,10 @@ to it) can both reach without either importing the other.
 
 **One transport seam** (:mod:`arichds.fileupload.transport`). Everything
 this module decides — which files, in what order, the budget, the status —
-is protocol-blind; the three real transports land in tickets 03-05. Until
-then :func:`_build_transport` always answers ``None``, so a fully configured
-page still moves no bytes (spec.md ticket 02's own scope line) — the cycle
-below is reachable in production only once a real transport exists, and in
-tests today only through the ``transport`` parameter.
+is protocol-blind; the three real transports land in tickets 03-05. HTTPS
+landed with ticket 03 (:mod:`arichds.fileupload.https_transport`); SFTP and
+FTPS still make :func:`_build_transport` answer ``None``, so a page
+configured on either still moves no bytes until tickets 04-05 land.
 """
 
 from __future__ import annotations
@@ -70,6 +69,7 @@ from arichds.db.models import Device
 from arichds.db.session import session_scope
 from arichds.filename_tokens import export_filename_pattern
 from arichds.fileupload.config import FileUploadConfig, load_config
+from arichds.fileupload.https_transport import HttpsTransport
 from arichds.fileupload.manifest import MANIFEST_VERSION, Manifest, ManifestEntry
 from arichds.fileupload.status import CycleStatus, set_last_cycle
 from arichds.fileupload.transport import Transport, TransportError
@@ -127,15 +127,15 @@ def _active_configured(config: FileUploadConfig) -> bool:
 def _build_transport(config: FileUploadConfig) -> Transport | None:
     """Build the real transport for *config*'s active protocol.
 
-    Real transports land in tickets 03-05 (SFTP/FTPS/HTTPS, ADR 0025). Until
-    then this always returns ``None`` — a configured page still moves no
-    bytes (spec.md ticket 02: "after this ticket a configured page still
-    moves no bytes") — so the cycle below is reached in production only
-    once a real transport exists; today it is reached only through the
-    ``transport`` parameter (tests, and ``Upload now`` once a real
-    transport lands).
+    HTTPS landed with ticket 03 (:class:`~arichds.fileupload.https_transport.HttpsTransport`).
+    SFTP and FTPS land in tickets 04-05 (ADR 0025) and still return ``None``
+    here — a page configured on either of those still moves no bytes until
+    then; today only ``active_protocol == "https"`` is reached in production
+    (``Upload now``, or the scheduler job), everything else only through the
+    ``transport`` parameter (tests).
     """
-    del config  # unused until tickets 03-05 register a builder per protocol
+    if config.active_protocol == "https":
+        return HttpsTransport(config.https.url, config.https.token, config.https.remote_root)
     return None
 
 
@@ -259,8 +259,9 @@ def file_upload_cycle(transport: Transport | None = None) -> None:
     The Scheduler's ``file_upload`` job (:func:`arichds.jobs.scheduler.default_jobs`),
     registered last. *transport* lets a caller inject one directly — the
     cycle tests' in-memory transport, and ``POST .../upload-now``'s manual
-    trigger once a real transport exists; the scheduler job itself always
-    calls this with no argument, so :func:`_build_transport` decides.
+    trigger; the scheduler job itself always calls this with no argument,
+    so :func:`_build_transport` decides (HTTPS since ticket 03, ``None`` for
+    SFTP/FTPS until tickets 04-05).
 
     Nothing propagates: a failure is recorded on the in-memory status
     (:mod:`arichds.fileupload.status`) and the job runs again in fifteen

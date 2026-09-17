@@ -7,6 +7,7 @@ import {
   api,
   isLicenseLapsed,
   type FileUploadFtpsUpdate,
+  type FileUploadHttpsTest,
   type FileUploadHttpsUpdate,
   type FileUploadSettings,
   type FileUploadSftpUpdate,
@@ -143,6 +144,8 @@ export function FileUploadDestination() {
   const [sftpError, setSftpError] = useState<string | null>(null);
   const [ftpsError, setFtpsError] = useState<string | null>(null);
   const [httpsError, setHttpsError] = useState<string | null>(null);
+  const [testingHttps, setTestingHttps] = useState(false);
+  const [httpsTestResult, setHttpsTestResult] = useState<FileUploadHttpsTest | null>(null);
 
   const surface = useCallback(
     (err: unknown, fallback: string) => {
@@ -224,6 +227,18 @@ export function FileUploadDestination() {
       .finally(() => setUploadingNow(false));
   }, [message, surface]);
 
+  const onTestHttps = useCallback(() => {
+    setTestingHttps(true);
+    api
+      .testFileUploadHttps()
+      .then((result) => {
+        setHttpsTestResult(result);
+        if (result.result === "ok") message.success("Connected.");
+      })
+      .catch((err: unknown) => surface(err, "Could not run the connection test."))
+      .finally(() => setTestingHttps(false));
+  }, [message, surface]);
+
   useEffect(() => {
     load(true);
     // Loaded once on mount, the same as `DatabaseDestination`/`CentralPush` —
@@ -297,6 +312,7 @@ export function FileUploadDestination() {
       .updateFileUploadHttps(body)
       .then((data) => {
         apply(data, false);
+        setHttpsTestResult(null);
         message.success("HTTPS settings saved. HTTPS is now the active protocol.");
       })
       .catch((err: unknown) => {
@@ -479,14 +495,31 @@ export function FileUploadDestination() {
                     <Form.Item name="remote_root" label="Remote root">
                       <Input placeholder="/arichds" />
                     </Form.Item>
-                    <Button type="primary" htmlType="submit" loading={savingHttps}>
-                      Save
-                    </Button>
+                    <Space>
+                      <Button type="primary" htmlType="submit" loading={savingHttps}>
+                        Save
+                      </Button>
+                      <Button loading={testingHttps} onClick={onTestHttps}>
+                        Test connection
+                      </Button>
+                    </Space>
                   </Form>
                   {httpsError !== null && <Alert type="error" showIcon title="Could not save the HTTPS settings" description={httpsError} />}
+                  {httpsTestResult !== null && (
+                    <Alert
+                      type={httpsTestResult.result === "ok" ? "success" : "warning"}
+                      showIcon
+                      title={
+                        httpsTestResult.result === "ok"
+                          ? "Connected"
+                          : `Could not connect (${httpsTestResult.result.replaceAll("_", " ")})`
+                      }
+                      description={httpsTestResult.message}
+                    />
+                  )}
                   <HowTo
                     prerequisites={[
-                      "A server implementing the published Files contract (see the API page).",
+                      "A server implementing the three Files endpoints published on the API page: GET .../v1/files/manifest, PUT .../v1/files/{relative path}, PUT .../v1/files/manifest.",
                       "A Bearer token the server will accept — the Push Token can be reused, or issue a different one.",
                       "A certificate issued by a trusted authority — a self-signed certificate is refused.",
                     ]}

@@ -312,6 +312,53 @@ class TestContractEndpoint:
             assert "typing." not in field["type"]
 
 
+class TestFilesSection:
+    """The **Files (optional)** section (ADR 0025, ticket 03) — the File
+    Upload Destination's HTTPS endpoints, published beside the push
+    contract from the same constants
+    :mod:`arichds.fileupload.https_transport` builds its own requests from."""
+
+    def test_it_lists_the_three_endpoints(self, admin_client: TestClient) -> None:
+        data = admin_client.get("/api/settings/central-push/contract").json()["data"]
+
+        methods_and_paths = {(e["method"], e["path"]) for e in data["files"]["endpoints"]}
+        assert ("GET", "{server_url}/v1/files/manifest") in methods_and_paths
+        assert ("PUT", "{server_url}/v1/files/{relative path}") in methods_and_paths
+        assert ("PUT", "{server_url}/v1/files/manifest") in methods_and_paths
+
+    def test_it_names_the_sha256_and_auth_headers(self, admin_client: TestClient) -> None:
+        data = admin_client.get("/api/settings/central-push/contract").json()["data"]
+
+        assert data["files"]["sha256_header"] == "X-ARICHDS-File-Sha256"
+        assert "bearer" in data["files"]["auth_header"].lower()
+
+    def test_it_reads_the_same_constants_the_transport_builds_requests_from(self) -> None:
+        """Mutation: change `arichds.fileupload.https_transport.SHA256_HEADER`
+        and this must move with it — proves the section is rendered from
+        that module's own constants, never a duplicated literal."""
+        from arichds.centralpush.contract import render_contract
+        from arichds.fileupload import https_transport
+
+        contract = render_contract()
+        assert contract.files.sha256_header == https_transport.SHA256_HEADER
+        assert any(https_transport.MANIFEST_PATH in e.path for e in contract.files.endpoints)
+
+    def test_the_existing_contract_render_is_unchanged_apart_from_the_new_section(
+        self, admin_client: TestClient
+    ) -> None:
+        """ADR 0025 ticket 03's own acceptance criterion — contract version 1
+        and the four push kinds must be untouched by this addition."""
+        data = admin_client.get("/api/settings/central-push/contract").json()["data"]
+
+        assert data["contract_version"] == 1
+        assert {kind["kind"] for kind in data["kinds"]} == {"meters", "billing", "energy_summary", "load_profile"}
+        for kind in data["kinds"]:
+            model = ITEM_KINDS[kind["kind"]]
+            assert {field["name"] for field in kind["fields"]} == set(model.model_fields)
+        assert {field["name"] for field in data["holdings"]} == set(HoldingsResponse.model_fields)
+        assert {field["name"] for field in data["envelope"]} == set(PushEnvelope.model_fields)
+
+
 class TestContractIsGeneratedNotHandWritten:
     """The acceptance criterion this exists for: a field added to a model
     appears in the rendered contract with no other edit. Proved by

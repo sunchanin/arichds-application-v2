@@ -316,6 +316,17 @@ FILEUPLOAD_INTERVAL_SEC: Final[int] = 900
 # server never holds the scheduler thread past this many seconds.
 FILEUPLOAD_BUDGET_SEC: Final[float] = 60.0
 JOB_FILE_UPLOAD: Final[str] = "file_upload"
+# HTTPS transport timeouts (ticket 03) — the same connect/read split
+# CENTRAL_PUSH_CONNECT_TIMEOUT_SEC/CENTRAL_PUSH_READ_TIMEOUT_SEC establish,
+# deliberately its own constants rather than an alias: retuning the push's
+# timeouts must not silently retune this Destination's, the same argument
+# already made for FILEUPLOAD_INTERVAL_SEC above.
+FILEUPLOAD_HTTPS_CONNECT_TIMEOUT_SEC: Final[int] = 10
+FILEUPLOAD_HTTPS_READ_TIMEOUT_SEC: Final[int] = 30
+# Test connection's own short connect timeout — DBDEST_TEST_CONNECT_TIMEOUT_SEC's
+# own shape: a Test button must fail fast rather than hold the request for
+# the cycle's own long timeout.
+FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC: Final[int] = 5
 
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"

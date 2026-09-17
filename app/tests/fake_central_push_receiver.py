@@ -10,6 +10,16 @@ actually stored, and upserts every pushed item on the contract's own natural
 key (``arichds.centralpush.contract.NATURAL_KEYS``). Tests assert only on
 what this receiver holds — never on `cycle.py`'s internals — the same
 discipline `test_dataout_mysql.py` uses against a real MariaDB.
+
+**Ticket 03 (ADR 0025)** grew the same in-process server with the File
+Upload Destination's three HTTPS endpoints — ``GET``/``PUT
+.../v1/files/manifest`` and ``PUT .../v1/files/{relative path}`` — reusing
+this receiver rather than a second in-process server, exactly as
+`test_fileupload_https_transport.py` (the transport tests) and
+`arichds.fileupload.https_transport` (the transport itself) expect. These
+three endpoints check a plain Bearer string (``.files_token``), never
+`verify_push_token` — the HTTPS tab's own token "may be the Push Token or a
+different one" (spec.md story 8).
 """
 
 from __future__ import annotations
@@ -32,7 +42,7 @@ class FakeCentralPushReceiver:
     past its test.
     """
 
-    def __init__(self, *, public_key_pem: bytes) -> None:
+    def __init__(self, *, public_key_pem: bytes, files_token: str = "test-files-token") -> None:
         self.public_key_pem = public_key_pem
 
         #: Current contents, keyed by each kind's own natural key — a plain
@@ -58,6 +68,28 @@ class FakeCentralPushReceiver:
         #: When set (seconds), every request sleeps this long before
         #: responding at all — the "receiver that stalls" probe.
         self.stall_seconds: float | None = None
+
+        # ── the three File Upload Destination endpoints (ADR 0025, ticket 03) ──
+        #: The Bearer token the file endpoints accept — a plain string
+        #: comparison, never `verify_push_token`: spec.md story 8 says this
+        #: tab's token "may be the Push Token or a different one", so a
+        #: receiving server for files has no reason to know about Push
+        #: Tokens at all.
+        self.files_token = files_token
+        #: `relative path` (e.g. `"export/SN0001.csv"`) -> the body last
+        #: `PUT` there.
+        self.files: dict[str, bytes] = {}
+        #: `relative path` -> the `X-ARICHDS-File-Sha256` header that PUT
+        #: carried — what a "the header names the right digest" test reads.
+        self.files_sha256_headers: dict[str, str] = {}
+        #: The manifest's raw bytes as last `PUT`, or `None` before the
+        #: first write — `GET .../v1/files/manifest` answers 404 while this
+        #: is `None`, exactly like a fresh remote root.
+        self.files_manifest: bytes | None = None
+        #: When `True`, the NEXT file-endpoint request (any of the three)
+        #: returns 500 without storing anything, and this resets to
+        #: `False` — the "a non-2xx response raises TransportError" probe.
+        self.fail_next_file_request: bool = False
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._build_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, name="fake-central-push", daemon=True)
@@ -148,6 +180,16 @@ class FakeCentralPushReceiver:
                 result = verify_push_token(auth[len("Bearer ") :], public_key_pem=receiver.public_key_pem)
                 return result.valid
 
+            def _authorized_files(self) -> bool:
+                """The three file endpoints (ADR 0025, ticket 03) accept
+                whatever Bearer token the operator configured on the HTTPS
+                tab — a plain string compare, never `verify_push_token`:
+                spec.md story 8 says this token "may be the Push Token or a
+                different one", so a receiving server for files has no
+                reason to know a Push Token's own wire format."""
+                auth = self.headers.get("Authorization", "")
+                return auth == f"Bearer {receiver.files_token}"
+
             def _reply(self, status: int, body: dict[str, Any] | None = None) -> None:
                 if receiver.stall_seconds is not None:
                     time.sleep(receiver.stall_seconds)
@@ -158,16 +200,35 @@ class FakeCentralPushReceiver:
                 self.end_headers()
                 self.wfile.write(payload)
 
+            def _reply_raw(self, status: int, payload: bytes, *, content_type: str = "application/json") -> None:
+                if receiver.stall_seconds is not None:
+                    time.sleep(receiver.stall_seconds)
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
             def do_GET(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's own naming
                 receiver.request_count += 1
-                if self.path != "/v1/holdings":
-                    self._reply(404)
+                if self.path == "/v1/holdings":
+                    if not self._authorized():
+                        receiver.unauthorized_requests += 1
+                        self._reply(401)
+                        return
+                    self._reply(200, receiver._holdings())
                     return
-                if not self._authorized():
-                    receiver.unauthorized_requests += 1
-                    self._reply(401)
+                if self.path == "/v1/files/manifest":
+                    if not self._authorized_files():
+                        receiver.unauthorized_requests += 1
+                        self._reply(401)
+                        return
+                    if receiver.files_manifest is None:
+                        self._reply(404)
+                        return
+                    self._reply_raw(200, receiver.files_manifest)
                     return
-                self._reply(200, receiver._holdings())
+                self._reply(404)
 
             def do_POST(self) -> None:  # noqa: N802
                 receiver.request_count += 1
@@ -189,6 +250,34 @@ class FakeCentralPushReceiver:
 
                 receiver._store(envelope)
                 self._reply(200, {"accepted": True})
+
+            def do_PUT(self) -> None:  # noqa: N802
+                """The other two of the three file endpoints (ADR 0025,
+                ticket 03): `PUT .../v1/files/manifest` and
+                `PUT .../v1/files/{relative path}`."""
+                receiver.request_count += 1
+                if not self.path.startswith("/v1/files/"):
+                    self._reply(404)
+                    return
+                if not self._authorized_files():
+                    receiver.unauthorized_requests += 1
+                    self._reply(401)
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length) if length else b""
+
+                if receiver.fail_next_file_request:
+                    receiver.fail_next_file_request = False
+                    self._reply(500)
+                    return
+
+                relative_path = self.path[len("/v1/files/") :]
+                if relative_path == "manifest":
+                    receiver.files_manifest = body
+                else:
+                    receiver.files[relative_path] = body
+                    receiver.files_sha256_headers[relative_path] = self.headers.get("X-ARICHDS-File-Sha256", "")
+                self._reply(200, {"stored": True})
 
         return Handler
 

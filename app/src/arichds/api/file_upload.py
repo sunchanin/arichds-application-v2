@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from arichds.api.deps import AdminDep, SchedulerDep, SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
-from arichds.constants import FILEUPLOAD_BUDGET_SEC
+from arichds.constants import FILEUPLOAD_BUDGET_SEC, FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC
 from arichds.db.app_settings import (
     FILEUPLOAD_ACTIVE_PROTOCOL_KEY,
     FILEUPLOAD_FTPS_HOST_KEY,
@@ -53,6 +53,7 @@ from arichds.db.app_settings import (
 )
 from arichds.fileupload.config import load_config
 from arichds.fileupload.cycle import file_upload_cycle
+from arichds.fileupload.https_transport import FilesTestResult, check_https_connection
 from arichds.fileupload.status import CycleStatus, last_cycle
 
 router = APIRouter(
@@ -331,6 +332,66 @@ def put_file_upload_https(body: FileUploadHttpsIn, session: SessionDep, _admin: 
 def get_file_upload_status(_admin: AdminDep) -> ApiResponse[FileUploadStatusOut | None]:
     """Return the last cycle's status."""
     return ApiResponse.ok(_status_out(last_cycle()))
+
+
+class FileUploadHttpsTestOut(BaseModel):
+    """What ``POST /api/settings/file-upload/https/test`` returns — see
+    :class:`arichds.fileupload.https_transport.FilesConnectionCheck`.
+
+    Attributes:
+        result: ``"ok"`` / ``"unreachable"`` / ``"timed_out"`` /
+            ``"unauthorized"`` / ``"other"`` — which check failed, naming it
+            rather than a bare "Connection failed" (ticket 03's own
+            acceptance criterion).
+        http_status: The HTTP status the server answered with, ``None``
+            when there was no response at all.
+        manifest_exists: Whether the server already holds a manifest.
+        message: One operator-actionable English sentence.
+    """
+
+    result: FilesTestResult
+    http_status: int | None
+    manifest_exists: bool
+    message: str
+
+
+@router.post("/https/test")
+def test_file_upload_https(session: SessionDep, _admin: AdminDep) -> ApiResponse[FileUploadHttpsTestOut]:
+    """Connect with the **stored** HTTPS settings and report which outcome it
+    is. Admin only; gated by the router's own ``file_upload_destination``
+    feature dependency.
+
+    Per-protocol, mirroring ``POST /api/settings/database-destination/test``
+    — the SFTP/FTPS tabs get their own ``.../sftp/test`` /
+    ``.../ftps/test`` in tickets 04-05 alongside this one, rather than one
+    endpoint branching on a body field, so each protocol's router entry
+    stays self-contained the way the three ``PUT`` endpoints above already
+    are.
+
+    Uses the **short** connect timeout
+    (:data:`~arichds.constants.FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC`,
+    the ``database-destination`` test's own shape) — a Test button that used
+    the cycle's own long timeout could hold this request for a minute
+    against an unreachable server. It takes no body, for the same reason
+    ``test_database_destination`` does not: a Test button that tested
+    something other than what is saved would prove nothing about what the
+    next cycle will do.
+
+    **HTTP 200 for every outcome, including the four failures** — the
+    ``database-destination`` test's own convention: a 4xx/5xx would be
+    swallowed by the page's generic error surface, leaving only a bare
+    "Connection failed" where the reason lives in ``result`` instead.
+    """
+    config = load_config(session).https
+    check = check_https_connection(config.url, config.token, connect_timeout=FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC)
+    return ApiResponse.ok(
+        FileUploadHttpsTestOut(
+            result=check.result,
+            http_status=check.http_status,
+            manifest_exists=check.manifest_exists,
+            message=check.message,
+        )
+    )
 
 
 class FileUploadUploadNowOut(BaseModel):

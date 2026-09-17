@@ -900,6 +900,28 @@ export interface CentralPushContractHoldingsEntry {
   fields: CentralPushContractField[];
 }
 
+/** One of the File Upload Destination's three HTTPS endpoints (ADR 0025, ticket 03). */
+export interface CentralPushContractFilesEndpoint {
+  method: string;
+  path: string;
+  description: string;
+}
+
+/**
+ * The **Files (optional)** section (ADR 0025, ticket 03) — a receiving
+ * server MAY implement these three endpoints to receive this machine's
+ * export files and Billing capture documents over HTTPS. Optional because
+ * the File Upload Destination itself is opt-in — unlike the four push
+ * kinds above, nothing here is ever sent unless an administrator turns the
+ * HTTPS tab on (see the FTP page).
+ */
+export interface CentralPushContractFiles {
+  endpoints: CentralPushContractFilesEndpoint[];
+  sha256_header: string;
+  auth_header: string;
+  notes: string[];
+}
+
 /**
  * What `GET /api/settings/central-push/contract` returns — generated from
  * the same models the push serializes: the four item kinds, plus the
@@ -919,6 +941,8 @@ export interface CentralPushContract {
   envelope: CentralPushContractField[];
   kinds: CentralPushContractKind[];
   notes: string[];
+  /** The File Upload Destination's HTTPS endpoints — see `CentralPushContractFiles`. */
+  files: CentralPushContractFiles;
 }
 
 /**
@@ -1042,6 +1066,22 @@ export interface FileUploadHttpsUpdate {
   url: string;
   token?: string;
   remote_root: string;
+}
+
+export type FileUploadHttpsTestResult = "ok" | "unreachable" | "timed_out" | "unauthorized" | "other";
+
+/**
+ * What `POST /api/settings/file-upload/https/test` returns (ADR 0025,
+ * ticket 03) — always on a 200, the `database-destination/test` convention:
+ * a failed check is data, not an error status.
+ */
+export interface FileUploadHttpsTest {
+  result: FileUploadHttpsTestResult;
+  /** The HTTP status the server answered with, `null` when there was no response at all. */
+  http_status: number | null;
+  manifest_exists: boolean;
+  /** One operator-actionable English sentence. */
+  message: string;
 }
 
 /** What `POST /api/load-profile/export` ("Save CSV now") did. */
@@ -1720,6 +1760,15 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(settings),
     }),
+
+  /**
+   * "Test connection" on the HTTPS tab (ADR 0025, ticket 03) — connects with
+   * the **stored** HTTPS settings (press Save first) and reports which of
+   * `FileUploadHttpsTestResult` it is. Admin-only. Always resolves — a
+   * failed check is `result`, not a thrown `ApiRequestError`.
+   */
+  testFileUploadHttps: () =>
+    request<FileUploadHttpsTest>("/api/settings/file-upload/https/test", { method: "POST" }),
 
   /**
    * "Upload now" (ADR 0025, ticket 02) — run one File Upload Destination
