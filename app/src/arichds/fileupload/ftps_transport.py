@@ -286,7 +286,12 @@ def check_ftps_connection(
     exactly as it would be for a real cycle.
     """
     if not host.strip():
-        return FtpsConnectionCheck("other", None, False, "No host is saved yet. Save the FTPS tab first.")
+        return FtpsConnectionCheck(
+            "other",
+            None,
+            False,
+            "No host is saved — uploads are off. Fill in the host on the FTPS tab and save to start.",
+        )
 
     try:
         ftps, subject = _connect_and_authenticate(

@@ -59,3 +59,15 @@ transport branch that no test reached and that was broken on every call (M14 tic
   `database_destination`; the License card tag it already shows becomes true.
 - Sites that forbid cloud upload configure nothing and are untouched; there is no switch
   because an empty page *is* the switch, the same rule the Central Push follows.
+- **"Empty" holds for the whole life of the page, not only before the first save**
+  (`docs/issues/022`, 2026-09-18): an empty host/URL on the *active* tab is the off state and is
+  savable from the page — the cycle publishes `not_configured` and never builds a transport —
+  exactly as the Central Push's empty URL already behaves and as the Database Destination's API
+  already accepts (its *form* still carries the same `required` rule this issue removed here —
+  `docs/issues/023`). Two guards keep the rule honest: only the *active* tab may be saved empty (an empty
+  save on any other tab, including when nothing is active yet, is refused with the way out
+  named, so a stray Save cannot silently stop uploads), and clearing the host keeps every other
+  field — password, token, passphrase, key-file path, the pinned host key — so switching back
+  on is one save. The first implementation had narrowed this rule to the fresh page (a
+  required Host/URL on the form, a blank-URL refusal on the HTTPS tab); that was the bug, not
+  the absence of a Stop button, which this ADR still does not have.

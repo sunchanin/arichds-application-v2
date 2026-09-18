@@ -225,7 +225,10 @@ class TestPutHttps:
         assert response.status_code == 200, response.text
         assert response.json()["data"]["active_protocol"] == "https"
 
-    def test_a_blank_url_is_refused(self, admin_client: TestClient) -> None:
+    def test_a_blank_url_is_refused_while_nothing_is_active_yet(self, admin_client: TestClient) -> None:
+        """Ticket 01's "refused with no URL" survives for the fresh machine —
+        an empty tab may be saved only when it is the active one
+        (docs/issues/022 decision 2), and here nothing is."""
         response = _save_https(admin_client, url="")
 
         assert response.status_code == 422, response.text
@@ -250,6 +253,123 @@ class TestPutHttps:
 
     def test_saving_is_admin_only(self, user_client: TestClient) -> None:
         assert _save_https(user_client).status_code == 403
+
+
+class TestSavingAnEmptyTab:
+    """docs/issues/022 — ADR 0025's "an empty page *is* the switch" holds for
+    the whole life of the page: an empty host/URL on the **active** tab is the
+    off state and is savable, everything else on the tab stays, and an empty
+    tab that is *not* the active one (including when nothing is active yet)
+    is refused so a stray Save cannot silently stop uploads."""
+
+    # -- clearing the active tab turns uploads off, keeping the rest ---------
+
+    def test_a_blank_host_on_the_active_sftp_tab_is_accepted_and_keeps_everything_else(
+        self, admin_client: TestClient
+    ) -> None:
+        _save_sftp(admin_client, password="kept-secret", key_path="/keys/id_ed25519", key_passphrase="kept-phrase")
+        admin_client.post("/api/settings/file-upload/sftp/host-key", json={"fingerprint": "SHA256:pinned"})
+
+        response = _save_sftp(admin_client, host="")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["active_protocol"] == "sftp"
+        assert data["sftp"]["host"] == ""
+        assert data["sftp"]["key_path"] == "/keys/id_ed25519"
+        assert data["sftp"]["password_set"] is True
+        assert data["sftp"]["key_passphrase_set"] is True
+        assert data["sftp"]["host_key_fingerprint"] == "SHA256:pinned"
+        assert _stored(admin_client, FILEUPLOAD_SFTP_PASSWORD_KEY, "") == "kept-secret"
+        assert _stored(admin_client, FILEUPLOAD_SFTP_KEY_PASSPHRASE_KEY, "") == "kept-phrase"
+        assert _stored(admin_client, FILEUPLOAD_SFTP_HOSTKEY_FINGERPRINT_KEY, "") == "SHA256:pinned"
+
+    def test_a_blank_host_on_the_active_sftp_tab_needs_no_credential(self, admin_client: TestClient) -> None:
+        """The "password or key file" rule guards a *connection*; with no host
+        there is none to guard (decision 4)."""
+        _save_sftp(admin_client)
+
+        response = _save_sftp(admin_client, host="", password="", key_path="")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["active_protocol"] == "sftp"
+
+    def test_a_blank_host_on_the_active_ftps_tab_is_accepted_and_keeps_the_password(
+        self, admin_client: TestClient
+    ) -> None:
+        _save_ftps(admin_client, password="kept-secret")
+
+        response = _save_ftps(admin_client, host="")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["active_protocol"] == "ftps"
+        assert data["ftps"]["host"] == ""
+        assert data["ftps"]["password_set"] is True
+        assert _stored(admin_client, FILEUPLOAD_FTPS_PASSWORD_KEY, "") == "kept-secret"
+
+    def test_a_blank_url_on_the_active_https_tab_is_accepted_and_keeps_the_token(
+        self, admin_client: TestClient
+    ) -> None:
+        _save_https(admin_client, token="kept-token")
+
+        response = _save_https(admin_client, url="")
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["active_protocol"] == "https"
+        assert data["https"]["url"] == ""
+        assert data["https"]["token_set"] is True
+        assert _stored(admin_client, FILEUPLOAD_HTTPS_TOKEN_KEY, "") == "kept-token"
+
+    def test_a_whitespace_only_host_is_stored_and_judged_as_empty(self, admin_client: TestClient) -> None:
+        _save_ftps(admin_client)
+
+        response = _save_ftps(admin_client, host="   ")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["ftps"]["host"] == ""
+
+    # -- an empty tab that is not the active one is refused ------------------
+
+    def test_a_blank_url_is_refused_while_sftp_is_active_and_sftp_is_untouched(self, admin_client: TestClient) -> None:
+        _save_sftp(admin_client, host="keep-me.example.com")
+
+        response = _save_https(admin_client, url="")
+
+        assert response.status_code == 422, response.text
+        assert "https" in response.text.lower()
+        assert "url" in response.text.lower()
+        current = admin_client.get("/api/settings/file-upload").json()["data"]
+        assert current["active_protocol"] == "sftp"
+        assert current["sftp"]["host"] == "keep-me.example.com"
+        assert current["https"]["url"] == ""
+
+    def test_a_blank_host_is_refused_while_nothing_is_active_yet(self, admin_client: TestClient) -> None:
+        response = _save_ftps(admin_client, host="")
+
+        assert response.status_code == 422, response.text
+        assert "ftps" in response.text.lower()
+        assert "host" in response.text.lower()
+        assert admin_client.get("/api/settings/file-upload").json()["data"]["active_protocol"] == ""
+
+    def test_a_whitespace_only_host_on_a_non_active_tab_is_refused_too(self, admin_client: TestClient) -> None:
+        _save_https(admin_client)
+
+        response = _save_sftp(admin_client, host="   ")
+
+        assert response.status_code == 422, response.text
+        assert admin_client.get("/api/settings/file-upload").json()["data"]["active_protocol"] == "https"
+
+    def test_a_non_empty_sftp_host_still_needs_a_credential(self, admin_client: TestClient) -> None:
+        """Decision 4's other half — `test_neither_password_nor_key_path_is_refused`
+        above stays true; this pins it from the new class's angle (active tab,
+        host present, credential cleared)."""
+        _save_sftp(admin_client)
+
+        response = _save_sftp(admin_client, password="", key_path="")
+
+        assert response.status_code == 422, response.text
 
 
 class TestHttpsTest:

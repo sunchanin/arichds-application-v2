@@ -395,7 +395,8 @@ export function FileUploadDestination() {
           <Text>
             Copies this machine&rsquo;s export files and Billing capture documents to a server of your team&rsquo;s
             choosing, over SFTP, FTPS or HTTPS — one active at a time. <strong>Nothing is sent while this page is
-            empty.</strong>
+            empty.</strong> To stop uploading later, clear the host (or URL) on the active tab and save — the other
+            fields stay, so switching back on is one save.
           </Text>
         }
       />
@@ -417,7 +418,7 @@ export function FileUploadDestination() {
                     onValuesChange={() => setSftpError(null)}
                     disabled={settings === null || savingSftp}
                   >
-                    <Form.Item name="host" label="Host" rules={[{ required: true, whitespace: true, message: "A host is required." }]}>
+                    <Form.Item name="host" label="Host">
                       <Input placeholder="sftp.example.com" />
                     </Form.Item>
                     <Form.Item name="port" label="Port" rules={portRules}>
@@ -454,7 +455,9 @@ export function FileUploadDestination() {
                       {settings?.sftp.host_key_fingerprint ? (
                         <Text code>Pinned: {settings.sftp.host_key_fingerprint}</Text>
                       ) : (
-                        <Text type="secondary">Not pinned yet — press Test connection to see the server&rsquo;s key.</Text>
+                        <Text type="secondary">
+                          Not pinned yet — save the tab, then press Test saved connection to see the server&rsquo;s key.
+                        </Text>
                       )}
                     </Form.Item>
                     <Space>
@@ -462,7 +465,7 @@ export function FileUploadDestination() {
                         Save
                       </Button>
                       <Button loading={testingSftp} onClick={onTestSftp}>
-                        Test connection
+                        Test saved connection
                       </Button>
                     </Space>
                   </Form>
@@ -516,7 +519,7 @@ export function FileUploadDestination() {
                     onValuesChange={() => setFtpsError(null)}
                     disabled={settings === null || savingFtps}
                   >
-                    <Form.Item name="host" label="Host" rules={[{ required: true, whitespace: true, message: "A host is required." }]}>
+                    <Form.Item name="host" label="Host">
                       <Input placeholder="ftps.example.com" />
                     </Form.Item>
                     <Form.Item name="port" label="Port" rules={portRules}>
@@ -540,7 +543,7 @@ export function FileUploadDestination() {
                         Save
                       </Button>
                       <Button loading={testingFtps} onClick={onTestFtps}>
-                        Test connection
+                        Test saved connection
                       </Button>
                     </Space>
                   </Form>
@@ -588,7 +591,7 @@ export function FileUploadDestination() {
                     onValuesChange={() => setHttpsError(null)}
                     disabled={settings === null || savingHttps}
                   >
-                    <Form.Item name="url" label="Server URL" rules={[{ required: true, whitespace: true, message: "A URL is required." }]}>
+                    <Form.Item name="url" label="Server URL">
                       <Input placeholder="https://files.example.com" />
                     </Form.Item>
                     <Form.Item
@@ -606,7 +609,7 @@ export function FileUploadDestination() {
                         Save
                       </Button>
                       <Button loading={testingHttps} onClick={onTestHttps}>
-                        Test connection
+                        Test saved connection
                       </Button>
                     </Space>
                   </Form>
@@ -658,9 +661,8 @@ export function FileUploadDestination() {
           </Text>
         ) : status.outcome === "not_configured" ? (
           <Text type="secondary">
-            The last cycle found this destination not configured — an active protocol needs a host or URL before
-            anything can be sent. Save a tab above, then press <Text strong>Upload now</Text> or wait for the next
-            scheduled cycle.
+            Nothing was sent — the active tab has no host or URL. Leave it empty to keep uploads off, or fill it in
+            and save to start; then press <Text strong>Upload now</Text> or wait for the next scheduled cycle.
           </Text>
         ) : (
           <Space direction="vertical" size="small" style={{ width: "100%" }}>

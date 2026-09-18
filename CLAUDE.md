@@ -415,9 +415,16 @@ MySQL, and ~30 tables.
   (`"file_upload_destination"`), the same shape `database-destination`'s endpoints use; saving a
   tab makes it the active protocol and the other two keep what they hold; a password/passphrase/
   token is write-only (`…_set` booleans only, never echoed) and an omitted or `null` one keeps
-  the stored value the same way `db_dest_password` does; the SFTP tab is refused when neither a
-  password nor a key-file path would be configured after the save, and the HTTPS tab is refused
-  with no URL — both checked against the *effective* value, not just what the request sent.
+  the stored value the same way `db_dest_password` does; the SFTP tab is refused when its host is
+  non-empty and neither a password nor a key-file path would be configured after the save —
+  checked against the *effective* value, not just what the request sent. **An empty host/URL on
+  the active tab is the off state and is savable** (`docs/issues/022`, 2026-09-18, amending the
+  ADR's Consequences in place): the cycle publishes `not_configured` and builds no transport,
+  every other field is kept, and an empty save on a tab that is *not* the active one — including
+  when nothing is active yet — is a 422 naming the way out (`_refuse_empty_unless_active`, the one
+  helper the three `PUT`s share); ticket 01's unconditional "HTTPS tab refused with no URL" is
+  gone, and the three page buttons read **Test saved connection** because the test endpoints take
+  no body.
   `file_upload_destination` left `RESERVED_FEATURE_KEYS` (now empty) and is sold exactly like
   `database_destination`; `web/src/features.ts` gates the page `kind: "feature"` on that key with
   on-screen label **FTP**, and `AppShell`'s nav entry follows. **One correction the

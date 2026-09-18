@@ -278,7 +278,12 @@ def check_sftp_connection(
     but it still never sends a credential past that point.
     """
     if not host.strip():
-        return SftpConnectionCheck("other", None, False, "No host is saved yet. Save the SFTP tab first.")
+        return SftpConnectionCheck(
+            "other",
+            None,
+            False,
+            "No host is saved — uploads are off. Fill in the host on the SFTP tab and save to start.",
+        )
 
     try:
         transport, fingerprint = _handshake(host, port, connect_timeout, connect_timeout)

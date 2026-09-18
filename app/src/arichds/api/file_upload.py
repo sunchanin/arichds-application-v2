@@ -192,6 +192,41 @@ def _validate_port(port: int) -> int:
     return port
 
 
+_PROTOCOL_LABEL = {"sftp": "SFTP", "ftps": "FTPS", "https": "HTTPS"}
+
+
+def _refuse_empty_unless_active(session: Session, protocol: str, value: str, field: str) -> str:
+    """Strip *value* (a tab's host or URL) and decide whether an empty one may
+    be saved — docs/issues/022, ADR 0025's "an empty page *is* the switch".
+
+    An empty host/URL on the **active** tab is the off state and is saved as
+    is: the cycle then publishes ``not_configured`` and never builds a
+    transport. An empty one on a tab that is *not* active — including when
+    nothing is active yet — is refused, so a stray Save on another tab
+    cannot silently stop uploads and a fresh machine keeps today's
+    behaviour.
+
+    Returns:
+        The stripped value, to be stored.
+
+    Raises:
+        HTTPException: 422 naming the way out, when *value* is empty and
+            *protocol* is not the active one.
+    """
+    stripped = value.strip()
+    if stripped:
+        return stripped
+    if load_config(session).active_protocol == protocol:
+        return stripped
+    label = _PROTOCOL_LABEL[protocol]
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=(
+            f"Fill in a {field} to switch uploads to {label}, or clear the {field} on the active tab to stop them."
+        ),
+    )
+
+
 def _status_out(cycle_status: CycleStatus | None) -> FileUploadStatusOut | None:
     """Project an in-memory :class:`CycleStatus` onto the API shape."""
     if cycle_status is None:
@@ -251,28 +286,34 @@ def get_file_upload_settings(session: SessionDep, _admin: AdminDep) -> ApiRespon
 def put_file_upload_sftp(body: FileUploadSftpIn, session: SessionDep, _admin: AdminDep) -> ApiResponse[FileUploadOut]:
     """Save the SFTP tab and make it the active protocol. Admin only.
 
-    **Refused when neither a password nor a key-file path would be
-    configured after this save** — the *effective* value, not just what this
-    request sent: an omitted *password* keeps whatever is already stored, so
-    a save that only edits *host* must not be judged against an empty body
-    field. A plain FTP or implicit-FTPS value cannot reach this endpoint at
-    all — there is no such field on this tab.
+    **An empty host is the off state, savable only on the active tab**
+    (docs/issues/022, ADR 0025 — "an empty page *is* the switch"); every
+    other field keeps its value, so switching back on is one save.
+
+    **Refused when the host is non-empty and neither a password nor a
+    key-file path would be configured after this save** — the *effective*
+    value, not just what this request sent: an omitted *password* keeps
+    whatever is already stored, so a save that only edits *host* must not
+    be judged against an empty body field. A plain FTP or implicit-FTPS
+    value cannot reach this endpoint at all — there is no such field on
+    this tab.
     """
     try:
         port = _validate_port(body.port)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
+    host = _refuse_empty_unless_active(session, "sftp", body.host, "host")
     key_path = body.key_path.strip()
     stored_password = load_config(session).sftp.password
     effective_password = body.password if body.password is not None else stored_password
-    if not effective_password and not key_path:
+    if host and not effective_password and not key_path:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Provide either a password or a key file path.",
         )
 
-    set_setting(session, FILEUPLOAD_SFTP_HOST_KEY, body.host)
+    set_setting(session, FILEUPLOAD_SFTP_HOST_KEY, host)
     set_setting(session, FILEUPLOAD_SFTP_PORT_KEY, str(port))
     set_setting(session, FILEUPLOAD_SFTP_USERNAME_KEY, body.username)
     if body.password is not None:
@@ -381,16 +422,19 @@ def pin_file_upload_sftp_host_key(
 def put_file_upload_ftps(body: FileUploadFtpsIn, session: SessionDep, _admin: AdminDep) -> ApiResponse[FileUploadOut]:
     """Save the FTPS tab and make it the active protocol. Admin only.
 
-    Only *port* is validated at save time (``1..65535``) — an unreachable
-    host or a self-signed certificate is what ticket 05's Test connection
-    reports, not a 422, the same split ``database-destination`` makes.
+    **An empty host is the off state, savable only on the active tab**
+    (docs/issues/022, ADR 0025). Beyond that only *port* is validated at
+    save time (``1..65535``) — an unreachable host or a self-signed
+    certificate is what ticket 05's Test connection reports, not a 422,
+    the same split ``database-destination`` makes.
     """
     try:
         port = _validate_port(body.port)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
-    set_setting(session, FILEUPLOAD_FTPS_HOST_KEY, body.host)
+    host = _refuse_empty_unless_active(session, "ftps", body.host, "host")
+    set_setting(session, FILEUPLOAD_FTPS_HOST_KEY, host)
     set_setting(session, FILEUPLOAD_FTPS_PORT_KEY, str(port))
     set_setting(session, FILEUPLOAD_FTPS_USERNAME_KEY, body.username)
     if body.password is not None:
@@ -459,14 +503,13 @@ def test_file_upload_ftps(session: SessionDep, _admin: AdminDep) -> ApiResponse[
 def put_file_upload_https(body: FileUploadHttpsIn, session: SessionDep, _admin: AdminDep) -> ApiResponse[FileUploadOut]:
     """Save the HTTPS tab and make it the active protocol. Admin only.
 
-    **Refused when the URL is blank** — unlike the other two tabs, HTTPS has
-    no second way to name a server, so an empty URL is unambiguously
-    nothing to save.
+    **An empty URL is the off state, savable only on the active tab**
+    (docs/issues/022, ADR 0025 — "an empty page *is* the switch"); on any
+    other tab it is refused, which is what ticket 01's unconditional
+    "refused with no URL" becomes.
     """
-    if not body.url.strip():
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="url is required.")
-
-    set_setting(session, FILEUPLOAD_HTTPS_URL_KEY, body.url)
+    url = _refuse_empty_unless_active(session, "https", body.url, "URL")
+    set_setting(session, FILEUPLOAD_HTTPS_URL_KEY, url)
     if body.token is not None:
         set_setting(session, FILEUPLOAD_HTTPS_TOKEN_KEY, body.token)
     set_setting(session, FILEUPLOAD_HTTPS_REMOTE_ROOT_KEY, body.remote_root)

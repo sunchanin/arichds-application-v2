@@ -212,7 +212,12 @@ def check_https_connection(
     included, without a 4xx/5xx swallowing the reason.
     """
     if not url.strip():
-        return FilesConnectionCheck("other", None, False, "No URL is saved yet. Save the HTTPS tab first.")
+        return FilesConnectionCheck(
+            "other",
+            None,
+            False,
+            "No URL is saved — uploads are off. Fill in the URL on the HTTPS tab and save to start.",
+        )
 
     request = Request(f"{url.rstrip('/')}{MANIFEST_PATH}", headers={"Authorization": f"Bearer {token}"}, method="GET")
     opener = build_split_timeout_opener(connect_timeout=connect_timeout, read_timeout=connect_timeout)

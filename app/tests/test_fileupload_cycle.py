@@ -245,6 +245,27 @@ class TestNotConfigured:
         assert status.outcome == "not_configured"
         assert status.protocol == "sftp"
 
+    def test_a_cleared_active_tab_never_builds_a_transport(
+        self, migrated_db, license_features, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """docs/issues/022 — clearing the host on the active tab is the off
+        state: no transport is *built*, not merely not *called*. The two
+        tests above inject a transport, so they could not see a build."""
+        license_features(["file_upload_destination"])
+        _configure_sftp(host="")
+
+        def _never(_config):  # noqa: ANN001, ANN202
+            raise AssertionError("the cycle built a transport for a cleared tab")
+
+        monkeypatch.setattr(cycle_module, "_build_transport", _never)
+
+        file_upload_cycle()
+
+        status = last_cycle()
+        assert status is not None
+        assert status.outcome == "not_configured"
+        assert status.protocol == "sftp"
+
     def test_without_the_feature_the_cycle_does_nothing(self, migrated_db, license_features) -> None:
         """Never reaches the "not configured" judgment at all — the licence
         gate returns first, the same as `centralpush_cycle`'s own gate, so
