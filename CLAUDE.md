@@ -118,7 +118,11 @@ MySQL, and ~30 tables.
   the **Database Destination** (the customer's own MariaDB/MySQL, SPEC §3.10) **landed with
   issue #46** — `dataout/`, the `dbdest_sync` scheduler job, the three
   `/api/settings/database-destination` endpoints and a working
-  `web/src/pages/DatabaseDestination.tsx`; the **central-server push** (SPEC §3.8, JSON + JWT,
+  `web/src/pages/DatabaseDestination.tsx` — whose Host and Database fields are **not** required as
+  of `docs/issues/023` (2026-09-18): an empty host or database is the off state the page's own
+  "sync is off while Host is empty" sentence always promised and the API always accepted, and the
+  form no longer blocks it (the same class of gap `docs/issues/022` closed on the FTP page; no
+  "only the active tab" guard here, since this page has one tab); the **central-server push** (SPEC §3.8, JSON + JWT,
   no watermark — each cycle asks the server what it holds, ADR 0024) **landed with M14 ticket
   08**, its own queue, separate contract, separate module (`centralpush/`); the **File Upload
   Destination** (menu **FTP**, SPEC §3.8, ADR 0025) had its configuration land with ticket 01 —

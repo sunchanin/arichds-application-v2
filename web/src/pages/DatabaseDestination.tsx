@@ -44,6 +44,7 @@ export function DatabaseDestination() {
   const { message } = App.useApp();
   const [form] = Form.useForm<FormValues>();
   const [settings, setSettings] = useState<DatabaseDestinationSettings | null>(null);
+  const syncOff = settings !== null && (settings.host.trim() === "" || settings.database.trim() === "");
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<DatabaseDestinationTest | null>(null);
@@ -180,11 +181,7 @@ export function DatabaseDestination() {
             }}
             disabled={settings === null || saving}
           >
-            <Form.Item
-              name="host"
-              label="Host"
-              rules={[{ required: true, whitespace: true, message: "A host is required." }]}
-            >
+            <Form.Item name="host" label="Host">
               <Input placeholder="127.0.0.1" />
             </Form.Item>
             <Form.Item
@@ -204,11 +201,7 @@ export function DatabaseDestination() {
             >
               <Input inputMode="numeric" placeholder="3306" />
             </Form.Item>
-            <Form.Item
-              name="database"
-              label="Database"
-              rules={[{ required: true, whitespace: true, message: "A database name is required." }]}
-            >
+            <Form.Item name="database" label="Database">
               <Input placeholder="arichds_dest" />
             </Form.Item>
             <Form.Item name="user" label="User">
@@ -271,7 +264,16 @@ export function DatabaseDestination() {
         }
       >
         <Space direction="vertical" size="small" style={{ width: "100%" }}>
-          {lastSync === null ? (
+          {syncOff ? (
+            // docs/issues/023: derived from the *saved* settings, not from
+            // `lastSync` — an unconfigured cycle returns without publishing
+            // anything, so the slot would otherwise keep showing whatever ran
+            // before the operator stopped it (often a red failure).
+            <Text type="secondary">
+              The sync is off: Host or Database is empty, so nothing is written to or deleted from this database.
+              Save a host and a database to start it.
+            </Text>
+          ) : lastSync === null ? (
             <Text type="secondary">
               No sync has run since ARICHDS last started. The sync runs every fifteen minutes once a host and a
               database are saved.

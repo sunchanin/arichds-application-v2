@@ -63,8 +63,8 @@ transport branch that no test reached and that was broken on every call (M14 tic
   (`docs/issues/022`, 2026-09-18): an empty host/URL on the *active* tab is the off state and is
   savable from the page — the cycle publishes `not_configured` and never builds a transport —
   exactly as the Central Push's empty URL already behaves and as the Database Destination's API
-  already accepts (its *form* still carries the same `required` rule this issue removed here —
-  `docs/issues/023`). Two guards keep the rule honest: only the *active* tab may be saved empty (an empty
+  already accepts (its *form* carried the same `required` rule this issue removed here until
+  `docs/issues/023` removed it too, the same day). Two guards keep the rule honest: only the *active* tab may be saved empty (an empty
   save on any other tab, including when nothing is active yet, is refused with the way out
   named, so a stray Save cannot silently stop uploads), and clearing the host keeps every other
   field — password, token, passphrase, key-file path, the pinned host key — so switching back

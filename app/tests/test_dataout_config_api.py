@@ -149,6 +149,43 @@ class TestPut:
         assert user_client.get("/api/settings/database-destination").status_code == 200
 
 
+class TestSavingAnEmptyFieldTurnsTheSyncOff:
+    """docs/issues/023 — the page says "The sync is off while Host is empty",
+    and that must be reachable *from the page*: an empty host or database is
+    saved as is, every other field kept, and the next cycle returns before
+    opening any connection. The form's own `required` rule was the only thing
+    in the way (the web has no test runner; the bundle grep is its seam), so
+    this pins the other two halves the off switch rests on."""
+
+    @pytest.mark.parametrize("field", ["host", "database"])
+    def test_an_empty_field_is_saved_and_the_next_cycle_never_connects(
+        self, admin_client: TestClient, monkeypatch: pytest.MonkeyPatch, field: str
+    ) -> None:
+        from arichds.dataout import sync
+        from arichds.dataout.status import last_sync, set_last_sync
+
+        _save(admin_client, password="kept-secret")
+
+        response = _save(admin_client, **{field: ""})
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data[field] == ""
+        assert data["password_set"] is True
+        assert _stored_password(admin_client) == "kept-secret"
+
+        def _never(*_args, **_kwargs):  # noqa: ANN202
+            raise AssertionError("the sync opened a connection with an empty " + field)
+
+        monkeypatch.setattr(sync, "create_destination_engine", _never)
+        set_last_sync(None)
+        try:
+            sync.database_destination_cycle()
+            assert last_sync() is None  # returned before running: "off", not a fault
+        finally:
+            set_last_sync(None)
+
+
 class TestClassifyConnectError:
     """The three connection-failure outcomes, keyed on the codes **measured** against MariaDB
     10.4.32 with PyMySQL 1.2.0 on 2026-08-25 — not inherited from a datasheet.
