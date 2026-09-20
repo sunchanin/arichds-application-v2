@@ -87,6 +87,13 @@ export interface NetTransport {
   kind: "net";
   host: string;
   port: number;
+  /**
+   * WRAPPER or HDLC over the socket — a property of the install, not of the
+   * model (a meter behind a serial-to-TCP converter speaks HDLC). Absent or
+   * null means the driver's own default. Only models whose
+   * {@link CatalogEntry.framings} lists a choice accept one.
+   */
+  framing?: string | null;
 }
 
 /**
@@ -1223,6 +1230,11 @@ export interface CatalogEntry {
   supports_battery: boolean;
   supports_energy_summary: boolean;
   supports_special_days: boolean;
+  /**
+   * Framings the operator may choose for this model on TCP, default first —
+   * empty when the model offers no choice (the form then shows no field).
+   */
+  framings: string[];
 }
 
 /**

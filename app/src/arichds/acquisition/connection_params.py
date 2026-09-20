@@ -70,6 +70,14 @@ class ConnectionParams:
         stop_bits: Stop bits as the human count, 1 or 2 (serial only) —
             GXSettings subtracts 1 to reach the ``StopBits`` enum
             (``ONE == 0``, ``TWO == 1``).
+        framing: ``"wrapper"`` or ``"hdlc"`` (net only), or ``None`` for the
+            driver's own default. Framing is a property of the *install*, not of
+            the model (``docs/issues/025``): a meter behind a transparent
+            serial-to-TCP converter speaks HDLC over the socket whatever it is.
+            It is **not** part of :attr:`endpoint` — the lock keys on
+            ``host:port`` alone (ADR 0006), and what two devices speak does not
+            let them share a line. A driver declares which framings it accepts
+            (``MeterDriver.SUPPORTED_FRAMINGS``); this class only carries the word.
     """
 
     connection_type: ConnectionType
@@ -80,11 +88,12 @@ class ConnectionParams:
     data_bits: int | None = None
     parity: str | None = None
     stop_bits: int | None = None
+    framing: str | None = None
 
     @classmethod
-    def net(cls, host: str, port: int) -> ConnectionParams:
-        """Build a TCP/IP transport for ``host:port``."""
-        return cls(connection_type=ConnectionType.NET, host=host, port=port)
+    def net(cls, host: str, port: int, framing: str | None = None) -> ConnectionParams:
+        """Build a TCP/IP transport for ``host:port``, optionally naming the framing."""
+        return cls(connection_type=ConnectionType.NET, host=host, port=port, framing=framing)
 
     @classmethod
     def serial(
@@ -186,4 +195,7 @@ def connection_params_from_transport(transport: Mapping[str, Any]) -> Connection
     port = transport.get("port")
     if not host or not port:
         raise ValueError(f"No usable net transport: {transport!r}")
-    return ConnectionParams.net(str(host), int(port))
+    # A row stored before the field existed has no key at all; a form that left
+    # it alone sends None. Both mean "the driver's default".
+    framing = str(transport.get("framing") or "").strip().lower() or None
+    return ConnectionParams.net(str(host), int(port), framing=framing)

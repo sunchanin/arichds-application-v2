@@ -31,6 +31,8 @@ from arichds.acquisition.drivers.base import (
     MeterDriver,
     SpecialDayEntry,
 )
+from arichds.acquisition.drivers.prometer100 import Prometer100Driver
+from arichds.acquisition.drivers.smw110 import Smw110Driver
 from arichds.constants import SOURCE_DLMS
 
 #: The serial the fake meter reports unless a test says otherwise.
@@ -127,6 +129,9 @@ class FakeMeterState:
     entered_read: threading.Event = field(default_factory=threading.Event)
     hold_read: threading.Event | None = None
     connects: int = 0
+    #: The framing each ``connect()`` was built with, in order — what lets an API
+    #: test prove the operator's choice reached the driver (``docs/issues/025``).
+    framings_seen: list[str | None] = field(default_factory=list)
     disconnects: int = 0
     load_profile_loggers: tuple[int, ...] = (1,)
     load_profile_rows: list[IntervalReading] = field(default_factory=list)
@@ -192,6 +197,11 @@ class FakeMeterDriver(MeterDriver):
     #: class each.
     _MODEL_NAME: str = "prometer100"
 
+    #: Read off the **real** driver, never retyped: a fake that mirrored the
+    #: declaration by hand would keep the API's framing tests green after the
+    #: real one changed (the three-copy trap, file-upload ticket 02).
+    SUPPORTED_FRAMINGS = Prometer100Driver.SUPPORTED_FRAMINGS
+
     def __init__(self, conn: ConnectionParams, password: str = "", **kwargs: Any) -> None:
         """Initialise the fake.
 
@@ -221,6 +231,7 @@ class FakeMeterDriver(MeterDriver):
         """Record the connect, or raise whatever the test asked for."""
         with _GUARD:
             _STATE.connects += 1
+            _STATE.framings_seen.append(self._conn.framing)
             _STATE.call_order.append("connect")
             error = _STATE.connect_error
         if error is not None:
@@ -274,6 +285,7 @@ class FakeSmw110Driver(FakeMeterDriver):
     """
 
     _MODEL_NAME = "smw110"
+    SUPPORTED_FRAMINGS = Smw110Driver.SUPPORTED_FRAMINGS
 
     def supports_load_profile(self) -> bool:
         """Yes — like the real ``Smw110Driver``."""

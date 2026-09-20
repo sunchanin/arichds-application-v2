@@ -526,6 +526,17 @@ class MeterDriver(ABC):
     #: comment nobody can falsify.
     BILLING_NEWEST_ENTRY_FIRST: bool = True
 
+    #: The framings (``"wrapper"`` / ``"hdlc"``) an operator may choose for this
+    #: model on a net transport, **default first** — or empty when the model has
+    #: only ever been measured on the one its driver hardcodes, in which case the
+    #: form offers nothing and the factory refuses a framing outright. A flag that
+    #: turns on from a meter, never from a datasheet (ADR 0011's rule): the
+    #: Prometer 100 earned its second entry at site TC, 2026-09-20
+    #: (``docs/issues/025``), where a unit behind a serial-to-TCP converter
+    #: answered HDLC only and had to be added as a Premier 550 to be reached at
+    #: all — which read it with the wrong column maps.
+    SUPPORTED_FRAMINGS: tuple[str, ...] = ()
+
     @property
     @abstractmethod
     def model_name(self) -> str:

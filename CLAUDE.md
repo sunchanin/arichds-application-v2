@@ -543,7 +543,21 @@ MySQL, and ~30 tables.
   datasheets: `load-profile-capture-objects.md` (CEWE ×3, 2026-08-05 — including the evidence
   that SPEC §3.5's Logger-1/2 merge is impossible), `lp-new-columns-scan.md` (the M13
   columns read off the Prometer 100, 2026-09-09 — every scaler resolved, `export_reactive_kvar`
-  cross-checked 12/12, and the two things measurement could **not** close), plus
+  cross-checked 12/12, and the two things measurement could **not** close),
+  `prometer100-load-profile-access.md` (2026-09-20, lab + customer site — the Prometer 100
+  **refuses every entry-access read** of its load profile and answers a range holding no entries
+  with `Data Block Unavailable` rather than `[]`; together they kept a two-day-old buffer at zero
+  stored rows, fixed by `load_profile_oldest_reading` falling back to
+  `now − (entries_in_use + 1) × capture_period`, measured 10–20 min early against the true oldest
+  row; the mid-buffer gap stall stays open as `docs/issues/024`; the HDLC-framed Prometer 100
+  (`docs/issues/025`) is **resolved**: **Framing** (CONTEXT.md) is a field of the `net` transport —
+  `ConnectionParams.framing`, stored only when chosen, never part of the Transport Endpoint — and
+  a driver *declares* what it was measured on (`MeterDriver.SUPPORTED_FRAMINGS`, empty = no
+  choice; `Prometer100Driver` = `("wrapper", "hdlc")`, its HDLC argument list being the Premier
+  550's flag for flag, proven against the lab HDLC meter); `factory.supported_framings()` feeds
+  the catalog's `framings`, the Devices form shows the field only when there is a choice, and
+  `_require_supported_framing` answers 422 before any socket opens;
+  `scripts/probe_lp_buffer.py` / `dist/probe_lp_buffer.exe` is the carry-to-site probe that found it), plus
   `tcc-obis-scan.md` and `mitsu-obis-scan.md` ported from v1. The skill above says *how* to read a register; these
   say *which*. Each carries its own limitations section — read it before trusting a value.
 

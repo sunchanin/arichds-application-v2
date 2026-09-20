@@ -436,6 +436,15 @@ serial. Concurrency locks key on the endpoint, not the device: devices sharing a
 queue behind one lock.
 _Avoid_: connection (ambiguous), socket
 
+**Framing**:
+How DLMS is carried over a TCP **Transport Endpoint** — WRAPPER (the meter's own network port)
+or HDLC (a transparent serial-to-TCP converter in front of it). A property of the install, like
+the endpoint itself, never of the model: the same Prometer 100 is reached either way depending
+on what sits between it and the network. Chosen per device, only for a model whose driver
+declares more than one; it is not part of the endpoint and never changes which lock a device
+queues behind.
+_Avoid_: protocol (DLMS is the protocol either way), interface, mode
+
 **Poller**:
 The background thread pool that reads every meter on a fixed cadence (60 s, not configurable)
 to prove it still answers. One worker per device, one lock per Transport Endpoint. Its tick

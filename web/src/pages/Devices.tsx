@@ -140,6 +140,16 @@ const PARITY_OPTIONS = [
   { value: "Space", label: "Space" },
 ];
 
+/**
+ * What each framing means to the person choosing it. The words on the wire are
+ * the API's (`wrapper` / `hdlc`); which of them a model offers comes from the
+ * catalog, never from this table.
+ */
+const FRAMING_LABELS: Record<string, string> = {
+  wrapper: "WRAPPER — the meter's own network port",
+  hdlc: "HDLC — through a serial-to-TCP converter",
+};
+
 const TRANSPORT_KIND_OPTIONS = [
   { value: "net", label: "TCP" },
   { value: "serial", label: "Serial" },
@@ -166,6 +176,8 @@ interface DeviceFormValues {
   transportKind: "net" | "serial";
   host: string;
   port: number;
+  /** `""` = the model's default framing, which is sent as no field at all. */
+  framing: string;
   serialPort: string;
   baudRate: number;
   dataBits: number;
@@ -192,6 +204,7 @@ const EMPTY_FORM: DeviceFormValues = {
   transportKind: "net",
   host: "",
   port: 4059,
+  framing: "",
   serialPort: "",
   baudRate: 19200,
   dataBits: 8,
@@ -221,6 +234,9 @@ function transportFromForm(values: DeviceFormValues): Transport {
     kind: "net",
     host: values.host.trim(),
     port: values.port,
+    // The default is sent as *nothing*, so a device the operator never touched
+    // keeps the stored shape it always had.
+    ...(values.framing ? { framing: values.framing } : {}),
   };
 }
 
@@ -257,6 +273,7 @@ function toFormValues(device: Device): DeviceFormValues {
     transportKind: transport.kind,
     host: transport.kind === "net" ? transport.host : "",
     port: transport.kind === "net" ? transport.port : EMPTY_FORM.port,
+    framing: transport.kind === "net" ? (transport.framing ?? "") : "",
     serialPort: transport.kind === "serial" ? transport.serial_port : "",
     baudRate: transport.kind === "serial" ? transport.baud_rate : EMPTY_FORM.baudRate,
     dataBits: transport.kind === "serial" ? transport.data_bits : EMPTY_FORM.dataBits,
@@ -395,6 +412,26 @@ export function Devices({
   const watchedPort = Form.useWatch("port", form);
   const watchedSerialPort = Form.useWatch("serialPort", form);
   const watchedModel = Form.useWatch("model", form);
+  const watchedFraming = Form.useWatch("framing", form);
+
+  /** The framings the chosen model offers — empty for a model with no choice. */
+  const offeredFramings = useMemo(
+    () => catalog.find((entry) => entry.model === watchedModel)?.framings ?? [],
+    [catalog, watchedModel],
+  );
+
+  // A framing left over from another model must not ride along invisibly: the
+  // field is hidden when the model offers no choice, and the server would refuse
+  // the save naming a field the operator cannot see. Only once the catalog
+  // actually lists the model, though — before it has loaded "offers nothing" is
+  // merely "not known yet", and clearing then would silently strip HDLC from a
+  // device that needs it, to be saved away by the next edit.
+  useEffect(() => {
+    const entry = catalog.find((candidate) => candidate.model === watchedModel);
+    if (entry && watchedFraming && !entry.framings.includes(watchedFraming)) {
+      form.setFieldValue("framing", "");
+    }
+  }, [catalog, form, watchedFraming, watchedModel]);
 
   const selected = devices.find((device) => device.id === selectedId) ?? null;
   const mode: "create" | "edit" = selected ? "edit" : "create";
@@ -1154,6 +1191,22 @@ export function Devices({
                           <InputNumber min={1} max={65535} style={{ width: "100%" }} />
                         </Form.Item>
                       </Col>
+                      {offeredFramings.length > 1 && (
+                        <Col xs={24} md={12}>
+                          <Form.Item
+                            name="framing"
+                            label="Framing"
+                            extra="How the meter is reached, not what it is. If Test connection answers “Invalid connection” on one, try the other."
+                          >
+                            <Select
+                              options={offeredFramings.map((framing, index) => ({
+                                value: index === 0 ? "" : framing,
+                                label: `${FRAMING_LABELS[framing] ?? framing}${index === 0 ? " (default)" : ""}`,
+                              }))}
+                            />
+                          </Form.Item>
+                        </Col>
+                      )}
                     </Row>
                   )}
                   <Row gutter={12}>

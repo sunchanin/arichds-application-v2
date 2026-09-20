@@ -187,7 +187,15 @@ class Prometer100Driver(DlmsProfileDriver):
     _INTERFACE = "WRAPPER"
     _CLIENT_ADDRESS = "32"
     _SERVER_ADDRESS = "1"
+    _LOGICAL_SERVER_ADDRESS = "0"
     _AUTHENTICATION = "Low"
+
+    #: WRAPPER is this driver's historic framing and stays the default. HDLC was
+    #: measured at site TC (2026-09-20, ``docs/issues/025``): Prometer 100
+    #: ``WP089573`` sits behind a serial-to-TCP converter, refuses WRAPPER with
+    #: ``Invalid connection`` and associates with exactly the flag list
+    #: :class:`~arichds.acquisition.drivers.premier550.Premier550Driver` sends.
+    SUPPORTED_FRAMINGS = ("wrapper", "hdlc")
 
     LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], LpColumn]] = {
         1: _LOGGER_1_COLUMNS,
@@ -220,6 +228,26 @@ class Prometer100Driver(DlmsProfileDriver):
         base ``_build_args``. ``-t Error`` keeps the Gurux trace at error level;
         anything chattier grows the log without bound.
         """
+        if self._conn.framing == "hdlc":
+            # The Premier 550's list, flag for flag — the one combination the
+            # site's meter is *proven* to answer, not a fresh guess at HDLC.
+            # ``-l`` must follow ``-s`` (``GXSettings.py:348-349``).
+            return [
+                "-i",
+                "HDLC",
+                "-c",
+                self._CLIENT_ADDRESS,
+                "-s",
+                self._SERVER_ADDRESS,
+                "-l",
+                self._LOGICAL_SERVER_ADDRESS,
+                "-a",
+                self._AUTHENTICATION,
+                "-P",
+                self._password,
+                "-t",
+                "Error",
+            ]
         return [
             "-i",
             self._INTERFACE,

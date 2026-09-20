@@ -67,7 +67,7 @@ from sqlalchemy import delete, func, select
 from arichds.acquisition.billing import read_and_store_billing
 from arichds.acquisition.catalog import BRAND_LABELS, CATALOG, Brand, ModelSpec, brand_key
 from arichds.acquisition.connection_params import connection_params_from_transport
-from arichds.acquisition.drivers.factory import supported_models
+from arichds.acquisition.drivers.factory import supported_framings, supported_models
 from arichds.acquisition.load_profile import read_and_store_load_profile
 from arichds.acquisition.probe import ProbeError, ProbeResult, probe_meter
 from arichds.acquisition.status import (
@@ -119,6 +119,13 @@ class NetTransport(BaseModel):
     kind: Literal["net"] = "net"
     host: str = Field(min_length=1, max_length=255)
     port: int = Field(ge=1, le=65535)
+    #: WRAPPER or HDLC over the socket — a property of the install, not the
+    #: model (``docs/issues/025``): a meter behind a serial-to-TCP converter
+    #: speaks HDLC whatever it is. ``None`` = the driver's own default, which is
+    #: also what every row stored before this field existed means. Whether the
+    #: *model* offers the choice is the driver's declaration, checked by
+    #: :func:`_require_supported_framing` — the schema only knows the two words.
+    framing: Literal["wrapper", "hdlc"] | None = None
 
 
 class SerialTransport(BaseModel):
@@ -173,6 +180,7 @@ class NetTransportOut(BaseModel):
     kind: Literal["net"] = "net"
     host: str
     port: int
+    framing: str | None = None
 
 
 class SerialTransportOut(BaseModel):
@@ -238,7 +246,11 @@ def _transport_out(transport: dict[str, Any]) -> NetTransportOut | SerialTranspo
             parity=str(transport.get("parity", "")),
             stop_bits=_safe_int(transport.get("stop_bits")),
         )
-    return NetTransportOut(host=str(transport.get("host", "")), port=_safe_int(transport.get("port")))
+    return NetTransportOut(
+        host=str(transport.get("host", "")),
+        port=_safe_int(transport.get("port")),
+        framing=str(transport.get("framing")) if transport.get("framing") else None,
+    )
 
 
 class DeviceCreate(BaseModel):
@@ -470,6 +482,11 @@ class CatalogEntry(BaseModel):
         supports_battery: True if the model exposes a battery reading.
         supports_energy_summary: True if the model exposes an energy summary.
         supports_special_days: True if the model exposes a special-days table.
+        framings: The framings the operator may choose for this model on a TCP
+            transport, default first — empty when the model offers no choice, in
+            which case the form shows no Framing field at all. The one piece of
+            transport information the catalog *does* carry, and it is the
+            driver's declaration, not the catalog's (``docs/issues/025``).
     """
 
     model: str
@@ -480,6 +497,7 @@ class CatalogEntry(BaseModel):
     supports_battery: bool
     supports_energy_summary: bool
     supports_special_days: bool
+    framings: list[str]
 
 
 class QuotaOut(BaseModel):
@@ -642,6 +660,7 @@ def _to_catalog_entry(model: str, spec: ModelSpec) -> CatalogEntry:
         supports_battery=spec.supports_battery,
         supports_energy_summary=spec.supports_energy_summary,
         supports_special_days=spec.supports_special_days,
+        framings=list(supported_framings(model)),
     )
 
 
@@ -680,6 +699,29 @@ def _require_known_model(model: str) -> None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Unknown meter model {model!r}. Supported: {supported_models()}",
+        )
+
+
+def _require_supported_framing(model: str, transport: NetTransport | SerialTransport) -> None:
+    """Refuse a framing the model's driver does not declare.
+
+    A form error, not a meter failure — 422, and no socket is opened. Without
+    it the driver factory would raise the same complaint as a 500 from inside
+    the probe, and a driver that ignored the word would speak its default at a
+    meter configured for the other one.
+
+    Raises:
+        HTTPException: 422 naming the model and what it does offer.
+    """
+    framing = getattr(transport, "framing", None)
+    if framing is None:
+        return
+    offered = supported_framings(model)
+    if framing not in offered:
+        choice = ", ".join(offered) if offered else "no choice of framing"
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"The {model} model does not support the {framing!r} framing — it offers: {choice}.",
         )
 
 
@@ -981,7 +1023,8 @@ def test_connection(payload: TestConnectionRequest, admin: AdminDep) -> ApiRespo
         HTTPException: 403 for a non-admin, 422 if the model is unknown.
     """
     _require_known_model(payload.model)
-    conn = connection_params_from_transport(payload.transport.model_dump())
+    _require_supported_framing(payload.model, payload.transport)
+    conn = connection_params_from_transport(payload.transport.model_dump(exclude_none=True))
     try:
         result = probe_meter(model=payload.model, conn=conn, password=payload.password)
     except ProbeError as exc:
@@ -1054,7 +1097,10 @@ def create_device(
     _enforce_quota(session, license_state.max_meters)
     _reject_duplicate_name(session, payload.name)
 
-    transport = payload.transport.model_dump()
+    _require_supported_framing(payload.model, payload.transport)
+    # exclude_none: a framing the operator never chose is not written into the
+    # row as `"framing": null` — the stored shape stays what it was (issue 025).
+    transport = payload.transport.model_dump(exclude_none=True)
     conn = connection_params_from_transport(transport)
     try:
         probe = probe_meter(model=payload.model, conn=conn, password=payload.password)
@@ -1213,7 +1259,10 @@ def update_device(
     block_cipher_key = _kept(payload.block_cipher_key, device.block_cipher_key or "") or None
     authentication_key = _kept(payload.authentication_key, device.authentication_key or "") or None
 
-    transport = payload.transport.model_dump()
+    _require_supported_framing(payload.model, payload.transport)
+    # exclude_none: a framing the operator never chose is not written into the
+    # row as `"framing": null` — the stored shape stays what it was (issue 025).
+    transport = payload.transport.model_dump(exclude_none=True)
     conn = connection_params_from_transport(transport)
     try:
         probe = probe_meter(model=payload.model, conn=conn, password=password)
