@@ -47,7 +47,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -688,8 +688,34 @@ class DlmsProfileDriver(DlmsDriver):
         saves, and :func:`~arichds.acquisition.load_profile.read_and_store_load_profile`
         only asks during backfill.
 
-        Every failure path returns ``None`` — an unreadable buffer must leave
-        the walk exactly as it was rather than break a read that works today.
+        **When entry 1 is refused, the start is estimated instead** (site TC,
+        2026-09-20; ``docs/meter-notes/prometer100-load-profile-access.md``). A
+        **Prometer 100 refuses every entry-access read of its load profile**
+        (``Access Error : Other Reason``) while answering the profile's
+        attributes — measured on the site's unit *and* on the healthy lab unit,
+        so the exact path below has never worked on this model; nobody saw it
+        because the lab buffer is longer than the backfill window. The same model
+        answers a range holding no entries with ``Data Block Unavailable`` rather
+        than ``[]`` (a Premier 550 answers ``[]``). Together: a meter two days
+        into service got ``None`` here, the walk kept its full window, the first
+        chunk — 88 days before the oldest row — was refused, nothing was ever
+        stored, and every cycle re-walked the same refused chunk.
+
+        The estimate is ``entries_in_use x capture_period`` back from now, plus
+        one period — starting early is free (the meter answers a range that
+        *overlaps* its buffer, even one starting before it), starting late loses
+        the row. Measured against the lab unit's true oldest row, found by range:
+        **20 min early on Logger 1 (9585 entries x 900 s, ~100 days) and 10 min
+        early on Logger 2 (32789 x 300 s, ~114 days)**. It is late by the
+        downtime on a meter that stopped logging for a while — a Saral 305 in the
+        lab would be 485 days late — which is why it is a *fallback*: that Saral
+        answers entry 1, and so never reaches it.
+
+        Every other failure path returns ``None`` — an unreadable buffer must
+        leave the walk exactly as it was rather than break a read that works
+        today. Each one now names the exception it swallowed: the old line said
+        only "could not read", and the site had to be probed by hand to learn
+        what the log had already seen.
         """
         if self._reader is None or self._client is None:
             return None
@@ -700,22 +726,82 @@ class DlmsProfileDriver(DlmsDriver):
         self._client.objects.append(pg)
         try:
             self._reader.read(pg, 3)  # capture objects — needed to locate the Clock column
-            if int(self._reader.read(pg, 7)) <= 0:
-                return None  # empty buffer: nothing to clamp to, and nothing to read either
-            rows = self._reader.readRowsByEntry(pg, 1, 1) or []
-        except Exception:  # noqa: BLE001 — a refusal degrades to "unknown", never to a failed read.
+            entries_in_use = int(self._reader.read(pg, 7))
+        except Exception as exc:  # noqa: BLE001 — a refusal degrades to "unknown", never to a failed read.
             logger.info(
-                "%s: could not read logger %d's oldest entry — the walk keeps its full window",
+                "%s: could not read logger %d's profile attributes (%s: %s) — the walk keeps its full window",
                 self.model_name,
                 logger_id,
+                type(exc).__name__,
+                exc,
             )
             return None
+        if entries_in_use <= 0:
+            return None  # empty buffer: nothing to clamp to, and nothing to read either
+
+        try:
+            rows = self._reader.readRowsByEntry(pg, 1, 1) or []
+        except Exception as exc:  # noqa: BLE001 — same rule; but the attributes answered, so estimate.
+            return self._estimate_oldest_reading(pg, logger_id, entries_in_use, exc)
 
         clock_pos = positions_by_obis_attr(pg.captureObjects).get(("0.0.1.0.0.255", 2))
         if clock_pos is None or not rows or clock_pos >= len(rows[0]):
             return None
         local_dt = coerce_clock_cell(rows[0][clock_pos])
         return meter_local_to_utc(local_dt) if local_dt is not None else None
+
+    def _estimate_oldest_reading(
+        self, pg: GXDLMSProfileGeneric, logger_id: int, entries_in_use: int, refusal: Exception
+    ) -> datetime | None:
+        """``now - (entries_in_use + 1) x capture_period`` — the fallback
+        :meth:`load_profile_oldest_reading` documents, for a meter that answers
+        its profile's attributes and refuses entry access.
+
+        ``None`` when the capture period is unreadable, not a number, or not
+        positive: a profile that is not logging has no span, and a period of
+        ``0`` would "estimate" the start at *now* and narrow the walk to nothing.
+        The caller (``load_profile._backfill_start``) still bounds whatever this
+        returns to the backfill window, so a full ring longer than that window
+        keeps the full window.
+        """
+        try:
+            capture_period_sec = int(self._reader.read(pg, 4))
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "%s: logger %d refused its oldest entry (%s: %s) and its capture period (%s: %s)"
+                " — the walk keeps its full window",
+                self.model_name,
+                logger_id,
+                type(refusal).__name__,
+                refusal,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+        if capture_period_sec <= 0:
+            logger.info(
+                "%s: logger %d refused its oldest entry (%s: %s) and reports a capture period of %d s"
+                " — nothing to estimate from, the walk keeps its full window",
+                self.model_name,
+                logger_id,
+                type(refusal).__name__,
+                refusal,
+                capture_period_sec,
+            )
+            return None
+
+        estimate = datetime.now(UTC) - timedelta(seconds=(entries_in_use + 1) * capture_period_sec)
+        logger.info(
+            "%s: logger %d refused its oldest entry (%s: %s) — start estimated at %s from %d entries x %d s",
+            self.model_name,
+            logger_id,
+            type(refusal).__name__,
+            refusal,
+            estimate.isoformat(),
+            entries_in_use,
+            capture_period_sec,
+        )
+        return estimate
 
     # ── Billing ───────────────────────────────────────────────────────────────
 
