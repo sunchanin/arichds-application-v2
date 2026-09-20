@@ -1,6 +1,6 @@
 # ARICHDS Application
 
-Windows-installed meter-monitoring application: reads electricity meters (DLMS/COSEM + Modbus),
+Windows-installed meter-monitoring application: reads electricity meters over DLMS/COSEM (Modbus meters are read by a separate program, not this one),
 stores readings locally, serves a local web UI, and pushes data to the team's central server.
 Single context — one program, one database.
 
@@ -92,7 +92,7 @@ _Avoid_: session cookie, API key
 
 **Interval Reading**:
 One row of time-series meter data in COSEM shape — always UTC, always kWh — regardless of
-whether the source was DLMS or Modbus. The normalization happens at write time, in the driver.
+its **Source**. The normalization happens at write time, in the driver.
 The rows live in the `load_profile_readings` table, mapped by the `LoadProfileReading` class:
 the term names the row and its contract, the table names what is in it — every interval the
 meter itself recorded, since ADR 0007 stopped anything else being written there. A row is
@@ -105,7 +105,8 @@ are untouched.
 _Avoid_: load profile row (that's the feature, not the row), sample, logger reading
 
 **Source**:
-Which acquisition path produced a reading: `dlms` or `modbus`. A property of the reading,
+Which acquisition path produced a reading. Always `dlms` today: the Modbus path was dropped
+(ADR 0026) and `modbus` is a reserved value that nothing writes. A property of the reading,
 never a branch in read-path code.
 
 **Meter Serial**:

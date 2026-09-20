@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-**ARICHDS Application v2** — a Windows-installed meter-monitoring app (DLMS/COSEM + Modbus,
-9 models, 3 brands): reads meters, stores locally, serves a local web UI, pushes data to the
+**ARICHDS Application v2** — a Windows-installed meter-monitoring app (DLMS/COSEM only — Modbus
+stays in the owner's separate Go program, ADR 0026 — 9 models, 3 brands): reads meters, stores locally, serves a local web UI, pushes data to the
 team's central server. A ground-up remake of v1 (`C:\Users\HP\Documents\Work\cewe`) with one
 process · one exe · one SQLite DB · one license — replacing v1's two services (Python + Go),
 MySQL, and ~30 tables.
@@ -523,7 +523,13 @@ MySQL, and ~30 tables.
   loopback fake tolerates active mode); the same fixture's `passive_ports` pin is gone (it rested
   on a false premise about what the port range controls, `docs/lib-notes/pyftpdlib-tls.md` §3,
   corrected in the same round) since the default already binds `127.0.0.1` for both control and
-  data.)
+  data.) ·
+  0026 (**Modbus stays in the owner's separate Go program — v2 reads DLMS/COSEM only**, 2026-09-18:
+  M4b is dropped, reversing REMAKE-PLAN D1 "port the Go program to Python" and SPEC's
+  one-process goal for Modbus sites; all 9 models keep a DLMS driver, so coverage is unchanged;
+  the `source` column and `SOURCE_MODBUS` stay as a reserved value no code writes, never a
+  read-path branch; no integration with the Go program — an assumption to revisit the first time a
+  site needs one UI or one push for both)
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject

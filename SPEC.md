@@ -7,7 +7,7 @@
 ## 1. ภาพรวม (Overview)
 
 **ARICHDS Application** คือโปรแกรมติดตั้งบนเครื่อง Windows ที่ไซต์ลูกค้า ทำหน้าที่อ่านข้อมูลจากมิเตอร์ไฟฟ้า
-9 รุ่น 3 ยี่ห้อ (CEWE · Mitsubishi · SMART TCC ผ่าน DLMS/COSEM และ Modbus) เก็บ load profile /
+9 รุ่น 3 ยี่ห้อ (CEWE · Mitsubishi · SMART TCC ผ่าน DLMS/COSEM — Modbus อยู่ในโปรแกรม Go แยกต่างหาก ไม่ใช่ขอบเขตของโปรแกรมนี้, ADR 0026) เก็บ load profile /
 billing / energy summary ลงฐานข้อมูลในเครื่อง แสดงผลบนเว็บ UI ภายในไซต์ และ **push** ข้อมูลขึ้น
 server กลางเพื่อแสดงบนเว็บไซต์ของทีม
 
@@ -22,7 +22,8 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
 
 - **ติดตั้งจบใน < 10 นาที** บนเครื่อง Windows เปล่า ด้วย installer exe ตัวเดียว + activation code
   หนึ่งบรรทัด โดยไม่มีคำถามเรื่องฐานข้อมูลเลยสักข้อ
-- **1 process · 1 exe · 1 database · 1 license** ครอบทั้ง DLMS และ Modbus (v1 มี 2 service คนละภาษา)
+- **1 process · 1 exe · 1 database · 1 license** สำหรับเส้นทาง DLMS — ~~ครอบทั้ง DLMS และ Modbus~~
+  Modbus อยู่ในโปรแกรม Go แยกต่างหากของเจ้าของ (ADR 0026, 2026-09-18) · v1 มี 2 service คนละภาษา
 - **Output parity กับ v1** — ตัวเลข load profile / billing / energy summary ที่แสดงต้องตรงกับ v1
   บนมิเตอร์ตัวเดียวกัน **ที่ค่า setting default ของ v1** (`divide_by_1000=on` → kWh) —
   ใช้เป็นเกณฑ์เทสได้เพราะ v1 ผ่านการยืนยันจากลูกค้าแล้ว
@@ -43,8 +44,8 @@ server กลางเพื่อแสดงบนเว็บไซต์ข�
 - **ไม่มี i18n** — UI อังกฤษล้วน (กวาดข้อความไทยที่ปนใน v1 ออกให้หมด)
 - **ไม่มี GPRS เป็น transport แยก** — transport มีแค่ TCP/IP + Serial (มิเตอร์ที่ต่อผ่าน GPRS
   เข้ามาเป็น TCP อยู่แล้วจากฝั่งโมเด็ม)
-- **ไม่เก็บ register modbus นอก mapping** — เก็บเฉพาะ ~14 คอลัมน์ที่ map เป็น COSEM
-  (register อีก ~77 ตัวของ CEWE modbus ไม่เก็บ — ดู Open Questions เรื่องตาข่ายกันตก)
+- **ไม่อ่าน Modbus เลย** (ADR 0026, 2026-09-18) — เส้นทาง Modbus อยู่ในโปรแกรม Go แยกต่างหาก ⇒ ไม่มี
+  mapping register→COSEM และไม่มีตาข่ายกันตก · ~~ไม่เก็บ register modbus นอก mapping~~
 - **ไม่ migrate ข้อมูลจาก v1 · ไม่ maintain v1 คู่ขนาน** — v1 ไม่เคยมี production install
 - **ไม่มี auto-update ในตัวโปรแกรม** — อัปเดตเวอร์ชัน = รัน installer ตัวใหม่ทับ
   (ตรวจของเดิม เก็บ DB/license รัน migration อัตโนมัติ)
@@ -195,7 +196,7 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
   (แก้จากรายการเดิมที่เคยเขียนไว้ 6 ช่อง — the argv seam `-S` ที่ `GXSettings` แยกไม่มีที่ให้ flow
   control เลย และหน่วยจริงทั้งสองที่ไซต์ลูกค้าใช้ค่า default "ไม่มี flow control" อยู่แล้ว ดู
   `docs/meter-notes/smw110w4-scan.md`) · คอลัมน์ `transport` เป็น JSON อยู่แล้วจึงไม่ต้อง migrate ตอน
-  เพิ่มจริง (พิสูจน์แล้วที่ M4a) · **ไม่มีช่อง Source (dlms/modbus) ใน M3/M4a** — modbus มาหลังวันที่ 5
+  เพิ่มจริง (พิสูจน์แล้วที่ M4a) · **ไม่มีช่อง Source (dlms/modbus) ใน M3/M4a** — ~~modbus มาหลังวันที่ 5~~ ไม่มาเลย (ADR 0026)
 - auth: `password` + `block_cipher_key` + `authentication_key` ครบตั้งแต่ M3 (M3 ใช้แค่ password
   แต่ M4 ต้องใช้ทั้งสาม จึงไม่ต้องกลับมาแก้ model/ฟอร์ม/API รอบสอง) · สร้างใหม่ prefill password ด้วย
   `fixed_password` ของยี่ห้อ (CEWE = `ABCD0001`) · **ตอนแก้ เว้นว่าง = คงรหัสเดิม** (พฤติกรรม v1)
@@ -214,8 +215,8 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 - billing: `first_bill_date` + `bill_day_feb28/29/30/31` — **ช่องบันทึกค่าล้วน ๆ เหมือน `site_code` /
   `customer` / `meter_number` ข้างบน: ห้ามประดิษฐ์พฤติกรรมให้** (เจ้าของยืนยัน grill M6, 2026-08-09) ·
   บรรทัดเดิมเขียนว่า *"ตรรกะการตัดงวดอยู่ M6"* ซึ่งผิด — ฝั่ง DLMS **มิเตอร์เป็นเจ้าของการตัดรอบเอง**
-  (v1 ADR 0002) และของเดียวที่เคยอ่านห้าช่องนี้คือ modbus billing cut ซึ่งอยู่ **M4b** ·
-  ชะตาของ modbus cut ยังไม่ตัดสิน — ดู §5 คำถามค้าง
+  (v1 ADR 0002) และของเดียวที่เคยอ่านห้าช่องนี้คือ modbus billing cut ซึ่ง**ไม่อยู่ในโปรแกรมนี้แล้ว**
+  (ADR 0026 — อยู่กับโปรแกรม Go) ⇒ ห้าช่องนี้เป็นค่าบันทึกล้วน ๆ ถาวร
 
 **Probe-first identity (ADR 0005)** — `meter_serial` มาจากมิเตอร์เสมอ:
 - **Create ต่อมิเตอร์จริงก่อนเขียนแถว** อ่าน serial มาใส่ให้ · probe ล้ม (timeout / auth / unreachable)
@@ -293,10 +294,10 @@ grill รอบ M3 (2026-08-05) — 31 ข้อตัดสิน อ้าง�
 
 ### 3.4 Acquisition (M4)
 
-- `MeterDriver` abstraction เดียว ครอบ DLMS (Gurux vendored) + Modbus (pymodbus)
+- `MeterDriver` abstraction เดียว ครอบ DLMS (Gurux vendored) — ~~+ Modbus (pymodbus)~~ ไม่มี (ADR 0026)
   — **ห้ามมี if/elif ตามรุ่นในโค้ดกลาง** (หลักการ ADR 0004 ของ v1)
 - รุ่นที่รองรับ (9 รุ่น เท่า v1): CEWE Prometer100 / Saral305 / Premier550 ·
-  Mitsubishi SMW110 (**DLMS ทั้ง serial และ TCP** + Modbus) · SMART TCC st3c / st3cl / st33tl / st3tl / st3dh
+  Mitsubishi SMW110 (**DLMS ทั้ง serial และ TCP**) · SMART TCC st3c / st3cl / st33tl / st3tl / st3dh
 - **เฟสแรก (ภายในวันที่ 5): SMW110W4 รุ่นเดียว เดินทะลุถึง billing** — รุ่นที่เหลือทั้งหมด
   (รวม Prometer100) ย้ายไป **M4c หลัง M6 จบ** (เจ้าของตัดสิน 2026-08-07 — เจาะลึกก่อนขยายกว้าง
   เพราะ SMW110W4 เป็นรุ่นเดียวที่มีข้อมูลภาคสนามครบทั้งเส้น ดู `docs/meter-notes/smw110w4-scan.md`)
@@ -969,7 +970,8 @@ Status หนึ่งชิปต่อแถว ตัดสินฝั่ง
 M6 เติม job `billing` เข้า list เดิม (§3.3) โดย **billing ที่ล้มไม่นับ strike** (มีแต่ `liveness`
 ที่แตะสถานะ device)
 
-**Modbus billing cut — ไม่อยู่ใน M6** (อยู่ M4b) และ**ชะตายังไม่ตัดสิน**: เจ้าของยืนยันที่ grill M6 ว่า
+✅ **ปิดแล้ว 2026-09-18 — modbus billing cut ไม่อยู่ในโปรแกรมนี้เลย** (ADR 0026, อยู่กับโปรแกรม Go) ·
+ข้อความเดิม: **Modbus billing cut — ไม่อยู่ใน M6** (อยู่ M4b) และ**ชะตายังไม่ตัดสิน**: เจ้าของยืนยันที่ grill M6 ว่า
 *"เราไม่มีตรรกะตัดงวด … เรามีหน้าที่อ่านค่าจาก meter (read only) เท่านั้น"* ซึ่งขัดกับตัวฟีเจอร์
 (มันเป็นการตัดงวดฝั่งระบบ แม้จะไม่เขียนอะไรลงมิเตอร์ก็ตาม) · **ปิดคำถามตอน grill M4b** — ดู §5
 
@@ -1373,7 +1375,7 @@ one header.
   primitives พอแล้ว) · **SQLAlchemy 2** (ORM — ไม่ใช้ SQLModel แม้ FastAPI skill จะแนะนำ
   เพราะ Alembic autogenerate + batch mode คือเส้นทางหลักของ schema; ตัดสิน M1) ·
   SQLite (WAL) + Alembic ชุดเดียว (`render_as_batch=True` ตั้งแต่ migration แรก) ·
-  Gurux DLMS (vendored `GX*.py` ห้ามแก้ API) · pymodbus · Ed25519 (`cryptography`) ·
+  Gurux DLMS (vendored `GX*.py` ห้ามแก้ API) · ~~pymodbus~~ (ไม่ใช้ — ADR 0026) · Ed25519 (`cryptography`) ·
   **PyMySQL** (Database Destination §3.10 เท่านั้น — pure Python จึงไม่ต้องมี C toolchain ตอน
   PyInstaller · ขับผ่าน **SQLAlchemy Core** ไม่ใช่ ORM เพราะฐานลูกค้าเป็น *ปลายทาง* ไม่ใช่ store
   ของเรา · URL scheme `mysql+pymysql://` รับได้ทั้ง MariaDB 10.4 และ MySQL 8)
@@ -1412,12 +1414,12 @@ one header.
 | ช่วง | เป้า |
 |---|---|
 | **วันที่ 1–5** | M0 (spec นี้ + เลือกไลบรารี FE จาก mockup) → M1 skeleton + installer → M2 auth → M3 devices → M4 **เส้นทาง DLMS ครบ 9 รุ่น** → M5 LP → M6 billing — จบด้วย demo ได้จริงจากเครื่องที่ติดตั้งด้วย installer |
-| **วันที่ 6–14** | M4-modbus (พอร์ต Go + modbus billing cut) → M7 โมดูลเบา 6 หน้า → M8 push ขึ้นเว็บ + ถอน API ตัวกลาง |
+| **วันที่ 6–14** | ~~M4-modbus (พอร์ต Go + modbus billing cut)~~ ตัดออก (ADR 0026) → M7 โมดูลเบา 6 หน้า → M8 push ขึ้นเว็บ + ถอน API ตัวกลาง |
 | **หลัง 14 วัน** | M9 online activation (gate: portal v2) → M10 hardening + pilot ลูกค้า 1 ราย 2 สัปดาห์ |
 
 ### คำถามค้าง (Open Questions)
 
-- **Mapping modbus→COSEM** — เดินหน้าด้วย mapping DERIVED ของ ADR 0005 ระหว่างรอลูกค้ายืนยัน
+- ~~**Mapping modbus→COSEM**~~ — ✅ **ปิดแล้ว 2026-09-18 (ADR 0026): ไม่มีเส้นทาง Modbus ให้ map** · ข้อความเดิม: เดินหน้าด้วย mapping DERIVED ของ ADR 0005 ระหว่างรอลูกค้ายืนยัน
   (โดยเฉพาะช่องว่างของ SMW110) · ต้องปิดก่อนเฟส modbus เขียนข้อมูลจริง — และตอนนั้นค่อยตัดสินว่า
   ต้องมีตารางตาข่าย raw modbus (retention 7 วัน) ไหม
 - ~~**Field-level contract ของ push**~~ — ✅ **ปิดแล้วที่ grill M14 (2026-09-14)**: สัญญาเป็นของเรา
@@ -1425,7 +1427,7 @@ one header.
   รายชื่อ field ต่อ payload ตัดสินตอน `/to-spec`
 - ~~**`billing_captures`**~~ — ✅ **ปิดแล้วที่ grill M6 (2026-08-09): ไม่สร้างตาราง** · derive path
   จาก convention เหมือน v1 ADR 0003 · จำนวนตารางใน §4 ลดจาก 12 เป็น 11
-- **ชะตาของ modbus billing cut** (เปิดที่ grill M6, 2026-08-09) — เจ้าของระบุว่า *"เราไม่มีตรรกะ
+- ~~**ชะตาของ modbus billing cut**~~ — ✅ **ปิดแล้ว 2026-09-18 (ADR 0026): ไม่อยู่ในโปรแกรมนี้** · ข้อความเดิม: (เปิดที่ grill M6, 2026-08-09) — เจ้าของระบุว่า *"เราไม่มีตรรกะ
   ตัดงวด … เรามีหน้าที่อ่านค่าจาก meter (read only) เท่านั้น"* ซึ่งขัดกับฟีเจอร์นี้โดยตรง: มันคือ
   **การตัดงวดที่ระบบทำแทนมิเตอร์** (แม้จะไม่เขียนอะไรลงมิเตอร์ — มันอ่านค่าสะสมของ modbus logger
   แล้วเขียนแถวใน DB เรา) · ราคาของการยกเลิก: **device ฝั่ง modbus จะไม่มีข้อมูล billing เลยตลอดไป**

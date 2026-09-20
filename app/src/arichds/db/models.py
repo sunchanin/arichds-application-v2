@@ -196,7 +196,7 @@ class LoadProfileReading(Base):
     **Every row here is an interval the meter itself recorded.** The name
     changed with the contents at M3-4: ADR 0007 deleted the ``interval='60s'``
     rows the Poller used to write each tick, and what remains — 15-minute load
-    profile (M5) and the Modbus cadences (M4b) — genuinely is load profile.
+    profile (M5; the Modbus cadences once planned for M4b were dropped, ADR 0026) — genuinely is load profile.
     Renaming was cheapest here, with the table empty and no reader, no push
     payload and no customer data attached to it yet.
 

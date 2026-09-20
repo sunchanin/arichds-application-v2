@@ -13,8 +13,9 @@ Two v1 fields are deliberately **not** carried over:
   duplicated status field would drift from the registry silently, and the first
   symptom would be an operator picking a model that cannot connect.
 * ``protocol`` — SPEC §3.3 says there is no Source field in M3, and every
-  catalogued model is DLMS today. Modbus arrives after day 5 and will say so on
-  the reading, not here (CONTEXT.md — Source is a property of the reading).
+  catalogued model is DLMS, and Modbus is not coming — it stays in the owner's
+  separate Go program (ADR 0026). Source stays a property of the reading, not of
+  the model (CONTEXT.md — Source).
 
 This module is **data**. It imports nothing from
 :mod:`arichds.acquisition.drivers`: the catalog says what exists in the world,
