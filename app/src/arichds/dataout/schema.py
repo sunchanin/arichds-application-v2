@@ -4,7 +4,9 @@ We own their shape and we are the only writer (CONTEXT.md — Database
 Destination). **Nothing else is ever sent**: not ``energy_register_readings``,
 not the device list, and never ``devices``, which holds meter passwords in the
 clear plus ``block_cipher_key`` / ``authentication_key`` the API itself is
-forbidden to return.
+forbidden to return. Three operator-entered labels are the one thing that
+crosses from that table, by name and one column at a time
+(:data:`DEVICE_LABEL_COLUMNS`) — never the row.
 
 **The column set is derived from the ORM models at import time, never hand
 listed.** That is what makes SPEC §3.10's decision 8b structural rather than a
@@ -27,7 +29,7 @@ import sqlalchemy as sa
 from sqlalchemy import Connection, Table
 from sqlalchemy.dialects import mysql
 
-from arichds.db.models import BillingReading, LoadProfileReading
+from arichds.db.models import BillingReading, Device, LoadProfileReading
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,19 @@ _EXCLUDED_COLUMNS = frozenset({"id", "device_id", "captured_at"})
 #: ``billing_readings.meter_serial`` (``String(64)``) rather than chosen here,
 #: so the two can never disagree.
 _METER_SERIAL_WIDTH = 64
+
+#: The device labels every destination row carries, destination column ->
+#: ``devices`` column (owner, 2026-09-20 — the customer's reports name a meter
+#: by these, not by its serial). ``meter`` is the customer's own word for
+#: ``meter_number``; ``device_name`` is ours for ``name``, which alone would
+#: say nothing in a table of readings.
+#:
+#: **A label is a snapshot, not a reference.** A load-profile row keeps the
+#: labels its device had when the row was written — a sent row never changes
+#: (ADR 0020/0021), so renaming a device reaches new rows only. Billing is
+#: replaced wholesale every cycle and therefore always carries the current
+#: ones. Rows sent before these columns existed stay ``NULL``.
+DEVICE_LABEL_COLUMNS: dict[str, str] = {"device_name": "name", "meter": "meter_number", "site_name": "site_name"}
 
 
 def _destination_type(source: sa.types.TypeEngine) -> sa.types.TypeEngine:
@@ -103,6 +118,31 @@ def _derive_columns(model: type[LoadProfileReading] | type[BillingReading]) -> l
     ]
 
 
+def _device_label_columns() -> list[sa.Column]:
+    """The :data:`DEVICE_LABEL_COLUMNS`, typed from ``devices`` itself.
+
+    **Always nullable**, whatever ``devices`` says: :func:`reconcile` adds them
+    to tables that already hold rows, and a ``NOT NULL`` there would fail on
+    the customer's server.
+    """
+    return [
+        sa.Column(name, _destination_type(Device.__table__.columns[source].type), nullable=True)
+        for name, source in DEVICE_LABEL_COLUMNS.items()
+    ]
+
+
+def _labelled(columns: list[sa.Column]) -> list[sa.Column]:
+    """*columns* with the device labels placed directly after ``meter_serial``.
+
+    Owner, 2026-09-20: whoever opens the table reads which meter a row belongs
+    to in one place — serial, name, meter number, site — before any
+    measurement. :func:`reconcile` adds a missing column ``AFTER`` its
+    neighbour here, so an upgraded destination ends up in this same order.
+    """
+    position = next(index for index, column in enumerate(columns) if column.name == "meter_serial") + 1
+    return [*columns[:position], *_device_label_columns(), *columns[position:]]
+
+
 #: Declared, never inherited. The reference server's ``my.ini`` happens to set
 #: ``utf8mb4`` server-wide (``C:\\xampp\\mysql\\bin\\my.ini:160-161``), so the
 #: stock MariaDB ``latin1`` default does not bite there — but another
@@ -132,8 +172,12 @@ _TABLE_OPTIONS = {
 LOAD_PROFILE_TABLE: Table = sa.Table(
     "load_profile_readings",
     METADATA,
-    sa.Column("meter_serial", mysql.VARCHAR(_METER_SERIAL_WIDTH), nullable=False),
-    *_derive_columns(LoadProfileReading),
+    *_labelled(
+        [
+            sa.Column("meter_serial", mysql.VARCHAR(_METER_SERIAL_WIDTH), nullable=False),
+            *_derive_columns(LoadProfileReading),
+        ]
+    ),
     sa.UniqueConstraint("meter_serial", "logger_id", "read_at", name="uq_load_profile_readings_serial_logger_read_at"),
     sa.Index("ix_load_profile_readings_serial_read_at", "meter_serial", "read_at"),
     **_TABLE_OPTIONS,
@@ -163,7 +207,7 @@ LOAD_PROFILE_TABLE: Table = sa.Table(
 BILLING_TABLE: Table = sa.Table(
     "billing_readings",
     METADATA,
-    *_derive_columns(BillingReading),
+    *_labelled(_derive_columns(BillingReading)),
     sa.Index("ix_billing_readings_serial_bill_date", "meter_serial", "bill_date"),
     **_TABLE_OPTIONS,
 )
@@ -180,7 +224,11 @@ def reconcile(connection: Connection) -> None:
 
     1. ``CREATE TABLE IF NOT EXISTS`` for each table.
     2. Compare ``information_schema.columns`` against the derived set and
-       ``ALTER TABLE … ADD COLUMN`` whatever is missing.
+       ``ALTER TABLE … ADD COLUMN`` whatever is missing — ``AFTER`` the column
+       that precedes it in our own definition, so an upgraded table has the
+       order a fresh one has. Measured on MariaDB 10.4.32, 200,000 rows: 3–5 ms
+       (instant), 570 ms when forced to copy the table as an older server
+       would. A column that is already there is **never moved**.
     3. Create any of our secondary indexes the server does not have.
     4. Refuse to go on if ``load_profile_readings`` has no unique key.
 
@@ -237,15 +285,18 @@ def reconcile(connection: Connection) -> None:
             # Freshly created above, or reported empty by information_schema —
             # either way there is nothing an ALTER could add.
             continue
+        previous: str | None = None
         for column in table.columns:
             if column.name in present:
+                previous = column.name
                 continue
             logger.info(
                 "Database Destination: adding missing column %s.%s — the destination's schema follows ours",
                 table.name,
                 column.name,
             )
-            connection.execute(sa.text(_add_column_sql(connection, table, column)))
+            connection.execute(sa.text(_add_column_sql(connection, table, column, after=previous)))
+            previous = column.name
 
     index_names = _existing_index_names(connection)
     for table in TABLES:
@@ -274,7 +325,7 @@ def _load_profile_unique_key_names() -> set[str]:
     return {str(constraint.name), "meter_serial"}
 
 
-def _add_column_sql(connection: Connection, table: Table, column: sa.Column) -> str:
+def _add_column_sql(connection: Connection, table: Table, column: sa.Column, *, after: str | None = None) -> str:
     """``ALTER TABLE … ADD COLUMN`` for one column, quoted for this server.
 
     Built by hand because SQLAlchemy Core has no ``ADD COLUMN`` DDL construct —
@@ -292,7 +343,14 @@ def _add_column_sql(connection: Connection, table: Table, column: sa.Column) -> 
     preparer = connection.dialect.identifier_preparer
     type_text = connection.dialect.type_compiler_instance.process(column.type)
     null_text = "NULL" if column.nullable else "NOT NULL"
-    return f"ALTER TABLE {preparer.quote(table.name)} ADD COLUMN {preparer.quote(column.name)} {type_text} {null_text}"
+    # *after* is the nearest preceding column of ours the destination has. With
+    # none — our first column is the missing one — the server's default (last)
+    # stands: that column is NOT NULL in both tables, so the table is not ours.
+    position_text = f" AFTER {preparer.quote(after)}" if after is not None else ""
+    return (
+        f"ALTER TABLE {preparer.quote(table.name)} ADD COLUMN {preparer.quote(column.name)} "
+        f"{type_text} {null_text}{position_text}"
+    )
 
 
 def _existing_columns(connection: Connection) -> dict[str, set[str]]:

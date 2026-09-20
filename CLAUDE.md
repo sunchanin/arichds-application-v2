@@ -241,7 +241,18 @@ MySQL, and ~30 tables.
   append hit its budget so the window cannot drift. One correction the implementation forced,
   in the ADR's favour: the ADR says nothing records that a purge ran, and nothing persisted
   does — but the page needs a status, so the counts live in one in-memory frozen dataclass
-  (`dataout/status.py`) that resets on restart, which is ADR 0008-clean) ·
+  (`dataout/status.py`) that resets on restart, which is ADR 0008-clean. **Three device labels ride
+  on every row since 2026-09-20** (the customer's request): `device_name`, `meter` (their word for
+  `meter_number`) and `site_name`, declared once in `dataout/schema.py::DEVICE_LABEL_COLUMNS`, typed
+  from `devices` itself, always nullable and placed **directly after `meter_serial`** in both
+  tables (the owner's choice — which meter a row belongs to is read in one place); `reconcile` now
+  adds every missing column `AFTER` its neighbour in our own definition, so an upgraded destination
+  ends in a fresh one's order (measured on MariaDB 10.4.32, 200,000 rows: 3–5 ms instant, 570 ms
+  forced to copy) — and still never moves a column that is already there. **A label is a snapshot,
+  not a reference**: a sent
+  load-profile row is never relabelled on a rename (the `ON DUPLICATE KEY UPDATE` still rewrites
+  only `source`), billing always carries the current ones, and rows sent before the columns
+  existed stay `NULL`) ·
   0021 (a destination **speaks local time** — UTC stops at our boundary; the store stays UTC and
   the invariant above is untouched, but the Database Destination receives
   `METER_LOCAL_UTC_OFFSET_HOURS`-shifted values in `DATETIME` (never `TIMESTAMP`, whose

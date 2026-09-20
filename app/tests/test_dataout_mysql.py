@@ -141,7 +141,7 @@ def configured(migrated_db: Settings, config: DestinationConfig) -> DestinationC
 # ─── Seeding helpers ──────────────────────────────────────────────────────────
 
 
-def add_device(name: str, serial: str | None) -> int:
+def add_device(name: str, serial: str | None, *, meter_number: str | None = None) -> int:
     with session_scope() as session:
         device = Device(
             name=name,
@@ -149,6 +149,7 @@ def add_device(name: str, serial: str | None) -> int:
             model="smw110",
             meter_serial=serial,
             site_name="Plant A",
+            meter_number=meter_number,
             transport={"kind": "net", "host": "127.0.0.1", "port": 4059},
             password="hunter2",
         )
@@ -346,7 +347,7 @@ class TestReconcile:
         assert "CHARSET=utf8mb4" in ddl
         print(f"\n{ddl}")
 
-    def test_billing_lands_with_all_sixty_seven_columns_and_no_unique_key(self, destination) -> None:  # noqa: ANN001
+    def test_billing_lands_with_all_seventy_columns_and_no_unique_key(self, destination) -> None:  # noqa: ANN001
         with destination.begin() as connection:
             reconcile(connection)
 
@@ -357,7 +358,7 @@ class TestReconcile:
             f"AND TABLE_NAME = '{BILLING_TABLE.name}'",
         )
 
-        assert len(columns) == 67
+        assert len(columns) == 70  # 67 measured/identity columns + device_name, meter, site_name
         assert "UNIQUE KEY" not in ddl
         assert "device_id" not in ddl
 
@@ -402,6 +403,54 @@ class TestReconcile:
         assert _columns(destination, LOAD_PROFILE_TABLE.name) >= {c.name for c in LOAD_PROFILE_TABLE.columns}
         assert _columns(destination, BILLING_TABLE.name) >= {c.name for c in BILLING_TABLE.columns}
         assert "the_customers_own" in _columns(destination, BILLING_TABLE.name)
+
+    def test_an_upgraded_table_ends_up_in_the_same_column_order_as_a_fresh_one(self, destination) -> None:  # noqa: ANN001
+        """`ADD COLUMN` alone appends, so a destination from before the device
+        labels would carry them last while a fresh one carries them beside
+        `meter_serial`. Each missing column is added `AFTER` its neighbour."""
+        with destination.begin() as connection:
+            reconcile(connection)
+        with destination.begin() as connection:
+            for table in (LOAD_PROFILE_TABLE, BILLING_TABLE):
+                for column in ("device_name", "meter", "site_name"):
+                    connection.execute(sa.text(f"ALTER TABLE {table.name} DROP COLUMN {column}"))
+            connection.execute(sa.text(f"ALTER TABLE {LOAD_PROFILE_TABLE.name} DROP COLUMN avg_geo_pf"))
+
+        with destination.begin() as connection:
+            reconcile(connection)
+
+        for table in (LOAD_PROFILE_TABLE, BILLING_TABLE):
+            on_server = [
+                name
+                for (name,) in rows(
+                    destination,
+                    "SELECT COLUMN_NAME FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() "
+                    f"AND TABLE_NAME = '{table.name}' ORDER BY ORDINAL_POSITION",
+                )
+            ]
+            assert on_server == [c.name for c in table.columns], table.name
+
+    def test_a_column_already_there_is_never_moved(self, destination) -> None:  # noqa: ANN001
+        """Reordering someone else's table is not ours to do: a destination
+        that already carries the labels last keeps them last."""
+        with destination.begin() as connection:
+            reconcile(connection)
+        with destination.begin() as connection:
+            connection.execute(
+                sa.text(
+                    f"ALTER TABLE {LOAD_PROFILE_TABLE.name} MODIFY COLUMN device_name VARCHAR(128) NULL AFTER created_at"
+                )
+            )
+
+        with destination.begin() as connection:
+            reconcile(connection)
+
+        last = rows(
+            destination,
+            "SELECT COLUMN_NAME FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() "
+            f"AND TABLE_NAME = '{LOAD_PROFILE_TABLE.name}' ORDER BY ORDINAL_POSITION DESC LIMIT 1",
+        )
+        assert last == [("device_name",)]
 
     def test_a_load_profile_table_with_no_unique_key_is_refused_rather_than_duplicated_into(self, destination) -> None:  # noqa: ANN001
         """`ON DUPLICATE KEY UPDATE` degenerates into a plain `INSERT` when
@@ -694,6 +743,89 @@ class TestTheCycle:
             )
         )
         assert split == {"closed": 1, "open": 1}
+
+
+class TestDeviceLabels:
+    """`device_name`, `meter`, `site_name` on every row (owner, 2026-09-20).
+
+    A load-profile row carries the labels **as they were when it was written**
+    — a sent row never changes (ADR 0020/0021) — while billing, replaced
+    wholesale every cycle, always carries the current ones.
+    """
+
+    def test_both_tables_carry_the_three_labels(self, configured, destination, licensed) -> None:  # noqa: ANN001
+        device_id = add_device("Main incomer", "WP079074", meter_number="MTR-0042")
+        add_intervals(device_id, 1, [datetime(2026, 8, 24, 0, 0, tzinfo=UTC)])
+        add_billing(device_id, datetime(2026, 7, 31, 17, 0, tzinfo=UTC), serial="WP079074")
+
+        run_cycle()
+
+        for table in (LOAD_PROFILE_TABLE, BILLING_TABLE):
+            stored = rows(destination, f"SELECT device_name, meter, site_name FROM {table.name}")
+            assert stored == [("Main incomer", "MTR-0042", "Plant A")], table.name
+
+    def test_a_device_with_no_meter_number_sends_null(self, configured, destination, licensed) -> None:  # noqa: ANN001
+        """`meter_number` is optional on the Devices form."""
+        device_id = add_device("Main", "WP079074")
+        add_intervals(device_id, 1, [datetime(2026, 8, 24, 0, 0, tzinfo=UTC)])
+
+        run_cycle()
+
+        assert rows(destination, f"SELECT device_name, meter FROM {LOAD_PROFILE_TABLE.name}") == [("Main", None)]
+
+    def test_each_meter_gets_its_own_labels(self, configured, destination, licensed) -> None:  # noqa: ANN001
+        first = add_device("Incomer", "WP079074", meter_number="A-1")
+        second = add_device("Chiller", "WP089573", meter_number="B-2")
+        at = datetime(2026, 8, 24, 0, 0, tzinfo=UTC)
+        add_intervals(first, 1, [at])
+        add_intervals(second, 1, [at])
+
+        run_cycle()
+
+        stored = rows(
+            destination,
+            f"SELECT meter_serial, device_name, meter FROM {LOAD_PROFILE_TABLE.name} ORDER BY meter_serial",
+        )
+        assert stored == [("WP079074", "Incomer", "A-1"), ("WP089573", "Chiller", "B-2")]
+
+    def test_a_rename_reaches_new_rows_and_billing_but_never_a_row_already_sent(
+        self, configured, destination, licensed
+    ) -> None:  # noqa: ANN001
+        device_id = add_device("Old name", "WP079074")
+        base = datetime(2026, 8, 24, 0, 0, tzinfo=UTC)
+        add_intervals(device_id, 1, [base])
+        add_billing(device_id, datetime(2026, 7, 31, 17, 0, tzinfo=UTC), serial="WP079074")
+        run_cycle()
+
+        with session_scope() as session:
+            session.get(Device, device_id).name = "New name"
+        add_intervals(device_id, 1, [base + timedelta(minutes=15)])
+        run_cycle()
+
+        load_profile = rows(destination, f"SELECT device_name FROM {LOAD_PROFILE_TABLE.name} ORDER BY read_at")
+        assert load_profile == [("Old name",), ("New name",)]
+        assert rows(destination, f"SELECT device_name FROM {BILLING_TABLE.name}") == [("New name",)]
+
+    def test_an_upgrade_adds_the_columns_and_leaves_rows_already_there_null(
+        self, configured, destination, licensed
+    ) -> None:  # noqa: ANN001
+        """The customer's tables exist from 0.7.4 without the three columns.
+        The first cycle after the upgrade must add them and carry on — and
+        must not touch what it sent before."""
+        device_id = add_device("Main", "WP079074")
+        base = datetime(2026, 8, 24, 0, 0, tzinfo=UTC)
+        add_intervals(device_id, 1, [base])
+        run_cycle()
+        with destination.begin() as connection:
+            for table in (LOAD_PROFILE_TABLE, BILLING_TABLE):
+                for column in ("device_name", "meter", "site_name"):
+                    connection.execute(sa.text(f"ALTER TABLE {table.name} DROP COLUMN {column}"))
+
+        add_intervals(device_id, 1, [base + timedelta(hours=2)])
+        run_cycle()
+
+        stored = rows(destination, f"SELECT device_name, site_name FROM {LOAD_PROFILE_TABLE.name} ORDER BY read_at")
+        assert stored == [(None, None), ("Main", "Plant A")]
 
 
 class TestBillingIsReplacedAtomically:

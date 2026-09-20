@@ -15,8 +15,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from sqlalchemy.dialects import mysql
 
-from arichds.dataout.schema import BILLING_TABLE, LOAD_PROFILE_TABLE
-from arichds.db.models import BillingReading, LoadProfileReading
+from arichds.dataout.schema import BILLING_TABLE, DEVICE_LABEL_COLUMNS, LOAD_PROFILE_TABLE
+from arichds.db.models import BillingReading, Device, LoadProfileReading
 
 
 class TestDerivedFromTheOrm:
@@ -31,7 +31,8 @@ class TestDerivedFromTheOrm:
     def test_load_profile_carries_every_source_column_but_the_two_ids(self) -> None:
         source = {c.name for c in LoadProfileReading.__table__.columns} - {"id", "device_id"}
 
-        assert {c.name for c in LOAD_PROFILE_TABLE.columns} == source | {"meter_serial"}
+        expected = source | {"meter_serial"} | set(DEVICE_LABEL_COLUMNS)
+        assert {c.name for c in LOAD_PROFILE_TABLE.columns} == expected
 
     def test_billing_carries_every_source_column_but_the_two_ids(self) -> None:
         """Minus `captured_at` too since ui-audit ticket 03 — a stamp about this
@@ -39,7 +40,7 @@ class TestDerivedFromTheOrm:
         mirrors (ADR 0016/0020)."""
         source = {c.name for c in BillingReading.__table__.columns} - {"id", "device_id", "captured_at"}
 
-        assert {c.name for c in BILLING_TABLE.columns} == source
+        assert {c.name for c in BILLING_TABLE.columns} == source | set(DEVICE_LABEL_COLUMNS)
 
     def test_billing_really_does_have_the_sixty_seven_columns_m4c_left(self) -> None:
         """70 model columns minus `id`, `device_id` and `captured_at` (a
@@ -47,8 +48,39 @@ class TestDerivedFromTheOrm:
         number, so a silent loss of a column shows up as a number rather than
         as a set."""
         assert len(BillingReading.__table__.columns) == 70
-        assert len(BILLING_TABLE.columns) == 67
+        assert len(BILLING_TABLE.columns) == 67 + len(DEVICE_LABEL_COLUMNS)
         assert "captured_at" not in BILLING_TABLE.columns
+
+    def test_the_three_device_labels_ride_on_both_tables_under_the_customers_names(self) -> None:
+        """Owner, 2026-09-20: the customer asked for the device name, the meter
+        number — under the column name **`meter`**, their word — and the site
+        name on every row. The names are the contract, so they are pinned."""
+        assert DEVICE_LABEL_COLUMNS == {"device_name": "name", "meter": "meter_number", "site_name": "site_name"}
+        for table in (LOAD_PROFILE_TABLE, BILLING_TABLE):
+            names = [c.name for c in table.columns]
+            serial = names.index("meter_serial")
+            # Directly after the serial (owner, 2026-09-20): which meter a row
+            # belongs to is read in one place, ahead of any measurement.
+            assert names[serial + 1 : serial + 4] == ["device_name", "meter", "site_name"]
+        assert [c.name for c in LOAD_PROFILE_TABLE.columns][:5] == [
+            "meter_serial",
+            "device_name",
+            "meter",
+            "site_name",
+            "read_at",
+        ]
+
+    def test_a_label_is_as_wide_as_the_device_column_it_copies_and_always_nullable(self) -> None:
+        """Width taken from `devices`, never chosen here — a label that fits
+        our form must fit their column. Nullable on purpose: the columns are
+        `ALTER`ed onto tables that already hold rows, and those rows are never
+        re-sent."""
+        for table in (LOAD_PROFILE_TABLE, BILLING_TABLE):
+            for destination_name, device_column in DEVICE_LABEL_COLUMNS.items():
+                column = table.columns[destination_name]
+                assert isinstance(column.type, mysql.VARCHAR)
+                assert column.type.length == Device.__table__.columns[device_column].type.length
+                assert column.nullable is True
 
     def test_device_id_appears_nowhere(self) -> None:
         """`devices.id` is a SQLite rowid alias and is **reused** after the

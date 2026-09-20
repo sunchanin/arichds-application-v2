@@ -24,7 +24,7 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 
 #define AppName        "ARICHDS"
-#define AppVersion     "0.7.2"
+#define AppVersion     "0.7.5"
 #define AppPublisher   "ARICHDS"
 #define ServiceName    "arichds"
 ; Default only — the effective port is {code:GetPort}, chosen on the wizard page

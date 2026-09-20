@@ -1304,7 +1304,13 @@ one header.
 
 - **ส่งสองตาราง**: `billing_readings` · `load_profile_readings` — ลูกค้าขอเท่านี้ ไม่ส่ง energy
   summary ไม่ส่งรายชื่อมิเตอร์ ไม่ส่ง `devices` (ตารางนั้นถือรหัสมิเตอร์เป็น plaintext
-  บวก `block_cipher_key` / `authentication_key` ที่ API ไม่เคยส่งออก)
+  บวก `block_cipher_key` / `authentication_key` ที่ API ไม่เคยส่งออก) · **ข้อยกเว้นเดียว (2026-09-20
+  ลูกค้าขอ)**: ป้ายกำกับสามตัวจาก `devices` ติดไปกับทุกแถวของทั้งสองตาราง — `device_name` (`name`) ·
+  `meter` (`meter_number` — ใช้คำของลูกค้า) · `site_name` — join ตอนเขียนแบบเดียวกับ `meter_serial` ·
+  **เป็น snapshot ไม่ใช่ reference** (ADR 0020): แถว load profile ที่ส่งแล้วไม่ถูกแก้เมื่อเปลี่ยนชื่อ
+  อุปกรณ์ ส่วน billing ถูกแทนที่ทั้งตารางทุกรอบจึงเป็นชื่อปัจจุบันเสมอ · แถวที่ส่งก่อนมีคอลัมน์เป็น `NULL` ·
+  ตำแหน่ง = ติดหลัง `meter_serial` ทั้งสองตาราง · `reconcile` เพิ่มคอลัมน์ที่ขาดด้วย `AFTER` คอลัมน์ก่อนหน้า
+  ตารางที่อัปเกรดจึงเรียงเหมือนตารางใหม่ แต่**ไม่ย้าย**คอลัมน์ที่มีอยู่แล้ว
 - **เราสร้างตารางเอง** `CREATE TABLE IF NOT EXISTS` ตอน sync ครั้งแรก ⇒ account ต้องมีสิทธิ์
   `CREATE` · `SELECT` · `INSERT` · `DELETE` · ขอลูกค้าสร้าง database แยกให้เฉพาะเรา ไม่ใช่ GRANT
   บนฐานที่มีตารางธุรกิจของเขาปนอยู่

@@ -114,6 +114,22 @@ or tracking per-meter deletions in a table ADR 0008 forbids. Neither is worth bu
   logger_id)`) and the purge from the oldest. A logger that lags behind another keeps its own
   watermark and catches up without being masked — the same failure ADR 0008 had to fix on our
   side at issue #24, avoided here by keying the watermark per logger rather than per meter.
+- **A device label on a row is a snapshot, not a reference** (added 2026-09-20, at the customer's
+  request). Both tables carry `device_name`, `meter` (their word for our `meter_number`) and
+  `site_name`, joined from `devices` at write time the way `meter_serial` already was. A
+  load-profile row keeps the labels its device had when the row was sent, because a sent row
+  never changes: renaming a device reaches new rows only, and the rewound hour that is re-sent
+  under the new name every cycle is discarded by the same `ON DUPLICATE KEY UPDATE` that
+  discards everything else about it. Billing, replaced wholesale, always carries the current
+  labels — the same asymmetry as above, and no more to be "fixed". Rejected: rewriting every
+  stored row on a rename (an unbounded `UPDATE` into someone else's database, for a label), and
+  a separate roster table (the customer asked for columns, and their `AFTER INSERT` trigger
+  into their own `logger` table can read `NEW.device_name` directly). Rows sent before the
+  columns existed stay `NULL`; `reconcile` adds the columns, nothing back-fills them. They sit
+  directly after `meter_serial` (the owner's choice), so `reconcile` adds a missing column `AFTER`
+  its neighbour — 3–5 ms on MariaDB 10.4.32 with 200,000 rows, 570 ms when forced to copy the
+  table — and never moves one that is already there: a destination that received them last keeps
+  them last until its owner runs `MODIFY COLUMN … AFTER` or drops the tables for us to recreate.
 - **Nothing records that a purge ran** on either side. ADR 0008 forbids persisted job state and
   `db/retention.py` already honours that with a single INFO line; the destination's purge is
   the same shape.

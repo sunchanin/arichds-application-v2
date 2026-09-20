@@ -43,7 +43,7 @@ from arichds.constants import (
     RETENTION_DAYS,
 )
 from arichds.dataout.destination import create_destination_engine, load_config
-from arichds.dataout.schema import BILLING_TABLE, LOAD_PROFILE_TABLE, reconcile
+from arichds.dataout.schema import BILLING_TABLE, DEVICE_LABEL_COLUMNS, LOAD_PROFILE_TABLE, reconcile
 from arichds.dataout.status import SyncStatus, set_last_sync
 from arichds.db.models import BillingReading, Device, LoadProfileReading
 from arichds.db.session import session_scope
@@ -316,9 +316,9 @@ def _billing_rows() -> tuple[list[dict[str, Any]], int]:
     source = BillingReading.__table__
     device = Device.__table__
     columns = [column for column in source.columns if column.name in BILLING_TABLE.columns]
-    statement = sa.select(*columns, device.c.meter_serial.label("_device_serial")).select_from(
-        source.join(device, device.c.id == source.c.device_id)
-    )
+    statement = sa.select(
+        *columns, device.c.meter_serial.label("_device_serial"), *_device_label_selectables()
+    ).select_from(source.join(device, device.c.id == source.c.device_id))
 
     rows: list[dict[str, Any]] = []
     skipped = 0
@@ -340,6 +340,17 @@ def _billing_rows() -> tuple[list[dict[str, Any]], int]:
     return rows, skipped
 
 
+def _device_label_selectables() -> list[sa.ColumnElement[Any]]:
+    """``devices`` columns selected under their destination names.
+
+    The one place :data:`~arichds.dataout.schema.DEVICE_LABEL_COLUMNS` is
+    turned into a query, shared by billing and load profile so the two tables
+    cannot label the same meter differently.
+    """
+    device = Device.__table__
+    return [device.c[source].label(name) for name, source in DEVICE_LABEL_COLUMNS.items()]
+
+
 # ─── Load profile — append from the destination's own watermark ───────────────
 
 
@@ -359,7 +370,7 @@ def _append_load_profile(engine: Engine, *, deadline: float, counts: _Counts) ->
     """
     watermarks = _destination_watermarks(engine)
 
-    for device_id, logger_id, serial in _source_pairs():
+    for device_id, logger_id, serial, labels in _source_pairs():
         if serial is None:
             # Counted only on the miss — see `_source_pairs`.
             missing_rows = _unattributable_row_count(device_id, logger_id)
@@ -374,7 +385,7 @@ def _append_load_profile(engine: Engine, *, deadline: float, counts: _Counts) ->
             continue
         if _out_of_budget(deadline, counts):
             return
-        _send_pair(engine, device_id, logger_id, serial, watermarks, deadline=deadline, counts=counts)
+        _send_pair(engine, device_id, logger_id, serial, labels, watermarks, deadline=deadline, counts=counts)
 
 
 def _destination_watermarks(engine: Engine) -> dict[tuple[str, int], datetime]:
@@ -393,8 +404,10 @@ def _destination_watermarks(engine: Engine) -> dict[tuple[str, int], datetime]:
         return {(str(serial), int(logger_id)): newest for serial, logger_id, newest in connection.execute(statement)}
 
 
-def _source_pairs() -> list[tuple[int, int, str | None]]:
-    """Every ``(device_id, logger_id)`` we hold rows for, with its Meter Serial.
+def _source_pairs() -> list[tuple[int, int, str | None, dict[str, Any]]]:
+    """Every ``(device_id, logger_id)`` we hold rows for, with its Meter Serial
+    and its device labels — read once per pair per cycle, which is what makes a
+    label a snapshot of the moment a row is sent.
 
     ``DISTINCT`` rather than ``GROUP BY … COUNT(*)``. An earlier version
     aggregated a count here so the "no Meter Serial" warning could name a
@@ -408,14 +421,22 @@ def _source_pairs() -> list[tuple[int, int, str | None]]:
     source = LoadProfileReading.__table__
     device = Device.__table__
     statement = (
-        sa.select(source.c.device_id, source.c.logger_id, device.c.meter_serial)
+        sa.select(source.c.device_id, source.c.logger_id, device.c.meter_serial, *_device_label_selectables())
         .select_from(source.join(device, device.c.id == source.c.device_id))
         .distinct()
         .order_by(source.c.device_id, source.c.logger_id)
     )
 
     with session_scope() as session:
-        return [(int(device_id), int(logger_id), serial) for device_id, logger_id, serial in session.execute(statement)]
+        return [
+            (
+                int(row["device_id"]),
+                int(row["logger_id"]),
+                row["meter_serial"],
+                {name: row[name] for name in DEVICE_LABEL_COLUMNS},
+            )
+            for row in session.execute(statement).mappings()
+        ]
 
 
 def _unattributable_row_count(device_id: int, logger_id: int) -> int:
@@ -436,6 +457,7 @@ def _send_pair(
     device_id: int,
     logger_id: int,
     serial: str,
+    labels: dict[str, Any],
     watermarks: dict[tuple[str, int], datetime],
     *,
     deadline: float,
@@ -445,7 +467,7 @@ def _send_pair(
     start = _watermark_start(watermarks.get((serial, logger_id)))
 
     while True:
-        rows = _source_chunk(device_id, logger_id, serial, start)
+        rows = _source_chunk(device_id, logger_id, serial, labels, start)
         if not rows:
             return
         _insert_load_profile(engine, rows)
@@ -458,7 +480,9 @@ def _send_pair(
             return
 
 
-def _source_chunk(device_id: int, logger_id: int, serial: str, start: datetime | None) -> list[dict[str, Any]]:
+def _source_chunk(
+    device_id: int, logger_id: int, serial: str, labels: dict[str, Any], start: datetime | None
+) -> list[dict[str, Any]]:
     """One page of source rows newer than *start*, in ``read_at`` order.
 
     The watermark is applied **in SQL**, which is the whole point: the
@@ -473,7 +497,9 @@ def _source_chunk(device_id: int, logger_id: int, serial: str, start: datetime |
     statement = statement.order_by(source.c.read_at).limit(DBDEST_ROW_CHUNK)
 
     with session_scope() as session:
-        return [{**dict(mapping), "meter_serial": serial} for mapping in session.execute(statement).mappings()]
+        return [
+            {**dict(mapping), "meter_serial": serial, **labels} for mapping in session.execute(statement).mappings()
+        ]
 
 
 def _insert_load_profile(engine: Engine, rows: Sequence[dict[str, Any]]) -> None:
@@ -490,7 +516,9 @@ def _insert_load_profile(engine: Engine, rows: Sequence[dict[str, Any]]) -> None
     The update clause re-asserts ``source``, one non-key column, because MySQL
     requires a non-empty update list and these rows **never change value** once
     written — the assignment is therefore a no-op by construction rather than
-    by coincidence.
+    by coincidence. It is also why a renamed device never rewrites the labels
+    on a row already sent: the rewound hour is re-sent under the new name every
+    cycle, and this clause is what discards it.
     """
     statement = mysql_insert(LOAD_PROFILE_TABLE)
     statement = statement.on_duplicate_key_update(source=statement.inserted.source)
