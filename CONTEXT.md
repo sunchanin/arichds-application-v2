@@ -533,7 +533,9 @@ _Avoid_: machine token (the portal's word, for M9), API key, Activation Code
 **Database Destination**:
 The customer's own SQL database, written to as one kind of **Data-out Destination**. We create
 the tables in it, we own their shape, and we are the only writer — it holds finished readings
-keyed on **Meter Serial**, never our `devices.id` (a SQLite rowid, reused after a delete).
+keyed on **Meter Serial**, never our `devices.id` (a SQLite rowid, reused after a delete). Its
+load profile is **one merged row per interval** — the row the Load Profile page and the Load
+Profile CSV show — not the store's row per Logger (ADR 0027).
 Distinct from the team's central server, which is a different Destination with a different
 transport (SPEC §3.8). ADR 0016 is why it is a Destination at all and not the store.
 _Avoid_: our database, the MySQL backend, the remote DB, external database

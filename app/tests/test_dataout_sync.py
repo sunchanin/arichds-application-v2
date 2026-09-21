@@ -212,8 +212,8 @@ class TestWatermarkStart:
         assert DBDEST_WATERMARK_REWIND_SEC > 0
 
     def test_no_watermark_means_send_everything_we_hold(self) -> None:
-        """A destination that has never seen this `(serial, logger)` gets the
-        first cycle's backfill — 61,023 rows on the design probe."""
+        """A destination that has never seen this Meter Serial gets the first
+        cycle's backfill — 61,023 rows on the design probe."""
         assert _watermark_start(None) is None
 
 
@@ -223,7 +223,7 @@ class TestLocalRow:
             "meter_serial": "WP079074",
             "read_at": datetime(2026, 8, 24, 13, 15, tzinfo=UTC),
             "created_at": datetime(2026, 8, 24, 13, 20, tzinfo=UTC),
-            "logger_id": 2,
+            "interval_sec": 900,
             "import_active_kwh": 0.0085671,
             "avg_geo_pf": None,
         }
@@ -233,7 +233,7 @@ class TestLocalRow:
         assert converted["read_at"] == datetime(2026, 8, 24, 20, 15)
         assert converted["created_at"] == datetime(2026, 8, 24, 20, 20)
         assert converted["meter_serial"] == "WP079074"
-        assert converted["logger_id"] == 2
+        assert converted["interval_sec"] == 900
         assert converted["import_active_kwh"] == 0.0085671  # value unchanged, probe-confirmed
         assert converted["avg_geo_pf"] is None
 

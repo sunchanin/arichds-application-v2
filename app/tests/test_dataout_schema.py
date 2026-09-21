@@ -15,7 +15,13 @@ from __future__ import annotations
 import sqlalchemy as sa
 from sqlalchemy.dialects import mysql
 
-from arichds.dataout.schema import BILLING_TABLE, DEVICE_LABEL_COLUMNS, LOAD_PROFILE_TABLE
+from arichds.dataout.schema import (
+    BILLING_TABLE,
+    DEVICE_LABEL_COLUMNS,
+    LOAD_PROFILE_SPINE_COLUMNS,
+    LOAD_PROFILE_TABLE,
+)
+from arichds.db.load_profile_query import MERGED_COLUMNS
 from arichds.db.models import BillingReading, Device, LoadProfileReading
 
 
@@ -28,11 +34,25 @@ class TestDerivedFromTheOrm:
     with an unknown column.
     """
 
-    def test_load_profile_carries_every_source_column_but_the_two_ids(self) -> None:
-        source = {c.name for c in LoadProfileReading.__table__.columns} - {"id", "device_id"}
+    def test_load_profile_carries_every_source_column_but_the_ids_and_the_logger(self) -> None:
+        """No `logger_id` since ADR 0027: the destination holds one merged row
+        per interval, so there is nothing left for it to discriminate."""
+        source = {c.name for c in LoadProfileReading.__table__.columns} - {"id", "device_id", "logger_id"}
 
         expected = source | {"meter_serial"} | set(DEVICE_LABEL_COLUMNS)
         assert {c.name for c in LOAD_PROFILE_TABLE.columns} == expected
+        assert "logger_id" not in LOAD_PROFILE_TABLE.columns
+
+    def test_every_load_profile_measurement_is_a_merged_column(self) -> None:
+        """The merge is `COALESCE(logger1, logger2)` over `MERGED_COLUMNS`;
+        everything else in the row is copied from the Logger 1 spine. Pinned as
+        an exact set so a measurement column added to the model cannot reach
+        the destination as a Logger-1-only value without anyone deciding so —
+        it lands here as a fourth "spine" column and fails."""
+        assert LOAD_PROFILE_SPINE_COLUMNS == ("source", "interval_sec", "created_at")
+        identity = {"meter_serial", "read_at", *DEVICE_LABEL_COLUMNS}
+        rest = {c.name for c in LOAD_PROFILE_TABLE.columns} - identity - set(LOAD_PROFILE_SPINE_COLUMNS)
+        assert rest == set(MERGED_COLUMNS)
 
     def test_billing_carries_every_source_column_but_the_two_ids(self) -> None:
         """Minus `captured_at` too since ui-audit ticket 03 — a stamp about this
@@ -153,7 +173,7 @@ class TestKeys:
         unique = [c for c in LOAD_PROFILE_TABLE.constraints if isinstance(c, sa.UniqueConstraint)]
 
         assert len(unique) == 1
-        assert [c.name for c in unique[0].columns] == ["meter_serial", "logger_id", "read_at"]
+        assert [c.name for c in unique[0].columns] == ["meter_serial", "read_at"]
 
     def test_billing_has_no_unique_key_at_all(self) -> None:
         """ADR 0009's two **partial** unique indexes cannot be expressed in
@@ -167,5 +187,9 @@ class TestKeys:
         assert list(BILLING_TABLE.primary_key.columns) == []
 
     def test_the_read_side_indexes_exist(self) -> None:
-        assert {tuple(i.columns.keys()) for i in LOAD_PROFILE_TABLE.indexes} == {("meter_serial", "read_at")}
+        # The unique key over (meter_serial, read_at) serves the watermark since
+        # ADR 0027, so a second index over the same columns would duplicate it.
+        # `read_at` alone is for the purge — `DELETE … WHERE read_at < :cutoff`
+        # names no serial, so no index that leads with one can serve it.
+        assert {tuple(i.columns.keys()) for i in LOAD_PROFILE_TABLE.indexes} == {("read_at",)}
         assert {tuple(i.columns.keys()) for i in BILLING_TABLE.indexes} == {("meter_serial", "bill_date")}

@@ -58,6 +58,7 @@ from arichds.db.app_settings import (
 )
 from arichds.db.models import BillingReading, Device, LoadProfileReading
 from arichds.db.session import session_scope
+from arichds.interval_status import ALL_INVALID_MASK
 from arichds.licensing.current import set_current_license_service
 from arichds.licensing.service import LicenseState
 
@@ -141,12 +142,12 @@ def configured(migrated_db: Settings, config: DestinationConfig) -> DestinationC
 # ─── Seeding helpers ──────────────────────────────────────────────────────────
 
 
-def add_device(name: str, serial: str | None, *, meter_number: str | None = None) -> int:
+def add_device(name: str, serial: str | None, *, meter_number: str | None = None, model: str = "smw110") -> int:
     with session_scope() as session:
         device = Device(
             name=name,
             brand="mitsu",
-            model="smw110",
+            model=model,
             meter_serial=serial,
             site_name="Plant A",
             meter_number=meter_number,
@@ -158,7 +159,9 @@ def add_device(name: str, serial: str | None, *, meter_number: str | None = None
         return device.id
 
 
-def add_intervals(device_id: int, logger_id: int, read_ats: list[datetime], *, kwh: float = 1.5) -> None:
+def add_intervals(
+    device_id: int, logger_id: int, read_ats: list[datetime], *, kwh: float | None = 1.5, **measurements: float
+) -> None:
     with session_scope() as session:
         for read_at in read_ats:
             session.add(
@@ -167,8 +170,9 @@ def add_intervals(device_id: int, logger_id: int, read_ats: list[datetime], *, k
                     read_at=read_at,
                     source=SOURCE_DLMS,
                     logger_id=logger_id,
-                    interval_sec=900,
+                    interval_sec=900 if logger_id == 1 else 300,
                     import_active_kwh=kwh,
+                    **measurements,
                 )
             )
 
@@ -378,8 +382,8 @@ class TestReconcile:
             )
         }
 
-        assert (LOAD_PROFILE_TABLE.name, "ix_load_profile_readings_serial_read_at") in names
-        assert (LOAD_PROFILE_TABLE.name, "uq_load_profile_readings_serial_logger_read_at") in names
+        assert (LOAD_PROFILE_TABLE.name, "uq_load_profile_readings_serial_read_at") in names
+        assert (LOAD_PROFILE_TABLE.name, "ix_load_profile_readings_read_at") in names
         assert (BILLING_TABLE.name, "ix_billing_readings_serial_bill_date") in names
 
     def test_a_missing_column_is_added_by_alter_and_an_unknown_one_is_left_alone(self, destination) -> None:  # noqa: ANN001
@@ -467,9 +471,7 @@ class TestReconcile:
             reconcile(connection)
         with destination.begin() as connection:
             connection.execute(
-                sa.text(
-                    f"ALTER TABLE {LOAD_PROFILE_TABLE.name} DROP INDEX uq_load_profile_readings_serial_logger_read_at"
-                )
+                sa.text(f"ALTER TABLE {LOAD_PROFILE_TABLE.name} DROP INDEX uq_load_profile_readings_serial_read_at")
             )
 
         with pytest.raises(RuntimeError, match="no unique key"), destination.begin() as connection:
@@ -553,8 +555,8 @@ class TestAnOverWideValueRaisesRatherThanTruncating:
             connection.execute(
                 sa.text(
                     f"INSERT IGNORE INTO {LOAD_PROFILE_TABLE.name} "
-                    "(meter_serial, read_at, source, logger_id, interval_sec) "
-                    "VALUES (:s, :r, :src, 1, 900)"
+                    "(meter_serial, read_at, source, interval_sec) "
+                    "VALUES (:s, :r, :src, 900)"
                 ),
                 {"s": "X" * 80, "r": datetime(2026, 8, 24, 20, 15), "src": SOURCE_DLMS},
             )
@@ -651,32 +653,6 @@ class TestTheCycle:
         newest = rows(destination, f"SELECT MAX(read_at) FROM {LOAD_PROFILE_TABLE.name}")[0][0]
         assert newest == datetime(2026, 8, 23, 23, 0) + timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)
 
-    def test_the_watermark_is_per_serial_and_logger_not_per_meter(self, configured, destination, licensed) -> None:  # noqa: ANN001
-        """The failure ADR 0008 had to fix on our own side at issue #24: a
-        `MIN`/`MAX` across loggers stalls the lagging one behind the other."""
-        device_id = add_device("Main", "WP079074")
-        base = datetime(2026, 8, 24, 0, 0, tzinfo=UTC)
-        add_intervals(device_id, 1, [base + timedelta(hours=i) for i in range(10)])
-        add_intervals(device_id, 2, [base + timedelta(minutes=5 * i) for i in range(3)])
-
-        run_cycle()
-
-        per_logger = dict(
-            rows(destination, f"SELECT logger_id, COUNT(*) FROM {LOAD_PROFILE_TABLE.name} GROUP BY logger_id")
-        )
-        assert per_logger == {1: 10, 2: 3}
-
-        # Logger 2 lags far behind logger 1. A watermark taken across both
-        # would mask logger 2's new rows entirely.
-        add_intervals(device_id, 2, [base + timedelta(minutes=5 * i) for i in range(3, 8)])
-
-        run_cycle()
-
-        per_logger = dict(
-            rows(destination, f"SELECT logger_id, COUNT(*) FROM {LOAD_PROFILE_TABLE.name} GROUP BY logger_id")
-        )
-        assert per_logger == {1: 10, 2: 8}, "the lagging logger was masked by the other's watermark"
-
     def test_the_watermark_is_rewound_before_sending(self, configured, destination, licensed) -> None:  # noqa: ANN001
         """The rewind is what turns an off-by-offset into bounded waste rather
         than a silent gap. Proven by observing that a row **inside** the rewind
@@ -704,6 +680,12 @@ class TestTheCycle:
         anonymous = add_device("Unidentified", None)
         add_intervals(good, 1, [datetime(2026, 8, 24, 0, 0, tzinfo=UTC)])
         add_intervals(anonymous, 1, [datetime(2026, 8, 24, 0, 0, tzinfo=UTC)] * 1)
+        # Logger 2 rows are merged onto the Logger 1 spine, never sent as rows of
+        # their own (ADR 0027) — so they are not rows that went unsent either.
+        add_intervals(anonymous, 2, [datetime(2026, 8, 24, 0, 5 * i, tzinfo=UTC) for i in range(3)])
+        # Nor is an interval the meter marked all-invalid: the merge leaves it
+        # out, so it was never going to be sent (code review, 2026-09-20).
+        add_intervals(anonymous, 1, [datetime(2026, 8, 24, 0, 15, tzinfo=UTC)], interval_status_flag=ALL_INVALID_MASK)
         add_billing(anonymous, datetime(2026, 7, 31, 17, 0, tzinfo=UTC), serial=None)
 
         run_cycle()
@@ -743,6 +725,228 @@ class TestTheCycle:
             )
         )
         assert split == {"closed": 1, "open": 1}
+
+
+class TestOneMergedRowPerInterval:
+    """ADR 0027 — the destination holds the row the Load Profile page and the
+    Load Profile CSV show: Logger 1 the spine, Logger 2 joined on an exact
+    `read_at`, `COALESCE(logger1, logger2)` per column."""
+
+    def test_logger_two_fills_what_logger_one_does_not_capture(
+        self, configured, destination, licensed, fake_meter
+    ) -> None:  # noqa: ANN001
+        """The Prometer 100 shape: energy on Logger 1, line-to-line voltage on
+        Logger 2."""
+        fake_meter.load_profile_loggers = (1, 2)
+        device_id = add_device("Main", "WP079074")
+        at = datetime(2026, 8, 24, 0, 0, tzinfo=UTC)
+        add_intervals(device_id, 1, [at], kwh=1.5)
+        add_intervals(device_id, 2, [at], kwh=None, volt_l1_l2=398.5)
+
+        run_cycle()
+
+        stored = rows(destination, f"SELECT import_active_kwh, volt_l1_l2, interval_sec FROM {LOAD_PROFILE_TABLE.name}")
+        assert stored == [(1.5, 398.5, 900)]
+
+    def test_logger_one_wins_a_column_both_loggers_capture(self, configured, destination, licensed, fake_meter) -> None:  # noqa: ANN001
+        """Frequency is captured by both Loggers on a Prometer 100
+        (`docs/meter-notes/load-profile-capture-objects.md`)."""
+        fake_meter.load_profile_loggers = (1, 2)
+        device_id = add_device("Main", "WP079074")
+        at = datetime(2026, 8, 24, 0, 0, tzinfo=UTC)
+        add_intervals(device_id, 1, [at], freq=50.01)
+        add_intervals(device_id, 2, [at], kwh=None, freq=49.99)
+
+        run_cycle()
+
+        assert rows(destination, f"SELECT freq FROM {LOAD_PROFILE_TABLE.name}") == [(50.01,)]
+
+    def test_a_logger_two_row_with_no_logger_one_partner_is_not_sent(
+        self, configured, destination, licensed, fake_meter
+    ) -> None:  # noqa: ANN001
+        """Logger 2 at 300 s against Logger 1 at 900 s: two in three Logger 2
+        rows have no spine row to merge onto."""
+        fake_meter.load_profile_loggers = (1, 2)
+        device_id = add_device("Main", "WP079074")
+        base = datetime(2026, 8, 24, 0, 0, tzinfo=UTC)
+        add_intervals(device_id, 1, [base + timedelta(minutes=15 * i) for i in range(4)])
+        add_intervals(device_id, 2, [base + timedelta(minutes=5 * i) for i in range(10)], kwh=None, volt_l1_l2=400.0)
+
+        run_cycle()
+
+        stored = rows(destination, f"SELECT read_at, volt_l1_l2 FROM {LOAD_PROFILE_TABLE.name} ORDER BY read_at")
+        local = base.replace(tzinfo=None) + timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)
+        assert stored == [(local + timedelta(minutes=15 * i), 400.0) for i in range(4)]
+
+    def test_a_logger_one_row_waits_for_logger_two_to_catch_up(
+        self, configured, destination, licensed, fake_meter
+    ) -> None:  # noqa: ANN001
+        """A sent row never changes, so a Logger 1 row sent ahead of its
+        Logger 2 partner would stay half-empty for good. It is held instead."""
+        fake_meter.load_profile_loggers = (1, 2)
+        device_id = add_device("Main", "WP079074")
+        base = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=6)
+        add_intervals(device_id, 1, [base, base + timedelta(minutes=15), base + timedelta(minutes=30)])
+        add_intervals(device_id, 2, [base], kwh=None, volt_l1_l2=400.0)
+
+        run_cycle()
+        assert count(destination, LOAD_PROFILE_TABLE.name) == 1, "rows past Logger 2's frontier were sent early"
+
+        add_intervals(
+            device_id, 2, [base + timedelta(minutes=15), base + timedelta(minutes=30)], kwh=None, volt_l1_l2=401.0
+        )
+        run_cycle()
+
+        stored = rows(destination, f"SELECT volt_l1_l2 FROM {LOAD_PROFILE_TABLE.name} ORDER BY read_at")
+        assert stored == [(400.0,), (401.0,), (401.0,)]
+
+    def test_a_meter_with_one_logger_is_never_held_back(self, configured, destination, licensed) -> None:  # noqa: ANN001
+        """Whether there is a Logger 2 comes from the driver. A one-logger
+        model waiting 24 h for a Logger 2 that does not exist would be a
+        day-long delay on every row."""
+        device_id = add_device("Main", "WP079074")
+        newest = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(minutes=15)
+        add_intervals(device_id, 1, [newest])
+
+        run_cycle()
+
+        assert count(destination, LOAD_PROFILE_TABLE.name) == 1
+
+    def test_a_long_backfill_never_sends_a_row_ahead_of_a_logger_two_that_is_still_arriving(
+        self, configured, destination, licensed, fake_meter
+    ) -> None:  # noqa: ANN001
+        """The walk reads Logger 1 to the present first; Logger 2 follows a chunk
+        per visit. More than 24 h behind is then the *normal* state of a
+        backfill — and a row sent half-empty is never repaired here."""
+        fake_meter.load_profile_loggers = (1, 2)
+        device_id = add_device("Main", "WP079074")
+        newest = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        days = [newest - timedelta(days=offset) for offset in (3, 2, 1, 0)]
+        add_intervals(device_id, 1, days)
+        add_intervals(device_id, 2, days[:1], kwh=None, volt_l1_l2=400.0)
+
+        run_cycle()
+        assert count(destination, LOAD_PROFILE_TABLE.name) == 1, "rows were released ahead of a Logger 2 still arriving"
+
+        add_intervals(device_id, 2, days[1:], kwh=None, volt_l1_l2=401.0)
+        run_cycle()
+
+        stored = rows(destination, f"SELECT volt_l1_l2 FROM {LOAD_PROFILE_TABLE.name} ORDER BY read_at")
+        assert stored == [(400.0,), (401.0,), (401.0,), (401.0,)]
+
+    def test_a_logger_two_that_has_gone_quiet_for_a_day_stops_holding_the_rows(
+        self, configured, destination, licensed, fake_meter
+    ) -> None:  # noqa: ANN001
+        fake_meter.load_profile_loggers = (1, 2)
+        device_id = add_device("Main", "WP079074")
+        newest = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        days = [newest - timedelta(days=offset) for offset in (3, 2, 1, 0)]
+        add_intervals(device_id, 1, days)
+        add_intervals(
+            device_id, 2, days[:1], kwh=None, volt_l1_l2=400.0, created_at=datetime.now(UTC) - timedelta(hours=25)
+        )
+
+        run_cycle()
+
+        assert count(destination, LOAD_PROFILE_TABLE.name) == 4
+
+    def test_a_device_with_no_driver_warns_once_a_day_not_every_cycle(
+        self, configured, destination, licensed, caplog: pytest.LogCaptureFixture
+    ) -> None:  # noqa: ANN001
+        """Ninety-six identical lines a day bury the one that matters."""
+        sync._no_driver_warned_on.clear()  # noqa: SLF001
+        device_id = add_device("Main", "WP079074", model="a-model-this-build-does-not-know")
+        add_intervals(device_id, 1, [datetime(2026, 8, 24, 0, 0, tzinfo=UTC)])
+
+        with caplog.at_level("DEBUG", logger="arichds.dataout.sync"):
+            run_cycle()
+            run_cycle()
+
+        lines = [r for r in caplog.records if "no driver for device id" in r.getMessage()]
+        assert [r.levelname for r in lines] == ["WARNING", "DEBUG"]
+
+    def test_a_device_whose_driver_cannot_be_built_is_still_sent(self, configured, destination, licensed) -> None:  # noqa: ANN001
+        """The rows are already in our store; the driver is wanted for one
+        answer only. Skipping the device would stop its rows arriving with
+        nothing on the page to say so."""
+        device_id = add_device("Main", "WP079074", model="a-model-this-build-does-not-know")
+        add_intervals(device_id, 1, [datetime(2026, 8, 24, 0, 0, tzinfo=UTC)])
+
+        run_cycle()
+
+        assert count(destination, LOAD_PROFILE_TABLE.name) == 1
+
+
+class TestAPerLoggerTableFromAnEarlierVersion:
+    """0.7.5 and earlier created `load_profile_readings` with a NOT NULL
+    `logger_id` inside its unique key. A merged row cannot be written into it
+    and reshaping it is not ours to do."""
+
+    @staticmethod
+    def _make_it_per_logger(destination) -> None:  # noqa: ANN001
+        with destination.begin() as connection:
+            reconcile(connection)
+            connection.execute(
+                sa.text(f"ALTER TABLE {LOAD_PROFILE_TABLE.name} ADD COLUMN logger_id INT NOT NULL DEFAULT 1")
+            )
+            # The key as 0.7.5 made it — under its old name, with the logger in it.
+            connection.execute(
+                sa.text(
+                    f"ALTER TABLE {LOAD_PROFILE_TABLE.name} "
+                    "DROP INDEX uq_load_profile_readings_serial_read_at, "
+                    "ADD UNIQUE KEY uq_load_profile_readings_serial_logger_read_at (meter_serial, logger_id, read_at)"
+                )
+            )
+
+    def test_the_page_is_told_what_to_run_and_billing_is_still_brought_current(
+        self, configured, destination, licensed
+    ) -> None:  # noqa: ANN001
+        self._make_it_per_logger(destination)
+        device_id = add_device("Main", "WP079074")
+        add_intervals(device_id, 1, [datetime(2026, 8, 24, 0, 0, tzinfo=UTC)])
+        add_billing(device_id, datetime(2026, 7, 31, 17, 0, tzinfo=UTC), serial="WP079074")
+
+        sync.database_destination_cycle()
+
+        status = last_sync()
+        assert status is not None and status.error is not None
+        assert f"DROP TABLE {LOAD_PROFILE_TABLE.name}" in status.error
+        assert count(destination, LOAD_PROFILE_TABLE.name) == 0
+        assert count(destination, BILLING_TABLE.name) == 1, "a load-profile refusal froze the billing mirror"
+
+    def test_a_site_not_licensed_for_load_profile_is_not_bothered_by_it(self, configured, destination) -> None:  # noqa: ANN001
+        self._make_it_per_logger(destination)
+        set_current_license_service(_StubLicenseService(["database_destination", "billing"]))
+        set_last_sync(None)
+        try:
+            device_id = add_device("Main", "WP079074")
+            add_billing(device_id, datetime(2026, 7, 31, 17, 0, tzinfo=UTC), serial="WP079074")
+
+            run_cycle()
+
+            assert count(destination, BILLING_TABLE.name) == 1
+        finally:
+            set_current_license_service(None)
+            set_last_sync(None)
+
+    def test_reconcile_leaves_it_exactly_as_it_found_it(self, destination) -> None:  # noqa: ANN001
+        self._make_it_per_logger(destination)
+        with destination.begin() as connection:
+            connection.execute(sa.text(f"ALTER TABLE {LOAD_PROFILE_TABLE.name} DROP COLUMN device_name"))
+            connection.execute(
+                sa.text(f"ALTER TABLE {LOAD_PROFILE_TABLE.name} DROP INDEX ix_load_profile_readings_read_at")
+            )
+        before = rows(destination, f"SHOW CREATE TABLE {LOAD_PROFILE_TABLE.name}")
+
+        with destination.begin() as connection:
+            answer = reconcile(connection)
+
+        assert answer is True
+        assert rows(destination, f"SHOW CREATE TABLE {LOAD_PROFILE_TABLE.name}") == before
+
+    def test_reconcile_says_false_for_the_table_it_made_itself(self, destination) -> None:  # noqa: ANN001
+        with destination.begin() as connection:
+            assert reconcile(connection) is False
 
 
 class TestDeviceLabels:
@@ -930,8 +1134,8 @@ class TestThePurge:
             connection.execute(
                 sa.text(
                     f"INSERT INTO {LOAD_PROFILE_TABLE.name} "
-                    "(meter_serial, read_at, source, logger_id, interval_sec, created_at) "
-                    "VALUES (:s, :r, :src, 1, 900, :c)"
+                    "(meter_serial, read_at, source, interval_sec, created_at) "
+                    "VALUES (:s, :r, :src, 900, :c)"
                 ),
                 {
                     "s": "WP079074",
@@ -997,8 +1201,8 @@ class TestTheBudget:
             connection.execute(
                 sa.text(
                     f"INSERT INTO {LOAD_PROFILE_TABLE.name} "
-                    "(meter_serial, read_at, source, logger_id, interval_sec, created_at) "
-                    "VALUES ('WP079074', :r, :src, 9, 900, :r)"
+                    "(meter_serial, read_at, source, interval_sec, created_at) "
+                    "VALUES ('WP079074', :r, :src, 900, :r)"
                 ),
                 {"r": datetime(2019, 1, 1, 0, 0), "src": SOURCE_DLMS},
             )

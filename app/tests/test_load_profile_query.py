@@ -10,10 +10,16 @@ rule, independent of either caller.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from arichds.config import Settings
-from arichds.db.load_profile_query import MERGED_COLUMNS, merged_rows_select
+from arichds.db.load_profile_query import (
+    MERGED_COLUMNS,
+    SKEW_CAP,
+    merged_rows_cap,
+    merged_rows_l1_max,
+    merged_rows_select,
+)
 from arichds.db.models import Device, LoadProfileReading
 from arichds.db.session import session_scope
 
@@ -138,3 +144,77 @@ class TestMergedRowsSelect:
             rows = session.execute(merged_rows_select(device_id)).all()
 
         assert rows == []
+
+
+class TestTheSpinesFrontier:
+    def test_a_device_with_no_logger_1_row_has_none(self, migrated_db: Settings) -> None:
+        device_id = make_device()
+        seed(device_id, BASE, logger_id=2, volt_l1_l2=400.0)
+
+        with session_scope() as session:
+            assert merged_rows_l1_max(session, device_id) is None
+
+    def test_it_is_logger_1s_newest_read_at_as_aware_utc(self, migrated_db: Settings) -> None:
+        device_id = make_device()
+        seed(device_id, BASE)
+        seed(device_id, BASE + timedelta(hours=1))
+        seed(device_id, BASE + timedelta(hours=5), logger_id=2)
+
+        with session_scope() as session:
+            assert merged_rows_l1_max(session, device_id) == BASE + timedelta(hours=1)
+
+
+class TestTheCapForAWriterThatNeverRewrites:
+    """The load-profile walk reads Logger 1 to the present before Logger 2 gets
+    more than a chunk per visit, so after a long backfill Logger 2 is days
+    behind **while still arriving**. The CSV's daily rewrite repairs the rows
+    the plain 24 h escape then releases half-empty; the Database Destination
+    never rewrites a row, so for it the escape waits for a Logger 2 that has
+    actually gone quiet (code review of ADR 0027, 2026-09-20)."""
+
+    NOW = BASE + timedelta(days=5)
+    L1_MAX = BASE + timedelta(days=5) - timedelta(minutes=15)
+    L2_MAX = BASE + timedelta(days=1)
+
+    def _seed(self, device_id: int, *, l2_stored_at: datetime) -> None:
+        seed(device_id, self.L1_MAX, created_at=self.NOW)
+        seed(device_id, self.L2_MAX, logger_id=2, created_at=l2_stored_at)
+
+    def test_a_logger_2_that_is_days_behind_but_still_arriving_holds_the_rows(self, migrated_db: Settings) -> None:
+        device_id = make_device()
+        self._seed(device_id, l2_stored_at=self.NOW - timedelta(minutes=20))
+
+        with session_scope() as session:
+            cap = merged_rows_cap(session, device_id, self.L1_MAX, True, never_rewritten=True, now_utc=self.NOW)
+
+        assert cap == self.L2_MAX
+
+    def test_a_logger_2_that_has_stored_nothing_for_a_day_is_given_up_on(self, migrated_db: Settings) -> None:
+        device_id = make_device()
+        self._seed(device_id, l2_stored_at=self.NOW - SKEW_CAP - timedelta(minutes=1))
+
+        with session_scope() as session:
+            cap = merged_rows_cap(session, device_id, self.L1_MAX, True, never_rewritten=True, now_utc=self.NOW)
+
+        assert cap == self.L1_MAX
+
+    def test_the_csv_keeps_its_plain_escape(self, migrated_db: Settings) -> None:
+        """Unchanged for the writer that heals itself: same rows, no flag."""
+        device_id = make_device()
+        self._seed(device_id, l2_stored_at=self.NOW - timedelta(minutes=20))
+
+        with session_scope() as session:
+            cap = merged_rows_cap(session, device_id, self.L1_MAX, True, now_utc=self.NOW)
+
+        assert cap == self.L1_MAX
+
+    def test_within_the_window_the_flag_changes_nothing(self, migrated_db: Settings) -> None:
+        device_id = make_device()
+        seed(device_id, self.L1_MAX, created_at=self.NOW)
+        l2_max = self.L1_MAX - timedelta(hours=2)
+        seed(device_id, l2_max, logger_id=2, created_at=self.NOW - timedelta(days=3))
+
+        with session_scope() as session:
+            cap = merged_rows_cap(session, device_id, self.L1_MAX, True, never_rewritten=True, now_utc=self.NOW)
+
+        assert cap == l2_max

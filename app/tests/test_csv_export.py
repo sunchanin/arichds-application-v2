@@ -443,7 +443,7 @@ class TestAHeadChangeRewritesTheFileInPlace:
 
     def test_the_rewrite_still_holds_rows_past_the_skew_cap(self, migrated_db: Settings, tmp_path: Path) -> None:
         """F5's skew cap is not just an incremental-append rule — the
-        head-change rewrite goes through the same `_compute_cap` and must
+        head-change rewrite goes through the same `merged_rows_cap` and must
         stay behind it too: a Logger 1 row newer than Logger 2's own frontier
         is still held back, even on a full-window rewrite."""
         device_id = make_device()

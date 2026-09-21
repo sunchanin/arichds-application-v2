@@ -27,13 +27,16 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterator, Sequence
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import Engine
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.orm import Session
 
+from arichds.acquisition.poller import build_driver
 from arichds.config import get_settings
 from arichds.constants import (
     DBDEST_ROW_CHUNK,
@@ -43,8 +46,16 @@ from arichds.constants import (
     RETENTION_DAYS,
 )
 from arichds.dataout.destination import create_destination_engine, load_config
-from arichds.dataout.schema import BILLING_TABLE, DEVICE_LABEL_COLUMNS, LOAD_PROFILE_TABLE, reconcile
+from arichds.dataout.schema import (
+    BILLING_TABLE,
+    DEVICE_LABEL_COLUMNS,
+    LOAD_PROFILE_SPINE_COLUMNS,
+    LOAD_PROFILE_TABLE,
+    per_logger_load_profile_error,
+    reconcile,
+)
 from arichds.dataout.status import SyncStatus, set_last_sync
+from arichds.db.load_profile_query import merged_rows_cap, merged_rows_l1_max, merged_rows_select
 from arichds.db.models import BillingReading, Device, LoadProfileReading
 from arichds.db.session import session_scope
 from arichds.licensing.current import current_license_service
@@ -106,8 +117,8 @@ def _watermark_start(destination_max_local: datetime | None) -> datetime | None:
     ``ON DUPLICATE KEY UPDATE`` against the unique key.
 
     ``None`` in means ``None`` out — a destination that has never seen this
-    ``(meter_serial, logger_id)`` gets everything we hold, which is the first
-    cycle's backfill.
+    ``meter_serial`` gets everything we hold, which is the first cycle's
+    backfill.
     """
     if destination_max_local is None:
         return None
@@ -225,7 +236,7 @@ class _Counts:
 def _run_cycle(engine: Engine, *, deadline: float, counts: _Counts, billing: bool, load_profile: bool) -> None:
     """Reconcile the schema, then do the three pieces of work in order."""
     with engine.begin() as connection:
-        reconcile(connection)
+        per_logger_load_profile = reconcile(connection)
 
     # Checked **before** the transaction opens and never inside it: a budget
     # check mid-replace would leave the destination holding a partial set of
@@ -250,7 +261,7 @@ def _run_cycle(engine: Engine, *, deadline: float, counts: _Counts, billing: boo
     # `database_destination_cycle`). Recorded so the next reader knows this was
     # chosen rather than missed.
     if load_profile:
-        _append_load_profile(engine, deadline=deadline, counts=counts)
+        _append_load_profile(engine, deadline=deadline, counts=counts, refused=bool(per_logger_load_profile))
         # The purge runs even when the append ran out of budget — the Mirror
         # Window must not drift while a first-run backfill takes several
         # cycles to finish (ADR 0020). `_purge_destination` runs one batch
@@ -354,120 +365,183 @@ def _device_label_selectables() -> list[sa.ColumnElement[Any]]:
 # ─── Load profile — append from the destination's own watermark ───────────────
 
 
-def _append_load_profile(engine: Engine, *, deadline: float, counts: _Counts) -> None:
-    """Send every Interval Reading the destination does not already have.
+#: The UTC day each device last drew the "no driver" WARNING — see
+#: :func:`_has_secondary_logger`.
+_no_driver_warned_on: dict[int, date] = {}
 
-    The watermark is **per ``(meter_serial, logger_id)``, never per meter**: a
-    logger that lags behind another must keep its own and catch up without
-    being masked. That is the same failure ADR 0008 had to fix on our own side
-    at issue #24, where the watermark was taking ``MIN`` across loggers and
-    stalling one behind the other.
+
+@dataclass(frozen=True)
+class _MergeSource:
+    """One device's merged load profile, ready to be sent.
+
+    Attributes:
+        device_id: Our row id — used to query our own store, never sent.
+        serial: The Meter Serial its rows are keyed on.
+        labels: The device labels as they stand **now** — a snapshot per cycle.
+        cap: The inclusive newest ``read_at`` that may be sent this cycle
+            (:func:`~arichds.db.load_profile_query.merged_rows_cap`).
+    """
+
+    device_id: int
+    serial: str
+    labels: dict[str, Any]
+    cap: datetime
+
+
+def _append_load_profile(engine: Engine, *, deadline: float, counts: _Counts, refused: bool = False) -> None:
+    """Send every merged Interval Reading the destination does not already have.
+
+    **One row per meter per interval** (ADR 0027): Logger 1 is the spine, Logger
+    2 is joined on an exact ``read_at`` and every measurement is
+    ``COALESCE(logger1, logger2)`` — :func:`merged_rows_select`, the query the
+    Load Profile page and the Load Profile CSV are built on, so the three cannot
+    disagree about what a row holds. A Logger 2 row with no Logger 1 partner —
+    two in three on a Prometer 100, whose Logger 2 runs at 300 s — is not sent.
+
+    The watermark is per ``meter_serial``. A Logger 2 that lags is handled by
+    the **cap**, not by a second watermark: a sent row never changes, so a
+    Logger 1 row is held back until Logger 2 has caught up — or has stored
+    nothing at all for 24 h (``never_rewritten``).
 
     **The source query filters on the watermark in SQL.** The design probe read
     all 61,023 rows on every run and discarded most of them in a Python loop;
     that cost 0.4 s at three meters and does not scale to twenty. No code path
     here reads the whole table into memory.
     """
-    watermarks = _destination_watermarks(engine)
+    # Here, after billing, never in `reconcile` before it (code review,
+    # 2026-09-20): a per-logger table left over from 0.7.5 stops *this* step, and
+    # the error still reaches the page — but billing is already current.
+    # *refused* is `reconcile`'s own answer from this same cycle.
+    if refused:
+        raise per_logger_load_profile_error()
 
-    for device_id, logger_id, serial, labels in _source_pairs():
-        if serial is None:
-            # Counted only on the miss — see `_source_pairs`.
-            missing_rows = _unattributable_row_count(device_id, logger_id)
-            counts.skipped += missing_rows
-            logger.warning(
-                "Database Destination: device id %s has no Meter Serial — its %d Interval Reading(s) on logger %s "
-                "cannot be attributed at the destination and were not sent",
-                device_id,
-                missing_rows,
-                logger_id,
-            )
-            continue
+    watermarks = _destination_watermarks(engine)
+    sources, unattributable = _merge_sources()
+    counts.skipped += unattributable
+
+    for source in sources:
         if _out_of_budget(deadline, counts):
             return
-        _send_pair(engine, device_id, logger_id, serial, labels, watermarks, deadline=deadline, counts=counts)
+        _send_device(engine, source, watermarks.get(source.serial), deadline=deadline, counts=counts)
 
 
-def _destination_watermarks(engine: Engine) -> dict[tuple[str, int], datetime]:
-    """The destination's newest ``read_at`` per ``(meter_serial, logger_id)``.
+def _destination_watermarks(engine: Engine) -> dict[str, datetime]:
+    """The destination's newest ``read_at`` per ``meter_serial``.
 
     Values are **local**, straight out of a ``DATETIME`` column;
     :func:`_watermark_start` is what converts them back.
     """
-    statement = sa.select(
-        LOAD_PROFILE_TABLE.c.meter_serial,
-        LOAD_PROFILE_TABLE.c.logger_id,
-        sa.func.max(LOAD_PROFILE_TABLE.c.read_at),
-    ).group_by(LOAD_PROFILE_TABLE.c.meter_serial, LOAD_PROFILE_TABLE.c.logger_id)
-
-    with engine.connect() as connection:
-        return {(str(serial), int(logger_id)): newest for serial, logger_id, newest in connection.execute(statement)}
-
-
-def _source_pairs() -> list[tuple[int, int, str | None, dict[str, Any]]]:
-    """Every ``(device_id, logger_id)`` we hold rows for, with its Meter Serial
-    and its device labels — read once per pair per cycle, which is what makes a
-    label a snapshot of the moment a row is sent.
-
-    ``DISTINCT`` rather than ``GROUP BY … COUNT(*)``. An earlier version
-    aggregated a count here so the "no Meter Serial" warning could name a
-    number, which meant every cycle paid a full aggregate over
-    ``load_profile_readings`` — ``logger_id`` is not in
-    ``ix_load_profile_readings_device_read_at``, so at 60k+ rows that is a scan
-    plus a temp b-tree — to populate a log line that normally never fires (the
-    design probe measured 0 such rows). :func:`_unattributable_row_count` now
-    issues that count only on the miss.
-    """
-    source = LoadProfileReading.__table__
-    device = Device.__table__
-    statement = (
-        sa.select(source.c.device_id, source.c.logger_id, device.c.meter_serial, *_device_label_selectables())
-        .select_from(source.join(device, device.c.id == source.c.device_id))
-        .distinct()
-        .order_by(source.c.device_id, source.c.logger_id)
+    statement = sa.select(LOAD_PROFILE_TABLE.c.meter_serial, sa.func.max(LOAD_PROFILE_TABLE.c.read_at)).group_by(
+        LOAD_PROFILE_TABLE.c.meter_serial
     )
 
-    with session_scope() as session:
-        return [
-            (
-                int(row["device_id"]),
-                int(row["logger_id"]),
-                row["meter_serial"],
-                {name: row[name] for name in DEVICE_LABEL_COLUMNS},
-            )
-            for row in session.execute(statement).mappings()
-        ]
+    with engine.connect() as connection:
+        return {str(serial): newest for serial, newest in connection.execute(statement)}
 
 
-def _unattributable_row_count(device_id: int, logger_id: int) -> int:
-    """How many rows one serial-less ``(device, logger)`` holds.
+def _merge_sources() -> tuple[list[_MergeSource], int]:
+    """Every device that can be sent this cycle, and how many rows could not be.
 
-    Exact rather than approximate: a device with no Meter Serial has nothing at
-    the destination, so every row it holds is a row not sent. Issued only when
-    a device actually lacks a serial, which on a healthy site is never.
+    Logger 1 is the spine of the merge, so a device with none has nothing to
+    send — including one that holds only Logger 2 rows, which shows nothing on
+    the Load Profile page either.
+
+    A device with **no Meter Serial** is not a source: its rows are
+    unattributable at a destination keyed on the serial. They are counted —
+    the merged rows up to the cap, which is exactly what would have been sent —
+    and warned about, only on the miss; a healthy site never gets there.
+
+    Returns:
+        The sources, and the number of merged rows skipped for a missing serial.
     """
-    source = LoadProfileReading.__table__
-    statement = sa.select(sa.func.count()).where(source.c.device_id == device_id, source.c.logger_id == logger_id)
+    sources: list[_MergeSource] = []
+    unattributable = 0
     with session_scope() as session:
-        return int(session.execute(statement).scalar_one())
+        for device in session.scalars(sa.select(Device).order_by(Device.id)):
+            l1_max = merged_rows_l1_max(session, device.id)
+            if l1_max is None:
+                continue
+            cap = merged_rows_cap(
+                session, device.id, l1_max, _has_secondary_logger(session, device), never_rewritten=True
+            )
+            if not device.meter_serial:
+                missing_rows = _merged_row_count(session, device.id, cap)
+                unattributable += missing_rows
+                logger.warning(
+                    "Database Destination: device id %s has no Meter Serial — its %d Interval Reading(s) "
+                    "cannot be attributed at the destination and were not sent",
+                    device.id,
+                    missing_rows,
+                )
+                continue
+            sources.append(
+                _MergeSource(
+                    device_id=device.id,
+                    serial=device.meter_serial,
+                    labels={name: getattr(device, column) for name, column in DEVICE_LABEL_COLUMNS.items()},
+                    cap=cap,
+                )
+            )
+    return sources, unattributable
 
 
-def _send_pair(
+def _has_secondary_logger(session: Session, device: Device) -> bool:
+    """Whether *device* has a Logger 2 — from its driver, as the CSV exporter asks (D-12).
+
+    Built but never connected; no Transport Endpoint lock is taken. **A driver
+    that cannot be built does not stop the send** (code review, 2026-09-20): the
+    rows are already in our store and the driver is needed for this one answer,
+    so the data answers instead — a device holding Logger 2 rows has a Logger 2.
+    The exporter may skip such a device because the next cycle rewrites its
+    file; a destination row skipped here would simply stop arriving, silently.
+    """
+    try:
+        return 2 in build_driver(device).load_profile_loggers()
+    except ValueError as exc:
+        # One WARNING per device per UTC day, DEBUG after that — the battery
+        # job's rule, for its reason: this repeats every fifteen minutes for as
+        # long as the device stays broken, and 96 identical lines a day bury
+        # the one that matters. In memory only (ADR 0008); a restart warns again.
+        today = datetime.now(UTC).date()
+        level = logging.DEBUG if _no_driver_warned_on.get(device.id) == today else logging.WARNING
+        _no_driver_warned_on[device.id] = today
+        logger.log(
+            level,
+            "Database Destination: no driver for device id %s (%s) — asking its stored rows whether it has a "
+            "Logger 2; one warning per device per day",
+            device.id,
+            exc,
+        )
+    source = LoadProfileReading.__table__
+    return (
+        session.scalar(sa.select(sa.exists().where(source.c.device_id == device.id, source.c.logger_id == 2))) or False
+    )
+
+
+def _merged_row_count(session: Session, device_id: int, cap: datetime) -> int:
+    """How many merged rows *device_id* holds up to *cap* — what a send would carry.
+
+    Counted over :func:`merged_rows_select` rather than over Logger 1, so an
+    all-invalid interval and a row still held behind the cap are not reported
+    as rows the destination is missing.
+    """
+    merged = merged_rows_select(device_id).where(LoadProfileReading.read_at <= cap).subquery()
+    return int(session.scalar(sa.select(sa.func.count()).select_from(merged)) or 0)
+
+
+def _send_device(
     engine: Engine,
-    device_id: int,
-    logger_id: int,
-    serial: str,
-    labels: dict[str, Any],
-    watermarks: dict[tuple[str, int], datetime],
+    source: _MergeSource,
+    destination_max_local: datetime | None,
     *,
     deadline: float,
     counts: _Counts,
 ) -> None:
-    """Send one ``(meter_serial, logger_id)``'s pending rows, chunk by chunk."""
-    start = _watermark_start(watermarks.get((serial, logger_id)))
+    """Send one meter's pending merged rows, chunk by chunk."""
+    start = _watermark_start(destination_max_local)
 
     while True:
-        rows = _source_chunk(device_id, logger_id, serial, labels, start)
+        rows = _source_chunk(source, start)
         if not rows:
             return
         _insert_load_profile(engine, rows)
@@ -480,25 +554,27 @@ def _send_pair(
             return
 
 
-def _source_chunk(
-    device_id: int, logger_id: int, serial: str, labels: dict[str, Any], start: datetime | None
-) -> list[dict[str, Any]]:
-    """One page of source rows newer than *start*, in ``read_at`` order.
+def _source_chunk(source: _MergeSource, start: datetime | None) -> list[dict[str, Any]]:
+    """One page of merged rows newer than *start* and no newer than the cap.
 
     The watermark is applied **in SQL**, which is the whole point: the
     destination's own newest row decides what SQLite is asked for, so a
     steady-state cycle reads about 28 rows rather than 61,023.
     """
-    source = LoadProfileReading.__table__
-    columns = [column for column in source.columns if column.name in LOAD_PROFILE_TABLE.columns]
-    statement = sa.select(*columns).where(source.c.device_id == device_id, source.c.logger_id == logger_id)
+    spine = LoadProfileReading
+    statement = (
+        merged_rows_select(source.device_id)
+        .add_columns(*[getattr(spine, name) for name in LOAD_PROFILE_SPINE_COLUMNS])
+        .where(spine.read_at <= source.cap)
+    )
     if start is not None:
-        statement = statement.where(source.c.read_at > start)
-    statement = statement.order_by(source.c.read_at).limit(DBDEST_ROW_CHUNK)
+        statement = statement.where(spine.read_at > start)
+    statement = statement.order_by(spine.read_at).limit(DBDEST_ROW_CHUNK)
 
     with session_scope() as session:
         return [
-            {**dict(mapping), "meter_serial": serial, **labels} for mapping in session.execute(statement).mappings()
+            {**dict(mapping), "meter_serial": source.serial, **source.labels}
+            for mapping in session.execute(statement).mappings()
         ]
 
 
@@ -518,7 +594,9 @@ def _insert_load_profile(engine: Engine, rows: Sequence[dict[str, Any]]) -> None
     written — the assignment is therefore a no-op by construction rather than
     by coincidence. It is also why a renamed device never rewrites the labels
     on a row already sent: the rewound hour is re-sent under the new name every
-    cycle, and this clause is what discards it.
+    cycle, and this clause is what discards it. The same goes for a Logger 2
+    value that arrives after its row was released by the cap's 24 h escape — the
+    Load Profile CSV behaves identically (ADR 0027).
     """
     statement = mysql_insert(LOAD_PROFILE_TABLE)
     statement = statement.on_duplicate_key_update(source=statement.inserted.source)

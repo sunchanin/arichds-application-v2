@@ -1317,14 +1317,25 @@ one header.
 - **ระบุแถวด้วย Meter Serial ไม่ใช่ `device_id`** — `devices.id` เป็น alias ของ rowid ใน SQLite
   จึงถูกใช้ซ้ำหลังลบ ปลายทางไม่มีวันรู้เรื่องการลบนั้น และข้อมูลสองมิเตอร์จะกองใต้เลขเดียวกัน ·
   `billing_readings` มี `meter_serial` ต่อแถวอยู่แล้ว (§3.6) · `load_profile_readings` ไม่มี
-  ต้อง join จาก `devices` ตอนเขียน · unique key ปลายทาง = `(meter_serial, logger_id, read_at)`
+  ต้อง join จาก `devices` ตอนเขียน · unique key ปลายทาง = `(meter_serial, read_at)` —
+  **หนึ่งแถวรวมต่อหนึ่งช่วงเวลา ไม่มี `logger_id`** (ADR 0027, 2026-09-20 ลูกค้าขอ; เดิมคือ
+  `(meter_serial, logger_id, read_at)`): แถวมาจาก `merged_rows_select` ตัวเดียวกับหน้า Load Profile
+  และไฟล์ CSV — Logger 1 เป็นแกน · Logger 2 join ด้วย `read_at` ที่ตรงกันเป๊ะ · `COALESCE(L1, L2)` ·
+  แถว Logger 2 ที่ไม่มีคู่ (2 ใน 3 ของ Prometer 100) **ไม่ถูกส่ง** · ตารางแบบเดิมที่ยังมี `logger_id`
+  ถูกขั้นตอน load profile ปฏิเสธพร้อมบอกให้ `DROP TABLE` (billing ยัง sync ตามปกติ · `reconcile` ไม่แตะ
+  ตารางนั้นเลย) — เราไม่แก้ key ในฐานข้อมูลของลูกค้า · index เดียวที่เพิ่ม = `read_at` สำหรับ purge
 - **เวลาท้องถิ่น ไม่ใช่ UTC** (ADR 0021) — `DATETIME` ไม่ใช่ `TIMESTAMP` · offset มาจาก
   `METER_LOCAL_UTC_OFFSET_HOURS` ไม่ใช่ timezone ของเครื่อง
 - **รอบ 15 นาที** เท่ารอบ Load Profile · หนึ่งบรรทัดใน `default_jobs()` ไม่มี thread ใหม่ ·
   Limited Mode หยุด scheduler ทั้ง thread อยู่แล้ว ⇒ sync หยุดเองโดยไม่ต้องเขียนอะไรเพิ่ม
 - **สองตาราง สองวิธีเขียน เพราะมันต่างกันจริง**:
-  - `load_profile_readings` — ถามปลายทางว่า `MAX(read_at)` ต่อ `(meter_serial, logger_id)`
-    ถึงไหน ถอยหลังด้วย safety margin แล้วส่งที่ใหม่กว่าด้วย
+  - `load_profile_readings` — ถามปลายทางว่า `MAX(read_at)` ต่อ `meter_serial` (ADR 0027; เดิมต่อ
+    `(meter_serial, logger_id)`) ถึงไหน ถอยหลังด้วย safety margin แล้วส่งที่ใหม่กว่า — แต่ไม่เกิน
+    **cap** `merged_rows_cap(never_rewritten=True)` (กติกา F5 ของ CSV: แถว Logger 1 รอ Logger 2 ตามทัน
+    เพราะแถวที่ส่งแล้วไม่ถูกแก้ — แต่**ทางหนี 24 ชม. ต่างจาก CSV**: ปล่อยก็ต่อเมื่อ Logger 2 ไม่ได้เก็บแถว
+    ใหม่เลย 24 ชม. (`MAX(created_at)`) ไม่ใช่แค่ตามหลังเกิน 24 ชม. เพราะระหว่าง backfill Logger 2
+    ตามหลังหลายวันเป็นปกติ และปลายทางไม่มี rewrite รายวันแบบ CSV มาซ่อม; มี Logger 2 หรือไม่ถาม driver
+    ถ้าสร้าง driver ไม่ได้ให้ดูจากแถวที่เก็บไว้) — ด้วย
     **`INSERT … ON DUPLICATE KEY UPDATE`** ⇒ **ไม่เก็บ state ฝั่งเรา** (ADR 0008) · แถวไม่เคยเปลี่ยนค่า
     · **ห้ามใช้ `INSERT IGNORE`** แม้จะ dedup ได้เหมือนกัน — วัดกับ MariaDB 10.4.32 ตัวจริง
     (2026-08-24): `IGNORE` ลดทอน error เป็น warning **แม้อยู่ใต้ `STRICT_TRANS_TABLES`** ⇒ serial

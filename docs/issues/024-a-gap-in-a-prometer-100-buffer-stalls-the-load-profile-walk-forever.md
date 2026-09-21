@@ -34,6 +34,15 @@ The risk to weigh: if the same error ever means something else on this model (a 
 refused for another reason), that chunk is skipped silently and the watermark moves past it —
 silent loss of up to 24 h, against today's certain and permanent stall.
 
+## What else rides on this (added 2026-09-21)
+
+Since ADR 0027 the Database Destination sends one merged row per interval and holds a Logger 1
+row until Logger 2 has caught up. A Logger 2 that this stall stops **at its very first chunk**
+never stores a row, and a two-Logger meter with no Logger 2 row at all is sent a permanent
+24 hours late (`merged_rows_cap`: `l1_max − 24 h`) with nothing on the Database page to say so.
+A stall further in is milder — Logger 2 goes quiet, and after 24 h the rows are released
+without their Logger 2 columns. Either way, deciding this issue also decides that.
+
 ## Evidence
 
 - `docs/meter-notes/prometer100-load-profile-access.md` — the measurements.

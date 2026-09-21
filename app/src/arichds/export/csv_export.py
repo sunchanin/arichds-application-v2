@@ -70,7 +70,7 @@ from arichds.db.app_settings import (
     EXPORT_OUTPUT_DIR_KEY,
     get_setting,
 )
-from arichds.db.load_profile_query import merged_rows_select
+from arichds.db.load_profile_query import merged_rows_cap, merged_rows_l1_max, merged_rows_select
 from arichds.db.models import Device, LoadProfileReading
 from arichds.db.session import session_scope
 from arichds.export.billing_csv import export_device_billing
@@ -84,10 +84,6 @@ logger = logging.getLogger(__name__)
 #: (M13, issue 07), and what to call this export in a log line.
 _FILE_LABEL = "Load Profile"
 _LOG_LABEL = "CSV export"
-
-#: F5 — how far Logger 2 may lag Logger 1 before the staleness escape
-#: releases held rows anyway (v1's `LP_L2_SKEW_MAX_HOURS`).
-_SKEW_CAP = timedelta(hours=24)
 
 _locks: dict[int, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -229,17 +225,12 @@ def _l1_max(session: Session, device_id: int) -> datetime | None:
     when it has none — a brand-new device that has never reported, or one
     whose every Logger 1 row has aged out past ``RETENTION_DAYS`` (the
     ordinary state right behind ``purge_expired``, reviewer finding 1(b))."""
-    l1_max = session.scalar(
-        select(func.max(LoadProfileReading.read_at)).where(
-            LoadProfileReading.device_id == device_id, LoadProfileReading.logger_id == 1
-        )
-    )
-    return _as_utc(l1_max) if l1_max is not None else None
+    return merged_rows_l1_max(session, device_id)
 
 
 def _context_from_target(session: Session, device_id: int, target: _ResolvedTarget, l1_max: datetime) -> _ExportContext:
     """Add the skew cap (F5) to an already-resolved *target*."""
-    cap = _compute_cap(session, device_id, l1_max, target.has_secondary_logger)
+    cap = merged_rows_cap(session, device_id, l1_max, target.has_secondary_logger)
     return _ExportContext(
         device=target.device,
         device_label=target.device_label,
@@ -400,39 +391,6 @@ def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExpo
 def _as_utc(value: datetime) -> datetime:
     """SQLite hands back naive datetimes; every stored ``read_at`` is UTC."""
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-
-
-def _compute_cap(session: Session, device_id: int, l1_max: datetime, has_secondary_logger: bool) -> datetime:
-    """F5 — the inclusive upper bound of the export window.
-
-    Args:
-        session: Active DB session.
-        device_id: The device being exported.
-        l1_max: This device's ``MAX(read_at)`` on Logger 1 — never ``None``
-            (the caller has already returned before this is called for a
-            device with no Logger 1 rows).
-        has_secondary_logger: Whether the driver reports a Logger 2 (D-12).
-
-    Returns:
-        The inclusive upper-bound ``read_at`` for the export window.
-    """
-    if not has_secondary_logger:
-        return l1_max
-
-    l2_max = session.scalar(
-        select(func.max(LoadProfileReading.read_at)).where(
-            LoadProfileReading.device_id == device_id, LoadProfileReading.logger_id == 2
-        )
-    )
-    if l2_max is None:
-        # Logger 2 never seen — hold everything within the skew window.
-        return l1_max - _SKEW_CAP
-    l2_max = _as_utc(l2_max)
-    if l2_max >= l1_max - _SKEW_CAP:
-        # Logger 2 present and within the window — hold rows past its frontier.
-        return min(l1_max, l2_max)
-    # Logger 2 stale beyond the window — staleness escape, release everything.
-    return l1_max
 
 
 def _full_window_rows(

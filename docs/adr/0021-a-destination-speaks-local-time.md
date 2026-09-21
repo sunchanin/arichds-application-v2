@@ -59,7 +59,7 @@ the offset must come from a constant we can point at rather than from ambient st
 ## The hazard this creates, and what absorbs it
 
 The load-profile write path asks the destination for its newest `read_at` per
-`(meter_serial, logger_id)` and sends what is newer. **That value is now in local time while
+`(meter_serial, logger_id)` (per `meter_serial` alone since ADR 0027) and sends what is newer. **That value is now in local time while
 ours is in UTC**, so the comparison must convert — and a missing or doubled conversion is seven
 hours of silently duplicated or skipped rows, with no error on either side.
 

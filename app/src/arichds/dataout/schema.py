@@ -29,6 +29,7 @@ import sqlalchemy as sa
 from sqlalchemy import Connection, Table
 from sqlalchemy.dialects import mysql
 
+from arichds.db.load_profile_query import MERGED_COLUMNS
 from arichds.db.models import BillingReading, Device, LoadProfileReading
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,13 @@ METADATA = sa.MetaData()
 # 03), not a meter measurement — a customer's database mirrors what the meter
 # said (ADR 0016/0020), never where a document landed on this machine.
 _EXCLUDED_COLUMNS = frozenset({"id", "device_id", "captured_at"})
+
+#: Dropped from ``load_profile_readings`` only, since ADR 0027: the destination
+#: holds **one merged row per interval** — Logger 1 the spine, Logger 2 joined
+#: on an exact ``read_at``, ``COALESCE`` per column — the row the Load Profile
+#: page and the Load Profile CSV already show, so a logger discriminator has
+#: nothing left to discriminate.
+_LOGGER_COLUMN = "logger_id"
 
 #: Meter Serial's width, taken from ``devices.meter_serial`` /
 #: ``billing_readings.meter_serial`` (``String(64)``) rather than chosen here,
@@ -164,23 +172,49 @@ _TABLE_OPTIONS = {
 #: ``NOT NULL``: a row nobody can attribute to a meter is unattributable at the
 #: destination too, so the sync skips and counts it rather than writing it.
 #:
-#: The unique key on ``(meter_serial, logger_id, read_at)`` is what makes
+#: **One merged row per interval, no ``logger_id``** (ADR 0027) — see
+#: :data:`_LOGGER_COLUMN`. Every measurement column is one of
+#: :data:`~arichds.db.load_profile_query.MERGED_COLUMNS`; what is left
+#: (``source``, ``interval_sec``, ``created_at``) is taken from the Logger 1 row.
+#: ``test_dataout_schema.py`` pins that split, so a measurement column added to
+#: the model cannot reach this table without joining the merge.
+#:
+#: The unique key on ``(meter_serial, read_at)`` is what makes
 #: ``INSERT … ON DUPLICATE KEY UPDATE`` collapse a re-sent row onto the
 #: existing one instead of duplicating it — the safety the watermark rewind
-#: rests on (ADR 0021). There is no surrogate primary key: nothing at the
-#: destination refers to a row by number.
+#: rests on (ADR 0021). The watermark's ``MAX(read_at)`` per serial rides it
+#: too, so the ``(meter_serial, read_at)`` secondary index the per-logger shape
+#: carried would now be an exact duplicate and is gone.
+#:
+#: **The purge needs its own index.** ``DELETE … WHERE read_at < :cutoff`` names
+#: no ``meter_serial``, so no index that leads with the serial can serve it —
+#: true of the old secondary index as well, which left every cycle's purge a
+#: full scan (code review, 2026-09-20). ``ix_load_profile_readings_read_at`` is
+#: for that statement alone.
+#:
+#: There is no surrogate primary key: nothing at the destination refers to a
+#: row by number.
 LOAD_PROFILE_TABLE: Table = sa.Table(
     "load_profile_readings",
     METADATA,
     *_labelled(
         [
             sa.Column("meter_serial", mysql.VARCHAR(_METER_SERIAL_WIDTH), nullable=False),
-            *_derive_columns(LoadProfileReading),
+            *[column for column in _derive_columns(LoadProfileReading) if column.name != _LOGGER_COLUMN],
         ]
     ),
-    sa.UniqueConstraint("meter_serial", "logger_id", "read_at", name="uq_load_profile_readings_serial_logger_read_at"),
-    sa.Index("ix_load_profile_readings_serial_read_at", "meter_serial", "read_at"),
+    sa.UniqueConstraint("meter_serial", "read_at", name="uq_load_profile_readings_serial_read_at"),
+    sa.Index("ix_load_profile_readings_read_at", "read_at"),
     **_TABLE_OPTIONS,
+)
+
+#: The destination columns that are **not** merged — copied from the Logger 1
+#: row as they stand. Derived, so :mod:`.sync` selects exactly what the table
+#: holds and nothing is listed twice.
+LOAD_PROFILE_SPINE_COLUMNS: tuple[str, ...] = tuple(
+    column.name
+    for column in LOAD_PROFILE_TABLE.columns
+    if column.name not in {"meter_serial", "read_at", *DEVICE_LABEL_COLUMNS, *MERGED_COLUMNS}
 )
 
 #: ``billing_readings`` at the destination.
@@ -217,7 +251,7 @@ BILLING_TABLE.columns["meter_serial"].nullable = False
 TABLES: tuple[Table, ...] = (BILLING_TABLE, LOAD_PROFILE_TABLE)
 
 
-def reconcile(connection: Connection) -> None:
+def reconcile(connection: Connection) -> bool:
     """Create what is missing and add what is new — **never drop, never retype**.
 
     Four steps, and the last three exist because the first is not enough:
@@ -231,6 +265,15 @@ def reconcile(connection: Connection) -> None:
        would. A column that is already there is **never moved**.
     3. Create any of our secondary indexes the server does not have.
     4. Refuse to go on if ``load_profile_readings`` has no unique key.
+
+    **A per-logger ``load_profile_readings`` is left exactly as it is.** A table
+    that still has a ``logger_id`` column is the one an ARICHDS before ADR 0027
+    created: nothing is added to it, no index is created on it and its key is
+    not judged, because nothing will be written to it either — this function
+    **returns ``True``** for it, and the load-profile step raises
+    :func:`per_logger_load_profile_error` on that answer before it would write.
+    The raise is kept out of here so that a site with no ``load_profile``
+    licence, or an upgrade nobody has finished yet, still gets its billing.
 
     **Step 1 alone is not enough**, and this is not hypothetical. Against a
     table that already exists, ``CREATE TABLE IF NOT EXISTS`` does *nothing at
@@ -271,15 +314,23 @@ def reconcile(connection: Connection) -> None:
             in any case, which is one more reason nothing destructive belongs
             in it.
 
+    Returns:
+        Whether ``load_profile_readings`` is a per-logger table that was left
+        alone. Returned rather than asked again by the caller: the columns are
+        already in hand here, and a second ``information_schema`` query every
+        fifteen minutes, for ever, is a lot to pay for a one-time upgrade.
+
     Raises:
-        RuntimeError: When ``load_profile_readings`` has no unique key over
-            ``(meter_serial, logger_id, read_at)``.
+        RuntimeError: When a merged-shape ``load_profile_readings`` has no
+            unique key over ``(meter_serial, read_at)``.
     """
     for table in TABLES:
         connection.execute(sa.schema.CreateTable(table, if_not_exists=True))
 
     existing = _existing_columns(connection)
-    for table in TABLES:
+    per_logger = _LOGGER_COLUMN in existing.get(LOAD_PROFILE_TABLE.name, set())
+    ours = [table for table in TABLES if not (per_logger and table is LOAD_PROFILE_TABLE)]
+    for table in ours:
         present = existing.get(table.name, set())
         if not present:
             # Freshly created above, or reported empty by information_schema —
@@ -299,20 +350,44 @@ def reconcile(connection: Connection) -> None:
             previous = column.name
 
     index_names = _existing_index_names(connection)
-    for table in TABLES:
+    for table in ours:
         for index in table.indexes:
             if index.name in index_names.get(table.name, set()):
                 continue
             logger.info("Database Destination: creating missing index %s on %s", index.name, table.name)
             connection.execute(sa.schema.CreateIndex(index))
 
+    if per_logger:
+        return True
     if not _load_profile_unique_key_names().intersection(index_names.get(LOAD_PROFILE_TABLE.name, set())):
         raise RuntimeError(
             f"The destination's {LOAD_PROFILE_TABLE.name} has no unique key over "
-            "(meter_serial, logger_id, read_at). ARICHDS relies on it to collapse a re-sent row onto the "
+            "(meter_serial, read_at). ARICHDS relies on it to collapse a re-sent row onto the "
             "existing one; without it every cycle would add duplicates. Drop or repair that table and let "
             "ARICHDS create it."
         )
+    return False
+
+
+def per_logger_load_profile_error() -> RuntimeError:
+    """What the load-profile step raises when :func:`reconcile` answered ``True``.
+
+    The per-logger table's unique key includes ``logger_id`` and that column is
+    ``NOT NULL``, so a merged row (ADR 0027) cannot be written into it, and
+    reshaping a key on a table that holds rows is not ours to do in someone
+    else's database. The message names the way out — drop the table;
+    :func:`reconcile` recreates it and the next cycle re-sends the whole window.
+
+    Raised by the load-profile step only, **after** billing has been replaced:
+    the refusal is about this one table, and the cycle's error on the Database
+    page is loud enough without freezing a table it has nothing to do with.
+    """
+    return RuntimeError(
+        f"The destination's {LOAD_PROFILE_TABLE.name} is the per-logger table an earlier ARICHDS created "
+        f"(it has a {_LOGGER_COLUMN} column). ARICHDS now writes one merged row per interval, keyed on "
+        f"(meter_serial, read_at). Run DROP TABLE {LOAD_PROFILE_TABLE.name}; on the destination — ARICHDS "
+        "recreates it and re-sends its whole window on the next cycle."
+    )
 
 
 def _load_profile_unique_key_names() -> set[str]:

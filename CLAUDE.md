@@ -540,7 +540,35 @@ MySQL, and ~30 tables.
   one-process goal for Modbus sites; all 9 models keep a DLMS driver, so coverage is unchanged;
   the `source` column and `SOURCE_MODBUS` stay as a reserved value no code writes, never a
   read-path branch; no integration with the Go program — an assumption to revisit the first time a
-  site needs one UI or one push for both)
+  site needs one UI or one push for both) ·
+  0027 (**the Database Destination's load profile is one merged row per interval**, 2026-09-20, the
+  customer's request — amends SPEC §3.10 and ADR 0021's per-`(meter_serial, logger_id)` key; **our own
+  store is untouched** and still keeps a row per Logger, for the reasons in
+  `load-profile-capture-objects.md`. The destination's `load_profile_readings` has **no
+  `logger_id`**, unique key `(meter_serial, read_at)` plus one index on `read_at` for the purge
+  (whose `DELETE … WHERE read_at <` names no serial) — and its rows come
+  from `db/load_profile_query.py::merged_rows_select`, the query the Load Profile page and the CSV
+  are built on, never a second copy of the rule; `source`/`interval_sec`/`created_at` come from
+  the Logger 1 row (`dataout/schema.py::LOAD_PROFILE_SPINE_COLUMNS`, pinned as an exact set so a
+  new measurement column cannot slip in un-merged). The watermark is per `meter_serial`; a
+  lagging Logger 2 is handled by the **cap** — `merged_rows_cap`, the CSV's F5 rule, moved out of
+  `export/csv_export.py` into `db/load_profile_query.py` because `dataout/` may not import
+  `export/` — since a sent row never changes. **The destination's 24 h escape is not the CSV's**
+  (`never_rewritten=True`, code review 2026-09-20): the walk reads Logger 1 to the present before
+  Logger 2 gets more than a chunk per visit, so "more than 24 h behind" is the normal state of a
+  backfill, and nothing repairs a destination row the way the daily rewrite repairs the CSV — the
+  escape therefore waits until Logger 2 has **stored nothing for 24 h** (`MAX(created_at)`,
+  stateless). **Costs the owner accepted**: a Logger 2 row with no Logger 1 partner (two in three
+  on a Prometer 100) is not sent; a Logger 2 value arriving after the escape never reaches the
+  destination; a two-Logger meter whose Logger 2 has never stored a row runs a day behind. **A
+  per-logger table from 0.7.5 or earlier is refused, not reshaped** — by the load-profile step
+  (`per_logger_load_profile_error`, raised on `reconcile`'s own returned answer), *after* billing
+  has been replaced, naming `DROP TABLE
+  load_profile_readings;`; `reconcile` leaves such a table exactly as it found it. A device whose
+  driver cannot be built is still sent — its stored rows say whether it has a Logger 2, with one
+  WARNING per device per day. `scripts/probe_dbdest_merge_backfill.py` is the acceptance probe: a
+  real two-Logger backfill into a real MariaDB, checking the hold after every round and the
+  merged rows against `merged_rows_select` at the end — `fake_meter` cannot prove either)
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
