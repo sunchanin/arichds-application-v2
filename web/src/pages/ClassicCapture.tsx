@@ -128,11 +128,21 @@ export function ClassicCapture({ request }: { request: CaptureRequest }) {
         <Text left={3} top={17}>
           Time:
         </Text>
-        <div className="cc-spinner cc-spinner-hour">00</div>
+        <div className="cc-spinner cc-spinner-hour">
+          00
+          <span className="cc-spin-up" />
+          <span className="cc-spin-divider" />
+          <span className="cc-spin-down" />
+        </div>
         <Text left={76} top={17}>
           :
         </Text>
-        <div className="cc-spinner cc-spinner-minute">00</div>
+        <div className="cc-spinner cc-spinner-minute">
+          00
+          <span className="cc-spin-up" />
+          <span className="cc-spin-divider" />
+          <span className="cc-spin-down" />
+        </div>
         <Text left={130} top={17} className="cc-status-running">
           Status: Running
         </Text>
