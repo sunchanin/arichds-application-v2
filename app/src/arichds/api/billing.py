@@ -942,7 +942,7 @@ class ClassicCaptureOut(BaseModel):
     """Everything the Classic page draws (ADR 0028)."""
 
     save_path: str
-    group_name: str | None
+    site_name: str
     brand: str
     meter_serial: str
     statistics: ClassicStatisticsOut
@@ -994,16 +994,17 @@ def _require_capture_dir(session: Session) -> str:
 
 
 def _classic_statistics(session: Session, device: Device) -> ClassicStatisticsOut:
-    """Counted over the devices sharing *device*'s group — or sharing *no*
-    group when it has none (``NULL`` matches ``NULL``, never a named group)
+    """Counted over the devices sharing *device*'s Site Name — the value the
+    image's Group box shows (owner, 2026-09-22: ``site_name`` is required on
+    every device where ``group_name`` is optional, so the box is never blank)
     — from the Poller's stored status alone (ADR 0004), read at request
     time, nothing persisted (ADR 0008): a Paused device is not counted at
     all, *Devices with Issues* are those held Offline, Unknown counts and
     is not an issue, Complete = Total − Issues."""
-    same_group = Device.group_name.is_(None) if device.group_name is None else Device.group_name == device.group_name
+    same_site = Device.site_name == device.site_name
     # The two columns `display_status` reads, not the whole row: `enabled`
     # false is Paused (computed, never stored), `status` is the Poller's word.
-    members = session.execute(select(Device.enabled, Device.status).where(same_group)).all()
+    members = session.execute(select(Device.enabled, Device.status).where(same_site)).all()
     counted = [stored for enabled, stored in members if enabled]
     issues = sum(1 for stored in counted if stored == DeviceStatus.OFFLINE.value)
     return ClassicStatisticsOut(total=len(counted), issues=issues, complete=len(counted) - issues)
@@ -1071,7 +1072,7 @@ def classic_capture_view(
         ClassicCaptureOut(
             # As ARICHDS Meter showed it: `/` separators.
             save_path=capture_dir_str.replace("\\", "/"),
-            group_name=device.group_name,
+            site_name=device.site_name,
             brand=brand_label,
             meter_serial=meter_serial,
             statistics=_classic_statistics(session, device),

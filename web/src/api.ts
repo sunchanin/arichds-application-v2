@@ -401,14 +401,15 @@ export interface ClassicCaptureRow {
 /**
  * Everything the Classic capture page draws, from
  * `GET /api/billing/capture-classic/{device_id}` (ADR 0028): the capture
- * folder with `/` separators, the device's real group (`null` when it has
- * none), `BRAND` and Meter Serial, the Statistics Summary counted from the
- * Poller's status over the same group, and the ten most recent closed
+ * folder with `/` separators, the device's Site Name (shown in the Group box),
+ * `BRAND` and Meter Serial, the Statistics Summary counted from the
+ * Poller's status over the same site, and the ten most recent closed
  * periods oldest first.
  */
 export interface ClassicCaptureView {
   save_path: string;
-  group_name: string | null;
+  /** The device's Site Name — what the image's Group box shows (owner, 2026-09-22). */
+  site_name: string;
   brand: string;
   meter_serial: string;
   statistics: { total: number; issues: number; complete: number };

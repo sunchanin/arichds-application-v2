@@ -402,8 +402,9 @@ it as a page — and it is judged by laying it over an image the old program wro
 sizes, colours and text must agree, glyph edges may not. It changes the `.png` only; `.pdf`,
 `.xlsx`, the filename convention and the ten-period span (oldest first in Classic, as that
 program listed them) are untouched. Its numbers are always kWh and kW, because its headings say
-so. **Every value in it is true or is inert**: the folder, the group, the device and the rows are
-real; Statistics Summary counts the devices of the same group at the moment of writing —
+so. **Every value in it is true or is inert**: the folder, the site (its Group box shows the Site
+Name, 2026-09-22), the device and the rows are real; Statistics Summary counts the devices of the
+same site at the moment of writing —
 *Devices with Issues* are the ones the Poller cannot currently reach, never the ones whose bill
 has not arrived yet, because a Capture is written meter by meter and the first of a group would
 otherwise accuse the rest; the Auto Read Schedule panel is fixed text, since it claims nothing

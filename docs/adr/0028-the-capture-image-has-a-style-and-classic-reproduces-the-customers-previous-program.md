@@ -45,10 +45,10 @@ What it shows:
 | Part | Value |
 |---|---|
 | Save Path | the real `capture_dir`, with `/` separators as that program showed them |
-| Group / Device | the device's real `group_name` (blank when it has none) · `<BRAND> - <serial>` |
+| Group / Device | the device's **Site Name** (amended 2026-09-22, owner: `site_name` is required on every device, `group_name` optional, so the box is never blank; the label still reads *Group* because that is the previous program's word) · `<BRAND> - <serial>` |
 | Data Table | the **ten most recent closed periods, oldest first** (then by Billing Sequence — a same-second pair is two rows with one Time, ADR 0029; since ADR 0029 this order is every page's, not Classic's alone), never the Open Period; columns up to the window edge only — Name `<BRAND> (<serial>)`, Time (bill date, local, `M/D/YYYY HH:MM`), Total kWh Total / Rate A / B / C, Prev kW Demand Rate A, Time of kW Demand A, Prev kW Demand Rate B (cut) |
 | Numbers | **always kWh and kW**, four decimals with trailing zeros dropped — the headings state the unit, so the Display unit setting (ADR 0013) does not reach this image |
-| Statistics Summary | counted over the devices sharing the captured device's group (or sharing *no* group) **at the moment of writing**: Paused devices are not counted at all; *Devices with Issues* = those the Poller currently holds Offline; Unknown counts in the total and is not an issue; *Complete* = Total − Issues |
+| Statistics Summary | counted over the devices sharing the captured device's Site Name — the value the Group box shows — **at the moment of writing**: Paused devices are not counted at all; *Devices with Issues* = those the Poller currently holds Offline; Unknown counts in the total and is not an issue; *Complete* = Total − Issues |
 | Auto Read Schedule | fixed text — `00:00`, `Status: Running`, `Stop` |
 | Status line | `Capture bill data <serial>...` |
 

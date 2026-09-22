@@ -55,7 +55,8 @@ sold separately. Acceptance is an overlay against a PNG the previous program its
 10. As the customer, I want *Save Path* to show the real capture folder, with `/` separators as
     the old program showed them, so that the path in the picture is the path on the machine.
 11. As the customer, I want *Group* to show the device's real group name, and to be blank when
-    the device has none, so that the picture never invents a group.
+    the device has none, so that the picture never invents a group. **Amended 2026-09-22 (owner,
+    ก): the box shows the device's Site Name** — required on every device, so never blank.
 12. As the customer, I want *Device* to read `<BRAND> - <Meter Serial>` and the table's *Name*
     column to read `<BRAND> (<Meter Serial>)`, so that the two match the old program's wording.
 13. As the customer, I want the Data Table to hold the ten most recent closed periods **oldest
@@ -77,7 +78,8 @@ sold separately. Acceptance is an overlay against a PNG the previous program its
     picture never claims a reading the meter did not give.
 19. As the customer, I want *Statistics Summary* to count the devices sharing the captured
     device's group — or sharing no group, when it has none — so that the numbers are about the
-    meters I would expect.
+    meters I would expect. **Amended 2026-09-22: sharing the captured device's Site Name**, the
+    value the box shows, so the name and the numbers mean the same thing.
 20. As the customer, I want *Total Devices* to exclude Paused devices, so that a meter I took
     out for repair is not counted against me.
 21. As the customer, I want *Devices with Issues* to be the devices the Poller currently holds
@@ -160,8 +162,8 @@ sold separately. Acceptance is an overlay against a PNG the previous program its
 - `GET /api/billing/capture-classic/{device_id}?end=<iso>&limit=<n>` (any authenticated
   caller — the capture token's user is what the page holds; gated by the router's `billing`
   feature and `billing_image_export`, the same gates the image endpoint has) returns everything
-  the page draws: `save_path` (the capture folder with `/` separators), `group_name`
-  (nullable), `brand` (upper-cased catalog brand), `meter_serial`, `statistics {total, issues,
+  the page draws: `save_path` (the capture folder with `/` separators), `site_name` (the
+  Group box's value, amended 2026-09-22), `brand` (upper-cased catalog brand), `meter_serial`, `statistics {total, issues,
   complete}`, and `rows[]` oldest first, each with `id`, `name`, `time`, and the seven
   numeric/time cells **already formatted as strings** (four decimals, trailing zeros dropped,
   local `M/D/YYYY HH:MM`, empty for `None`). The page is a layout, not a formatter — the
@@ -170,7 +172,7 @@ sold separately. Acceptance is an overlay against a PNG the previous program its
 - Row selection is `png_source_rows`' own query (same device, same serial, closed periods
   only, `bill_date <= end`, newest first, at most ten) then reversed — never a second copy of
   the rule.
-- Statistics: devices whose `group_name` equals the captured device's (`NULL` matches `NULL`),
+- Statistics: devices whose `site_name` equals the captured device's (amended 2026-09-22),
   excluding disabled (Paused) devices; `issues` = those whose stored status is `offline`;
   `complete = total − issues`. Read from the same rows the Devices page derives its status
   from (ADR 0004) at request time; nothing new is persisted (ADR 0008).

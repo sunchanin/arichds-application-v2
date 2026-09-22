@@ -2,9 +2,9 @@
 view model (ADR 0028, capture-style ticket 01).
 
 Everything the Classic page draws, already formatted: the capture folder with
-``/`` separators, the device's real group, ``<BRAND>`` and Meter Serial, a
-Statistics Summary counted from the Poller's stored status over the devices
-sharing that group, and the ten most recent closed periods **oldest first,
+``/`` separators, the device's Site Name (what the image's Group box shows),
+``<BRAND>`` and Meter Serial, a Statistics Summary counted from the Poller's
+stored status over the devices sharing that site, and the ten most recent closed periods **oldest first,
 then by Billing Sequence** — exactly the window ``png_source_rows`` selects
 for the anchor, reversed. Every rule below is written as the mutation it
 would catch (two devices per status, a thirteen-row seed with a same-second
@@ -35,6 +35,7 @@ def add_device(
     enabled: bool = True,
     meter_serial: str | None = None,
     brand: str = "cewe",
+    site_name: str = "Plant A",
 ) -> int:
     """Insert a device the way the Poller would have left it — ``status`` is
     the stored column ``acquisition/status.py`` writes; ``enabled=False`` is
@@ -47,7 +48,7 @@ def add_device(
             name=name,
             brand=brand,
             model="prometer100",
-            site_name="Plant A",
+            site_name=site_name,
             transport={"kind": "net", "host": "127.0.0.1", "port": 4059},
             password="",
             meter_serial=meter_serial,
@@ -286,24 +287,15 @@ class TestHeader:
         from arichds.db.app_settings import CAPTURE_DIR_KEY
 
         set_setting_raw(CAPTURE_DIR_KEY, r"C:\CEWE DATA\Billing")
-        device_id = add_device(name="Main", group_name="PWA Phase.2 Days1", meter_serial=SERIAL)
+        device_id = add_device(name="Main", group_name=None, site_name="PWA Phase.2 Days1", meter_serial=SERIAL)
         add_closed(device_id, NEWEST_BILL_DATE)
 
         data = fetch(admin_client, device_id).json()["data"]
 
         assert data["save_path"] == "C:/CEWE DATA/Billing"
-        assert data["group_name"] == "PWA Phase.2 Days1"
+        assert data["site_name"] == "PWA Phase.2 Days1"
         assert data["brand"] == "CEWE"
         assert data["meter_serial"] == SERIAL
-
-    def test_a_device_without_a_group_answers_null_not_an_invented_name(
-        self, admin_client: TestClient, tmp_path: Path
-    ) -> None:
-        configure_capture_dir(admin_client, tmp_path)
-        device_id = add_device(name="Main", group_name=None, meter_serial=SERIAL)
-        add_closed(device_id, NEWEST_BILL_DATE)
-
-        assert fetch(admin_client, device_id).json()["data"]["group_name"] is None
 
     def test_an_unconfigured_capture_folder_is_404(self, admin_client: TestClient) -> None:
         device_id = add_device(name="Main", group_name=None, meter_serial=SERIAL)
@@ -315,68 +307,71 @@ class TestHeader:
 
 
 class TestStatisticsSummary:
-    """Counted over the devices sharing the captured device's group from the
-    Poller's stored status alone (ADR 0028): Paused not counted, Issues =
-    Offline only, Unknown and Online counted but not issues, Complete =
-    Total − Issues. Two devices per status so that a dropped filter moves a
-    count by two, never by an amount another rule could hide."""
+    """Counted over the devices sharing the captured device's Site Name — the
+    value the image's Group box shows (owner, 2026-09-22) — from the Poller's
+    stored status alone (ADR 0028): Paused not counted, Issues = Offline only,
+    Unknown and Online counted but not issues, Complete = Total − Issues. Two
+    devices per status so that a dropped filter moves a count by two, never by
+    an amount another rule could hide; `group_name` is set on some of them so
+    a count that still keys on it would differ."""
 
-    def _seed_groups(self) -> None:
+    def _seed_sites(self) -> None:
         for n in (1, 2):
-            add_device(name=f"g1-online-{n}", group_name="G1", status="online")
-            add_device(name=f"g1-offline-{n}", group_name="G1", status="offline")
-            add_device(name=f"g1-unknown-{n}", group_name="G1", status="unknown")
-            add_device(name=f"g1-paused-{n}", group_name="G1", status="online", enabled=False)
-            add_device(name=f"g1-paused-offline-{n}", group_name="G1", status="offline", enabled=False)
-            add_device(name=f"none-offline-{n}", group_name=None, status="offline")
-            add_device(name=f"none-online-{n}", group_name=None, status="online")
-            add_device(name=f"g2-offline-{n}", group_name="G2", status="offline")
+            add_device(name=f"s1-online-{n}", group_name="G1", site_name="Site 1", status="online")
+            add_device(name=f"s1-offline-{n}", group_name=None, site_name="Site 1", status="offline")
+            add_device(name=f"s1-unknown-{n}", group_name="G1", site_name="Site 1", status="unknown")
+            add_device(name=f"s1-paused-{n}", group_name="G1", site_name="Site 1", status="online", enabled=False)
+            add_device(
+                name=f"s1-paused-offline-{n}", group_name=None, site_name="Site 1", status="offline", enabled=False
+            )
+            add_device(name=f"s2-offline-{n}", group_name="G1", site_name="Site 2", status="offline")
+            add_device(name=f"s2-online-{n}", group_name="G1", site_name="Site 2", status="online")
 
-    def test_a_named_group_counts_its_own_unpaused_devices_only(self, admin_client: TestClient, tmp_path: Path) -> None:
+    def test_a_site_counts_its_own_unpaused_devices_only(self, admin_client: TestClient, tmp_path: Path) -> None:
         configure_capture_dir(admin_client, tmp_path)
-        self._seed_groups()
-        device_id = add_device(name="Main", group_name="G1", meter_serial=SERIAL, status="online")
+        self._seed_sites()
+        device_id = add_device(name="Main", group_name=None, site_name="Site 1", meter_serial=SERIAL, status="online")
+        add_closed(device_id, NEWEST_BILL_DATE)
+
+        data = fetch(admin_client, device_id).json()["data"]
+
+        # Main + 2 online + 2 offline + 2 unknown; the four paused are out; Site 2 never counts.
+        assert data["site_name"] == "Site 1"
+        assert data["statistics"] == {"total": 7, "issues": 2, "complete": 5}
+
+    def test_the_group_name_never_decides_the_count(self, admin_client: TestClient, tmp_path: Path) -> None:
+        """Main shares `group_name` G1 with six Site 1 devices and four Site 2
+        devices — a count keyed on the group would answer 11 / 4, not 5 / 2."""
+        configure_capture_dir(admin_client, tmp_path)
+        self._seed_sites()
+        device_id = add_device(name="Main", group_name="G1", site_name="Site 2", meter_serial=SERIAL, status="unknown")
         add_closed(device_id, NEWEST_BILL_DATE)
 
         statistics = fetch(admin_client, device_id).json()["data"]["statistics"]
 
-        # Main + 2 online + 2 offline + 2 unknown; the four paused are out.
-        assert statistics == {"total": 7, "issues": 2, "complete": 5}
-
-    def test_a_group_less_device_counts_with_the_other_group_less_devices(
-        self, admin_client: TestClient, tmp_path: Path
-    ) -> None:
-        configure_capture_dir(admin_client, tmp_path)
-        self._seed_groups()
-        device_id = add_device(name="Main", group_name=None, meter_serial=SERIAL, status="unknown")
-        add_closed(device_id, NEWEST_BILL_DATE)
-
-        statistics = fetch(admin_client, device_id).json()["data"]["statistics"]
-
-        # Main (unknown, counted, not an issue) + 2 offline + 2 online with no group.
         assert statistics == {"total": 5, "issues": 2, "complete": 3}
 
     def test_the_captured_device_itself_counts_as_an_issue_when_offline(
         self, admin_client: TestClient, tmp_path: Path
     ) -> None:
         configure_capture_dir(admin_client, tmp_path)
-        self._seed_groups()
-        device_id = add_device(name="Main", group_name="G2", meter_serial=SERIAL, status="offline")
+        self._seed_sites()
+        device_id = add_device(name="Main", group_name=None, site_name="Site 2", meter_serial=SERIAL, status="offline")
         add_closed(device_id, NEWEST_BILL_DATE)
 
         statistics = fetch(admin_client, device_id).json()["data"]["statistics"]
 
-        assert statistics == {"total": 3, "issues": 3, "complete": 0}
+        assert statistics == {"total": 5, "issues": 3, "complete": 2}
 
     def test_billing_rows_never_move_the_counts(self, admin_client: TestClient, tmp_path: Path) -> None:
-        """The first meter of a group captured after a cut must not picture
+        """The first meter of a site captured after a cut must not picture
         the others as broken (ADR 0028) — a device with no period at all is
         counted exactly as one with ten."""
         configure_capture_dir(admin_client, tmp_path)
-        device_id = add_device(name="Main", group_name="G3", meter_serial=SERIAL, status="online")
+        device_id = add_device(name="Main", group_name=None, site_name="Site 3", meter_serial=SERIAL, status="online")
         add_closed(device_id, NEWEST_BILL_DATE)
         for n in (1, 2):
-            add_device(name=f"g3-online-no-bill-{n}", group_name="G3", status="online")
+            add_device(name=f"s3-online-no-bill-{n}", group_name=None, site_name="Site 3", status="online")
 
         statistics = fetch(admin_client, device_id).json()["data"]["statistics"]
 

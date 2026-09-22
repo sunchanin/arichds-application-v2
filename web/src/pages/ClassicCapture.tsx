@@ -44,7 +44,7 @@ function Text({ left, top, className, children }: { left: number; top: number; c
  * formatted — this component is a layout, not a formatter (spec: one
  * formatting rule, testable in Python, cannot drift between two places).
  *
- * **Every value is true or is inert.** The folder, the group, the device,
+ * **Every value is true or is inert.** The folder, the site (in the Group box), the device,
  * the statistics and the rows are what the endpoint answered; the Auto Read
  * Schedule panel is fixed text because it claims nothing about a bill.
  *
@@ -88,7 +88,7 @@ export function ClassicCapture({ request }: { request: CaptureRequest }) {
         <Text left={9} top={13}>
           Group:
         </Text>
-        <div className="cc-combo cc-group-combo">{view?.group_name ?? ""}</div>
+        <div className="cc-combo cc-group-combo">{view?.site_name ?? ""}</div>
 
         <div className="cc-group cc-statistics">
           <span className="cc-group-caption">Statistics Summary</span>

@@ -52,7 +52,7 @@ import arichds_vendor  # noqa: E402 — the real issuer, imported the way tests/
 
 ADMIN = {"username": "admin", "password": "probe-admin-password"}
 SERIAL = "WP081200"
-GROUP = "PWA Phase.2 Days1"
+SITE = "PWA Phase.2 Days1"  # shown in the image's Group box (owner, 2026-09-22)
 SAVE_PATH = r"C:\CEWE DATA Billing_"
 LOCAL_OFFSET = timedelta(hours=7)
 
@@ -331,11 +331,11 @@ def seed(device_status_counts: tuple[int, int]) -> int:
             name=name,
             brand="cewe",
             model="prometer100",
-            site_name="PWA",
+            site_name=SITE,
             transport={"kind": "net", "host": "127.0.0.1", "port": 4059},
             password="",
             meter_serial=serial,
-            group_name=GROUP,
+            group_name=None,
             enabled=True,
             status=status,
         )
@@ -488,7 +488,7 @@ def main() -> None:
             device_id = seed((176, 36))  # 212 in the group, 36 Offline → 212 / 36 / 176
 
             view = client.get(f"/api/billing/capture-classic/{device_id}").json()["data"]
-            print(f"statistics: {view['statistics']}   save_path: {view['save_path']}   group: {view['group_name']}")
+            print(f"statistics: {view['statistics']}   save_path: {view['save_path']}   site: {view['site_name']}")
             mismatches = 0
             for expected, row in zip(EXPECTED_CELLS, view["rows"], strict=True):
                 got = tuple(row[key] for key in CELL_KEYS)

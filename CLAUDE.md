@@ -590,8 +590,9 @@ MySQL, and ~30 tables.
   rather than the spec's `end`+`limit`, because only the id can name a same-second pair's older
   member, ADR 0029), cells `100.302`/`319840.2819`/`1/21/2026 00:00` local with the meter's
   epoch `2000-01-01 00:00` an empty cell, the column mapping declared once in
-  `api/billing.py::_CLASSIC_NUMBER_COLUMNS`, statistics from `display_status` over the same
-  group (`NULL` matches `NULL`), and `_capture_anchor` now shared with the image download.
+  `api/billing.py::_CLASSIC_NUMBER_COLUMNS`, statistics over the same **site** — the Group box shows
+  `site_name`, owner decision 2026-09-22, since `group_name` is optional and was blank on the owner's
+  own machine — and `_capture_anchor` now shared with the image download.
   **The Classic page and the drive landed with ticket 02** (2026-09-22): the seeded request
   carries `style` and `anchorId` (`capture/dom.py::CAPTURE_STYLE_FIELD`/`CAPTURE_ANCHOR_FIELD`,
   read leniently by `capture.ts` — a malformed value is Standard/absent), `App.tsx` renders
