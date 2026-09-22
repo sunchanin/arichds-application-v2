@@ -610,7 +610,11 @@ MySQL, and ~30 tables.
   data rows and `212 / 36 / 176` match cell for cell; the accepted differences are glyph rendering
   (Chromium draws digit strings 2–5 px wider over ~80 px than GDI), the 2px sunken field edge drawn
   as 1px, and the schedule time `00 : 00` against the reference's `00 : 10` by design. Images in
-  the owner's `Downloads\arichds-classic-overlay\`. — amends 0017: **Capture Style** (CONTEXT.md) is a
+  the owner's `Downloads\arichds-classic-overlay\`; a third round from the owner's own product capture
+  added the spinner arrows, the combo chevron and the checked button's inner edges. **A hand-pressed
+  Capture image on a period whose `.png` exists serves that file, whatever style wrote it** — the
+  owner chose this (2026-09-22, ข) over re-rendering on a style mismatch: delete the file to re-issue
+  it, nothing on disk is ever rewritten. — amends 0017: **Capture Style** (CONTEXT.md) is a
   machine-wide admin setting beside the capture folder, `standard` (default, today's image) or
   `classic`, no licence key; Classic is a page in `web/` no menu reaches, drawn only to be
   photographed by the same headless pipeline at a fixed 1280×709, imitating the window of the
