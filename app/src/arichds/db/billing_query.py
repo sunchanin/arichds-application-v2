@@ -43,9 +43,11 @@ def latest_closed_per_device() -> Select:
     ``bill_date`` among rows whose ``record_status`` is ``NULL`` — or ``None``
     for a device that has never produced one.
 
-    ``MAX(bill_date)`` identifies exactly one row per device because closed
-    periods are unique on ``(device_id, bill_date)`` (ADR 0009's partial
-    unique index), so this cannot fan a device out into two rows.
+    ``MAX(bill_date)`` plus ``sequence = 0`` identifies exactly one row per
+    device: closed periods are unique on ``(device_id, bill_date, sequence)``
+    (ADR 0009's partial unique index, ADR 0029's third column), and every
+    bill date has a sequence ``0`` — so a same-second pair as the newest
+    period cannot fan a device out into two rows.
 
     Returns:
         A :class:`~sqlalchemy.Select` the caller executes. No ordering and no
@@ -67,6 +69,7 @@ def latest_closed_per_device() -> Select:
             BillingReading,
             (BillingReading.device_id == newest.c.device_id)
             & (BillingReading.bill_date == newest.c.bill_date)
+            & (BillingReading.sequence == 0)
             & BillingReading.record_status.is_(None),
         )
     )
@@ -100,7 +103,12 @@ def closed_periods_with_record_no(device_id: int) -> Select:
     numbered = (
         select(
             BillingReading.id.label("id"),
-            func.row_number().over(order_by=BillingReading.bill_date.asc()).label("record_no"),
+            # Oldest first — the exact reverse of the meter's own listing, so
+            # within a same-second pair the older member (sequence 1) comes
+            # before the newer (sequence 0) (ADR 0029).
+            func.row_number()
+            .over(order_by=(BillingReading.bill_date.asc(), BillingReading.sequence.desc()))
+            .label("record_no"),
         )
         .where(BillingReading.device_id == device_id, BillingReading.record_status.is_(None))
         .subquery()
@@ -108,5 +116,5 @@ def closed_periods_with_record_no(device_id: int) -> Select:
     return (
         select(BillingReading, numbered.c.record_no)
         .join(numbered, numbered.c.id == BillingReading.id)
-        .order_by(BillingReading.bill_date.asc())
+        .order_by(BillingReading.bill_date.asc(), BillingReading.sequence.desc())
     )

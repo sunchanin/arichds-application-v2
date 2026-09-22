@@ -177,17 +177,26 @@ def add_intervals(
             )
 
 
-def add_billing(device_id: int, bill_date: datetime, *, serial: str | None, status: str | None = None) -> None:
+def add_billing(
+    device_id: int,
+    bill_date: datetime,
+    *,
+    serial: str | None,
+    status: str | None = None,
+    sequence: int = 0,
+    kwh: float = 147029.6554881,
+) -> None:
     with session_scope() as session:
         session.add(
             BillingReading(
                 device_id=device_id,
                 bill_date=bill_date,
+                sequence=sequence,
                 read_at=datetime(2026, 8, 24, 6, 0, tzinfo=UTC),
                 record_status=status,
                 source=SOURCE_DLMS,
                 meter_serial=serial,
-                import_active_kwh_total=147029.6554881,
+                import_active_kwh_total=kwh,
             )
         )
 
@@ -351,7 +360,7 @@ class TestReconcile:
         assert "CHARSET=utf8mb4" in ddl
         print(f"\n{ddl}")
 
-    def test_billing_lands_with_all_seventy_columns_and_no_unique_key(self, destination) -> None:  # noqa: ANN001
+    def test_billing_lands_with_all_seventy_one_columns_and_no_unique_key(self, destination) -> None:  # noqa: ANN001
         with destination.begin() as connection:
             reconcile(connection)
 
@@ -362,7 +371,7 @@ class TestReconcile:
             f"AND TABLE_NAME = '{BILLING_TABLE.name}'",
         )
 
-        assert len(columns) == 70  # 67 measured/identity columns + device_name, meter, site_name
+        assert len(columns) == 71  # 68 measured/identity columns (incl. `sequence`, ADR 0029) + the three labels
         assert "UNIQUE KEY" not in ddl
         assert "device_id" not in ddl
 
@@ -1304,3 +1313,70 @@ class TestItNeverReadsTheWholeTable:
         assert status.load_profile_rows <= 2, f"a steady-state cycle re-sent {status.load_profile_rows} of 50 rows"
         assert count(destination, LOAD_PROFILE_TABLE.name) == 50
         assert second < 10.0
+
+
+# ─── ADR 0029 — the Billing Sequence rides after bill_date ─────────────────────
+
+
+def _column_facts(engine, table: str) -> list[tuple[str, str, str | None]]:  # noqa: ANN001
+    """``(name, IS_NULLABLE, COLUMN_DEFAULT)`` per column, in the server's order."""
+    return rows(
+        engine,
+        "SELECT COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.columns "
+        f"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}' ORDER BY ORDINAL_POSITION",
+    )
+
+
+class TestTheBillingSequenceRidesAfterBillDate:
+    """A same-second pair is two rows on the customer's server too, told apart
+    by `sequence` — `NOT NULL DEFAULT 0` right after `bill_date`, on a fresh
+    table and on one an earlier build created."""
+
+    def test_a_fresh_table_carries_it_after_bill_date_not_null_default_zero(self, destination) -> None:  # noqa: ANN001
+        with destination.begin() as connection:
+            reconcile(connection)
+
+        facts = _column_facts(destination, BILLING_TABLE.name)
+        names = [name for name, _n, _d in facts]
+        assert names.index("sequence") == names.index("bill_date") + 1
+        assert [(n, d) for name, n, d in facts if name == "sequence"] == [("NO", "0")]
+
+    def test_a_table_from_before_the_column_gets_it_after_bill_date_with_every_row_at_zero(
+        self, configured, destination, licensed
+    ) -> None:  # noqa: ANN001
+        """The 0.7.7 shape: `reconcile` adds the missing column `AFTER bill_date`
+        and the server fills the rows that are already there with the default."""
+        device_id = add_device("Main", "WP079074")
+        add_billing(device_id, datetime(2026, 7, 31, 17, 0, tzinfo=UTC), serial="WP079074")
+        run_cycle()
+        with destination.begin() as connection:
+            connection.execute(sa.text(f"ALTER TABLE {BILLING_TABLE.name} DROP COLUMN sequence"))
+        with destination.begin() as connection:
+            connection.execute(
+                sa.text(
+                    f"INSERT INTO {BILLING_TABLE.name} (meter_serial, bill_date, read_at, source, created_at, updated_at) "
+                    "VALUES ('X', '2026-06-30 17:00:00', '2026-07-01 00:00:00', 'dlms', NOW(), NOW())"
+                )
+            )
+
+        with destination.begin() as connection:
+            reconcile(connection)
+
+        facts = _column_facts(destination, BILLING_TABLE.name)
+        names = [name for name, _n, _d in facts]
+        assert names.index("sequence") == names.index("bill_date") + 1
+        assert [(n, d) for name, n, d in facts if name == "sequence"] == [("NO", "0")]
+        assert rows(destination, f"SELECT sequence FROM {BILLING_TABLE.name} WHERE meter_serial = 'X'") == [(0,)]
+
+    def test_a_same_second_pair_arrives_as_two_rows(self, configured, destination, licensed) -> None:  # noqa: ANN001
+        device_id = add_device("Main", "WP089573")
+        stamp = datetime(2026, 9, 19, 8, 59, 50, tzinfo=UTC)
+        add_billing(device_id, stamp, serial="WP089573", sequence=0, kwh=3118.2458)
+        add_billing(device_id, stamp, serial="WP089573", sequence=1, kwh=31.1777)
+
+        run_cycle()
+
+        assert rows(
+            destination,
+            f"SELECT sequence, import_active_kwh_total FROM {BILLING_TABLE.name} ORDER BY sequence",
+        ) == [(0, 3118.2458), (1, 31.1777)]

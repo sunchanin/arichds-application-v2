@@ -39,7 +39,8 @@ rows arrive on the first whole-buffer read of the new build, with no manual step
    skip it with the same warning as today, so that stored history is never rewritten.
 6. As an operator, I want the meter dropping its oldest entry to leave every stored key valid,
    so that a pair losing its older member does not renumber the younger one.
-7. As an operator, I want the Billing page to list periods **oldest first**, then by sequence,
+7. As an operator, I want the Billing page to list periods **oldest first** — the exact reverse of
+   the meter's own listing, so within a pair sequence 1 comes before 0 —
    so that the screen reads the way the customer asked to read it.
 8. As an operator, I want the Billing page to show no sequence column, so that the page looks
    as the vendor tool does — a pair is two rows with one bill date.
@@ -105,7 +106,9 @@ rows arrive on the first whole-buffer read of the new build, with no manual step
 - The Open Period is untouched: still one slot per device, still `bill_date = read time`.
 
 **Order.**
-- The Billing page's listing endpoint orders `bill_date ASC, sequence ASC` (per device, the
+- The Billing page's listing endpoint **selects** newest first (`bill_date DESC, sequence ASC` —
+  page one is the newest `limit` periods, which is how a capture picks its ten-period window) and
+  **returns each page reversed**, so a page reads `bill_date ASC, sequence DESC` (per device, the
   device ordering it already has). The page's "latest bill" highlight ties on equal bill dates
   and takes `sequence = 0`. The PNG window query keeps its "same device and serial, closed,
   `bill_date <=` anchor" selection and orders the same way on the page; the renderer's expected
@@ -152,7 +155,8 @@ count was computed.
 - **Migration** (`test_migration_00NN.py` prior art): existing rows read back with `sequence =
   0`; the rebuilt index is listed by `PRAGMA index_list` with the three columns and its `WHERE`.
 - **API** (`test_api_billing.py`, `test_api_billing_all_meters.py`, TestClient): order is
-  `bill_date ASC, sequence ASC`; a pair is two rows with one bill date; All-Meters View returns
+  `bill_date ASC, sequence DESC` within a page, page one being the newest periods; a pair is two
+  rows with one bill date; All-Meters View returns
   one row per device when the newest period is a pair; the image endpoint's ten-row window
   counts the pair as two.
 - **Capture** (`test_capture_paths.py`, `test_capture_service.py`): `sequence = 0` → today's

@@ -100,7 +100,7 @@ def _png_source_rows(session: Any, anchor: Any) -> list[Any]:
                 BillingReadingRow.record_status.is_(None),
                 BillingReadingRow.bill_date <= anchor.bill_date,
             )
-            .order_by(BillingReadingRow.bill_date.desc())
+            .order_by(BillingReadingRow.bill_date.desc(), BillingReadingRow.sequence.asc())
             .limit(10)
         )
     )

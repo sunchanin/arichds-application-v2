@@ -121,6 +121,10 @@ class BillingRowOut(BaseModel):
     device_id: int
     device_name: str
     bill_date: datetime
+    #: The Billing Sequence (ADR 0029) — ``0`` unless this period shares its
+    #: bill date with another; the page shows no column for it, but the
+    #: "latest bill" tint needs it to break a same-second tie.
+    sequence: int
     read_at: datetime
     meter_serial: str | None
 
@@ -324,13 +328,18 @@ def list_billing_readings(
         select(BillingReading, Device.name)
         .join(Device, BillingReading.device_id == Device.id)
         .where(*matching)
-        .order_by(BillingReading.bill_date.desc(), BillingReading.device_id.asc())
+        # Selection walks newest first — page one is the newest `limit`
+        # periods, and a capture's `end` + `limit` picks its window off the
+        # newest end (ADR 0015) — but the page is *read* oldest first (ADR
+        # 0029, owner Q6), so the selected block is reversed below: within a
+        # same-second pair the meter's newer member (sequence 0) comes last.
+        .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc(), BillingReading.device_id.asc())
         .limit(limit)
         .offset(offset)
     ).all()
     total = session.scalar(select(func.count()).select_from(BillingReading).where(*matching)) or 0
 
-    items = [_to_row_out(reading, device_name) for reading, device_name in rows]
+    items = [_to_row_out(reading, device_name) for reading, device_name in reversed(rows)]
 
     return ApiResponse.ok(BillingPage(items=items, total=total, limit=limit, offset=offset))
 
@@ -702,7 +711,18 @@ def export_billing_now(session: SessionDep, device_id: Annotated[int, Query(ge=1
 #: anyone hand-updating a sixty-line kwargs list (mirrors
 #: ``capture/_render_shared.py``'s own column-derived approach).
 _IDENTITY_COLUMNS = frozenset(
-    {"id", "device_id", "bill_date", "read_at", "record_status", "source", "meter_serial", "created_at", "updated_at"}
+    {
+        "id",
+        "device_id",
+        "bill_date",
+        "sequence",
+        "read_at",
+        "record_status",
+        "source",
+        "meter_serial",
+        "created_at",
+        "updated_at",
+    }
 )
 _MEASUREMENT_COLUMN_NAMES: tuple[str, ...] = tuple(
     column.name for column in BillingReading.__table__.columns if column.name not in _IDENTITY_COLUMNS
@@ -716,6 +736,7 @@ def _to_row_out(reading: BillingReading, device_name: str) -> BillingRowOut:
         device_id=reading.device_id,
         device_name=device_name,
         bill_date=reading.bill_date,
+        sequence=reading.sequence,
         read_at=reading.read_at,
         meter_serial=reading.meter_serial,
         **{name: getattr(reading, name) for name in _MEASUREMENT_COLUMN_NAMES},

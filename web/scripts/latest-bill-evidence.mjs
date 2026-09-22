@@ -26,7 +26,7 @@ const check = (ok, what) => {
   console.log(`${ok ? "ok  " : "FAIL"} ${what}`);
   if (!ok) failed += 1;
 };
-const row = (id, billDate) => ({ id, bill_date: billDate });
+const row = (id, billDate, sequence = 0) => ({ id, bill_date: billDate, sequence });
 const oldestFirst = [row(3, "2026-05-31T17:00:00+00:00"), row(2, "2026-06-30T17:00:00+00:00"), row(1, "2026-07-31T17:00:00+00:00")];
 
 check(latestBillRowId(oldestFirst) === 1, "oldest-first order: the newest date wins, not row 0");
@@ -36,6 +36,14 @@ check(latestBillRowId([]) === null, "empty table tints nothing");
 check(
   latestBillRowId([row(12, "2026-07-31T17:00:00+00:00"), row(11, "2026-07-31T17:00:00+00:00"), row(10, "2026-06-30T17:00:00+00:00")]) === 11,
   "two meters closing on the same instant (All devices): exactly one row, the lowest id",
+);
+check(
+  latestBillRowId([row(20, "2026-09-19T08:59:50+00:00", 1), row(21, "2026-09-19T08:59:50+00:00", 0), row(19, "2026-09-12T17:53:45+00:00", 0)]) === 21,
+  "a same-second pair on one meter (ADR 0029): the newer member, sequence 0, even with the higher id",
+);
+check(
+  latestBillRowId([row(21, "2026-09-19T08:59:50+00:00", 0), row(20, "2026-09-19T08:59:50+00:00", 1)]) === 21,
+  "the same pair listed the other way round: still sequence 0",
 );
 // v1's literal rule, "first row of page one", disagrees with the helper on the oldest-first page.
 check(oldestFirst[0].id !== latestBillRowId(oldestFirst), "mutation 'first row of page one' would tint a different row here");

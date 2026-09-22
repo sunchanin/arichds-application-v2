@@ -154,6 +154,20 @@ class TestTheRowSetComesFromDevices:
 
         assert len(items) == 1
 
+    def test_one_row_per_device_when_its_newest_period_is_a_same_second_pair(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """ADR 0029: a pair shares one bill date, so a MAX(bill_date) join alone
+        would fan the device out into two rows; the join takes sequence 0."""
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, NOW - timedelta(days=1), sequence=1, import_active_kwh_total=31.18)
+        seed_closed(device_id, NOW - timedelta(days=1), sequence=0, import_active_kwh_total=3118.25)
+        seed_closed(device_id, NOW - timedelta(days=32))
+
+        items = rows(admin_client)
+
+        assert [(row["device_id"], row["import_active_kwh_total"]) for row in items] == [(device_id, 3118.25)]
+
     def test_the_row_carries_the_latest_closed_period_not_the_oldest(
         self, admin_client: TestClient, fake_meter: FakeMeterState
     ) -> None:

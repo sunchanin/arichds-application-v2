@@ -269,6 +269,7 @@ class TestRowShape:
             "device_id",
             "device_name",
             "bill_date",
+            "sequence",  # ADR 0029 — the tie-breaker for the "latest bill" tint, never a column on the page
             "read_at",
             "meter_serial",
         }
@@ -308,7 +309,10 @@ class TestRowShape:
 
 
 class TestOrdering:
-    def test_newest_bill_date_first(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+    """Oldest first, then by Billing Sequence (ADR 0029, owner Q6) — the order
+    the customer reads periods in, on the page and in every capture image."""
+
+    def test_oldest_bill_date_first(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
         device_id = add_device(admin_client, fake_meter)
         seed_closed(device_id, BASE)
         seed_closed(device_id, BASE + timedelta(days=30))
@@ -317,7 +321,47 @@ class TestOrdering:
         response = fetch(admin_client, "closed", device_id=device_id)
 
         dates = [row["bill_date"] for row in response.json()["data"]["items"]]
-        assert dates == sorted(dates, reverse=True)
+        assert dates == sorted(dates)
+
+    def test_a_same_second_pair_is_two_rows_with_sequence_zero_before_one(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE, sequence=1, import_active_kwh_total=31.18)
+        seed_closed(device_id, BASE, sequence=0, import_active_kwh_total=3118.25)
+        seed_closed(device_id, BASE - timedelta(days=30))
+
+        items = fetch(admin_client, "closed", device_id=device_id).json()["data"]["items"]
+
+        # The exact reverse of the meter's own listing (History 1 = 3118.25
+        # newest, History 2 = 31.18 the same second): reading down, the older
+        # member of the pair comes first.
+        assert [
+            (datetime.fromisoformat(row["bill_date"]), row["sequence"], row["import_active_kwh_total"]) for row in items
+        ] == [
+            (BASE - timedelta(days=30), 0, None),
+            (BASE, 1, 31.18),
+            (BASE, 0, 3118.25),
+        ]
+
+    def test_page_one_is_the_newest_periods_read_oldest_first(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """Paging walks from the newest period backwards — page one is the
+        newest `limit` periods, the way a capture picks its ten-period window
+        (ADR 0015) — and each page is read oldest first."""
+        device_id = add_device(admin_client, fake_meter)
+        for days in (0, 30, 60, 90):
+            seed_closed(device_id, BASE - timedelta(days=days))
+
+        page_one = fetch(admin_client, "closed", device_id=device_id, limit=2).json()["data"]["items"]
+        page_two = fetch(admin_client, "closed", device_id=device_id, limit=2, offset=2).json()["data"]["items"]
+
+        assert [datetime.fromisoformat(row["bill_date"]) for row in page_one] == [BASE - timedelta(days=30), BASE]
+        assert [datetime.fromisoformat(row["bill_date"]) for row in page_two] == [
+            BASE - timedelta(days=90),
+            BASE - timedelta(days=60),
+        ]
 
 
 class TestSingleRowPageMatchesTheOnePeriodCaptureFallback:

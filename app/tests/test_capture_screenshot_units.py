@@ -431,7 +431,8 @@ class TestDriveCaptureSeedRequest:
         assert len(rows) == 12
         transport = FakeTransport(
             responses={
-                "Runtime.evaluate": [_evaluate_result([str(row.id) for row in rows])],
+                # The page lists oldest first (ADR 0029); `rows` is newest first.
+                "Runtime.evaluate": [_evaluate_result([str(row.id) for row in reversed(rows)])],
                 "Page.captureScreenshot": [{"data": _TINY_PNG_B64}],
             }
         )
@@ -444,6 +445,32 @@ class TestDriveCaptureSeedRequest:
 
         assert '"pageSize": 12' in seed_script
         assert '"pageSize": 50' not in seed_script  # the old padded constant
+
+    def test_the_ids_waited_for_are_in_the_pages_order_oldest_first(self) -> None:
+        """ADR 0029: the page lists periods oldest first, `_png_source_rows()`
+        hands them over newest first (the anchor is rows[0]), and the gate
+        compares order. A gate expecting newest-first would time out on every
+        capture of two or more rows — pinned by a page that answers in the
+        page's own order and is accepted."""
+        import asyncio
+
+        rows = [
+            SimpleNamespace(
+                id=row_id, device_id=7, meter_serial="SN-1", bill_date=datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC)
+            )
+            for row_id in (3, 2, 1)  # newest first, as `_png_source_rows()` returns them
+        ]
+        transport = FakeTransport(
+            responses={
+                "Runtime.evaluate": [_evaluate_result(["1", "2", "3"])],  # the page: oldest first
+                "Page.captureScreenshot": [{"data": _TINY_PNG_B64}],
+            }
+        )
+        minted = MintedToken("raw-token", "token-hash", 1, "admin", "admin")
+
+        asyncio.run(_drive_capture(transport, rows, minted, 8000, time.monotonic() + 5))
+
+        assert [method for method, _ in transport.calls].count("Page.captureScreenshot") == 1
 
 
 class TestDriveCaptureScreenshotGeometry:

@@ -618,7 +618,10 @@ async def _drive_capture(
     )
     await transport.request("Page.navigate", {"url": f"http://127.0.0.1:{app_port}/"})
 
-    expected_ids = [str(row.id) for row in rows]
+    # *rows* arrive newest first (the anchor is rows[0]); the page lists
+    # oldest first, then by Billing Sequence (ADR 0029), and the gate compares
+    # order too — so the expectation is built in the page's order.
+    expected_ids = [str(row.id) for row in reversed(rows)]
     await _wait_for_rows(transport, expected_ids, deadline)
 
     metrics = await transport.request("Page.getLayoutMetrics")

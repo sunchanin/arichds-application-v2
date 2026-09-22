@@ -220,7 +220,8 @@ pairs, *Invocation of Scaling tariff*, one of them the same register before and 
 scaling), and the customer measures ARICHDS against the vendor tool that shows every one. It is
 counted within the group from its newest member, so the meter dropping its oldest entry can
 remove a `1` and never a `0`. A pair identical in every column is still two rows. Everywhere a
-person reads periods they run oldest first, then by sequence. The Billing page shows no column
+person reads periods they run oldest first — the exact reverse of the meter's listing, so within a
+pair `1` comes before `0`. The Billing page shows no column
 for it; the export file, the Database Destination and the Central Push carry it, because a
 machine reading them must tell the pair apart.
 _Avoid_: entry index (that shifts every cut), duplicate, sub-period

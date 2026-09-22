@@ -325,6 +325,10 @@ _SENTINEL_BEFORE = 2001
 _BILLING_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("Record No", "record_no", "int"),
     ("Time", "bill_date", "time"),
+    # The Billing Sequence (ADR 0029) — the one column the customer's sample
+    # did not have: a meter can stamp two periods on one second, and a machine
+    # reading this file needs to tell the pair apart. `0` on every other line.
+    ("Sequence", "sequence", "int"),
     ("111 Billing total kWh Total", "import_active_kwh_total", "num"),
     ("010 Billing total kWh Rate A", "import_active_kwh_rate_a", "num"),
     ("020 Billing total kWh Rate B", "import_active_kwh_rate_b", "num"),
@@ -355,14 +359,17 @@ _BILLING_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("Record Status", "record_status", "closed"),
 )
 
-#: The twenty-four headers, order frozen — a row appended to an existing file
+#: The twenty-five headers, order frozen — a row appended to an existing file
 #: must still land in the right column.
 BILLING_EXPORT_HEADERS: tuple[str, ...] = tuple(header for header, _field, _kind in _BILLING_COLUMNS)
 
 #: The reading attributes :func:`format_billing_rows` reads, so a caller builds
-#: its mappings from one list rather than restating twenty-three names. Excludes
-#: ``record_no``, which the query supplies rather than the row.
-BILLING_FIELDS: tuple[str, ...] = tuple(field for _header, field, kind in _BILLING_COLUMNS if kind in {"num", "time"})
+#: its mappings from one list rather than restating twenty-four names. Excludes
+#: ``record_no``, which the query supplies rather than the row, and the constant
+#: ``record_status`` cell.
+BILLING_FIELDS: tuple[str, ...] = tuple(
+    field for _header, field, kind in _BILLING_COLUMNS if kind != "closed" and field != "record_no"
+)
 
 
 def _decimal(value: object) -> str:
@@ -409,7 +416,7 @@ def format_billing_rows(rows: Sequence[Mapping[str, Any]], *, date_format: str) 
             shared with the Load Profile CSV and translated once per call.
 
     Returns:
-        One list of twenty-four string cells per input row, in input order.
+        One list of twenty-five string cells per input row, in input order.
     """
     strftime_fmt = _translate_date_format(date_format)
     output: list[list[str]] = []

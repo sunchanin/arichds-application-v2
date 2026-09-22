@@ -246,6 +246,10 @@ BILLING_TABLE: Table = sa.Table(
     **_TABLE_OPTIONS,
 )
 BILLING_TABLE.columns["meter_serial"].nullable = False
+# The Billing Sequence (ADR 0029) rides after `bill_date`, `NOT NULL DEFAULT 0`
+# — the default is what lets `reconcile` add it to a table that already holds
+# rows on the customer's server, where every existing row is a `0`.
+BILLING_TABLE.columns["sequence"].server_default = sa.DefaultClause(sa.text("0"))
 
 #: Both tables, in the order a cycle touches them.
 TABLES: tuple[Table, ...] = (BILLING_TABLE, LOAD_PROFILE_TABLE)
@@ -418,13 +422,19 @@ def _add_column_sql(connection: Connection, table: Table, column: sa.Column, *, 
     preparer = connection.dialect.identifier_preparer
     type_text = connection.dialect.type_compiler_instance.process(column.type)
     null_text = "NULL" if column.nullable else "NOT NULL"
+    # A declared server default travels with the column (the Billing Sequence,
+    # ADR 0029, is `NOT NULL DEFAULT 0`): it is what lets a NOT NULL column be
+    # added to a table that already holds rows, and what a fresh CREATE TABLE
+    # would have emitted for the same column.
+    default = column.server_default
+    default_text = f" DEFAULT {default.arg.text}" if default is not None and hasattr(default.arg, "text") else ""
     # *after* is the nearest preceding column of ours the destination has. With
     # none — our first column is the missing one — the server's default (last)
     # stands: that column is NOT NULL in both tables, so the table is not ours.
     position_text = f" AFTER {preparer.quote(after)}" if after is not None else ""
     return (
         f"ALTER TABLE {preparer.quote(table.name)} ADD COLUMN {preparer.quote(column.name)} "
-        f"{type_text} {null_text}{position_text}"
+        f"{type_text} {null_text}{default_text}{position_text}"
     )
 
 

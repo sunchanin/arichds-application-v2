@@ -53,7 +53,7 @@ have given TC eleven rows and the same complaint.
   group from its newest member, and the meter drops the oldest entry first, so a group can lose
   its `1` and keep its `0`, never the reverse.
 
-**Order, everywhere a person looks: oldest bill date first, then sequence ascending** (owner,
+**Order, everywhere a person looks: oldest bill date first** — the exact reverse of the meter's own listing, so within a same-second pair the older member (sequence 1) comes before the newer (sequence 0) (owner,
 Q6 "ก"). The Billing page's default sort changes from newest-first to oldest-first, and with it
 the Standard capture image, which is a screenshot of that page (ADR 0017). The Billing Export
 File already lists oldest first (`record_no` runs that way). The Classic image (ADR 0028) was

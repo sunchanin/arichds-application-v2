@@ -127,7 +127,28 @@ class TestTheFileTheCustomerAskedFor:
         assert rows[3] == ["Setting :", "1"]
         assert rows[4] == ["Billing :", ""]
         assert rows[5] == list(BILLING_EXPORT_HEADERS)
-        assert len(rows[5]) == 24
+        assert len(rows[5]) == 25  # 24 from the customer's sample + `Sequence` (ADR 0029)
+
+    def test_sequence_is_the_column_right_after_time_and_a_pair_is_two_lines(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        """ADR 0029: a same-second pair is two lines telling a machine reader
+        apart by `Sequence`; oldest first is the reverse of the meter's own
+        listing, so the older member (1) comes before the newer (0)."""
+        device_id = make_device()
+        configure(output_dir=tmp_path)
+        seed(device_id, JAN, sequence=0, import_active_kwh_total=3118.25)
+        seed(device_id, JAN, sequence=1, import_active_kwh_total=31.18)
+        seed(device_id, JAN - timedelta(days=31), import_active_kwh_total=0.0)
+
+        export_device_billing(device_id, require_auto_save=True)
+
+        path = tmp_path / "SN-1-billing.csv"
+        assert BILLING_EXPORT_HEADERS.index("Sequence") == BILLING_EXPORT_HEADERS.index("Time") + 1
+        assert [
+            (cell(path, i, "Record No"), cell(path, i, "Sequence"), cell(path, i, "111 Billing total kWh Total"))
+            for i in range(3)
+        ] == [("1", "0", "0"), ("2", "1", "31.18"), ("3", "0", "3118.25")]
 
     def test_a_device_with_no_customer_still_gets_the_line(self, migrated_db: Settings, tmp_path: Path) -> None:
         """Customer is a record-only field — empty is normal, not an error, and

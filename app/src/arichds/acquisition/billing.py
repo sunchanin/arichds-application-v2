@@ -11,12 +11,15 @@ is the write:
 * **Every read is the whole buffer** (ADR 0009). There is no window, no
   watermark, and therefore no "Backfill" left as a concept: a device with no
   stored rows and a device read yesterday are read identically.
-* **Closed periods dedupe on ``(device_id, bill_date)`` and are never
-  rewritten.** A ``bill_date`` seen before with a *different* value is skipped
+* **Closed periods dedupe on ``(device_id, bill_date, sequence)`` and are
+  never rewritten.** A key seen before with a *different* value is skipped
   and logged, never overwritten — stored history is not something a later read
   gets to correct (ADR 0009's "Consequences": ``Delete all data`` is the only
   way to repair a wrong value, and it is a repair tool for values that were
-  wrong on *our* side, not the meter's).
+  wrong on *our* side, not the meter's). ``sequence`` is the Billing Sequence
+  (ADR 0029): a meter can stamp two periods on one second, and the store —
+  not the driver — numbers the members of such a group from the newest as
+  the meter lists them, so every model gets it with no driver change.
 * **The Open Period is one row per device, found by ``record_status``, never
   by ``bill_date``** — its Bill Date advances on every read, which is the
   entire reason the slot exists (CONTEXT.md — Open Period).
@@ -235,6 +238,11 @@ def _read_while_holding(
             readings,
             read_at,
             profile_has_open_period=getattr(driver, "BILLING_PROFILE_HAS_OPEN_PERIOD", True),
+            # Entry order is a property of the profile, declared per driver
+            # (ADR 0018, `BILLING_NEWEST_ENTRY_FIRST`); the Billing Sequence
+            # is counted from the newest, so the store must know which end
+            # the list starts at.
+            newest_first=getattr(driver, "BILLING_NEWEST_ENTRY_FIRST", True),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Billing read of %s at %s failed", device_name, endpoint)
@@ -481,10 +489,15 @@ def _store(
     read_at: datetime,
     *,
     profile_has_open_period: bool = True,
+    newest_first: bool = True,
 ) -> tuple[int, bool, list[int]]:
     """Write the whole buffer in one unit of work: closed periods first, then
     the Open Period slot — the newly closed period must exist before the slot
     moves off it (ADR 0009).
+
+    *newest_first* says which end of *readings* the meter's newest entry is
+    at; the Billing Sequence of each closed period is its position among the
+    entries sharing its bill date, counted from that end (ADR 0029).
 
     Returns:
         ``(closed periods inserted, whether the open slot changed, the ids of
@@ -497,12 +510,20 @@ def _store(
 
     closed = [reading for reading in readings if not reading.is_open]
     open_reading = next((reading for reading in readings if reading.is_open), None)
+    if not newest_first:
+        closed.reverse()
+    seen: dict[datetime, int] = {}
+    sequenced: list[tuple[BillingReading, int]] = []
+    for reading in closed:
+        sequence = seen.get(reading.bill_date, 0)
+        seen[reading.bill_date] = sequence + 1
+        sequenced.append((reading, sequence))
 
     stored = 0
     new_closed_ids: list[int] = []
     with session_scope() as session:
-        for reading in closed:
-            new_id = _upsert_closed(session, device_id, device_name, reading, read_at)
+        for reading, sequence in sequenced:
+            new_id = _upsert_closed(session, device_id, device_name, reading, sequence, read_at)
             if new_id is not None:
                 stored += 1
                 new_closed_ids.append(new_id)
@@ -554,10 +575,12 @@ def _upsert_closed(
     device_id: int,
     device_name: str,
     reading: BillingReading,
+    sequence: int,
     read_at: datetime,
 ) -> int | None:
     """Insert a closed period if absent; skip and WARN if it exists with a
-    different value; silent no-op if it exists and matches exactly.
+    different value; silent no-op if it exists and matches exactly. The key
+    is ``(device_id, bill_date, sequence)`` (ADR 0029).
 
     Returns:
         The new row's id if one was inserted, else None.
@@ -566,6 +589,7 @@ def _upsert_closed(
         select(BillingReadingRow).where(
             BillingReadingRow.device_id == device_id,
             BillingReadingRow.bill_date == reading.bill_date,
+            BillingReadingRow.sequence == sequence,
             BillingReadingRow.record_status.is_(None),
         )
     )
@@ -575,6 +599,7 @@ def _upsert_closed(
         row = BillingReadingRow(
             device_id=device_id,
             bill_date=reading.bill_date,
+            sequence=sequence,
             read_at=read_at,
             record_status=None,
             source=reading.source,

@@ -24,7 +24,7 @@ Decision record: ADR 0029 (filename), ADR 0015 (one stem, three formats — stil
       resolve the suffixed path — a download of the pair's second period never serves or writes
       the first period's file (`test_api_billing_captures.py`)
 - [ ] The PNG window: for an anchor whose ten-period window contains a pair, the selected rows
-      include both, ordered `bill_date ASC, sequence ASC`, and the renderer's expected row-id list
+      include both, read `bill_date ASC, sequence DESC`, and the renderer's expected row-id list
       is built in that same order (fake CDP transport, `test_capture_screenshot*.py`)
 - [ ] FTP: a suffixed document under `captures/<serial>/` is listed and uploaded with no
       configuration change (`test_fileupload_cycle.py` shape) — proven, not assumed

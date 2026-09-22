@@ -583,7 +583,16 @@ MySQL, and ~30 tables.
   old program itself wrote** and stays `Type: HITL` until the customer sends them — the one
   reference held is a chat-app JPEG, so **do not report "identical" from it**) ·
   0029 (**a closed billing period is keyed by bill date and sequence — every entry the meter
-  holds is stored**, 2026-09-22, **decided, not implemented** — amends 0009's `(device,
+  holds is stored**, 2026-09-22 — **the store, the page, the export file and the Database
+  Destination landed with billing-sequence ticket 01** (migration 0022; the sequence is counted in
+  `acquisition/billing.py::_store`, from whichever end `BILLING_NEWEST_ENTRY_FIRST` says the
+  driver's list starts at — no driver changed; the Billing page **selects** newest first and
+  **returns each page reversed**, so page one is the newest periods read oldest first, exactly
+  the window a capture picks; `_drive_capture` waits for the row ids in that reversed order;
+  `latest_closed_per_device` joins on `sequence = 0`; the Billing Export File has a `Sequence`
+  column after `Time` — 25 columns now; `dataout/schema.py` renders the column's `DEFAULT 0` in
+  both `CREATE TABLE` and `ADD COLUMN`); the capture-document suffix is ticket 02 and the push's
+  contract version 2 is ticket 03 — amends 0009's `(device,
   bill_date)` key: site TC's Prometer 100 stamps commissioning resets in **pairs on the same
   second** (six pairs, *Invocation of Scaling tariff*, `31.18` vs `3118.25` = one register before
   and after a ×100 scaling; two pairs identical in every column), the vendor tool shows thirteen

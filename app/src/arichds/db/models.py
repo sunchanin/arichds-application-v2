@@ -367,6 +367,12 @@ class BillingReading(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
     bill_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # The Billing Sequence (ADR 0029, CONTEXT.md): this row's position among
+    # the closed periods sharing its bill date, counted from the newest as the
+    # meter lists them — `0` for every bill date with one period. Declared
+    # right after `bill_date` because the destination table and the export
+    # file both derive their column order from this one.
+    sequence: Mapped[int] = mapped_column(default=0, server_default=text("0"))
     read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     record_status: Mapped[str | None] = mapped_column(String(16), default=None)
     source: Mapped[str] = mapped_column(String(16))
@@ -469,11 +475,13 @@ class BillingReading(Base):
         # range, either tab.
         Index("ix_billing_readings_device_bill_date", "device_id", "bill_date"),
         # Closed-period dedup — reading the same buffer twice stores nothing
-        # new (ADR 0009).
+        # new (ADR 0009); `sequence` joined the key with ADR 0029, because a
+        # meter can stamp two periods on one second.
         Index(
             "uq_billing_readings_closed",
             "device_id",
             "bill_date",
+            "sequence",
             unique=True,
             sqlite_where=text("record_status IS NULL"),
         ),

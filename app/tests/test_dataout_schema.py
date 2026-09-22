@@ -62,13 +62,14 @@ class TestDerivedFromTheOrm:
 
         assert {c.name for c in BILLING_TABLE.columns} == source | set(DEVICE_LABEL_COLUMNS)
 
-    def test_billing_really_does_have_the_sixty_seven_columns_m4c_left(self) -> None:
-        """70 model columns minus `id`, `device_id` and `captured_at` (a
+    def test_billing_really_does_have_the_sixty_eight_columns_m4c_left(self) -> None:
+        """71 model columns (M4c's sixty measurements, the identity columns and
+        `sequence`, ADR 0029) minus `id`, `device_id` and `captured_at` (a
         capture-folder stamp, ui-audit ticket 03 — not a measurement). A
         number, so a silent loss of a column shows up as a number rather than
         as a set."""
-        assert len(BillingReading.__table__.columns) == 70
-        assert len(BILLING_TABLE.columns) == 67 + len(DEVICE_LABEL_COLUMNS)
+        assert len(BillingReading.__table__.columns) == 71
+        assert len(BILLING_TABLE.columns) == 68 + len(DEVICE_LABEL_COLUMNS)
         assert "captured_at" not in BILLING_TABLE.columns
 
     def test_the_three_device_labels_ride_on_both_tables_under_the_customers_names(self) -> None:

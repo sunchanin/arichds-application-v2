@@ -30,7 +30,7 @@ documents) — the file name a pair's second period is written under
       entry point and the second seed says `classic`
 - [ ] Classic drive (fake CDP transport): viewport `Emulation.setDeviceMetricsOverride` 1280×709;
       the screenshot clip is exactly 1280×709 with no `captureBeyondViewport` and no
-      layout-metrics growth; the row-id gate waits for the ids in `bill_date ASC, sequence ASC`
+      layout-metrics growth; the row-id gate waits for the ids in `bill_date ASC, sequence DESC`
       order
 - [ ] Standard drive: the recorded request list to the fake transport is **identical** to the
       existing expectation, asserted against the existing test's list rather than a new one

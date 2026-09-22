@@ -34,7 +34,7 @@ meter holds, oldest first) — the rows and their order
       the image endpoint gives): `save_path` (forward slashes), `group_name` (nullable), `brand`
       (upper-cased catalog brand), `meter_serial`, `statistics {total, issues, complete}`, `rows[]`
 - [ ] Rows are exactly the ones the PNG window selects (same device, same serial, closed only,
-      `bill_date <=` the given end, at most ten) reversed to `bill_date ASC, sequence ASC` —
+      `bill_date <=` the given end, at most ten) reversed to `bill_date ASC, sequence DESC` —
       seeded with thirteen closed rows plus an Open Period so the selection, the order and the
       Open Period's absence each discriminate; a same-second pair is two rows with one Time
 - [ ] Each row carries `id` and the nine cells as strings: Name `<BRAND> (<serial>)`; Time and

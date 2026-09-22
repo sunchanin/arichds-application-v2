@@ -269,6 +269,10 @@ export interface BillingRow {
   device_name: string;
   /** The meter's own Clock cell — UTC, ISO-8601 (CONTEXT.md — Bill Date). */
   bill_date: string;
+  /** The Billing Sequence (ADR 0029): `0` unless this period shares its bill
+   * date with another — the newest member of such a pair is `0`. Never a
+   * column on the page; it breaks the "latest bill" tie. */
+  sequence: number;
   /** When *we* read it — UTC, ISO-8601. */
   read_at: string;
   meter_serial: string | null;

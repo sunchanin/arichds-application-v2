@@ -113,6 +113,10 @@ _BILLING_EXCLUDE: Final[frozenset[str]] = frozenset(
         # Bookkeeping about this machine's capture folder (ui-audit ticket 03),
         # not a measurement — contract version 1 must not grow a field for it.
         "captured_at",
+        # The Billing Sequence (ADR 0029) is part of the natural key, not a
+        # measurement; it joins the contract deliberately, beside `bill_date`,
+        # as version 2 (billing-sequence ticket 03) — never by falling in here.
+        "sequence",
     }
 )
 

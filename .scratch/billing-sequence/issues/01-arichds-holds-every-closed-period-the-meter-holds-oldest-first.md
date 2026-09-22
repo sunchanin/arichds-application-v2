@@ -5,7 +5,8 @@
 two pairs identical in every column — ends up with **every** period stored, keyed by Bill Date
 **and Billing Sequence** (`0` for the newest of a same-second group, `1` for the next). Reading
 the buffer again stores nothing new; a re-read with different values under a stored key is still
-skipped with today's warning. The Billing page lists periods **oldest first, then by sequence**,
+skipped with today's warning. The Billing page lists periods **oldest first** — the exact reverse of
+the meter's own listing, so within a pair sequence 1 comes before 0; page one is the newest periods —
 shows no sequence column, highlights exactly one "latest bill" when the newest bill date is a
 pair, and the All-Meters View still shows one row per device. The Billing Export File and the
 Database Destination's billing table both carry `sequence` immediately after `bill_date`. On the
@@ -36,7 +37,8 @@ with nobody pressing anything. Decision record: ADR 0029; spec:
       two columns instead of three, and skipping identical pairs must each turn a named test red
 - [ ] The Open Period is untouched: one slot per device, `bill_date` = read time, overwritten in
       place — an existing test proves it still, unchanged
-- [ ] `GET` billing (TestClient): rows come `bill_date ASC, sequence ASC`; a pair is two rows with
+- [ ] `GET` billing (TestClient): a page reads `bill_date ASC, sequence DESC` and page one holds the
+      newest periods (selection newest first, each page reversed); a pair is two rows with
       one bill date; the All-Meters View returns one row per device when that device's newest
       closed bill date is a pair (the `MAX(bill_date)` join takes `sequence = 0`) — a test with a
       pair as the newest period would return two rows without the fix

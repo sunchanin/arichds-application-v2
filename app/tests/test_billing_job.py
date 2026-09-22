@@ -708,3 +708,163 @@ class TestAProfileWithNoOpenPeriodClearsAStaleSlot:
         read_and_store_billing(device_id, now=NOW)
 
         assert open_row(device_id) is not None, "an undeclared driver's open slot must survive"
+
+
+# ─── ADR 0029 — every entry the meter holds, keyed by Billing Sequence ─────────
+
+
+def _closed(bill_date: datetime, kwh: float) -> BillingReading:
+    return BillingReading(
+        bill_date=bill_date, source=SOURCE_DLMS, is_open=False, meter_serial="WP089573", import_active_kwh_total=kwh
+    )
+
+
+#: Site TC's Prometer 100 buffer, 2026-09-22, newest entry first as the driver
+#: hands it over: thirteen closed periods in six same-second pairs — one pair
+#: differing in value (the register before and after a x100 scaling), two
+#: pairs identical in every column, plus an odd one out — and the Open Period.
+_T1 = datetime(2026, 9, 19, 8, 59, 50, tzinfo=UTC)
+_T2 = datetime(2026, 9, 19, 8, 58, 40, tzinfo=UTC)
+_T3 = datetime(2026, 9, 12, 17, 53, 45, tzinfo=UTC)
+_T4 = datetime(2026, 9, 12, 17, 42, 50, tzinfo=UTC)
+_T5 = datetime(2026, 9, 11, 13, 20, 40, tzinfo=UTC)
+_T6 = datetime(2026, 9, 11, 13, 19, 15, tzinfo=UTC)
+_T7 = datetime(2026, 9, 11, 13, 18, 5, tzinfo=UTC)
+TC_OPEN = BillingReading(
+    bill_date=datetime(2026, 9, 20, 12, 34, 37, tzinfo=UTC),
+    source=SOURCE_DLMS,
+    is_open=True,
+    meter_serial="WP089573",
+    import_active_kwh_total=3807.03,
+)
+TC_BUFFER = [
+    TC_OPEN,
+    _closed(_T1, 3118.2458),  # History 1
+    _closed(_T1, 31.1777),  # History 2 — same second, the value before scaling
+    _closed(_T2, 31.1777),  # History 3
+    _closed(_T2, 31.1777),  # History 4 — identical in every column
+    _closed(_T3, 0.0),
+    _closed(_T3, 0.0),
+    _closed(_T4, 0.0),
+    _closed(_T4, 0.0),
+    _closed(_T5, 0.0),
+    _closed(_T5, 0.0),
+    _closed(_T6, 0.0),
+    _closed(_T6, 0.0),
+    _closed(_T7, 0.0),
+]
+
+
+def keyed(device_id: int) -> list[tuple[datetime, int, float | None]]:
+    """Every closed row as ``(bill_date, sequence, kWh)``, oldest first then by sequence."""
+    with session_scope() as session:
+        rows = session.scalars(
+            select(BillingReadingRow)
+            .where(BillingReadingRow.device_id == device_id, BillingReadingRow.record_status.is_(None))
+            .order_by(BillingReadingRow.bill_date, BillingReadingRow.sequence)
+        ).all()
+        return [(row.bill_date.replace(tzinfo=UTC), row.sequence, row.import_active_kwh_total) for row in rows]
+
+
+class TestEveryEntryTheMeterHoldsIsStored:
+    def test_thirteen_entries_in_six_pairs_store_thirteen_rows(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert len(closed_rows(device_id)) == 13
+
+    def test_the_newest_of_a_pair_is_sequence_zero_and_the_next_is_one(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """History 1 (3118.25, after scaling) is 0; History 2 (31.18, before) is 1
+        — counted from the newest as the meter lists them, never from the oldest."""
+        fake_meter.billing_rows = TC_BUFFER
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert [k for k in keyed(device_id) if k[0] == _T1] == [(_T1, 0, 3118.2458), (_T1, 1, 31.1777)]
+
+    def test_a_pair_identical_in_every_column_is_still_two_rows(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert [k for k in keyed(device_id) if k[0] == _T2] == [(_T2, 0, 31.1777), (_T2, 1, 31.1777)]
+
+    def test_a_bill_date_with_one_period_is_sequence_zero(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert [k for k in keyed(device_id) if k[0] == _T7] == [(_T7, 0, 0.0)]
+
+    def test_the_open_period_is_still_one_slot(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+
+        read_and_store_billing(device_id, now=NOW)
+        read_and_store_billing(device_id, now=NOW)
+
+        row = open_row(device_id)
+        assert row is not None and row.sequence == 0
+        with session_scope() as session:
+            assert (
+                session.scalar(
+                    select(BillingReadingRow.id)
+                    .where(BillingReadingRow.device_id == device_id, BillingReadingRow.record_status == "open")
+                    .limit(2)
+                    .offset(1)
+                )
+                is None
+            )
+
+
+class TestRereadingAPairedBufferIsANoOp:
+    def test_a_second_read_stores_nothing_and_warns_nothing(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+        read_and_store_billing(device_id, now=NOW)
+        before = keyed(device_id)
+
+        with caplog.at_level("WARNING"):
+            result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 0
+        assert keyed(device_id) == before
+        assert not [r for r in caplog.records if "already stored" in r.message]
+
+    def test_the_meter_dropping_the_older_member_of_a_pair_leaves_every_key_intact(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """The ring drops its oldest entry first — History 13 here — so a group
+        can lose its `1` and keep its `0`, and the survivors' keys never move."""
+        fake_meter.billing_rows = TC_BUFFER
+        read_and_store_billing(device_id, now=NOW)
+        before = keyed(device_id)
+
+        fake_meter.billing_rows = TC_BUFFER[:-1]  # the oldest entry has fallen off the ring
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 0
+        assert keyed(device_id) == before
+
+    def test_a_changed_value_under_a_stored_key_is_skipped_with_the_existing_warning(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+        read_and_store_billing(device_id, now=NOW)
+
+        changed = list(TC_BUFFER)
+        changed[2] = _closed(_T1, 99.0)  # History 2 (sequence 1) now reads differently
+        fake_meter.billing_rows = changed
+        with caplog.at_level("WARNING"):
+            result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 0
+        assert [k for k in keyed(device_id) if k[0] == _T1] == [(_T1, 0, 3118.2458), (_T1, 1, 31.1777)]
+        assert any("already stored with a different value" in r.message for r in caplog.records)

@@ -58,6 +58,7 @@ class TestAllSectionsCoversEveryMeasurementColumn:
                 # A capture-folder stamp (ui-audit ticket 03), not a measurement —
                 # the document it stamps must not print it.
                 "captured_at",
+                "sequence",  # ADR 0029, migration 0022 — part of the key, not a measurement
             }
         }
 
