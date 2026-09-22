@@ -44,7 +44,10 @@ sold separately. Acceptance is an overlay against a PNG the previous program its
    automatic capture of a new closed period, the Capture image button, and the download of a
    missing image — so that "next write" means every next write.
 7. As an operator, I want to re-issue an old period in the new style by pressing Capture image
-   on that period, so that a switch is not a one-way door for history.
+   on that period, so that a switch is not a one-way door for history. **Amended 2026-09-22
+   (owner, ข):** the button stays render-on-miss — a period whose `.png` already exists is served
+   as it is, whatever style wrote it; to re-issue it, delete the file first. ADR 0028's "switching
+   style rewrites nothing on disk" wins over this story.
 8. As the customer, I want the Classic image to be 1280×709 pixels, always, regardless of how
    many rows it holds, so that it drops into the place the old image occupied.
 9. As the customer, I want the toolbar's ten icons to be the previous program's own icons, so
