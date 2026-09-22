@@ -314,6 +314,40 @@ class TestBillingImageEndpoint:
         written = list((capture_dir / "1232002893").glob("*.png"))
         assert len(written) == 1
 
+    def test_reading_id_anchors_the_image_on_a_pairs_older_member_and_names_it_2(
+        self, admin_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Code review 2026-09-22: the `_2.png` has a render-on-miss path too."""
+        stub_render_billing_png(monkeypatch)
+        capture_dir = tmp_path / "captures"
+        capture_dir.mkdir()
+        set_capture_dir(admin_client, capture_dir)
+        device_id = make_device(admin_client)
+        seed_closed(device_id, sequence=0)
+        older = seed_closed(device_id, sequence=1)
+
+        response = admin_client.get("/api/billing/captures/image", params={"device_id": device_id, "reading_id": older})
+
+        assert response.status_code == 200, response.text
+        assert [p.name for p in (capture_dir / "1232002893").glob("*.png")] == ["2026-07-31_170000_2.png"]
+
+    def test_a_reading_id_of_another_device_or_the_open_period_is_404(
+        self, admin_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub_render_billing_png(monkeypatch)
+        capture_dir = tmp_path / "captures"
+        capture_dir.mkdir()
+        set_capture_dir(admin_client, capture_dir)
+        device_id = make_device(admin_client)
+        seed_closed(device_id)
+        open_id = seed_open(device_id)
+
+        for reading_id in (open_id, 424242):
+            response = admin_client.get(
+                "/api/billing/captures/image", params={"device_id": device_id, "reading_id": reading_id}
+            )
+            assert response.status_code == 404, response.text
+
     def test_t15_the_filename_stem_is_the_newest_closed_periods(
         self, admin_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

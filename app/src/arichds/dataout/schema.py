@@ -426,8 +426,8 @@ def _add_column_sql(connection: Connection, table: Table, column: sa.Column, *, 
     # ADR 0029, is `NOT NULL DEFAULT 0`): it is what lets a NOT NULL column be
     # added to a table that already holds rows, and what a fresh CREATE TABLE
     # would have emitted for the same column.
-    default = column.server_default
-    default_text = f" DEFAULT {default.arg.text}" if default is not None and hasattr(default.arg, "text") else ""
+    default = connection.dialect.ddl_compiler(connection.dialect, None).get_column_default_string(column)
+    default_text = f" DEFAULT {default}" if default is not None else ""
     # *after* is the nearest preceding column of ours the destination has. With
     # none — our first column is the missing one — the server's default (last)
     # stands: that column is NOT NULL in both tables, so the table is not ours.

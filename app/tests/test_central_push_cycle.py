@@ -287,6 +287,27 @@ class TestASameSecondPairReachesTheServer:
         assert "sequence" in by_kind["billing"]["items"][0]
 
 
+class TestAServerOnAnotherContractVersion:
+    def test_the_cycle_ends_skipped_and_pushes_nothing(
+        self, migrated_db, receiver: FakeCentralPushReceiver, license_features
+    ) -> None:
+        """Code review 2026-09-22: a version-1 server would accept the pair and
+        collapse it onto one row, reporting nothing; refusing is the honest answer."""
+        receiver.holdings_contract_version = 1
+        device_id = make_device(serial="WP089573")
+        seed_billing(device_id, bill_date=datetime(2026, 9, 19, 8, 59, 50, tzinfo=UTC), record_status=None, total=1.0)
+        _configure(receiver.url, token=mint_push_token())
+        license_features(None)
+
+        central_push_cycle()
+
+        status = last_cycle()
+        assert status is not None
+        assert status.outcome == "skipped"
+        assert "contract version" in (status.error or "")
+        assert receiver.pushes == []
+
+
 class TestRosterFullSnapshot:
     def test_a_deleted_device_makes_the_next_roster_empty(
         self, migrated_db, receiver: FakeCentralPushReceiver, license_features

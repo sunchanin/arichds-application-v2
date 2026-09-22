@@ -44,6 +44,9 @@ class FakeCentralPushReceiver:
 
     def __init__(self, *, public_key_pem: bytes, files_token: str = "test-files-token") -> None:
         self.public_key_pem = public_key_pem
+        #: What the holdings answer claims to speak — a test sets 1 to stand
+        #: in for a server that never learned ADR 0029's `sequence`.
+        self.holdings_contract_version = 2
 
         #: Current contents, keyed by each kind's own natural key — a plain
         #: `dict` upsert is exactly what "the server upserts" (ADR 0024)
@@ -128,7 +131,7 @@ class FakeCentralPushReceiver:
                 energy_newest[meter_serial] = parsed
 
         return {
-            "contract_version": 2,
+            "contract_version": self.holdings_contract_version,
             "load_profile": [
                 {"meter_serial": serial, "logger_id": logger_id, "newest_read_at": newest.isoformat()}
                 for (serial, logger_id), newest in lp_newest.items()

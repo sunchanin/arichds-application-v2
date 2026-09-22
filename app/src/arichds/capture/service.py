@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import object_session
 from sqlalchemy.orm.exc import UnmappedInstanceError
 
@@ -89,11 +89,14 @@ def _png_source_rows(session: Any, anchor: Any) -> list[Any]:
     """The rows the PNG capture is built from (D4, issue #35).
 
     Same device_id and meter_serial as *anchor*, closed periods only
-    (``record_status IS NULL``), ``bill_date <= anchor.bill_date`` — not "the
-    ten newest for the device": a single read can commit several newly closed
-    periods at once, and the image for the *older* of two must not contain
-    the newer one (ADR 0015's "an older period's own image still holds the
-    ten periods that preceded it"). Newest first, limited to ten.
+    (``record_status IS NULL``), every period up to and including *anchor* —
+    not "the ten newest for the device": a single read can commit several
+    newly closed periods at once, and the image for the *older* of two must
+    not contain the newer one (ADR 0015's "an older period's own image still
+    holds the ten periods that preceded it"). That rule holds inside a
+    same-second pair too (ADR 0029, code review 2026-09-22): the older
+    member's window starts at itself and excludes the newer member. Newest
+    first — within a pair the newer member (sequence 0) first — limited to ten.
 
     Lives on the service side, not the renderer and not
     :mod:`arichds.acquisition.billing` — both the eager write
@@ -107,7 +110,13 @@ def _png_source_rows(session: Any, anchor: Any) -> list[Any]:
                 BillingReadingRow.device_id == anchor.device_id,
                 BillingReadingRow.meter_serial == anchor.meter_serial,
                 BillingReadingRow.record_status.is_(None),
-                BillingReadingRow.bill_date <= anchor.bill_date,
+                or_(
+                    BillingReadingRow.bill_date < anchor.bill_date,
+                    and_(
+                        BillingReadingRow.bill_date == anchor.bill_date,
+                        BillingReadingRow.sequence >= anchor.sequence,
+                    ),
+                ),
             )
             .order_by(BillingReadingRow.bill_date.desc(), BillingReadingRow.sequence.asc())
             .limit(10)
@@ -225,7 +234,7 @@ def capture_reading(
 
     try:
         pdf_target, xlsx_target, png_target = capture_target_paths(
-            capture_dir, row.meter_serial, row.bill_date, sequence=getattr(row, "sequence", 0)
+            capture_dir, row.meter_serial, row.bill_date, sequence=row.sequence
         )
     except ValueError as exc:
         logger.warning("Capture skipped for %s bill_date %s — %s", device_name, row.bill_date, exc)

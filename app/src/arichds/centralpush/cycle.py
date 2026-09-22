@@ -45,7 +45,7 @@ import sqlalchemy as sa
 
 from arichds.acquisition.status import display_status
 from arichds.centralpush.client import PushRequestError, fetch_holdings, push_kind
-from arichds.centralpush.contract import BillingItem, EnergySummaryItem, LoadProfileItem, MeterItem
+from arichds.centralpush.contract import CONTRACT_VERSION, BillingItem, EnergySummaryItem, LoadProfileItem, MeterItem
 from arichds.centralpush.status import CycleStatus, set_last_cycle
 from arichds.config import get_settings
 from arichds.constants import CENTRAL_PUSH_BUDGET_SEC, CENTRAL_PUSH_LOAD_PROFILE_REWIND_SEC
@@ -160,6 +160,16 @@ def central_push_cycle() -> None:
 
     try:
         holdings = fetch_holdings(url, token)
+        if holdings.contract_version != CONTRACT_VERSION:
+            # Code review, 2026-09-22: a server on another version would
+            # accept every push and quietly keep a different shape — a
+            # version-1 server upserts billing on two columns and collapses
+            # a same-second pair (ADR 0029). Sending nothing and saying so
+            # beats sending everything and losing rows.
+            raise PushRequestError(
+                f"contract version mismatch: the server speaks {holdings.contract_version}, "
+                f"this build speaks {CONTRACT_VERSION}"
+            )
         lp_watermarks = {(entry.meter_serial, entry.logger_id): entry.newest_read_at for entry in holdings.load_profile}
         billing_watermarks = {entry.meter_serial: entry.newest_updated_at for entry in holdings.billing}
         energy_watermarks = {entry.meter_serial: entry.newest_updated_at for entry in holdings.energy_summary}

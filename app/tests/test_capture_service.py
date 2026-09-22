@@ -41,7 +41,7 @@ def make_row(**overrides: object) -> SimpleNamespace:
     from arichds.capture._render_shared import ALL_SECTIONS
 
     fields = {attr: None for _title, section in ALL_SECTIONS for _label, attr in section}
-    fields.update(bill_date=BILL_DATE, meter_serial="1232002893", record_status=None, read_at=BILL_DATE)
+    fields.update(bill_date=BILL_DATE, meter_serial="1232002893", record_status=None, read_at=BILL_DATE, sequence=0)
     fields.update(overrides)
     return SimpleNamespace(**fields)
 
@@ -138,6 +138,14 @@ class TestThePngWindowWithASameSecondPair:
 
         expected = [ids[(0, 0)], ids[(1, 0)], ids[(1, 1)]] + [ids[(i, 0)] for i in range(2, 9)]
         assert window == expected  # ten rows: the pair counts twice, so day-index 9 falls out
+
+        # The older member's own image (code review, 2026-09-22): its window
+        # starts at itself — the newer member and everything after are out.
+        with session_scope() as session:
+            older = session.scalar(select(BillingReading).where(BillingReading.id == ids[(1, 1)]))
+            assert older is not None
+            window = [row.id for row in _png_source_rows(session, older)]
+        assert window == [ids[(1, 1)]] + [ids[(i, 0)] for i in range(2, 11)]
 
 
 class TestCaptureReading:

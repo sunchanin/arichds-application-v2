@@ -823,6 +823,22 @@ class TestEveryEntryTheMeterHoldsIsStored:
             )
 
 
+class TestADriverThatListsOldestFirst:
+    """No shipped driver declares `BILLING_NEWEST_ENTRY_FIRST = False`, so the
+    store's reverse is pinned here directly (code review 2026-09-22): the
+    sequence is counted from the newest member whichever end the list starts at."""
+
+    def test_the_sequence_still_counts_from_the_newest_member(self, device_id: int) -> None:
+        from arichds.acquisition.billing import _store
+
+        oldest_first = list(reversed([r for r in TC_BUFFER if not r.is_open]))
+
+        _store(device_id, "Main Incomer", oldest_first, NOW, newest_first=False)
+
+        assert [k for k in keyed(device_id) if k[0] == _T1] == [(_T1, 0, 3118.2458), (_T1, 1, 31.1777)]
+        assert len(keyed(device_id)) == 13
+
+
 class TestRereadingAPairedBufferIsANoOp:
     def test_a_second_read_stores_nothing_and_warns_nothing(
         self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture

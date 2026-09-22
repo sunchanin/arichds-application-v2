@@ -281,7 +281,9 @@ def list_billing_readings(
     limit: Annotated[int, Query(ge=1, le=500, description="Page size")] = 100,
     offset: Annotated[int, Query(ge=0, description="Rows to skip")] = 0,
 ) -> ApiResponse[BillingPage]:
-    """Return one page of Billing Readings, newest ``bill_date`` first.
+    """Return one page of Billing Readings — page one is the **newest**
+    periods, and every page is read **oldest first** (ADR 0029): within a
+    same-second pair the older member (sequence 1) comes before the newer.
 
     Any authenticated role — reading a device's data is not admin-only
     (``devices.py``'s own rule, and Load Profile's).
@@ -333,7 +335,9 @@ def list_billing_readings(
         # newest end (ADR 0015) — but the page is *read* oldest first (ADR
         # 0029, owner Q6), so the selected block is reversed below: within a
         # same-second pair the meter's newer member (sequence 0) comes last.
-        .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc(), BillingReading.device_id.asc())
+        # `device_id` descending here so that the reversed page still lists
+        # devices ascending on a shared bill date (code review, 2026-09-22).
+        .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc(), BillingReading.device_id.desc())
         .limit(limit)
         .offset(offset)
     ).all()
@@ -862,6 +866,13 @@ def download_billing_image(
     session: SessionDep,
     license_service: LicenseServiceDep,
     device_id: Annotated[int, Query(ge=1, description="Which device's Billing History image to fetch")],
+    reading_id: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            description="A closed period of that device to anchor on instead of its newest — the only way to (re)produce the `_2` image of a same-second pair's older member (ADR 0029)",
+        ),
+    ] = None,
 ) -> StreamingResponse:
     """Download the Billing History image (up to ten most recent closed
     periods) for one device — render-on-miss, device-keyed (D11, ADR
@@ -884,21 +895,34 @@ def download_billing_image(
     Gated on ``billing_image_export`` on top of the router's own ``billing``
     gate, exactly as :func:`download_billing_capture` gates per format.
 
+    ``reading_id`` (code review, 2026-09-22) names a closed period of the
+    same device to anchor on instead — every capture document has a
+    render-on-miss path (ADR 0010), and without it the ``_2`` image of a
+    same-second pair's older member would have had none.
+
     Raises:
         HTTPException: 404 for a device with no closed billing period yet,
+            a ``reading_id`` that is not one of this device's closed periods,
             or an unconfigured ``capture_dir``. 422 for a ``meter_serial``
             that fails path validation. 500 for a write failure.
     """
     if not feature_enabled("billing_image_export", license_service=license_service, settings=get_settings()):
         raise FeatureDisabledError("billing_image_export")
 
-    anchor = session.scalars(
-        select(BillingReading)
-        .where(BillingReading.device_id == device_id, BillingReading.record_status.is_(None))
-        # The newest period; of a same-second pair, its newer member (ADR 0029).
-        .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc())
-        .limit(1)
-    ).first()
+    if reading_id is not None:
+        anchor = session.get(BillingReading, reading_id)
+        if anchor is None or anchor.device_id != device_id or anchor.record_status is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="No such closed billing period for this device."
+            )
+    else:
+        anchor = session.scalars(
+            select(BillingReading)
+            .where(BillingReading.device_id == device_id, BillingReading.record_status.is_(None))
+            # The newest period; of a same-second pair, its newer member (ADR 0029).
+            .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc())
+            .limit(1)
+        ).first()
     if anchor is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="This device has no closed billing period yet."

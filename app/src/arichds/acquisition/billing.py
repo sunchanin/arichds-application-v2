@@ -615,10 +615,11 @@ def _upsert_closed(
 
     if any(_measurement_differs(getattr(existing, key), value) for key, value in incoming.items()):
         logger.warning(
-            "Billing period for device %s at bill_date %s is already stored with a different value — "
+            "Billing period for device %s at bill_date %s sequence %d is already stored with a different value — "
             "skipping (stored history is never rewritten)",
             device_name,
             reading.bill_date.isoformat(),
+            sequence,
         )
     return None
 
