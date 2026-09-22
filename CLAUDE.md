@@ -568,7 +568,37 @@ MySQL, and ~30 tables.
   driver cannot be built is still sent — its stored rows say whether it has a Logger 2, with one
   WARNING per device per day. `scripts/probe_dbdest_merge_backfill.py` is the acceptance probe: a
   real two-Logger backfill into a real MariaDB, checking the hold after every round and the
-  merged rows against `merged_rows_select` at the end — `fake_meter` cannot prove either)
+  merged rows against `merged_rows_select` at the end — `fake_meter` cannot prove either) ·
+  0028 (**the capture image has a style, and Classic reproduces the customer's previous program**,
+  2026-09-21, **decided, not implemented** — amends 0017: **Capture Style** (CONTEXT.md) is a
+  machine-wide admin setting beside the capture folder, `standard` (default, today's image) or
+  `classic`, no licence key; Classic is a page in `web/` no menu reaches, drawn only to be
+  photographed by the same headless pipeline at a fixed 1280×709, imitating the window of the
+  customer's **own** desktop program (not v1) with its toolbar icons as bitmaps they confirmed
+  they own; ten closed periods **oldest first**, always kWh/kW; **every value is true or is
+  inert** — real folder/group/device/rows, Statistics Summary counted from Poller status over the
+  same group at the moment of writing (Paused uncounted, Issues = Offline only — *not* billing
+  completeness, because captures are written meter by meter), the Auto Read Schedule panel fixed
+  text; switching style rewrites nothing on disk; **acceptance is an overlay against a PNG the
+  old program itself wrote** and stays `Type: HITL` until the customer sends them — the one
+  reference held is a chat-app JPEG, so **do not report "identical" from it**) ·
+  0029 (**a closed billing period is keyed by bill date and sequence — every entry the meter
+  holds is stored**, 2026-09-22, **decided, not implemented** — amends 0009's `(device,
+  bill_date)` key: site TC's Prometer 100 stamps commissioning resets in **pairs on the same
+  second** (six pairs, *Invocation of Scaling tariff*, `31.18` vs `3118.25` = one register before
+  and after a ×100 scaling; two pairs identical in every column), the vendor tool shows thirteen
+  and ARICHDS kept seven, skipping the rest with *already stored with a different value*; the
+  owner chose "store what the meter holds" over my recommendation to explain the six.
+  **Billing Sequence** (CONTEXT.md) = position within a same-bill-date group counted from the
+  newest, `0` for every single-entry bill date, so existing rows keep their key; identical pairs
+  are still two rows; **not** an auto id (cannot recognise a re-read — 13 rows become 26 on
+  day two), not the buffer position (shifts every cut). Rides into the Billing Export File, the
+  Database Destination and the Central Push (**contract version 2**, natural key
+  `(meter_serial, bill_date, sequence)`); capture stems get `_<sequence+1>` only for
+  `sequence > 0`, so no existing file is renamed; the Billing page shows no column for it and
+  **every page now lists periods oldest first** — which changes the Standard capture image's
+  order too. Change Check (0018) unaffected. TC's six rows arrive on the first whole-buffer read
+  of the new build, no manual step)
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject

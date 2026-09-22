@@ -205,11 +205,25 @@ like every other billing group.
 _Avoid_: total demand, accumulated demand, sum of demand
 
 **Bill Date**:
-The timestamp the **meter** stamped on a billing period, and the natural key of a closed one:
-`(device, bill_date)` is unique, so reading the same buffer twice stores nothing new. It comes
-from the meter's clock, never the server's — a period read a day late still belongs to the day
-the meter cut it.
+The timestamp the **meter** stamped on a billing period, and — with the Billing Sequence — the
+natural key of a closed one: `(device, bill_date, sequence)` is unique, so reading the same
+buffer twice stores nothing new. It comes from the meter's clock, never the server's — a period
+read a day late still belongs to the day the meter cut it. **A bill date is not unique on its
+own** (ADR 0029): a meter can stamp two periods on one second, and does.
 _Avoid_: read time (that's `read_at`), cut date, period date
+
+**Billing Sequence**:
+Which of the closed periods sharing one Bill Date a row is — `0` for the newest as the meter
+lists them, `1` for the next, so a bill date with one period is always `0`. It exists because
+a CEWE meter writes commissioning resets in pairs stamped on the same second (site TC: six
+pairs, *Invocation of Scaling tariff*, one of them the same register before and after a ×100
+scaling), and the customer measures ARICHDS against the vendor tool that shows every one. It is
+counted within the group from its newest member, so the meter dropping its oldest entry can
+remove a `1` and never a `0`. A pair identical in every column is still two rows. Everywhere a
+person reads periods they run oldest first, then by sequence. The Billing page shows no column
+for it; the export file, the Database Destination and the Central Push carry it, because a
+machine reading them must tell the pair apart.
+_Avoid_: entry index (that shifts every cut), duplicate, sub-period
 
 **Open Period**:
 The billing period a meter is still accumulating into — at most one per device, held in a
@@ -362,7 +376,8 @@ Three formats share that one filename stem, and **they do not cover the same spa
 `.pdf` and `.xlsx` hold **that one period**, while `.png` holds **the ten most recent closed
 periods** rendered as the Billing History table. Sending the `.png` believing it carries a
 single month sends nine more. Nothing in the folder warns of this; saying so is the guard. The
-`.png` **is** a screenshot — a headless capture of the running Billing page taken over the Chrome
+`.png` **is** a screenshot — a headless capture of the running Billing page (or, in the Classic
+**Capture Style**, of a page drawn only for it) taken over the Chrome
 DevTools Protocol against the already-installed Microsoft Edge, nobody signed in on screen
 (ADR 0017, reverses ADR 0014, issue #38); `.pdf`/`.xlsx` stay drawn, not screenshotted. Edge is
 launched under a `NT AUTHORITY\LOCAL SERVICE` scheduled task while the ARICHDS service itself
@@ -371,6 +386,25 @@ operator-chosen `capture_dir` under `C:\Users\…` writable, since only the serv
 ever writes the capture file, and a service pinned to a low-privilege account cannot write
 outside `%ProgramData%\ARICHDS` (the mistake issue #38 first shipped, and #40 corrects).
 _Avoid_: report, export (that's a different feature), snapshot
+
+**Capture Style**:
+What a Capture's `.png` looks like — a machine-wide choice an admin makes beside the capture
+folder, with two values. **Standard** is the Billing History table as our own Billing page shows
+it. **Classic** reproduces the window of the program a customer ran before ARICHDS (**ARICHDS
+Meter**, a desktop program, not v1): its toolbar, its Save Path / Data Billing / Auto Read Schedule panels
+and its Data Table, at that window's fixed size, so the image can go on standing where that
+program's image stood. Classic is a picture of a window that does not exist — nobody can open
+it as a page — and it is judged by laying it over an image the old program wrote: positions,
+sizes, colours and text must agree, glyph edges may not. It changes the `.png` only; `.pdf`,
+`.xlsx`, the filename convention and the ten-period span (oldest first in Classic, as that
+program listed them) are untouched. Its numbers are always kWh and kW, because its headings say
+so. **Every value in it is true or is inert**: the folder, the group, the device and the rows are
+real; Statistics Summary counts the devices of the same group at the moment of writing —
+*Devices with Issues* are the ones the Poller cannot currently reach, never the ones whose bill
+has not arrived yet, because a Capture is written meter by meter and the first of a group would
+otherwise accuse the rest; the Auto Read Schedule panel is fixed text, since it claims nothing
+about a bill. Switching style rewrites nothing already on disk — it governs the next write.
+_Avoid_: legacy style (v1 and the customer's `logger` table are both already "legacy"), theme, skin
 
 **Export Format**:
 The machine-wide settings that govern the **export files** (M7 slice 3, issue #30; extended at
