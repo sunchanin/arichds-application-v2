@@ -1,6 +1,6 @@
-"""Contract version 1 — the payload shapes Central Push sends, and the
+"""Contract version 2 — the payload shapes Central Push sends, and the
 document rendered from them for the API page (ADR 0024, "Contract version
-1"; CONTEXT.md — Central Push).
+1", bumped to 2 by ADR 0029 for `billing.sequence`; CONTEXT.md — Central Push).
 
 **Ours, published, generated.** The receiving team implements to the exact
 thing the machine sends, so the four item kinds below (:data:`ITEM_KINDS`)
@@ -36,7 +36,10 @@ from arichds.fileupload.https_transport import FILE_PATH_PREFIX, MANIFEST_PATH, 
 #: The one contract version this build speaks (ADR 0024). A future change
 #: bumps this and is a new, additively-named version — never a silent
 #: reshape of the fields below.
-CONTRACT_VERSION: Final[int] = 1
+#: Version 2 since ADR 0029 (2026-09-22): `billing` gained `sequence`, and its natural key
+#: became `(meter_serial, bill_date, sequence)`. Nothing else changed. A version-1 server
+#: upserting on two columns collapses a same-second pair onto one row.
+CONTRACT_VERSION: Final[int] = 2
 
 _HOLDINGS_PATH: Final[str] = "/v1/holdings"
 _PUSH_PATH: Final[str] = "/v1/push"
@@ -114,8 +117,8 @@ _BILLING_EXCLUDE: Final[frozenset[str]] = frozenset(
         # not a measurement — contract version 1 must not grow a field for it.
         "captured_at",
         # The Billing Sequence (ADR 0029) is part of the natural key, not a
-        # measurement; it joins the contract deliberately, beside `bill_date`,
-        # as version 2 (billing-sequence ticket 03) — never by falling in here.
+        # measurement — declared explicitly beside `bill_date` below, never by
+        # falling into the measurement walk.
         "sequence",
     }
 )
@@ -123,11 +126,21 @@ _BILLING_EXCLUDE: Final[frozenset[str]] = frozenset(
 BillingItem = create_model(
     "BillingItem",
     __doc__="One Billing Reading (SPEC §3.6, CONTEXT.md — Billing Reading).",
-    meter_serial=(str, Field(description="Natural key 1/2.")),
+    meter_serial=(str, Field(description="Natural key 1/3.")),
     bill_date=(
         datetime,
         Field(
-            description="Natural key 2/2 — ISO 8601 with the site's UTC offset, the meter's own Clock cell for this period."
+            description="Natural key 2/3 — ISO 8601 with the site's UTC offset, the meter's own Clock cell for this period."
+        ),
+    ),
+    sequence=(
+        int,
+        Field(
+            description=(
+                "Natural key 3/3 (contract version 2, ADR 0029) — the Billing Sequence: 0 for every period alone on its "
+                "bill date; a meter that stamps two periods on one second sends the newer as 0 and the next as 1. "
+                "Upsert on all three columns, or a pair collapses onto one row."
+            )
         ),
     ),
     is_open=(
@@ -191,7 +204,7 @@ ITEM_KINDS: Final[Mapping[ItemKind, type[BaseModel]]] = {
 #: Serial is still the identifying field, so it is listed the same way.
 NATURAL_KEYS: Final[Mapping[ItemKind, tuple[str, ...]]] = {
     "load_profile": ("meter_serial", "logger_id", "read_at"),
-    "billing": ("meter_serial", "bill_date"),
+    "billing": ("meter_serial", "bill_date", "sequence"),
     "energy_summary": ("meter_serial", "local_date"),
     "meters": ("meter_serial",),
 }
@@ -482,5 +495,9 @@ def render_contract(
             "sent — the server's copy of them is final.",
             "`meters` replaces the whole roster every cycle; it is not upserted by its natural key the way the "
             "other three kinds are.",
+            "Version 2 (2026-09-22): `billing` gained `sequence` and its natural key is now (`meter_serial`, "
+            "`bill_date`, `sequence`) — a meter can stamp two closed periods on one second (ADR 0029). Keep any "
+            "auto-increment id of your own, but upsert on the natural key: a machine re-pushes after a data "
+            "reset or a reinstall. A version-1 server upserting on two columns collapses such a pair onto one row.",
         ],
     )

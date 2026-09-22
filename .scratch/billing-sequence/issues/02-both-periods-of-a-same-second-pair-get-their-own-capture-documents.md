@@ -12,7 +12,7 @@ Decision record: ADR 0029 (filename), ADR 0015 (one stem, three formats — stil
 
 **Blocked by:** 01 (ARICHDS holds every closed period the meter holds, oldest first)
 
-**Status:** ready-for-agent
+**Status:** done — commit `d5e2888`, 2026-09-22 (four mutation probes each red one named test; the real-Edge run is the owner's, see the criterion below)
 
 - [ ] The one stem function takes the sequence: `0` → byte-for-byte today's path (an existing
       test's expected value is unchanged); `1` → `_2`; `2` → `_3`; all three formats share the

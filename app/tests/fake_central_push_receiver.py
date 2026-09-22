@@ -49,7 +49,7 @@ class FakeCentralPushReceiver:
         #: `dict` upsert is exactly what "the server upserts" (ADR 0024)
         #: means for a fake standing in for a real one.
         self.meters: dict[str, dict[str, Any]] = {}
-        self.billing: dict[tuple[str, str], dict[str, Any]] = {}
+        self.billing: dict[tuple[str, str, int], dict[str, Any]] = {}
         self.energy_summary: dict[tuple[str, str], dict[str, Any]] = {}
         self.load_profile: dict[tuple[str, int, str], dict[str, Any]] = {}
 
@@ -116,7 +116,7 @@ class FakeCentralPushReceiver:
                 lp_newest[key] = parsed
 
         billing_newest: dict[str, datetime] = {}
-        for (meter_serial, _bill_date), item in self.billing.items():
+        for (meter_serial, _bill_date, _sequence), item in self.billing.items():
             parsed = datetime.fromisoformat(item["updated_at"])
             if meter_serial not in billing_newest or parsed > billing_newest[meter_serial]:
                 billing_newest[meter_serial] = parsed
@@ -128,7 +128,7 @@ class FakeCentralPushReceiver:
                 energy_newest[meter_serial] = parsed
 
         return {
-            "contract_version": 1,
+            "contract_version": 2,
             "load_profile": [
                 {"meter_serial": serial, "logger_id": logger_id, "newest_read_at": newest.isoformat()}
                 for (serial, logger_id), newest in lp_newest.items()
@@ -154,7 +154,7 @@ class FakeCentralPushReceiver:
             self.meters = {item["meter_serial"]: item for item in items}
         elif kind == "billing":
             for item in items:
-                self.billing[(item["meter_serial"], item["bill_date"])] = item
+                self.billing[(item["meter_serial"], item["bill_date"], item["sequence"])] = item
         elif kind == "energy_summary":
             for item in items:
                 self.energy_summary[(item["meter_serial"], item["local_date"])] = item

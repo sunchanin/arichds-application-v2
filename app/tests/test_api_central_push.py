@@ -234,11 +234,13 @@ class TestContractEndpoint:
 
         assert response.status_code == 200, response.text
         data = response.json()["data"]
-        assert data["contract_version"] == 1
+        assert data["contract_version"] == 2  # ADR 0029: billing gained `sequence` in its natural key
         kinds = {kind["kind"]: kind for kind in data["kinds"]}
         assert set(kinds) == {"meters", "billing", "energy_summary", "load_profile"}
         assert kinds["load_profile"]["natural_key"] == ["meter_serial", "logger_id", "read_at"]
-        assert kinds["billing"]["natural_key"] == ["meter_serial", "bill_date"]
+        assert kinds["billing"]["natural_key"] == ["meter_serial", "bill_date", "sequence"]
+        billing_fields = [field["name"] for field in kinds["billing"]["fields"]]
+        assert billing_fields.index("sequence") == billing_fields.index("bill_date") + 1
         assert kinds["energy_summary"]["natural_key"] == ["meter_serial", "local_date"]
         assert kinds["meters"]["replace_whole_roster"] is True
 
@@ -346,11 +348,11 @@ class TestFilesSection:
     def test_the_existing_contract_render_is_unchanged_apart_from_the_new_section(
         self, admin_client: TestClient
     ) -> None:
-        """ADR 0025 ticket 03's own acceptance criterion — contract version 1
-        and the four push kinds must be untouched by this addition."""
+        """ADR 0025 ticket 03's own acceptance criterion — the contract version
+        (2 since ADR 0029) and the four push kinds must be untouched by this addition."""
         data = admin_client.get("/api/settings/central-push/contract").json()["data"]
 
-        assert data["contract_version"] == 1
+        assert data["contract_version"] == 2
         assert {kind["kind"] for kind in data["kinds"]} == {"meters", "billing", "energy_summary", "load_profile"}
         for kind in data["kinds"]:
             model = ITEM_KINDS[kind["kind"]]

@@ -12,7 +12,7 @@ Push*, *Billing Sequence*.
 
 **Blocked by:** 01 (ARICHDS holds every closed period the meter holds, oldest first)
 
-**Status:** ready-for-agent
+**Status:** done — 2026-09-22 (commit follows the full gate; cycle 61 passed incl. the pair, the reset re-push and the other kinds unchanged)
 
 - [ ] The billing item model carries `sequence` (integer, ≥ 0); because the item's measurement
       columns are built by walking the ORM model, confirm `sequence` is placed deliberately beside

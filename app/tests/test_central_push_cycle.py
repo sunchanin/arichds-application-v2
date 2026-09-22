@@ -1,7 +1,7 @@
 """The Central Push cycle (ADR 0024, spec.md "Central Push"; M14 ticket 08).
 
 Driven against :class:`FakeCentralPushReceiver`, an in-process HTTP server
-implementing contract version 1 — the same "assert only on what the fake
+implementing contract version 2 — the same "assert only on what the fake
 holds" discipline `test_dataout_mysql.py` uses against a real MariaDB.
 `test_api_central_push.py` (ticket 07) owns the settings/contract HTTP
 surface; this file owns the cycle itself: the scheduler job, the
@@ -18,6 +18,7 @@ import jwt
 import pytest
 from conftest import TEST_MACHINE_ID, VENDOR_PRIVATE_KEY_PEM, VENDOR_PUBLIC_KEY_PEM
 from fake_central_push_receiver import FakeCentralPushReceiver
+from sqlalchemy import delete as sa_delete
 
 from arichds.centralpush import client as centralpush_client
 from arichds.centralpush import cycle as centralpush_cycle_module
@@ -114,12 +115,14 @@ def seed_billing(
     record_status: str | None,
     total: float,
     updated_at: datetime | None = None,
+    sequence: int = 0,
 ) -> None:
     with session_scope() as session:
         session.add(
             BillingReading(
                 device_id=device_id,
                 bill_date=bill_date,
+                sequence=sequence,
                 read_at=bill_date,
                 record_status=record_status,
                 source=SOURCE_DLMS,
@@ -216,6 +219,72 @@ class TestFirstAndSecondCycle:
         assert status2.billing_rows == 0
         assert status2.energy_summary_rows == 0
         assert status2.meters_rows == 1
+
+
+class TestASameSecondPairReachesTheServer:
+    """ADR 0029 / contract version 2: `sequence` travels with every billing item
+    and is part of the key the receiver upserts on."""
+
+    def test_a_pair_lands_as_two_rows_keyed_by_sequence(
+        self, migrated_db, receiver: FakeCentralPushReceiver, license_features
+    ) -> None:
+        device_id = make_device(serial="WP089573")
+        stamp = datetime(2026, 9, 19, 8, 59, 50, tzinfo=UTC)
+        seed_billing(device_id, bill_date=stamp, record_status=None, total=3118.2458, sequence=0)
+        seed_billing(device_id, bill_date=stamp, record_status=None, total=31.1777, sequence=1)
+        _configure(receiver.url, token=mint_push_token())
+        license_features(None)
+
+        central_push_cycle()
+
+        assert {key[2]: item["import_active_kwh_total"] for key, item in receiver.billing.items()} == {
+            0: 3118.2458,
+            1: 31.1777,
+        }
+        assert all(item["sequence"] == key[2] for key, item in receiver.billing.items())
+
+    def test_a_data_reset_and_re_read_leaves_the_same_two_rows_never_four(
+        self, migrated_db, receiver: FakeCentralPushReceiver, license_features
+    ) -> None:
+        """The natural key, not an id, is what makes a re-push after *Delete
+        all data* idempotent (ADR 0024, ADR 0029)."""
+        device_id = make_device(serial="WP089573")
+        stamp = datetime(2026, 9, 19, 8, 59, 50, tzinfo=UTC)
+        seed_billing(device_id, bill_date=stamp, record_status=None, total=3118.2458, sequence=0)
+        seed_billing(device_id, bill_date=stamp, record_status=None, total=31.1777, sequence=1)
+        _configure(receiver.url, token=mint_push_token())
+        license_features(None)
+        central_push_cycle()
+
+        with session_scope() as session:
+            session.execute(sa_delete(BillingReading).where(BillingReading.device_id == device_id))
+        later = datetime(2026, 9, 21, tzinfo=UTC)
+        seed_billing(device_id, bill_date=stamp, record_status=None, total=3118.2458, sequence=0, updated_at=later)
+        seed_billing(device_id, bill_date=stamp, record_status=None, total=31.1777, sequence=1, updated_at=later)
+        central_push_cycle()
+
+        assert len(receiver.billing) == 2
+
+    def test_the_wire_says_version_two_and_the_other_kinds_are_unchanged(
+        self, migrated_db, receiver: FakeCentralPushReceiver, license_features
+    ) -> None:
+        device_id = make_device(serial="SN0001")
+        seed_billing(device_id, bill_date=datetime(2026, 8, 1, tzinfo=UTC), record_status=None, total=10.0)
+        seed_energy_summary(
+            device_id, local_date=date(2026, 8, 1), total_import_kwh=5.0, updated_at=datetime(2026, 8, 1, tzinfo=UTC)
+        )
+        seed_load_profile(device_id, read_at=datetime(2026, 8, 1, 0, 15, tzinfo=UTC))
+        _configure(receiver.url, token=mint_push_token())
+        license_features(None)
+
+        central_push_cycle()
+
+        assert {push["contract_version"] for push in receiver.pushes} == {2}
+        by_kind = {push["kind"]: push for push in receiver.pushes}
+        assert set(by_kind["meters"]["items"][0]) == {"meter_serial", "device_name", "brand", "model", "status"}
+        assert "sequence" not in by_kind["energy_summary"]["items"][0]
+        assert "sequence" not in by_kind["load_profile"]["items"][0]
+        assert "sequence" in by_kind["billing"]["items"][0]
 
 
 class TestRosterFullSnapshot:

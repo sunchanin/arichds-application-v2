@@ -416,7 +416,14 @@ MySQL, and ~30 tables.
   `fake_central_push_receiver.py`, an in-process `ThreadingHTTPServer` implementing contract
   version 1 on `127.0.0.1:0` — an ephemeral port so `pytest -n auto` workers never collide —
   verifying the Push Token with `verify_push_token` and upserting on the contract's own natural
-  keys; every test asserts only on what it holds. ·
+  keys; every test asserts only on what it holds. **Contract version 2 since ADR 0029**
+  (billing-sequence ticket 03, 2026-09-22): `BillingItem` carries `sequence`, declared explicitly
+  beside `bill_date` (never by the measurement walk — it is in `_BILLING_EXCLUDE` so the walk
+  cannot pick it up), and `NATURAL_KEYS["billing"]` is `(meter_serial, bill_date, sequence)`; the
+  published contract's notes say why a version-1 server collapses a same-second pair. Nothing else
+  on the wire changed — the roster, Energy Summary and load-profile items are asserted
+  field-for-field unchanged. Nobody consumes the push as of 2026-09-22 (only the Database
+  Destination to `localhost` is in use), so there was no server team to coordinate with. ·
   0025 (the **File Upload Destination speaks three protocols and keeps its state in a
   server-side manifest** — menu label **FTP**, the customer's own word (CONTEXT.md's glossary
   term stays *File Upload Destination*; the two disagree on purpose) — a third Data-out
