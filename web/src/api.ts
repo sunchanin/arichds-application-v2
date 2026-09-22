@@ -382,6 +382,40 @@ export interface BillingSettings {
 export type CaptureStyle = "standard" | "classic";
 
 /**
+ * One Data Table row of the Classic capture, every cell already a string —
+ * the page is a layout, not a formatter (ADR 0028).
+ */
+export interface ClassicCaptureRow {
+  id: number;
+  name: string;
+  time: string;
+  total_kwh_total: string;
+  total_kwh_rate_a: string;
+  total_kwh_rate_b: string;
+  total_kwh_rate_c: string;
+  prev_kw_demand_rate_a: string;
+  time_of_kw_demand_a: string;
+  prev_kw_demand_rate_b: string;
+}
+
+/**
+ * Everything the Classic capture page draws, from
+ * `GET /api/billing/capture-classic/{device_id}` (ADR 0028): the capture
+ * folder with `/` separators, the device's real group (`null` when it has
+ * none), `BRAND` and Meter Serial, the Statistics Summary counted from the
+ * Poller's status over the same group, and the ten most recent closed
+ * periods oldest first.
+ */
+export interface ClassicCaptureView {
+  save_path: string;
+  group_name: string | null;
+  brand: string;
+  meter_serial: string;
+  statistics: { total: number; issues: number; complete: number };
+  rows: ClassicCaptureRow[];
+}
+
+/**
  * What `POST /api/billing/read` did (issue #44). A live-read failure is a
  * verdict on `error`, never a thrown error — mirrors
  * `LoadProfileReadNowResult`.
@@ -1645,6 +1679,16 @@ export const api = {
 
   /** The current `capture_dir` and how many closed periods exist (M6b, issue #22). */
   billingSettings: () => request<BillingSettings>("/api/billing/settings"),
+
+  /**
+   * The Classic capture's view model (ADR 0028) — `readingId` anchors the
+   * ten-period window on one closed period; omitted means the device's
+   * newest. Any authenticated role; gated like the image download.
+   */
+  classicCapture: (deviceId: number, readingId?: number) =>
+    request<ClassicCaptureView>(
+      `/api/billing/capture-classic/${deviceId}${readingId === undefined ? "" : `?reading_id=${readingId}`}`,
+    ),
 
   /**
    * Read one device's whole billing buffer now, through the Manual Read

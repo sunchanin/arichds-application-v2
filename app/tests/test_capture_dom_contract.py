@@ -20,7 +20,10 @@ import pytest
 
 from arichds.capture.dom import (
     APP_SHELL_SELECTOR,
+    CAPTURE_ANCHOR_FIELD,
     CAPTURE_REQUEST_GLOBAL,
+    CAPTURE_STYLE_FIELD,
+    CLASSIC_TABLE_BODY_ROW_SELECTOR,
     ROW_KEY_ATTRIBUTE,
     SESSION_STORAGE_KEY,
     TABLE_BODY_ROW_SELECTOR,
@@ -83,6 +86,15 @@ class TestPollScript:
         assert ROW_KEY_ATTRIBUTE in script
         assert APP_SHELL_SELECTOR in script
 
+    def test_classic_polls_the_classic_selector_only(self) -> None:
+        """ADR 0028 — the Classic page renders no AntD table, so its rows are
+        found by a selector declared here, never hardcoded in the driver."""
+        script = poll_script("classic")
+
+        assert CLASSIC_TABLE_BODY_ROW_SELECTOR in script
+        assert TABLE_BODY_ROW_SELECTOR not in script
+        assert ROW_KEY_ATTRIBUTE in script
+
 
 class TestOurOwnContract:
     """Grep-based, never skipped — ``web/src`` is committed."""
@@ -98,6 +110,23 @@ class TestOurOwnContract:
     def test_row_key_reads_the_row_id_in_billing_tsx(self) -> None:
         text = (WEB_SRC / "pages" / "Billing.tsx").read_text(encoding="utf-8")
         assert "rowKey={(row) => row.id}" in text
+
+    def test_the_style_and_anchor_fields_match_capture_ts(self) -> None:
+        """ADR 0028 — `style` picks the page, `anchorId` names the period the
+        Classic view model is anchored on; both read by `capture.ts` under
+        exactly these names."""
+        text = (WEB_SRC / "capture.ts").read_text(encoding="utf-8")
+        assert f"{CAPTURE_STYLE_FIELD}?:" in text
+        assert f"{CAPTURE_ANCHOR_FIELD}?:" in text
+        assert '"classic"' in text
+
+    def test_the_classic_selector_matches_classic_capture_tsx(self) -> None:
+        """The selector's class is on the page's root and its rows carry the
+        row-key attribute — the two halves of the Classic row gate."""
+        text = (WEB_SRC / "pages" / "ClassicCapture.tsx").read_text(encoding="utf-8")
+        root_class = CLASSIC_TABLE_BODY_ROW_SELECTOR.split(" ")[0].lstrip(".")
+        assert f'className="{root_class}"' in text
+        assert f"{ROW_KEY_ATTRIBUTE}={{row.id}}" in text
 
 
 def _rc_table_body_dir() -> Path | None:

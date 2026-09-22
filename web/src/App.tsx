@@ -11,6 +11,7 @@ import { AppLog } from "./pages/AppLog";
 import { Battery } from "./pages/Battery";
 import { Billing } from "./pages/Billing";
 import { CentralPush } from "./pages/CentralPush";
+import { ClassicCapture } from "./pages/ClassicCapture";
 import { DatabaseDestination } from "./pages/DatabaseDestination";
 import { Devices } from "./pages/Devices";
 import { EnergySummary } from "./pages/EnergySummary";
@@ -180,6 +181,15 @@ export default function App() {
 
   if (status.state !== "active") {
     return <Activation status={status} role={session.role} onActivated={() => void refreshStatus()} />;
+  }
+
+  // The Classic Capture Style (ADR 0028): a page no menu reaches and no URL
+  // names, rendered in place of the whole shell only when the seeded request
+  // says so — the headless renderer photographs it at a fixed 1280×709. A
+  // request saying `standard` (or nothing) falls through to the Billing page
+  // inside the shell, exactly as before.
+  if (captureRequest?.style === "classic") {
+    return <ClassicCapture request={captureRequest} />;
   }
 
   // A `user` never reaches the Users, App Log, or Data-out Destination

@@ -12,6 +12,8 @@ seed migration.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from sqlalchemy.orm import Session
 
 from arichds.db.models import Setting
@@ -39,6 +41,11 @@ DISPLAY_UNIT_SCALE_DEFAULT = "kilo"
 #: rule, applied to a setting); no licence feature key.
 CAPTURE_STYLE_KEY = "capture_style"
 CAPTURE_STYLE_DEFAULT = "standard"
+
+#: The two Capture Styles. The settings body model's ``Literal`` is what
+#: makes anything else a 422; :func:`read_capture_style` is what makes a
+#: stray stored value read as ``standard`` rather than crash a capture.
+CaptureStyle = Literal["standard", "classic"]
 
 #: The four Export Format keys (M7 slice 3, issue #30, D-7) — machine-wide,
 #: same as every key above. Defaults are v1's own (`cewe/.../core/models.py`
@@ -198,6 +205,15 @@ def get_setting(session: Session, key: str, default: str) -> str:
     if row is None or row.value is None:
         return default
     return row.value
+
+
+def read_capture_style(session: Session) -> CaptureStyle:
+    """The stored Capture Style (ADR 0028), ``standard`` when the key is
+    absent — or when the row somehow holds neither value. Read at write
+    time by the capture renderer and per request by the settings endpoint,
+    never cached."""
+    stored = get_setting(session, CAPTURE_STYLE_KEY, CAPTURE_STYLE_DEFAULT)
+    return "classic" if stored == "classic" else "standard"
 
 
 def set_setting(session: Session, key: str, value: str) -> None:

@@ -42,7 +42,10 @@ One capture, start to finish:
    row ids exactly match ``_png_source_rows()``'s own selection
    (:func:`~arichds.capture.dom.ids_match`) — the readiness signal and the
    correctness gate in one comparison (decision 6).
-6. Screenshot at 1920 CSS px wide, height grown to fit every row.
+6. Screenshot at 1920 CSS px wide, height grown to fit every row — or, in
+   the Classic Capture Style (ADR 0028), at the previous program's fixed
+   1280×709, never grown: the style is read from the store on the same
+   session the token is minted with, at write time, never cached.
 7. **Always**, in this order: a best-effort ``Browser.close`` over a
    *second*, browser-level CDP connection (page-level connections reject
    that call — CDP Findings, issue #40), close the page-level CDP
@@ -90,9 +93,16 @@ from sqlalchemy.orm import Session
 
 from arichds.auth.roles import Role
 from arichds.auth.security import create_access_token, hash_token
-from arichds.capture.dom import build_seed_script, ids_match, poll_script
+from arichds.capture.dom import (
+    CAPTURE_ANCHOR_FIELD,
+    CAPTURE_STYLE_FIELD,
+    build_seed_script,
+    ids_match,
+    poll_script,
+)
 from arichds.capture.task import CAPTURE_TASK_NAME
 from arichds.config import get_settings
+from arichds.db.app_settings import CaptureStyle, read_capture_style
 from arichds.db.models import User, UserToken
 from arichds.db.session import session_scope
 
@@ -136,6 +146,12 @@ _TOKEN_LIFETIME = timedelta(minutes=5)
 
 _VIEWPORT_WIDTH = 1920
 _VIEWPORT_HEIGHT = 1080
+
+#: The Classic Capture Style's window (ADR 0028) — the size of every image
+#: ARICHDS Meter itself wrote (`capture_WP081200.png`, 2026-09-22). Fixed:
+#: the screenshot is this box and nothing more, however many rows exist.
+_CLASSIC_VIEWPORT_WIDTH = 1280
+_CLASSIC_VIEWPORT_HEIGHT = 709
 
 #: How often :func:`_wait_for_rows` re-polls the page.
 _POLL_INTERVAL_SECONDS = 0.25
@@ -526,7 +542,9 @@ def _content_height(metrics: dict[str, Any]) -> float:
     return float(height) if height is not None else float(_VIEWPORT_HEIGHT)
 
 
-async def _wait_for_rows(transport: CdpTransport, expected_ids: list[str], deadline: float) -> None:
+async def _wait_for_rows(
+    transport: CdpTransport, expected_ids: list[str], deadline: float, style: CaptureStyle = "standard"
+) -> None:
     """Poll :func:`~arichds.capture.dom.poll_script` until the rendered row
     ids exactly match *expected_ids* (decision 6) — the readiness signal and
     the correctness gate in one comparison.
@@ -546,7 +564,7 @@ async def _wait_for_rows(transport: CdpTransport, expected_ids: list[str], deadl
         BrowserCaptureError: Naming both lists, if the match never happens
             before *deadline*.
     """
-    script = poll_script()
+    script = poll_script(style)
     observed: list[str] = []
     mounted = False
     while time.monotonic() < deadline:
@@ -569,13 +587,22 @@ async def _drive_capture(
     minted: MintedToken,
     app_port: int,
     deadline: float,
+    *,
+    style: CaptureStyle = "standard",
 ) -> bytes:
     """Seed, navigate, wait for the exact rows, then screenshot — the whole
     on-page part of a capture, over an already-connected *transport*.
 
+    *style* (ADR 0028) picks the page the seed makes ``App.tsx`` render and
+    the geometry: Standard is the Billing page at 1920 wide grown to its
+    content; Classic is the Classic page at a fixed 1280×709, the screenshot
+    exactly that box. The row-id gate is the same in both — the page lists
+    the window oldest first (ADR 0029) and the wait expects that order.
+
     Kept independent of how *transport* was obtained so it is unit-testable
     with a fake — no real websocket, no real Edge.
     """
+    classic = style == "classic"
     anchor = rows[0]
     end_bound = _as_utc(anchor.bill_date) + timedelta(seconds=1)  # inclusive of the anchor (decision, step 6)
     capture_request = {
@@ -597,6 +624,12 @@ async def _drive_capture(
         # count instead of a single unpaginated page — left visible on
         # purpose rather than hidden without the owner seeing it.
         "pageSize": len(rows),
+        CAPTURE_STYLE_FIELD: style,
+        # The Classic page asks the view model for exactly this anchor's
+        # window (ADR 0028) — `endIso` alone cannot name a same-second
+        # pair's older member (ADR 0029). Seeded for Standard too, unused
+        # there, so the two seeds differ in `style` alone.
+        CAPTURE_ANCHOR_FIELD: anchor.id,
     }
     session_payload = {
         "id": minted.user_id,
@@ -612,9 +645,12 @@ async def _drive_capture(
     # all (the SPA boots straight to Login with an empty `localStorage`).
     await transport.request("Page.enable")
     await transport.request("Page.addScriptToEvaluateOnNewDocument", {"source": seed_script})
+    width, height = (
+        (_CLASSIC_VIEWPORT_WIDTH, _CLASSIC_VIEWPORT_HEIGHT) if classic else (_VIEWPORT_WIDTH, _VIEWPORT_HEIGHT)
+    )
     await transport.request(
         "Emulation.setDeviceMetricsOverride",
-        {"width": _VIEWPORT_WIDTH, "height": _VIEWPORT_HEIGHT, "deviceScaleFactor": 1, "mobile": False},
+        {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": False},
     )
     await transport.request("Page.navigate", {"url": f"http://127.0.0.1:{app_port}/"})
 
@@ -622,19 +658,25 @@ async def _drive_capture(
     # oldest first, then by Billing Sequence (ADR 0029), and the gate compares
     # order too — so the expectation is built in the page's order.
     expected_ids = [str(row.id) for row in reversed(rows)]
-    await _wait_for_rows(transport, expected_ids, deadline)
+    await _wait_for_rows(transport, expected_ids, deadline, style)
 
-    metrics = await transport.request("Page.getLayoutMetrics")
-    height = max(_VIEWPORT_HEIGHT, _content_height(metrics))
-
-    result = await transport.request(
-        "Page.captureScreenshot",
-        {
+    if classic:
+        # The window is the picture (ADR 0028): no layout metrics, no
+        # growth, nothing beyond the viewport.
+        screenshot_params: dict[str, Any] = {
+            "format": "png",
+            "clip": {"x": 0, "y": 0, "width": width, "height": height, "scale": 1},
+        }
+    else:
+        metrics = await transport.request("Page.getLayoutMetrics")
+        grown_height = max(_VIEWPORT_HEIGHT, _content_height(metrics))
+        screenshot_params = {
             "format": "png",
             "captureBeyondViewport": True,
-            "clip": {"x": 0, "y": 0, "width": _VIEWPORT_WIDTH, "height": height, "scale": 1},
-        },
-    )
+            "clip": {"x": 0, "y": 0, "width": _VIEWPORT_WIDTH, "height": grown_height, "scale": 1},
+        }
+
+    result = await transport.request("Page.captureScreenshot", screenshot_params)
     data = result.get("data")
     if not data:
         raise BrowserCaptureError("Page.captureScreenshot returned no data.")
@@ -760,6 +802,10 @@ async def _run_capture(
     try:
         with session_scope() as session:
             minted = mint_token(session)
+            # The Capture Style at write time (ADR 0028), on the session the
+            # token is minted with — every path (eager, button, download)
+            # reaches this line, so none can hold a stale style.
+            style = read_capture_style(session)
         cleanup.token_hash = minted.token_hash
 
         trigger_browser()
@@ -769,7 +815,7 @@ async def _run_capture(
         connection, transport = await connect(port, deadline)
         cleanup.connection = connection
 
-        return await _drive_capture(transport, rows, minted, settings.port, deadline)
+        return await _drive_capture(transport, rows, minted, settings.port, deadline, style=style)
     finally:
         await cleanup.run()
 

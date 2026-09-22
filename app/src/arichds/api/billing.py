@@ -68,13 +68,14 @@ from arichds.constants import (
 from arichds.db.app_settings import (
     CAPTURE_DIR_DEFAULT,
     CAPTURE_DIR_KEY,
-    CAPTURE_STYLE_DEFAULT,
     CAPTURE_STYLE_KEY,
     DISPLAY_UNIT_SCALE_DEFAULT,
     DISPLAY_UNIT_SCALE_KEY,
     EXPORT_OUTPUT_DIR_DEFAULT,
     EXPORT_OUTPUT_DIR_KEY,
+    CaptureStyle,
     get_setting,
+    read_capture_style,
     set_setting,
 )
 from arichds.db.billing_query import latest_closed_per_device
@@ -762,19 +763,6 @@ def _to_row_out(reading: BillingReading, device_name: str) -> BillingRowOut:
     )
 
 
-#: The two Capture Styles (ADR 0028, CONTEXT.md — Capture Style). The body
-#: model's ``Literal`` is what makes anything else a 422.
-CaptureStyle = Literal["standard", "classic"]
-
-
-def _read_capture_style(session: Session) -> CaptureStyle:
-    """The stored Capture Style, ``standard`` when the key is absent — or
-    when the row somehow holds neither value, so the settings page can never
-    500 on a stray row."""
-    stored = get_setting(session, CAPTURE_STYLE_KEY, CAPTURE_STYLE_DEFAULT)
-    return "classic" if stored == "classic" else "standard"
-
-
 class BillingSettingsOut(BaseModel):
     """The Billing settings, as the Billing page's admin form renders them.
 
@@ -830,7 +818,7 @@ def get_billing_settings(session: SessionDep) -> ApiResponse[BillingSettingsOut]
         BillingSettingsOut(
             capture_dir=capture_dir,
             capture_count=_closed_billing_count(session),
-            capture_style=_read_capture_style(session),
+            capture_style=read_capture_style(session),
         )
     )
 
@@ -870,7 +858,7 @@ def put_billing_settings(
         BillingSettingsOut(
             capture_dir=value,
             capture_count=_closed_billing_count(session),
-            capture_style=_read_capture_style(session),
+            capture_style=read_capture_style(session),
         )
     )
 

@@ -206,6 +206,33 @@ class TestRealHeadlessCapture:
 
             assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
             assert width == 1920
+
+            # ── Classic (ADR 0028): the same rows, the same renderer, the
+            # style flipped in the store — a 1280×709 picture of ARICHDS
+            # Meter's window, never grown to the content. ──
+            from arichds.db.app_settings import CAPTURE_DIR_KEY, CAPTURE_STYLE_KEY, set_setting
+
+            with session_scope() as session:
+                set_setting(session, CAPTURE_STYLE_KEY, "classic")
+                set_setting(session, CAPTURE_DIR_KEY, str(tmp_path / "captures"))
+            with session_scope() as session:
+                anchor = session.scalars(
+                    select(BillingReading)
+                    .where(BillingReading.device_id == device_id)
+                    .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc())
+                    .limit(1)
+                ).first()
+                assert anchor is not None
+                rows = _png_source_rows(session, anchor)
+                classic_bytes = render_billing_png(rows, "Main Incomer")
+
+            classic_width, classic_height = _png_dimensions(classic_bytes)
+            print(  # noqa: T201
+                f"Integration Classic capture: {classic_width}x{classic_height} px, {len(classic_bytes)} bytes, {len(rows)} rows"
+            )
+            assert classic_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+            assert (classic_width, classic_height) == (1280, 709)
+            assert len(classic_bytes) > 10_000, "a blank 1280x709 PNG compresses to a few hundred bytes"
         finally:
             server.should_exit = True
             thread.join(timeout=10)

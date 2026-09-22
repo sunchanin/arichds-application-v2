@@ -12,8 +12,12 @@
  * Anything malformed is treated as absent: a broken global must not break
  * the page for a human. That is the regression this file exists to prevent —
  * every consumer of `captureRequest` must behave exactly as it does today
- * when this is `null`.
+ * when this is `null`. The two fields the Capture Style added (ADR 0028) are
+ * read leniently for the same reason: a `style` that is not `"classic"` is
+ * Standard, an `anchorId` that is not a number is absent.
  */
+
+import type { CaptureStyle } from "./api";
 
 /** What the renderer seeds — the state the Billing page needs driven by
  * something other than a click, because exactly ten periods is unreachable
@@ -32,6 +36,15 @@ export interface CaptureRequest {
   /** The page size to request — large enough that every row
    * `_png_source_rows()` selected (at most ten) lands on page one. */
   pageSize: number;
+  /** The Capture Style (ADR 0028) — `"classic"` makes `App.tsx` render the
+   * Classic page in place of the shell; anything else, or absent, is
+   * Standard. Always set after normalisation. */
+  style?: CaptureStyle;
+  /** The anchor period's `BillingReading.id` — what the Classic page hands
+   * `GET /api/billing/capture-classic/{device_id}?reading_id=` so it draws
+   * exactly the window the renderer selected (a same-second pair's older
+   * member cannot be named by `endIso` alone, ADR 0029). */
+  anchorId?: number;
 }
 
 declare global {
@@ -51,10 +64,23 @@ function isCaptureRequest(value: unknown): value is CaptureRequest {
   );
 }
 
+function normalize(value: unknown): CaptureRequest | null {
+  if (!isCaptureRequest(value)) return null;
+  const raw = value as CaptureRequest & { style?: unknown; anchorId?: unknown };
+  return {
+    deviceId: raw.deviceId,
+    meterSerial: raw.meterSerial,
+    endIso: raw.endIso,
+    pageSize: raw.pageSize,
+    style: raw.style === "classic" ? "classic" : "standard",
+    anchorId: typeof raw.anchorId === "number" ? raw.anchorId : undefined,
+  };
+}
+
 const rawCaptureRequest = typeof window !== "undefined" ? window.__ARICHDS_CAPTURE__ : undefined;
 
 /**
  * The seeded capture request, or `null` when absent or malformed — read
  * once, at module load, per the module doc above.
  */
-export const captureRequest: CaptureRequest | null = isCaptureRequest(rawCaptureRequest) ? rawCaptureRequest : null;
+export const captureRequest: CaptureRequest | null = normalize(rawCaptureRequest);
