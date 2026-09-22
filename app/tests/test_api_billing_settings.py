@@ -61,7 +61,7 @@ class TestGetIsOpenToAnyAuthenticatedCaller:
         response = admin_client.get("/api/billing/settings")
 
         assert response.status_code == 200, response.text
-        assert response.json()["data"] == {"capture_dir": "", "capture_count": 0}
+        assert response.json()["data"] == {"capture_dir": "", "capture_count": 0, "capture_style": "standard"}
 
     def test_a_plain_user_may_read_it(self, user_client: TestClient) -> None:
         assert user_client.get("/api/billing/settings").status_code == 200
@@ -102,3 +102,53 @@ class TestPutIsAdminOnly:
 
         assert response.status_code == 200, response.text
         assert response.json()["data"]["capture_dir"] == ""
+
+
+class TestCaptureStyle:
+    """ADR 0028 — `capture_style` rides beside `capture_dir`: `standard` on an
+    install that never chose, `classic` reproduces ARICHDS Meter's window."""
+
+    def test_a_plain_user_sees_the_style_and_cannot_change_it(
+        self, admin_client: TestClient, user_client: TestClient
+    ) -> None:
+        assert user_client.get("/api/billing/settings").json()["data"]["capture_style"] == "standard"
+
+        response = user_client.put("/api/billing/settings", json={"capture_dir": "", "capture_style": "classic"})
+
+        assert response.status_code == 403
+        assert admin_client.get("/api/billing/settings").json()["data"]["capture_style"] == "standard"
+
+    def test_an_admin_round_trips_classic(self, admin_client: TestClient) -> None:
+        response = admin_client.put("/api/billing/settings", json={"capture_dir": "", "capture_style": "classic"})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["capture_style"] == "classic"
+        assert admin_client.get("/api/billing/settings").json()["data"]["capture_style"] == "classic"
+
+    def test_a_value_outside_the_two_styles_is_422(self, admin_client: TestClient) -> None:
+        response = admin_client.put("/api/billing/settings", json={"capture_dir": "", "capture_style": "banana"})
+
+        assert response.status_code == 422, response.text
+        assert admin_client.get("/api/billing/settings").json()["data"]["capture_style"] == "standard"
+
+    def test_saving_the_style_leaves_the_folder_untouched(self, admin_client: TestClient, tmp_path) -> None:
+        admin_client.put("/api/billing/settings", json={"capture_dir": str(tmp_path)})
+
+        response = admin_client.put(
+            "/api/billing/settings", json={"capture_dir": str(tmp_path), "capture_style": "classic"}
+        )
+
+        assert response.status_code == 200, response.text
+        data = admin_client.get("/api/billing/settings").json()["data"]
+        assert data["capture_dir"] == str(tmp_path.resolve())
+        assert data["capture_style"] == "classic"
+
+    def test_saving_the_folder_alone_leaves_the_style_untouched(self, admin_client: TestClient, tmp_path) -> None:
+        admin_client.put("/api/billing/settings", json={"capture_dir": "", "capture_style": "classic"})
+
+        response = admin_client.put("/api/billing/settings", json={"capture_dir": str(tmp_path)})
+
+        assert response.status_code == 200, response.text
+        data = admin_client.get("/api/billing/settings").json()["data"]
+        assert data["capture_dir"] == str(tmp_path.resolve())
+        assert data["capture_style"] == "classic"

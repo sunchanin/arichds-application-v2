@@ -941,7 +941,11 @@ path มาจาก convention **ไม่มีตาราง `billing_captur
 ครอบ **สิบรอบปิดล่าสุด** ของมิเตอร์นั้น (ชื่อไฟล์ stem เดียวกันทั้งสามแบบ —
 ต่างกันแค่ extension, ADR 0015) · `.png` เป็น screenshot จริง — ถ่ายหน้า Billing ที่รันอยู่ผ่าน Chrome
 DevTools Protocol กับ Microsoft Edge ที่ติดตั้งมากับ Windows อยู่แล้ว ไม่มีใคร sign in บนจอ
-(ADR 0017, ยกเลิก ADR 0014 ที่เคยวาดด้วย Pillow ฝั่งเซิร์ฟเวอร์)
+(ADR 0017, ยกเลิก ADR 0014 ที่เคยวาดด้วย Pillow ฝั่งเซิร์ฟเวอร์) · **Capture Style** (ADR 0028): `.png`
+มีสองแบบ — `standard` (หน้า Billing ของเรา) และ `classic` (จำลองหน้าต่างของ **ARICHDS Meter**
+โปรแกรมเดิมของลูกค้า ขนาดคงที่ 1280×709 สิบรอบปิดล่าสุดเรียงเก่าสุดขึ้นก่อน ทุกค่าจริงหรือไม่อ้างอะไร)
+เลือกแบบ machine-wide ข้างช่อง capture folder บนหน้า Billing (admin เปลี่ยน, user เห็น) ไม่มี licence key
+สลับแบบไม่เขียนทับไฟล์เดิม มีผลกับรูปถัดไปที่เขียน
 
 **Feature entitlement** — ✅ **ลงแล้วกับ issue #22 (M6b)** · ตอน grill M6 v2 ยังไม่มีกลไกนี้เลย
 (license มี `features` แต่ไม่มีใครอ่าน) ·

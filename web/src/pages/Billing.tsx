@@ -8,6 +8,7 @@ import {
   Flex,
   Form,
   Input,
+  Segmented,
   Select,
   Space,
   Statistic,
@@ -34,6 +35,7 @@ import {
   type BillingRow,
   type BillingSettings,
   type BillingStatus,
+  type CaptureStyle,
   type Device,
 } from "../api";
 import { latestBillRowId } from "../billingHighlight";
@@ -297,48 +299,65 @@ function allMetersColumns(scale: DisplayUnitScale): ColumnsType<AllMetersRow> {
   ];
 }
 
+type CaptureSettingsForm = { capture_dir: string; capture_style: CaptureStyle };
+
+const CAPTURE_STYLE_OPTIONS: { label: string; value: CaptureStyle }[] = [
+  { label: "Standard", value: "standard" },
+  { label: "Classic", value: "classic" },
+];
+
 /**
- * Admin-only `capture_dir` form (M6b, issue #22).
+ * The `capture_dir` form (M6b, issue #22) and, beside it, the Capture Style
+ * (ADR 0028). Editable by an admin only; a `user` sees the values and every
+ * control is disabled — the same read/change split the API has.
  *
- * Changing the value while captures already exist confirms first — the
+ * Changing the folder while captures already exist confirms first — the
  * backend never blocks (ADR 0010: "warns, never blocks"), so this confirm
- * dialog is the only place that fact is enforced at all.
+ * dialog is the only place that fact is enforced at all. Switching the style
+ * asks nothing: nothing on disk changes, it governs the next write.
  */
-function CaptureSettingsCard({ surface }: { surface: (err: unknown, fallback: string) => void }) {
+function CaptureSettingsCard({
+  role,
+  surface,
+}: {
+  role: "admin" | "user";
+  surface: (err: unknown, fallback: string) => void;
+}) {
   const { message, modal } = App.useApp();
-  const [form] = Form.useForm<{ capture_dir: string }>();
+  const [form] = Form.useForm<CaptureSettingsForm>();
   const [settings, setSettings] = useState<BillingSettings | null>(null);
   const [saving, setSaving] = useState(false);
+  const editable = role === "admin";
 
   useEffect(() => {
     api
       .billingSettings()
       .then((data) => {
         setSettings(data);
-        form.setFieldsValue({ capture_dir: data.capture_dir });
+        form.setFieldsValue({ capture_dir: data.capture_dir, capture_style: data.capture_style });
       })
-      .catch((err: unknown) => surface(err, "Could not load the capture folder setting."));
+      .catch((err: unknown) => surface(err, "Could not load the capture settings."));
     // Loaded once on mount — the form owns edits from then on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const save = useCallback(
-    (captureDir: string) => {
+    (captureDir: string, captureStyle: CaptureStyle) => {
       setSaving(true);
       api
-        .updateBillingSettings(captureDir)
+        .updateBillingSettings(captureDir, captureStyle)
         .then((data) => {
           setSettings(data);
-          form.setFieldsValue({ capture_dir: data.capture_dir });
-          message.success("Capture folder saved.");
+          form.setFieldsValue({ capture_dir: data.capture_dir, capture_style: data.capture_style });
+          message.success("Capture settings saved.");
         })
-        .catch((err: unknown) => surface(err, "Could not save the capture folder."))
+        .catch((err: unknown) => surface(err, "Could not save the capture settings."))
         .finally(() => setSaving(false));
     },
     [form, message, surface],
   );
 
-  const onFinish = (values: { capture_dir: string }) => {
+  const onFinish = (values: CaptureSettingsForm) => {
     const next = values.capture_dir.trim();
     if (settings && next !== settings.capture_dir && settings.capture_count > 0) {
       // `capture_count` is the number of CLOSED BILLING ROWS — the rows a
@@ -352,16 +371,16 @@ function CaptureSettingsCard({ surface }: { surface: (err: unknown, fallback: st
         title: "Change the capture folder?",
         content: `${settings.capture_count} closed billing period(s) exist. Any captures already written under the current folder stay exactly where they are and will no longer be reachable from this page.`,
         okText: "Change folder",
-        onOk: () => save(next),
+        onOk: () => save(next, values.capture_style),
       });
       return;
     }
-    save(next);
+    save(next, values.capture_style);
   };
 
   return (
     <Card size="small" title="Capture folder">
-      <Form form={form} layout="vertical" onFinish={onFinish}>
+      <Form form={form} layout="vertical" onFinish={onFinish} disabled={!editable}>
         <Form.Item
           name="capture_dir"
           label="Folder path"
@@ -369,9 +388,18 @@ function CaptureSettingsCard({ surface }: { surface: (err: unknown, fallback: st
         >
           <Input placeholder="e.g. C:\Captures" allowClear />
         </Form.Item>
-        <Button type="primary" htmlType="submit" loading={saving}>
-          Save
-        </Button>
+        <Form.Item
+          name="capture_style"
+          label="Capture image style"
+          extra="Classic reproduces the window of ARICHDS Meter, the program used before ARICHDS. The style applies to the next image written; existing images are unchanged."
+        >
+          <Segmented<CaptureStyle> options={CAPTURE_STYLE_OPTIONS} />
+        </Form.Item>
+        {editable ? (
+          <Button type="primary" htmlType="submit" loading={saving}>
+            Save
+          </Button>
+        ) : null}
       </Form>
     </Card>
   );
@@ -405,7 +433,8 @@ function CaptureSettingsCard({ surface }: { surface: (err: unknown, fallback: st
  * days. Billing is roughly a dozen rows per device per year, so forcing
  * either filter would only hide data.
  *
- * **The `capture_dir` form (M6b, issue #22) is admin-only**, shown above the
+ * **The capture settings card (M6b, issue #22; the Capture Style, ADR 0028)
+ * is editable by an admin only** and read-only for a `user`, shown above the
  * tabs — SPEC §3.6 puts it on this page, next to the data it captures.
  */
 export function Billing({ role }: { role: "admin" | "user" }) {
@@ -722,7 +751,7 @@ export function Billing({ role }: { role: "admin" | "user" }) {
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       {/* Hidden in capture mode (decision 8, issue #38): the folder path is
           for a human admin, not for what the headless renderer photographs. */}
-      {role === "admin" && !captureRequest ? <CaptureSettingsCard surface={surface} /> : null}
+      {captureRequest ? null : <CaptureSettingsCard role={role} surface={surface} />}
       {/* Hidden in capture mode like the other operator controls (D13): the
           PNG stays the table the customer's screenshot shows. */}
       {captureRequest ? null : (

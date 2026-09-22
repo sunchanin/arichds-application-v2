@@ -372,7 +372,14 @@ export interface BillingPage {
 export interface BillingSettings {
   capture_dir: string;
   capture_count: number;
+  /** The Capture Style (ADR 0028) — what the next `.png` written on any
+   * path looks like; `standard` on an install that never chose. */
+  capture_style: CaptureStyle;
 }
+
+/** `standard` is the Billing page photographed; `classic` reproduces the
+ * window of ARICHDS Meter, the customer's previous program (ADR 0028). */
+export type CaptureStyle = "standard" | "classic";
 
 /**
  * What `POST /api/billing/read` did (issue #44). A live-read failure is a
@@ -1676,10 +1683,10 @@ export const api = {
    * non-empty value is validated server-side (ADR 0010) and a rejection
    * comes back as a 422 the caller renders via `ApiRequestError.message`.
    */
-  updateBillingSettings: (captureDir: string) =>
+  updateBillingSettings: (captureDir: string, captureStyle: CaptureStyle) =>
     request<BillingSettings>("/api/billing/settings", {
       method: "PUT",
-      body: JSON.stringify({ capture_dir: captureDir }),
+      body: JSON.stringify({ capture_dir: captureDir, capture_style: captureStyle }),
     }),
 
   /**

@@ -32,6 +32,14 @@ CAPTURE_DIR_DEFAULT = ""
 DISPLAY_UNIT_SCALE_KEY = "display_unit_scale"
 DISPLAY_UNIT_SCALE_DEFAULT = "kilo"
 
+#: The Capture Style (ADR 0028, CONTEXT.md) — `"standard"` (the Billing page
+#: photographed, today's image) or `"classic"` (a picture of ARICHDS Meter's
+#: window). A missing key means `"standard"`, so an upgrade changes nobody's
+#: image. Read at write time on every capture path, never cached (ADR 0001's
+#: rule, applied to a setting); no licence feature key.
+CAPTURE_STYLE_KEY = "capture_style"
+CAPTURE_STYLE_DEFAULT = "standard"
+
 #: The four Export Format keys (M7 slice 3, issue #30, D-7) — machine-wide,
 #: same as every key above. Defaults are v1's own (`cewe/.../core/models.py`
 #: `FormatSetting`), except `export_auto_save_enabled`, which v1 also

@@ -37,6 +37,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from arichds.acquisition.billing import last_billing_change_check_at, read_and_store_billing
+from arichds.acquisition.catalog import BRAND_LABELS, brand_key
 from arichds.acquisition.status import DeviceStatus, display_status
 from arichds.api.deps import (
     AdminDep,
@@ -49,12 +50,26 @@ from arichds.api.deps import (
 from arichds.api.envelope import ApiResponse
 from arichds.capture.paths import validate_capture_dir_setting
 from arichds.capture.screenshot import BrowserCaptureError
-from arichds.capture.service import capture_target_paths, write_pdf_capture, write_png_capture, write_xlsx_capture
+from arichds.capture.service import (
+    _png_source_rows,
+    capture_target_paths,
+    write_pdf_capture,
+    write_png_capture,
+    write_xlsx_capture,
+)
 from arichds.config import get_settings
-from arichds.constants import BILLING_BEHIND_DAYS, LOAD_PROFILE_INTERVAL_SEC, O_BINARY, O_NOFOLLOW
+from arichds.constants import (
+    BILLING_BEHIND_DAYS,
+    LOAD_PROFILE_INTERVAL_SEC,
+    METER_LOCAL_UTC_OFFSET_HOURS,
+    O_BINARY,
+    O_NOFOLLOW,
+)
 from arichds.db.app_settings import (
     CAPTURE_DIR_DEFAULT,
     CAPTURE_DIR_KEY,
+    CAPTURE_STYLE_DEFAULT,
+    CAPTURE_STYLE_KEY,
     DISPLAY_UNIT_SCALE_DEFAULT,
     DISPLAY_UNIT_SCALE_KEY,
     EXPORT_OUTPUT_DIR_DEFAULT,
@@ -747,6 +762,19 @@ def _to_row_out(reading: BillingReading, device_name: str) -> BillingRowOut:
     )
 
 
+#: The two Capture Styles (ADR 0028, CONTEXT.md — Capture Style). The body
+#: model's ``Literal`` is what makes anything else a 422.
+CaptureStyle = Literal["standard", "classic"]
+
+
+def _read_capture_style(session: Session) -> CaptureStyle:
+    """The stored Capture Style, ``standard`` when the key is absent — or
+    when the row somehow holds neither value, so the settings page can never
+    500 on a stray row."""
+    stored = get_setting(session, CAPTURE_STYLE_KEY, CAPTURE_STYLE_DEFAULT)
+    return "classic" if stored == "classic" else "standard"
+
+
 class BillingSettingsOut(BaseModel):
     """The Billing settings, as the Billing page's admin form renders them.
 
@@ -757,16 +785,26 @@ class BillingSettingsOut(BaseModel):
             rows a capture could exist for. Drives the frontend's "changing
             this orphans N existing captures" warning; the backend never
             blocks on it (decision 2d, ADR 0010).
+        capture_style: The Capture Style (ADR 0028) — what the next ``.png``
+            written on any path looks like; ``standard`` on an install that
+            never chose.
     """
 
     capture_dir: str
     capture_count: int
+    capture_style: CaptureStyle
 
 
 class BillingSettingsIn(BaseModel):
-    """The body ``PUT /api/billing/settings`` takes."""
+    """The body ``PUT /api/billing/settings`` takes.
+
+    ``capture_style`` omitted (or ``null``) keeps the stored style — the page
+    sends what it holds for both, and a caller that only ever knew
+    ``capture_dir`` still saves exactly what it did before ADR 0028.
+    """
 
     capture_dir: str
+    capture_style: CaptureStyle | None = None
 
 
 def _closed_billing_count(session: Session) -> int:
@@ -788,7 +826,13 @@ def get_billing_settings(session: SessionDep) -> ApiResponse[BillingSettingsOut]
     the rest of this router (``list_billing_readings`` above).
     """
     capture_dir = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
-    return ApiResponse.ok(BillingSettingsOut(capture_dir=capture_dir, capture_count=_closed_billing_count(session)))
+    return ApiResponse.ok(
+        BillingSettingsOut(
+            capture_dir=capture_dir,
+            capture_count=_closed_billing_count(session),
+            capture_style=_read_capture_style(session),
+        )
+    )
 
 
 @router.put("/settings")
@@ -816,9 +860,227 @@ def put_billing_settings(
         value = ""
 
     set_setting(session, CAPTURE_DIR_KEY, value)
+    if body.capture_style is not None:
+        # Switching style rewrites nothing on disk (ADR 0028) — it governs
+        # the next write, so there is nothing to validate or warn about.
+        set_setting(session, CAPTURE_STYLE_KEY, body.capture_style)
     session.commit()
 
-    return ApiResponse.ok(BillingSettingsOut(capture_dir=value, capture_count=_closed_billing_count(session)))
+    return ApiResponse.ok(
+        BillingSettingsOut(
+            capture_dir=value,
+            capture_count=_closed_billing_count(session),
+            capture_style=_read_capture_style(session),
+        )
+    )
+
+
+# ── The Classic capture's view model (ADR 0028, capture-style ticket 01) ────
+
+#: Classic Data Table column ← stored ``billing_readings`` column, for the
+#: columns inside the 1280-pixel window (the rest are cut by the window edge
+#: and never fetched). **Confirmed 2026-09-22 from ARICHDS Meter's own
+#: ``billing.csv``** read against its own image of the same meter (WP081200):
+#: its columns 8–11 are Total kWh Total/Rate A/B/C with A + B + C = Total on
+#: every row, 12 and 13 Prev kW Demand Rate A and its time, 14 Rate B. Units
+#: are the stored kWh/kW — the headings say so, so the Display unit setting
+#: (ADR 0013) never reaches this image.
+_CLASSIC_NUMBER_COLUMNS: dict[str, str] = {
+    "total_kwh_total": "import_active_kwh_total",
+    "total_kwh_rate_a": "import_active_kwh_rate_a",
+    "total_kwh_rate_b": "import_active_kwh_rate_b",
+    "total_kwh_rate_c": "import_active_kwh_rate_c",
+    "prev_kw_demand_rate_a": "max_demand_import_active_kw_rate_a",
+    "prev_kw_demand_rate_b": "max_demand_import_active_kw_rate_b",
+}
+_CLASSIC_TIME_COLUMNS: dict[str, str] = {
+    "time_of_kw_demand_a": "max_demand_import_active_time_rate_a",
+}
+
+#: A demand time the meter never set — CEWE stamps its epoch, ``2000-01-01
+#: 00:00`` meter-local (TC's rows hold exactly this). Rendered as an empty
+#: cell, never as a date, because the picture must not claim a maximum the
+#: meter did not record.
+_METER_EPOCH_LOCAL = datetime(2000, 1, 1, 0, 0)
+_LOCAL_OFFSET = timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)
+
+
+def _classic_number(value: float | None) -> str:
+    """Four decimals with trailing zeros dropped, as ARICHDS Meter printed
+    them — ``100.302``, ``319840.2819``, ``0``; ``None`` is an empty cell."""
+    if value is None:
+        return ""
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _classic_time(moment: datetime | None) -> str:
+    """Local ``M/D/YYYY HH:MM`` — no leading zeros on month or day, 24-hour
+    clock; ``None`` and the meter's epoch are both an empty cell."""
+    if moment is None:
+        return ""
+    local = (_as_utc(moment) + _LOCAL_OFFSET).replace(tzinfo=None)
+    if local == _METER_EPOCH_LOCAL:
+        return ""
+    return f"{local.month}/{local.day}/{local.year} {local:%H:%M}"
+
+
+class ClassicRowOut(BaseModel):
+    """One Data Table row, every cell already a string — the page is a
+    layout, not a formatter, so one formatting rule cannot drift between the
+    endpoint and the page."""
+
+    id: int
+    name: str
+    time: str
+    total_kwh_total: str
+    total_kwh_rate_a: str
+    total_kwh_rate_b: str
+    total_kwh_rate_c: str
+    prev_kw_demand_rate_a: str
+    time_of_kw_demand_a: str
+    prev_kw_demand_rate_b: str
+
+
+class ClassicStatisticsOut(BaseModel):
+    """The Statistics Summary panel — connectivity at the moment of writing,
+    never billing completeness (ADR 0028)."""
+
+    total: int
+    issues: int
+    complete: int
+
+
+class ClassicCaptureOut(BaseModel):
+    """Everything the Classic page draws (ADR 0028)."""
+
+    save_path: str
+    group_name: str | None
+    brand: str
+    meter_serial: str
+    statistics: ClassicStatisticsOut
+    rows: list[ClassicRowOut]
+
+
+def _capture_anchor(session: Session, device_id: int, reading_id: int | None) -> BillingReading:
+    """The closed period a capture image is anchored on — *reading_id* when
+    given (must be one of this device's closed periods), else the device's
+    newest closed period, of a same-second pair its newer member (ADR 0029).
+
+    Shared by the image download and the Classic view model so the two can
+    never anchor differently.
+
+    Raises:
+        HTTPException: 404 for a *reading_id* that is not one of this
+            device's closed periods, or a device with no closed period yet.
+    """
+    if reading_id is not None:
+        anchor = session.get(BillingReading, reading_id)
+        if anchor is None or anchor.device_id != device_id or anchor.record_status is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="No such closed billing period for this device."
+            )
+        return anchor
+    anchor = session.scalars(
+        select(BillingReading)
+        .where(BillingReading.device_id == device_id, BillingReading.record_status.is_(None))
+        .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc())
+        .limit(1)
+    ).first()
+    if anchor is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="This device has no closed billing period yet."
+        )
+    return anchor
+
+
+def _classic_statistics(session: Session, device: Device) -> ClassicStatisticsOut:
+    """Counted over the devices sharing *device*'s group — or sharing *no*
+    group when it has none (``NULL`` matches ``NULL``, never a named group)
+    — from the Poller's stored status alone (ADR 0004), read at request
+    time, nothing persisted (ADR 0008): a Paused device is not counted at
+    all, *Devices with Issues* are those held Offline, Unknown counts and
+    is not an issue, Complete = Total − Issues."""
+    same_group = Device.group_name.is_(None) if device.group_name is None else Device.group_name == device.group_name
+    shown = [display_status(member) for member in session.scalars(select(Device).where(same_group))]
+    counted = [state for state in shown if state is not DeviceStatus.PAUSED]
+    issues = sum(1 for state in counted if state is DeviceStatus.OFFLINE)
+    return ClassicStatisticsOut(total=len(counted), issues=issues, complete=len(counted) - issues)
+
+
+@router.get("/capture-classic/{device_id}")
+def classic_capture_view(
+    session: SessionDep,
+    license_service: LicenseServiceDep,
+    device_id: int,
+    reading_id: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            description="The closed period the image is anchored on — omitted means the device's newest; the older member of a same-second pair is reachable only this way (ADR 0029)",
+        ),
+    ] = None,
+) -> ApiResponse[ClassicCaptureOut]:
+    """The Classic capture's view model (ADR 0028) — everything the Classic
+    page draws, already formatted; the page is a layout, not a formatter.
+
+    Rows are :func:`~arichds.capture.service._png_source_rows`' own window
+    for the anchor (same device, same serial, closed only, at most ten,
+    ADR 0015) **reversed** to ``bill_date ASC, sequence DESC`` — the order
+    the page lists them and the driver waits for — never a second copy of
+    the rule. The column mapping is :data:`_CLASSIC_NUMBER_COLUMNS` /
+    :data:`_CLASSIC_TIME_COLUMNS`, confirmed from ARICHDS Meter's own export.
+
+    Any authenticated caller (the capture token's user is what the page
+    holds), gated on ``billing_image_export`` on top of the router's own
+    ``billing`` gate — the image endpoint's own gates. Not on the API page's
+    published contract: it is the capture's own, like the image endpoint.
+
+    Raises:
+        HTTPException: 404 for an unknown device, a device with no closed
+            period, a *reading_id* that is not one of its closed periods, or
+            an unconfigured ``capture_dir``.
+    """
+    if not feature_enabled("billing_image_export", license_service=license_service, settings=get_settings()):
+        raise FeatureDisabledError("billing_image_export")
+
+    device = session.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Device {device_id} does not exist.")
+    anchor = _capture_anchor(session, device_id, reading_id)
+
+    capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
+    if not capture_dir_str.strip():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="capture_dir is not configured — nothing to draw."
+        )
+
+    brand = brand_key(device.brand)
+    brand_label = (BRAND_LABELS[brand] if brand is not None else device.brand).upper()
+    meter_serial = anchor.meter_serial or device.meter_serial or ""
+    name = f"{brand_label} ({meter_serial})"
+
+    rows = [
+        ClassicRowOut(
+            id=row.id,
+            name=name,
+            time=_classic_time(row.bill_date),
+            **{cell: _classic_number(getattr(row, column)) for cell, column in _CLASSIC_NUMBER_COLUMNS.items()},
+            **{cell: _classic_time(getattr(row, column)) for cell, column in _CLASSIC_TIME_COLUMNS.items()},
+        )
+        for row in reversed(_png_source_rows(session, anchor))
+    ]
+
+    return ApiResponse.ok(
+        ClassicCaptureOut(
+            # As ARICHDS Meter showed it: `/` separators.
+            save_path=capture_dir_str.replace("\\", "/"),
+            group_name=device.group_name,
+            brand=brand_label,
+            meter_serial=meter_serial,
+            statistics=_classic_statistics(session, device),
+            rows=rows,
+        )
+    )
 
 
 #: Media type per download format — the only two the capture package renders.
@@ -909,24 +1171,7 @@ def download_billing_image(
     if not feature_enabled("billing_image_export", license_service=license_service, settings=get_settings()):
         raise FeatureDisabledError("billing_image_export")
 
-    if reading_id is not None:
-        anchor = session.get(BillingReading, reading_id)
-        if anchor is None or anchor.device_id != device_id or anchor.record_status is not None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="No such closed billing period for this device."
-            )
-    else:
-        anchor = session.scalars(
-            select(BillingReading)
-            .where(BillingReading.device_id == device_id, BillingReading.record_status.is_(None))
-            # The newest period; of a same-second pair, its newer member (ADR 0029).
-            .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc())
-            .limit(1)
-        ).first()
-    if anchor is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="This device has no closed billing period yet."
-        )
+    anchor = _capture_anchor(session, device_id, reading_id)
 
     capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
     if not capture_dir_str.strip():

@@ -580,7 +580,19 @@ MySQL, and ~30 tables.
   real two-Logger backfill into a real MariaDB, checking the hold after every round and the
   merged rows against `merged_rows_select` at the end — `fake_meter` cannot prove either) ·
   0028 (**the capture image has a style, and Classic reproduces the customer's previous program**,
-  2026-09-21, **decided, not implemented** — amends 0017: **Capture Style** (CONTEXT.md) is a
+  2026-09-21 — **the setting and the Classic view model landed with capture-style ticket 01**
+  (2026-09-22): `capture_style` rides on `GET`/`PUT /api/billing/settings` beside `capture_dir`
+  (omitted on `PUT` keeps the stored style, so the old one-field body still works), the Billing
+  page's Capture folder card carries the Standard/Classic control (read-only for a `user`, who
+  now sees the card), and `GET /api/billing/capture-classic/{device_id}?reading_id=` hands the
+  Classic page everything it draws already formatted — rows are `_png_source_rows`' own window
+  for the anchor reversed (never a second copy of the rule; keyed by the anchor's reading id
+  rather than the spec's `end`+`limit`, because only the id can name a same-second pair's older
+  member, ADR 0029), cells `100.302`/`319840.2819`/`1/21/2026 00:00` local with the meter's
+  epoch `2000-01-01 00:00` an empty cell, the column mapping declared once in
+  `api/billing.py::_CLASSIC_NUMBER_COLUMNS`, statistics from `display_status` over the same
+  group (`NULL` matches `NULL`), and `_capture_anchor` now shared with the image download.
+  **The Classic page itself is ticket 02, pending** — amends 0017: **Capture Style** (CONTEXT.md) is a
   machine-wide admin setting beside the capture folder, `standard` (default, today's image) or
   `classic`, no licence key; Classic is a page in `web/` no menu reaches, drawn only to be
   photographed by the same headless pipeline at a fixed 1280×709, imitating the window of the
