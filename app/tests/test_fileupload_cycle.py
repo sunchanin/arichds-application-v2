@@ -279,6 +279,24 @@ class TestNotConfigured:
 
 
 class TestFirstCycleSendsEverything:
+    def test_a_same_second_pairs_suffixed_document_is_uploaded_like_any_other(
+        self, migrated_db, license_features, tmp_path: pathlib.Path
+    ) -> None:
+        """ADR 0029: the capture folder is *listed*, never predicted from a
+        bill date, so the pair's `_2` document needs no configuration."""
+        license_features(["file_upload_destination"])
+        _configure_sftp()
+        capture_dir = tmp_path / "captures"
+        _configure_dirs(export_dir=tmp_path / "export", capture_dir=capture_dir)
+        make_device(serial="SN0001")
+        first = _write_capture_file(capture_dir, "SN0001", "2026-09-19_085950.pdf")
+        second = _write_capture_file(capture_dir, "SN0001", "2026-09-19_085950_2.pdf")
+        transport = InMemoryTransport(manifest=None)
+
+        file_upload_cycle(transport=transport)
+
+        assert set(transport.puts) == {first, second}
+
     def test_it_sends_every_candidate_and_names_every_file_in_the_manifest(
         self, migrated_db, license_features, tmp_path: pathlib.Path
     ) -> None:

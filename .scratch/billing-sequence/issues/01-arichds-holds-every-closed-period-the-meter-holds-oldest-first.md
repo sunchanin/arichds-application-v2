@@ -17,7 +17,7 @@ with nobody pressing anything. Decision record: ADR 0029; spec:
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done — commit `20d7933`, 2026-09-22 (full gate 2546 passed; MariaDB 79 passed; four mutation probes each red one named test)
 
 - [ ] Migration: `billing_readings.sequence` (integer, not null, default `0`); the closed-period
       partial unique index is rebuilt as `(device_id, bill_date, sequence) WHERE record_status IS

@@ -28,16 +28,21 @@ from arichds.db.models import BillingReading as BillingReadingRow
 logger = logging.getLogger(__name__)
 
 
-def capture_target_paths(capture_dir: Path, meter_serial: str, bill_date: datetime) -> tuple[Path, Path, Path]:
+def capture_target_paths(
+    capture_dir: Path, meter_serial: str, bill_date: datetime, *, sequence: int = 0
+) -> tuple[Path, Path, Path]:
     """The fixed convention path for all three formats (decision 15, ADR
     0010; the ``.png`` added M7 slice 4, issue #35, D2) — never stored in the
     database, derived fresh on every render/write/download.
 
-    ``<capture_dir>/<meter_serial>/<bill_date UTC as %Y-%m-%d_%H%M%S>.{pdf,xlsx,png}``
+    ``<capture_dir>/<meter_serial>/<bill_date UTC as %Y-%m-%d_%H%M%S>[_<n>].{pdf,xlsx,png}``
 
     **One stem, three extensions** (ADR 0015) — deriving it in one function
     rather than a separate ``capture_png_path()`` is what stops the three
-    formats from drifting apart later.
+    formats from drifting apart later. ``_<n>`` is the Billing Sequence plus
+    one (ADR 0029) and appears **only** for ``sequence > 0``: a period alone on
+    its bill date keeps the name it always had, so no document already handed
+    over is renamed, and the older member of a same-second pair gets ``_2``.
 
     Args:
         capture_dir: The current ``capture_dir`` setting value.
@@ -45,6 +50,8 @@ def capture_target_paths(capture_dir: Path, meter_serial: str, bill_date: dateti
         bill_date: The row's ``bill_date`` — naive values are treated as UTC
             (SQLite hands back naive datetimes for a ``DateTime(timezone=True)``
             column; every stored timestamp in this product is UTC).
+        sequence: The row's Billing Sequence — ``0`` unless the bill date is
+            shared (CONTEXT.md — Billing Sequence).
 
     Returns:
         ``(pdf_path, xlsx_path, png_path)``, all resolved absolute paths
@@ -56,6 +63,8 @@ def capture_target_paths(capture_dir: Path, meter_serial: str, bill_date: dateti
     serial = sanitize_meter_serial(meter_serial)
     aware = bill_date if bill_date.tzinfo is not None else bill_date.replace(tzinfo=UTC)
     stem = aware.astimezone(UTC).strftime("%Y-%m-%d_%H%M%S")
+    if sequence > 0:
+        stem = f"{stem}_{sequence + 1}"
     base = capture_dir.resolve() / serial / stem
     return base.with_suffix(".pdf"), base.with_suffix(".xlsx"), base.with_suffix(".png")
 
@@ -215,7 +224,9 @@ def capture_reading(
         return
 
     try:
-        pdf_target, xlsx_target, png_target = capture_target_paths(capture_dir, row.meter_serial, row.bill_date)
+        pdf_target, xlsx_target, png_target = capture_target_paths(
+            capture_dir, row.meter_serial, row.bill_date, sequence=getattr(row, "sequence", 0)
+        )
     except ValueError as exc:
         logger.warning("Capture skipped for %s bill_date %s — %s", device_name, row.bill_date, exc)
         return

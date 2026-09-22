@@ -73,6 +73,72 @@ class TestCaptureTargetPaths:
         assert pdf_path.stem == xlsx_path.stem == png_path.stem
         assert (pdf_path.suffix, xlsx_path.suffix, png_path.suffix) == (".pdf", ".xlsx", ".png")
 
+    def test_sequence_zero_is_todays_stem_byte_for_byte(self, tmp_path: Path) -> None:
+        """ADR 0029: a period alone on its bill date keeps the name it always
+        had — no file already handed over is renamed."""
+        assert capture_target_paths(tmp_path, "1232002893", BILL_DATE, sequence=0) == capture_target_paths(
+            tmp_path, "1232002893", BILL_DATE
+        )
+
+    def test_a_later_member_of_a_same_second_pair_gets_a_numbered_suffix_on_the_shared_stem(
+        self, tmp_path: Path
+    ) -> None:
+        pdf_path, xlsx_path, png_path = capture_target_paths(tmp_path, "1232002893", BILL_DATE, sequence=1)
+
+        assert pdf_path.name == "2026-07-31_170000_2.pdf"
+        assert xlsx_path.name == "2026-07-31_170000_2.xlsx"
+        assert png_path.name == "2026-07-31_170000_2.png"
+        assert capture_target_paths(tmp_path, "1232002893", BILL_DATE, sequence=2)[0].name == "2026-07-31_170000_3.pdf"
+
+
+class TestThePngWindowWithASameSecondPair:
+    """ADR 0029: a pair counts as two of the ten, and the window is handed
+    over newest first with the pair's newer member (sequence 0) first — the
+    reverse of the page's reading order, which `_drive_capture` reverses back."""
+
+    def test_a_pair_is_two_of_the_ten_and_the_newer_member_comes_first(self, migrated_db: object) -> None:
+        from datetime import timedelta
+
+        from sqlalchemy import select
+
+        from arichds.capture.service import _png_source_rows
+        from arichds.db.models import BillingReading, Device
+        from arichds.db.session import session_scope
+
+        with session_scope() as session:
+            device = Device(
+                name="Main",
+                brand="cewe",
+                model="prometer100",
+                site_name="Plant A",
+                transport={"kind": "net", "host": "127.0.0.1", "port": 4059},
+                password="",
+            )
+            session.add(device)
+            session.flush()
+            ids: dict[tuple[int, int], int] = {}
+            for i in range(12):
+                for sequence in (0, 1) if i == 1 else (0,):
+                    row = BillingReading(
+                        device_id=device.id,
+                        bill_date=BILL_DATE - timedelta(days=31 * i),
+                        sequence=sequence,
+                        read_at=BILL_DATE,
+                        record_status=None,
+                        source="dlms",
+                        meter_serial="1232002893",
+                    )
+                    session.add(row)
+                    session.flush()
+                    ids[(i, sequence)] = row.id
+            anchor = session.scalar(select(BillingReading).where(BillingReading.id == ids[(0, 0)]))
+            assert anchor is not None
+
+            window = [row.id for row in _png_source_rows(session, anchor)]
+
+        expected = [ids[(0, 0)], ids[(1, 0)], ids[(1, 1)]] + [ids[(i, 0)] for i in range(2, 9)]
+        assert window == expected  # ten rows: the pair counts twice, so day-index 9 falls out
+
 
 class TestCaptureReading:
     def test_writes_only_the_pdf_when_excel_is_off(self, tmp_path: Path) -> None:

@@ -895,7 +895,8 @@ def download_billing_image(
     anchor = session.scalars(
         select(BillingReading)
         .where(BillingReading.device_id == device_id, BillingReading.record_status.is_(None))
-        .order_by(BillingReading.bill_date.desc())
+        # The newest period; of a same-second pair, its newer member (ADR 0029).
+        .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc())
         .limit(1)
     ).first()
     if anchor is None:
@@ -916,7 +917,7 @@ def download_billing_image(
 
     try:
         _pdf_target, _xlsx_target, png_target = capture_target_paths(
-            capture_dir, anchor.meter_serial or "", anchor.bill_date
+            capture_dir, anchor.meter_serial or "", anchor.bill_date, sequence=anchor.sequence
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
@@ -1010,7 +1011,9 @@ def download_billing_capture(
     device_name = device.name if device is not None else str(row.device_id)
 
     try:
-        pdf_target, xlsx_target, _png_target = capture_target_paths(capture_dir, row.meter_serial or "", row.bill_date)
+        pdf_target, xlsx_target, _png_target = capture_target_paths(
+            capture_dir, row.meter_serial or "", row.bill_date, sequence=row.sequence
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     target = pdf_target if document_format == "pdf" else xlsx_target

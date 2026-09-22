@@ -129,6 +129,35 @@ class TestBothFeaturesOn:
         assert any(f.suffix == ".xlsx" for f in files)
 
 
+class TestBothMembersOfASameSecondPairAreCaptured:
+    def test_the_second_member_is_written_under_the_numbered_stem_and_both_are_stamped(
+        self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features
+    ) -> None:
+        """ADR 0029: a pair is two closed periods, so two documents — the newer
+        member (sequence 0) under the stem it always had, the older under `_2`."""
+        from dataclasses import replace
+
+        from sqlalchemy import select
+
+        from arichds.db.models import BillingReading as BillingReadingRow
+
+        license_features(["billing", "auto_capture"])
+        set_capture_dir(capture_dir)
+        twin = replace(ENTRY_CLOSED, import_active_kwh_total=31.18)
+        fake_meter.billing_rows = [ENTRY_CLOSED, twin]  # newest first: History 1, History 2
+
+        read_and_store_billing(device_id, now=NOW)
+
+        names = sorted(f.name for f in captured_files(capture_dir))
+        stem = ENTRY_CLOSED.bill_date.strftime("%Y-%m-%d_%H%M%S")
+        assert names == [f"{stem}.pdf", f"{stem}_2.pdf"]
+        with session_scope() as session:
+            stamped = session.scalars(
+                select(BillingReadingRow.captured_at).where(BillingReadingRow.record_status.is_(None))
+            ).all()
+        assert len(stamped) == 2 and all(stamped)
+
+
 class TestDisplayUnitScaleReachesTheEagerCapture:
     def test_base_scale_is_applied_to_the_written_xlsx(
         self, device_id: int, fake_meter: FakeMeterState, capture_dir: Path, license_features

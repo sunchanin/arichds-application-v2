@@ -29,7 +29,11 @@ Decision record: ADR 0029 (filename), ADR 0015 (one stem, three formats — stil
 - [ ] FTP: a suffixed document under `captures/<serial>/` is listed and uploaded with no
       configuration change (`test_fileupload_cycle.py` shape) — proven, not assumed
 - [ ] The opt-in real-Edge test (`ARICHDS_TEST_EDGE=1`) run by hand once with a pair in the
-      seeded rows; its output line in the evidence
+      seeded rows; its output line in the evidence. **2026-09-22: the test now seeds the pair, but
+      could not run from the agent's shell** — `schtasks /run /TN 'ARICHDS Capture Browser'` answers
+      `Access is denied` (the task is registered to LOCAL SERVICE; running it needs an elevated
+      shell). The owner runs it from an administrator terminal:
+      `cd app && set ARICHDS_TEST_EDGE=1 && .venv\Scripts\python -m pytest tests/test_capture_screenshot_integration.py -s`
 - [ ] Docs in the same change: CONTEXT.md *Capture* names the suffix rule in one sentence;
       CLAUDE.md's ADR 0015 and 0029 digests mention it
 - [ ] Gate: `ruff format --check`, `ruff check`, `pytest -n auto` (app)

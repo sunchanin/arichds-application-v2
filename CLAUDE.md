@@ -109,7 +109,10 @@ MySQL, and ~30 tables.
   periods** — `<capture_dir>/<serial>/<bill_date>.{pdf,xlsx,png}`, where the pdf and xlsx hold
   that one period and the png holds the ten most recent; it looks like a bug and is a decision
   the owner made explicitly, so **do not "fix" it** by renaming, suffixing or foldering;
-  **fully implemented** with issue #35) ·
+  **fully implemented** with issue #35; **amended by ADR 0029** (billing-sequence ticket 02): the
+  stem carries `_<sequence + 1>` for the older members of a same-second pair *only* — a period
+  alone on its bill date keeps its unsuffixed name, so nothing already handed over is renamed —
+  and `_png_source_rows` counts a pair as two of the ten) ·
   0016 (a customer's database is a **destination, not our store** — MySQL cannot express the
   partial unique indexes ADR 0009's invariant rests on, and making their database the store
   would make their downtime our downtime; FTP upload, a customer MySQL and a replicated folder

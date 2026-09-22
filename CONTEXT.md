@@ -373,6 +373,9 @@ capture of a new closed period, or a hand-pressed Capture image — stamped on t
 once the file exists, and blank until then; it is never the bill's own read time, and never
 inferred from the folder being configured (ui-audit ticket 03).
 
+Since ADR 0029 the stem carries `_2` (`_3`, …) for the older members of a same-second pair
+(Billing Sequence 1, 2, …) and nothing for a period alone on its bill date — so a file already
+handed over never changes its name, and both members of a pair get their own documents.
 Three formats share that one filename stem, and **they do not cover the same span** (ADR 0015):
 `.pdf` and `.xlsx` hold **that one period**, while `.png` holds **the ten most recent closed
 periods** rendered as the Billing History table. Sending the `.png` believing it carries a

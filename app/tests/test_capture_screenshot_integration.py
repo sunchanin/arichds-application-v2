@@ -164,17 +164,22 @@ class TestRealHeadlessCapture:
             with session_scope() as session:
                 for i in range(13):
                     bill_date = anchor_bill_date - timedelta(days=31 * i)
-                    session.add(
-                        BillingReading(
-                            device_id=device_id,
-                            bill_date=bill_date,
-                            read_at=bill_date,
-                            record_status=None,
-                            source="dlms",
-                            meter_serial="INTEGRATION-SN-1",
-                            import_active_kwh_total=198685.030 - i * 1000,
+                    # Period 1 is a same-second pair (ADR 0029): two rows, one
+                    # bill date, sequence 0 and 1 — the page must render both
+                    # and the id gate must accept them in the page's order.
+                    for sequence in (0, 1) if i == 1 else (0,):
+                        session.add(
+                            BillingReading(
+                                device_id=device_id,
+                                bill_date=bill_date,
+                                sequence=sequence,
+                                read_at=bill_date,
+                                record_status=None,
+                                source="dlms",
+                                meter_serial="INTEGRATION-SN-1",
+                                import_active_kwh_total=198685.030 - i * 1000 - sequence * 0.5,
+                            )
                         )
-                    )
 
             with session_scope() as session:
                 # ── The real row selection AND the real renderer — no fakes
@@ -187,7 +192,7 @@ class TestRealHeadlessCapture:
                 anchor = session.scalars(
                     select(BillingReading)
                     .where(BillingReading.device_id == device_id)
-                    .order_by(BillingReading.bill_date.desc())
+                    .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc())
                     .limit(1)
                 ).first()
                 assert anchor is not None

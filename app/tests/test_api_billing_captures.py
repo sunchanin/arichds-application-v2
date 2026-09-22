@@ -60,7 +60,7 @@ def make_device(admin_client: TestClient) -> int:
     return response.json()["data"]["id"]
 
 
-def seed_closed(device_id: int, meter_serial: str | None = "1232002893") -> int:
+def seed_closed(device_id: int, meter_serial: str | None = "1232002893", *, sequence: int = 0) -> int:
     from arichds.db.models import BillingReading
     from arichds.db.session import session_scope
 
@@ -68,6 +68,7 @@ def seed_closed(device_id: int, meter_serial: str | None = "1232002893") -> int:
         row = BillingReading(
             device_id=device_id,
             bill_date=BILL_DATE,
+            sequence=sequence,
             read_at=BILL_DATE,
             record_status=None,
             source="dlms",
@@ -117,6 +118,24 @@ class TestRenderOnMiss:
         assert response.headers["content-type"] == "application/pdf"
         written = list(capture_dir.rglob("*.pdf"))
         assert len(written) == 1
+
+    def test_the_older_member_of_a_same_second_pair_downloads_under_its_own_suffixed_name(
+        self, admin_client: TestClient, tmp_path: Path
+    ) -> None:
+        """ADR 0029: the pair's second period is its own document, never the
+        first's file served twice."""
+        capture_dir = tmp_path / "captures"
+        capture_dir.mkdir()
+        set_capture_dir(admin_client, capture_dir)
+        device_id = make_device(admin_client)
+        seed_closed(device_id, sequence=0)
+        second = seed_closed(device_id, sequence=1)
+
+        response = admin_client.get(f"/api/billing/captures/{second}", params={"format": "pdf"})
+
+        assert response.status_code == 200, response.text
+        written = [p.name for p in capture_dir.rglob("*.pdf")]
+        assert written == ["2026-07-31_170000_2.pdf"]
 
     def test_xlsx_format_is_rendered_written_and_served(self, admin_client: TestClient, tmp_path: Path) -> None:
         capture_dir = tmp_path / "captures"
