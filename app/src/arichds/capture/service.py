@@ -85,7 +85,7 @@ def write_xlsx_capture(
     write_capture(target, lambda: render_billing_xlsx(row, device_name, scale=scale), allowlist)
 
 
-def _png_source_rows(session: Any, anchor: Any) -> list[Any]:
+def png_source_rows(session: Any, anchor: Any) -> list[Any]:
     """The rows the PNG capture is built from (D4, issue #35).
 
     Same device_id and meter_serial as *anchor*, closed periods only
@@ -187,7 +187,7 @@ def write_png_capture(
             )
             rows = [row]
         else:
-            rows = _png_source_rows(session, row)
+            rows = png_source_rows(session, row)
 
     allowlist = [capture_dir.resolve()]
     write_capture(target, lambda: render_billing_png(rows, device_name), allowlist)

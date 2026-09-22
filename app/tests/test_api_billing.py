@@ -184,7 +184,7 @@ class TestRange:
 class TestMeterSerialFilter:
     """Decision 7, issue #38 — an optional ``meter_serial`` filter, added so
     this endpoint agrees with ``capture/service.py``'s
-    ``_png_source_rows()`` (which already filters on ``meter_serial``)
+    ``png_source_rows()`` (which already filters on ``meter_serial``)
     unconditionally, rather than only for a device that has never had its
     meter swapped (ADR 0005 — identity comes from the meter)."""
 

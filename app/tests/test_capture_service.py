@@ -101,7 +101,7 @@ class TestThePngWindowWithASameSecondPair:
 
         from sqlalchemy import select
 
-        from arichds.capture.service import _png_source_rows
+        from arichds.capture.service import png_source_rows
         from arichds.db.models import BillingReading, Device
         from arichds.db.session import session_scope
 
@@ -134,7 +134,7 @@ class TestThePngWindowWithASameSecondPair:
             anchor = session.scalar(select(BillingReading).where(BillingReading.id == ids[(0, 0)]))
             assert anchor is not None
 
-            window = [row.id for row in _png_source_rows(session, anchor)]
+            window = [row.id for row in png_source_rows(session, anchor)]
 
         expected = [ids[(0, 0)], ids[(1, 0)], ids[(1, 1)]] + [ids[(i, 0)] for i in range(2, 9)]
         assert window == expected  # ten rows: the pair counts twice, so day-index 9 falls out
@@ -144,7 +144,7 @@ class TestThePngWindowWithASameSecondPair:
         with session_scope() as session:
             older = session.scalar(select(BillingReading).where(BillingReading.id == ids[(1, 1)]))
             assert older is not None
-            window = [row.id for row in _png_source_rows(session, older)]
+            window = [row.id for row in png_source_rows(session, older)]
         assert window == [ids[(1, 1)]] + [ids[(i, 0)] for i in range(2, 11)]
 
 

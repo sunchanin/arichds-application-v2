@@ -12,11 +12,12 @@ seed migration.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from sqlalchemy.orm import Session
 
+from arichds.capture.dom import CaptureStyle
 from arichds.db.models import Setting
+
+__all__ = ["CaptureStyle"]
 
 #: The one key M6b introduces. `""` means "not configured" — capture is then
 #: skipped with a log line rather than defaulting to a path under
@@ -42,10 +43,10 @@ DISPLAY_UNIT_SCALE_DEFAULT = "kilo"
 CAPTURE_STYLE_KEY = "capture_style"
 CAPTURE_STYLE_DEFAULT = "standard"
 
-#: The two Capture Styles. The settings body model's ``Literal`` is what
-#: makes anything else a 422; :func:`read_capture_style` is what makes a
-#: stray stored value read as ``standard`` rather than crash a capture.
-CaptureStyle = Literal["standard", "classic"]
+#: The two values are :data:`arichds.capture.dom.CaptureStyle`, re-exported
+#: here for the settings endpoint. Its ``Literal`` is what makes anything else
+#: a 422; :func:`read_capture_style` is what makes a stray stored value read
+#: as ``standard`` rather than crash a capture.
 
 #: The four Export Format keys (M7 slice 3, issue #30, D-7) — machine-wide,
 #: same as every key above. Defaults are v1's own (`cewe/.../core/models.py`

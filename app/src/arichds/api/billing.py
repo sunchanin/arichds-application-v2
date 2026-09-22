@@ -51,8 +51,8 @@ from arichds.api.envelope import ApiResponse
 from arichds.capture.paths import validate_capture_dir_setting
 from arichds.capture.screenshot import BrowserCaptureError
 from arichds.capture.service import (
-    _png_source_rows,
     capture_target_paths,
+    png_source_rows,
     write_pdf_capture,
     write_png_capture,
     write_xlsx_capture,
@@ -308,7 +308,7 @@ def list_billing_readings(
     row volume (~13/device/year) never justifies forcing one.
 
     ``meter_serial`` (ADR 0017, issue #38, decision 7) makes this endpoint
-    agree unconditionally with :func:`~arichds.capture.service._png_source_rows`,
+    agree unconditionally with :func:`~arichds.capture.service.png_source_rows`,
     which has always filtered on it — without this param the two would
     disagree the moment a device's meter is swapped (ADR 0005) and stay
     disagreeing until enough new-serial periods accumulated on their own.
@@ -981,6 +981,18 @@ def _capture_anchor(session: Session, device_id: int, reading_id: int | None) ->
     return anchor
 
 
+def _require_capture_dir(session: Session) -> str:
+    """The ``capture_dir`` setting, or the 404 every capture surface answers
+    when it is unset — one precondition, one place, so the image download
+    and the Classic view model cannot drift on it (code review, 2026-09-22)."""
+    capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
+    if not capture_dir_str.strip():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="capture_dir is not configured — nothing to download."
+        )
+    return capture_dir_str
+
+
 def _classic_statistics(session: Session, device: Device) -> ClassicStatisticsOut:
     """Counted over the devices sharing *device*'s group — or sharing *no*
     group when it has none (``NULL`` matches ``NULL``, never a named group)
@@ -989,9 +1001,11 @@ def _classic_statistics(session: Session, device: Device) -> ClassicStatisticsOu
     all, *Devices with Issues* are those held Offline, Unknown counts and
     is not an issue, Complete = Total − Issues."""
     same_group = Device.group_name.is_(None) if device.group_name is None else Device.group_name == device.group_name
-    shown = [display_status(member) for member in session.scalars(select(Device).where(same_group))]
-    counted = [state for state in shown if state is not DeviceStatus.PAUSED]
-    issues = sum(1 for state in counted if state is DeviceStatus.OFFLINE)
+    # The two columns `display_status` reads, not the whole row: `enabled`
+    # false is Paused (computed, never stored), `status` is the Poller's word.
+    members = session.execute(select(Device.enabled, Device.status).where(same_group)).all()
+    counted = [stored for enabled, stored in members if enabled]
+    issues = sum(1 for stored in counted if stored == DeviceStatus.OFFLINE.value)
     return ClassicStatisticsOut(total=len(counted), issues=issues, complete=len(counted) - issues)
 
 
@@ -1011,7 +1025,7 @@ def classic_capture_view(
     """The Classic capture's view model (ADR 0028) — everything the Classic
     page draws, already formatted; the page is a layout, not a formatter.
 
-    Rows are :func:`~arichds.capture.service._png_source_rows`' own window
+    Rows are :func:`~arichds.capture.service.png_source_rows`' own window
     for the anchor (same device, same serial, closed only, at most ten,
     ADR 0015) **reversed** to ``bill_date ASC, sequence DESC`` — the order
     the page lists them and the driver waits for — never a second copy of
@@ -1035,12 +1049,7 @@ def classic_capture_view(
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Device {device_id} does not exist.")
     anchor = _capture_anchor(session, device_id, reading_id)
-
-    capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
-    if not capture_dir_str.strip():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="capture_dir is not configured — nothing to draw."
-        )
+    capture_dir_str = _require_capture_dir(session)
 
     brand = brand_key(device.brand)
     brand_label = (BRAND_LABELS[brand] if brand is not None else device.brand).upper()
@@ -1055,7 +1064,7 @@ def classic_capture_view(
             **{cell: _classic_number(getattr(row, column)) for cell, column in _CLASSIC_NUMBER_COLUMNS.items()},
             **{cell: _classic_time(getattr(row, column)) for cell, column in _CLASSIC_TIME_COLUMNS.items()},
         )
-        for row in reversed(_png_source_rows(session, anchor))
+        for row in reversed(png_source_rows(session, anchor))
     ]
 
     return ApiResponse.ok(
@@ -1160,13 +1169,7 @@ def download_billing_image(
         raise FeatureDisabledError("billing_image_export")
 
     anchor = _capture_anchor(session, device_id, reading_id)
-
-    capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
-    if not capture_dir_str.strip():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="capture_dir is not configured — nothing to download."
-        )
-    capture_dir = Path(capture_dir_str)
+    capture_dir = Path(_require_capture_dir(session))
     display_unit_scale = get_setting(session, DISPLAY_UNIT_SCALE_KEY, DISPLAY_UNIT_SCALE_DEFAULT)
 
     device = session.get(Device, anchor.device_id)

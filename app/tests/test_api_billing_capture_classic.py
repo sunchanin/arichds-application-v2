@@ -5,7 +5,7 @@ Everything the Classic page draws, already formatted: the capture folder with
 ``/`` separators, the device's real group, ``<BRAND>`` and Meter Serial, a
 Statistics Summary counted from the Poller's stored status over the devices
 sharing that group, and the ten most recent closed periods **oldest first,
-then by Billing Sequence** — exactly the window ``_png_source_rows`` selects
+then by Billing Sequence** — exactly the window ``png_source_rows`` selects
 for the anchor, reversed. Every rule below is written as the mutation it
 would catch (two devices per status, a thirteen-row seed with a same-second
 pair), never as a scenario that passes on a one-row table.

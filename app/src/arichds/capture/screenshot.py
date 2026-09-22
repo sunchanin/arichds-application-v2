@@ -39,7 +39,7 @@ One capture, start to finish:
 5. Seed the session and the capture request into ``localStorage`` /
    ``window.__ARICHDS_CAPTURE__`` *before* navigating
    (:mod:`arichds.capture.dom`), then navigate and poll until the rendered
-   row ids exactly match ``_png_source_rows()``'s own selection
+   row ids exactly match ``png_source_rows()``'s own selection
    (:func:`~arichds.capture.dom.ids_match`) — the readiness signal and the
    correctness gate in one comparison (decision 6).
 6. Screenshot at 1920 CSS px wide, height grown to fit every row — or, in
@@ -96,13 +96,14 @@ from arichds.auth.security import create_access_token, hash_token
 from arichds.capture.dom import (
     CAPTURE_ANCHOR_FIELD,
     CAPTURE_STYLE_FIELD,
+    CaptureStyle,
     build_seed_script,
     ids_match,
     poll_script,
 )
 from arichds.capture.task import CAPTURE_TASK_NAME
 from arichds.config import get_settings
-from arichds.db.app_settings import CaptureStyle, read_capture_style
+from arichds.db.app_settings import read_capture_style
 from arichds.db.models import User, UserToken
 from arichds.db.session import session_scope
 
@@ -114,7 +115,7 @@ class BrowserCaptureError(Exception):
 
     The single type every caller catches — a missing Edge install, no admin
     to mint a token for, a launch/connect failure, a capture budget
-    exceeded, or the rendered rows never matching :func:`_png_source_rows`'s
+    exceeded, or the rendered rows never matching :func:`png_source_rows`'s
     selection all raise this and nothing else.
     """
 
@@ -575,9 +576,10 @@ async def _wait_for_rows(
         if ids_match(expected_ids, observed):
             return
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+    page = "Classic page" if style == "classic" else "Billing page"
     raise BrowserCaptureError(
-        f"Billing page never rendered the expected rows within the capture budget "
-        f"(shell mounted: {mounted}; expected {expected_ids!r}, last observed {observed!r})."
+        f"{page} never rendered the expected rows within the capture budget "
+        f"(page mounted: {mounted}; expected {expected_ids!r}, last observed {observed!r})."
     )
 
 
@@ -610,7 +612,7 @@ async def _drive_capture(
         "meterSerial": anchor.meter_serial,
         "endIso": end_bound.isoformat(),
         # Exactly `len(rows)` (code review round, problem 1) — NOT a padded
-        # constant. `_png_source_rows()` already truncated to at most ten;
+        # constant. `png_source_rows()` already truncated to at most ten;
         # the page's own query (same device_id/meter_serial, the same
         # `bill_date DESC` order, `endIso` matching this function's own
         # inclusive bound) selects the identical row set, so the first page
@@ -889,7 +891,7 @@ def render_billing_png(rows: Sequence[Any], device_name: str) -> bytes:
 
     Args:
         rows: Already ordered newest-``bill_date``-first and already limited
-            to at most ten (:func:`~arichds.capture.service._png_source_rows`)
+            to at most ten (:func:`~arichds.capture.service.png_source_rows`)
             — this function does not query, sort, or truncate. Anything
             exposing ``id``/``device_id``/``bill_date``/``meter_serial`` as
             attributes (a real ``BillingReading``, since the row ids are

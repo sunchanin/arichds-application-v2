@@ -23,6 +23,7 @@ from arichds.capture.dom import (
     CAPTURE_ANCHOR_FIELD,
     CAPTURE_REQUEST_GLOBAL,
     CAPTURE_STYLE_FIELD,
+    CLASSIC_PAGE_SELECTOR,
     CLASSIC_TABLE_BODY_ROW_SELECTOR,
     ROW_KEY_ATTRIBUTE,
     SESSION_STORAGE_KEY,
@@ -94,6 +95,13 @@ class TestPollScript:
         assert CLASSIC_TABLE_BODY_ROW_SELECTOR in script
         assert TABLE_BODY_ROW_SELECTOR not in script
         assert ROW_KEY_ATTRIBUTE in script
+        # Its own mount marker — the Classic page has no AppShell, so the
+        # shell selector would say "never mounted" on every Classic timeout.
+        assert CLASSIC_PAGE_SELECTOR in script
+        assert APP_SHELL_SELECTOR not in script
+        # No ids until the ten toolbar bitmaps have loaded (code review, 2026-09-22).
+        assert "document.images" in script and "img.complete" in script
+        assert "document.images" not in poll_script("standard")
 
 
 class TestOurOwnContract:
@@ -124,7 +132,7 @@ class TestOurOwnContract:
         """The selector's class is on the page's root and its rows carry the
         row-key attribute — the two halves of the Classic row gate."""
         text = (WEB_SRC / "pages" / "ClassicCapture.tsx").read_text(encoding="utf-8")
-        root_class = CLASSIC_TABLE_BODY_ROW_SELECTOR.split(" ")[0].lstrip(".")
+        root_class = CLASSIC_PAGE_SELECTOR.lstrip(".")
         assert f'className="{root_class}"' in text
         assert f"{ROW_KEY_ATTRIBUTE}={{row.id}}" in text
 

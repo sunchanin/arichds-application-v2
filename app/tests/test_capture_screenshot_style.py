@@ -32,7 +32,7 @@ BILL_DATE = datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC)
 
 
 def _rows(*ids: int) -> list[SimpleNamespace]:
-    """Newest first, as ``_png_source_rows`` hands them over."""
+    """Newest first, as ``png_source_rows`` hands them over."""
     return [SimpleNamespace(id=row_id, device_id=7, meter_serial="SN-1", bill_date=BILL_DATE) for row_id in ids]
 
 
@@ -100,7 +100,7 @@ class TestClassicDrive:
     def test_a_page_answering_newest_first_never_satisfies_the_classic_gate(self) -> None:
         transport = _transport(["3", "2", "1"])
 
-        with pytest.raises(screenshot_module.BrowserCaptureError):
+        with pytest.raises(screenshot_module.BrowserCaptureError, match="Classic page never rendered"):
             minted = MintedToken("raw-token", "token-hash", 1, "admin", "admin")
             asyncio.run(
                 _drive_capture(transport, _rows(3, 2, 1), minted, 8000, time.monotonic() + 0.6, style="classic")

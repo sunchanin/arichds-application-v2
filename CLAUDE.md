@@ -112,7 +112,7 @@ MySQL, and ~30 tables.
   **fully implemented** with issue #35; **amended by ADR 0029** (billing-sequence ticket 02): the
   stem carries `_<sequence + 1>` for the older members of a same-second pair *only* — a period
   alone on its bill date keeps its unsuffixed name, so nothing already handed over is renamed —
-  and `_png_source_rows` counts a pair as two of the ten) ·
+  and `png_source_rows` counts a pair as two of the ten) ·
   0016 (a customer's database is a **destination, not our store** — MySQL cannot express the
   partial unique indexes ADR 0009's invariant rests on, and making their database the store
   would make their downtime our downtime; FTP upload, a customer MySQL and a replicated folder
@@ -585,7 +585,7 @@ MySQL, and ~30 tables.
   (omitted on `PUT` keeps the stored style, so the old one-field body still works), the Billing
   page's Capture folder card carries the Standard/Classic control (read-only for a `user`, who
   now sees the card), and `GET /api/billing/capture-classic/{device_id}?reading_id=` hands the
-  Classic page everything it draws already formatted — rows are `_png_source_rows`' own window
+  Classic page everything it draws already formatted — rows are `png_source_rows`' own window
   for the anchor reversed (never a second copy of the rule; keyed by the anchor's reading id
   rather than the spec's `end`+`limit`, because only the id can name a same-second pair's older
   member, ADR 0029), cells `100.302`/`319840.2819`/`1/21/2026 00:00` local with the meter's

@@ -147,7 +147,7 @@ sold separately. Acceptance is an overlay against a PNG the previous program its
   keeps 1920 wide, height grown to fit.
 - The row-id gate is unchanged: the driver waits until the rendered body rows are exactly the
   expected ids, in the expected order — for Classic that order is **ascending** `bill_date`
-  (the same ten rows `_png_source_rows` selects, reversed by the view-model endpoint; the
+  (the same ten rows `png_source_rows` selects, reversed by the view-model endpoint; the
   expected-id list the driver waits for is built in the same order).
 - The Classic page renders no AntD table; its rows carry the same `data-row-key` attribute on
   `<tr>` so the existing selector still finds them. If the page needs its own selector, it is
@@ -164,7 +164,7 @@ sold separately. Acceptance is an overlay against a PNG the previous program its
   local `M/D/YYYY HH:MM`, empty for `None`). The page is a layout, not a formatter — the
   formatting is testable in Python, and one formatting rule cannot drift between the endpoint
   and a page.
-- Row selection is `_png_source_rows`' own query (same device, same serial, closed periods
+- Row selection is `png_source_rows`' own query (same device, same serial, closed periods
   only, `bill_date <= end`, newest first, at most ten) then reversed — never a second copy of
   the rule.
 - Statistics: devices whose `group_name` equals the captured device's (`NULL` matches `NULL`),
@@ -219,7 +219,7 @@ happens to be laid out or which helper formatted a cell.
   on a fresh database; a `user` sees it and cannot change it; an admin's `PUT` round-trips;
   `banana` is 422; saving a style does not touch `capture_dir`.
 - **The view-model endpoint** (new file beside `test_api_billing_captures.py`, TestClient):
-  rows are oldest first and exactly the ten `_png_source_rows` selects (seed thirteen, as the
+  rows are oldest first and exactly the ten `png_source_rows` selects (seed thirteen, as the
   integration test does — with one row every ordering is identical); the Open Period is absent;
   formatting — `100.302`, `319840.2819`, `0` → `0`, `None` → `""`, `1/21/2026 00:00` in local
   time; the group rule — a Paused device is not in `total`, an Offline one is in `issues`, an

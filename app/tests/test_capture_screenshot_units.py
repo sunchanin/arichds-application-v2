@@ -379,7 +379,7 @@ class TestWaitForRows:
 class TestDriveCaptureSeedRequest:
     """Step 6 — the seeded ``endIso`` is exclusive (matching the API's own
     ``end`` bound), so it must be chosen to include the anchor row's own
-    ``bill_date`` exactly, since ``_png_source_rows()`` is inclusive
+    ``bill_date`` exactly, since ``png_source_rows()`` is inclusive
     (``<=``). Proven by inspecting the actual seed script sent over the
     fake transport, not by re-deriving the value and comparing it to
     itself."""
@@ -410,7 +410,7 @@ class TestDriveCaptureSeedRequest:
         assert "2026-07-31T17:00:00+00:00" not in seed_script  # the exclusive (wrong) bound would read this
 
     def test_the_seeded_page_size_is_exactly_the_row_count_not_a_padded_constant(self) -> None:
-        """Code review round, problem 1 (blocker) — `_png_source_rows()`
+        """Code review round, problem 1 (blocker) — `png_source_rows()`
         already truncated to at most ten; the page must be asked for
         exactly that many, or a device with an eleventh closed period gets
         more rows on the page than `expected_ids` holds and every capture
@@ -426,7 +426,7 @@ class TestDriveCaptureSeedRequest:
                 meter_serial="SN-1",
                 bill_date=datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC),
             )
-            for row_id in range(12, 0, -1)  # 12 rows — one more than _png_source_rows()'s cap
+            for row_id in range(12, 0, -1)  # 12 rows — one more than png_source_rows()'s cap
         ]
         assert len(rows) == 12
         transport = FakeTransport(
@@ -447,7 +447,7 @@ class TestDriveCaptureSeedRequest:
         assert '"pageSize": 50' not in seed_script  # the old padded constant
 
     def test_the_ids_waited_for_are_in_the_pages_order_oldest_first(self) -> None:
-        """ADR 0029: the page lists periods oldest first, `_png_source_rows()`
+        """ADR 0029: the page lists periods oldest first, `png_source_rows()`
         hands them over newest first (the anchor is rows[0]), and the gate
         compares order. A gate expecting newest-first would time out on every
         capture of two or more rows — pinned by a page that answers in the
@@ -458,7 +458,7 @@ class TestDriveCaptureSeedRequest:
             SimpleNamespace(
                 id=row_id, device_id=7, meter_serial="SN-1", bill_date=datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC)
             )
-            for row_id in (3, 2, 1)  # newest first, as `_png_source_rows()` returns them
+            for row_id in (3, 2, 1)  # newest first, as `png_source_rows()` returns them
         ]
         transport = FakeTransport(
             responses={

@@ -629,7 +629,7 @@ class TestPngRowSelectionD4:
         `2026-08-07` vs `ENTRY_CLOSED.bill_date` `2026-07-31`) is already
         excluded by `bill_date <= anchor.bill_date` alone, so it never
         exercises the `record_status IS NULL` clause — deleting that clause
-        from `_png_source_rows` left the full suite green. `<=` is
+        from `png_source_rows` left the full suite green. `<=` is
         *inclusive*: an Open Period whose `bill_date` exactly equals the
         closed anchor's is the case only `record_status` can catch. Seeded
         directly through the session (not the read path, which does not

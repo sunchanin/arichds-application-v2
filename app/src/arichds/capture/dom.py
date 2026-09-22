@@ -18,6 +18,12 @@ under a minute by whoever next has to explain why a capture broke after a
 from __future__ import annotations
 
 import json
+from typing import Literal
+
+#: The two Capture Styles (ADR 0028) — the values :data:`CAPTURE_STYLE_FIELD` may
+#: carry. Declared here, beside the field, so the renderer, the settings reader
+#: and the API all spell the same two words; ``db/app_settings.py`` re-exports it.
+CaptureStyle = Literal["standard", "classic"]
 
 #: ``web/src/auth.ts`` — ``SESSION_KEY``, the ``localStorage`` key the
 #: session lives under. The seed script writes a session here before
@@ -38,7 +44,7 @@ CAPTURE_STYLE_FIELD = "style"
 #: ``web/src/capture.ts`` — the request field carrying the anchor period's
 #: ``BillingReading.id``, which the Classic page passes to
 #: ``GET /api/billing/capture-classic/{device_id}?reading_id=`` so it draws
-#: exactly the window ``_png_source_rows`` selected — a same-second pair's
+#: exactly the window ``png_source_rows`` selected — a same-second pair's
 #: older member (ADR 0029) cannot be named by ``endIso`` alone.
 CAPTURE_ANCHOR_FIELD = "anchorId"
 
@@ -62,34 +68,47 @@ TABLE_BODY_ROW_SELECTOR = ".ant-table-tbody tr[data-row-key]"
 #: ``BillingReading.id`` as a string.
 ROW_KEY_ATTRIBUTE = "data-row-key"
 
-#: ``web/src/pages/ClassicCapture.tsx`` — the Classic page renders no AntD
-#: table (ADR 0028), so its Data Table rows are found under the page's own
-#: root class, each ``<tr>`` carrying :data:`ROW_KEY_ATTRIBUTE` exactly as
-#: the Billing page's rows do.
-CLASSIC_TABLE_BODY_ROW_SELECTOR = ".classic-capture tbody tr[data-row-key]"
+#: ``web/src/pages/ClassicCapture.tsx`` renders its root with this class — the
+#: Classic page's own "mounted" marker (it has no AppShell, so
+#: :data:`APP_SHELL_SELECTOR` is false there by design), diagnostic only.
+CLASSIC_PAGE_SELECTOR = ".classic-capture"
+
+#: The Classic page renders no AntD table (ADR 0028), so its Data Table rows
+#: are found under the page's own root class, each ``<tr>`` carrying
+#: :data:`ROW_KEY_ATTRIBUTE` exactly as the Billing page's rows do.
+CLASSIC_TABLE_BODY_ROW_SELECTOR = f"{CLASSIC_PAGE_SELECTOR} tbody tr[data-row-key]"
 
 
-def poll_script(style: str = "standard") -> str:
+def poll_script(style: CaptureStyle = "standard") -> str:
     """The JS expression polled while waiting for the Billing table to
     render (step 5, issue #38) — or, with *style* ``"classic"``, the Classic
     page's Data Table (ADR 0028).
 
     Returns an object ``{mounted, ids}`` in one round trip: ``mounted`` is
-    whether :data:`APP_SHELL_SELECTOR` exists at all (diagnostic only, and
-    false by design on the Classic page, which has no shell), and ``ids`` is
-    the list of :data:`ROW_KEY_ATTRIBUTE` values off
+    whether the page's own root exists at all (:data:`APP_SHELL_SELECTOR`, or
+    :data:`CLASSIC_PAGE_SELECTOR` for Classic — diagnostic only), and ``ids``
+    is the list of :data:`ROW_KEY_ATTRIBUTE` values off
     :data:`TABLE_BODY_ROW_SELECTOR` (:data:`CLASSIC_TABLE_BODY_ROW_SELECTOR`
-    for Classic), in DOM order, **de-duplicated by id**
+    for Classic), in DOM order, **de-duplicated by id**. For Classic the list
+    stays empty until every ``<img>`` on the page has finished loading — the
+    ten toolbar bitmaps are fetched separately from the rows, and the row gate
+    alone would let a screenshot fire with blank icon slots (code review,
+    2026-09-22); ``complete`` is true for a failed image too, so a missing file
+    shows as a gap in the picture rather than a timeout
     (Findings: ``scroll={{ x }}`` splitting header/body into separate tables
     "should not duplicate body rows, but confirm rather than assume" — this
     de-duplicates defensively so a duplicate, if it exists, never inflates
     the comparison instead of just failing it).
     """
-    row_selector = CLASSIC_TABLE_BODY_ROW_SELECTOR if style == "classic" else TABLE_BODY_ROW_SELECTOR
+    classic = style == "classic"
+    row_selector = CLASSIC_TABLE_BODY_ROW_SELECTOR if classic else TABLE_BODY_ROW_SELECTOR
+    mount_selector = CLASSIC_PAGE_SELECTOR if classic else APP_SHELL_SELECTOR
+    images_gate = "if (!Array.from(document.images).every((img) => img.complete)) { return []; } " if classic else ""
     return (
         "(() => ({"
-        f"mounted: !!document.querySelector({json.dumps(APP_SHELL_SELECTOR)}), "
+        f"mounted: !!document.querySelector({json.dumps(mount_selector)}), "
         "ids: (() => { "
+        f"{images_gate}"
         "const seen = new Set(); const out = []; "
         f"document.querySelectorAll({json.dumps(row_selector)}).forEach((el) => {{ "
         f"const id = el.getAttribute({json.dumps(ROW_KEY_ATTRIBUTE)}); "

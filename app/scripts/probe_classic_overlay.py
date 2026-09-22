@@ -14,7 +14,8 @@ Classic, renders through the real ``render_billing_png`` and writes, beside the 
   than anti-aliasing would), plus the eight rows as the Classic endpoint formatted them next to
   the strings the reference shows.
 
-Run from ``app/`` with the dev extras installed (Pillow is dev-only)::
+Run from ``app/`` with the dev extras installed (``httpx`` is dev-only; Pillow is a runtime
+dependency through fpdf2)::
 
     .venv\\Scripts\\python scripts\\probe_classic_overlay.py --reference "C:\\...\\capture_WP081200.png" --out "C:\\...\\overlay"
 
@@ -499,7 +500,7 @@ def main() -> None:
         from sqlalchemy import select
 
         from arichds.capture.screenshot import _run_capture_with_hard_deadline, render_billing_png
-        from arichds.capture.service import _png_source_rows
+        from arichds.capture.service import png_source_rows
         from arichds.db.models import BillingReading
         from arichds.db.session import session_scope
 
@@ -511,7 +512,7 @@ def main() -> None:
                 .limit(1)
             ).first()
             assert anchor is not None
-            rows = _png_source_rows(session, anchor)
+            rows = png_source_rows(session, anchor)
             started = time.monotonic()
             if trigger is None:
                 png = render_billing_png(rows, SERIAL)

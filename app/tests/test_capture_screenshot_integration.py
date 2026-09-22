@@ -21,7 +21,7 @@ problem 1/3 — every other test in this file used to seed exactly one, which
 is why the seeded-``pageSize`` bug reached this point without a single test
 catching it: at one row, an over-wide ``pageSize`` and the correct one
 request an identical page), selects the real ten-row window through the
-real :func:`~arichds.capture.service._png_source_rows`, then calls the real
+real :func:`~arichds.capture.service.png_source_rows`, then calls the real
 ``render_billing_png`` — no fakes anywhere in this file.
 """
 
@@ -154,7 +154,7 @@ class TestRealHeadlessCapture:
             # same process — one more than the twelve `test_t4` in
             # `test_billing_eager_capture.py` uses for the same reason:
             # thirteen closed periods is the smallest count that both
-            # exceeds `_png_source_rows()`'s ten-row cap AND leaves the
+            # exceeds `png_source_rows()`'s ten-row cap AND leaves the
             # anchor (the newest) with three periods excluded, so the
             # window's *boundary* is exercised, not just its existence. ──
             from arichds.db.models import BillingReading
@@ -187,7 +187,7 @@ class TestRealHeadlessCapture:
                 from sqlalchemy import select
 
                 from arichds.capture.screenshot import render_billing_png
-                from arichds.capture.service import _png_source_rows
+                from arichds.capture.service import png_source_rows
 
                 anchor = session.scalars(
                     select(BillingReading)
@@ -196,7 +196,7 @@ class TestRealHeadlessCapture:
                     .limit(1)
                 ).first()
                 assert anchor is not None
-                rows = _png_source_rows(session, anchor)
+                rows = png_source_rows(session, anchor)
                 assert len(rows) == 10, "the ten-row cap itself — proves this test seeded enough to exercise it"
 
                 png_bytes = render_billing_png(rows, "Main Incomer")
@@ -223,7 +223,7 @@ class TestRealHeadlessCapture:
                     .limit(1)
                 ).first()
                 assert anchor is not None
-                rows = _png_source_rows(session, anchor)
+                rows = png_source_rows(session, anchor)
                 classic_bytes = render_billing_png(rows, "Main Incomer")
 
             classic_width, classic_height = _png_dimensions(classic_bytes)

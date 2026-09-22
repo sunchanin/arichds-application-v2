@@ -20,7 +20,7 @@ meter holds, oldest first) — the rows and their order
 
 **Status:** done — 2026-09-22 (commit in the log). One deviation from the spec, recorded in
 CLAUDE.md's ADR 0028 digest: the endpoint is keyed by `reading_id` (the anchor) rather than
-`end`+`limit`, because `_png_source_rows` has been anchor-sequence-aware since the billing-sequence
+`end`+`limit`, because `png_source_rows` has been anchor-sequence-aware since the billing-sequence
 review round and only the id can name a same-second pair's older member. Evidence: 15 tests in
 `test_api_billing_capture_classic.py` + 5 in `test_api_billing_settings.py`; seven mutation probes
 (paused counted, unknown as issue, `NULL` group, rows not reversed, epoch rendered, leading zeros,

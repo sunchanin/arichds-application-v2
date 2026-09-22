@@ -393,7 +393,10 @@ function CaptureSettingsCard({
           label="Capture image style"
           extra="Classic reproduces the window of ARICHDS Meter, the program used before ARICHDS. The style applies to the next image written; existing images are unchanged."
         >
-          <Segmented<CaptureStyle> options={CAPTURE_STYLE_OPTIONS} />
+          {/* `Segmented` does not consume the Form's disabled context (antd 6), so it
+              is disabled explicitly — a `user` must not be able to flip a control whose
+              Save button they do not have (code review, 2026-09-22). */}
+          <Segmented<CaptureStyle> options={CAPTURE_STYLE_OPTIONS} disabled={!editable} />
         </Form.Item>
         {editable ? (
           <Button type="primary" htmlType="submit" loading={saving}>
