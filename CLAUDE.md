@@ -592,7 +592,25 @@ MySQL, and ~30 tables.
   epoch `2000-01-01 00:00` an empty cell, the column mapping declared once in
   `api/billing.py::_CLASSIC_NUMBER_COLUMNS`, statistics from `display_status` over the same
   group (`NULL` matches `NULL`), and `_capture_anchor` now shared with the image download.
-  **The Classic page itself is ticket 02, pending** — amends 0017: **Capture Style** (CONTEXT.md) is a
+  **The Classic page and the drive landed with ticket 02** (2026-09-22): the seeded request
+  carries `style` and `anchorId` (`capture/dom.py::CAPTURE_STYLE_FIELD`/`CAPTURE_ANCHOR_FIELD`,
+  read leniently by `capture.ts` — a malformed value is Standard/absent), `App.tsx` renders
+  `pages/ClassicCapture.tsx` in place of the whole shell on `classic`, `_run_capture` reads
+  `read_capture_style` on the session it mints the token with (never cached), and
+  `_drive_capture` sets a 1280×709 viewport and clips exactly that box — no
+  `Page.getLayoutMetrics`, no `captureBeyondViewport` — while the Standard drive's request list
+  is pinned byte-identical (`test_capture_screenshot_style.py`); the Classic page's rows are found
+  by `CLASSIC_TABLE_BODY_ROW_SELECTOR`, declared in `dom.py` beside the AntD one. Every distance,
+  colour and column width lives in `web/src/pages/classic-capture.css` (measured with Pillow from
+  `capture_WP081200.png`; font Segoe UI 12px by width comparison), the ten icons in
+  `web/public/images/classic/` cut from the owner's strip at native size. **Overlay done with
+  ticket 03** (2026-09-22, `app/scripts/probe_classic_overlay.py` — real Edge, launched directly
+  from the shell since the LOCAL SERVICE task needs an administrator): every frame line, button,
+  combo, tab, scrollbar and text start agrees with ARICHDS Meter's own PNG to the pixel, the eight
+  data rows and `212 / 36 / 176` match cell for cell; the accepted differences are glyph rendering
+  (Chromium draws digit strings 2–5 px wider over ~80 px than GDI), the 2px sunken field edge drawn
+  as 1px, and the schedule time `00 : 00` against the reference's `00 : 10` by design. Images in
+  the owner's `Downloads\arichds-classic-overlay\`. — amends 0017: **Capture Style** (CONTEXT.md) is a
   machine-wide admin setting beside the capture folder, `standard` (default, today's image) or
   `classic`, no licence key; Classic is a page in `web/` no menu reaches, drawn only to be
   photographed by the same headless pipeline at a fixed 1280×709, imitating the window of the
@@ -602,8 +620,8 @@ MySQL, and ~30 tables.
   same group at the moment of writing (Paused uncounted, Issues = Offline only — *not* billing
   completeness, because captures are written meter by meter), the Auto Read Schedule panel fixed
   text; switching style rewrites nothing on disk; **acceptance is an overlay against a PNG the
-  old program itself wrote** and stays `Type: HITL` until the customer sends them — the one
-  reference held is a chat-app JPEG, so **do not report "identical" from it**) ·
+  old program itself wrote** — done, see above; a *second* reference from another meter or
+  machine is still worth asking the customer for) ·
   0029 (**a closed billing period is keyed by bill date and sequence — every entry the meter
   holds is stored**, 2026-09-22 — **the store, the page, the export file and the Database
   Destination landed with billing-sequence ticket 01** (migration 0022; the sequence is counted in
