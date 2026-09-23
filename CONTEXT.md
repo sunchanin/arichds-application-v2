@@ -365,7 +365,8 @@ hands the file to a customer through whatever their own workflow already reaches
 share, a synced folder, their mail client's watched directory). Its path is derived from
 convention every time — `<capture_dir>/<meter_serial>/<bill_date>.<ext>` — and never stored in
 the database, so changing `capture_dir` orphans every existing capture by design: old files stay
-exactly where they are and simply stop being reachable from the Billing page. Created eagerly,
+exactly where they are and simply stop being reachable from the Billing page — a **Capture Sweep**
+is how the new folder gets them back. Created eagerly,
 synchronously, the moment a closed period is inserted; a missing one is rendered again on
 download rather than tracked as a failure. The Open Period never has one. The Billing page's
 **Captured** column is the moment a document for that period was last written — the automatic
@@ -440,6 +441,31 @@ _Avoid_: divide by 1000 (v1's setting; not ported — write-time normalization a
 vacuous), per-meter format (rejected — see above), a second output folder (rejected — see
 above)
 
+**Billing Folder**:
+The one folder an admin sets on the Billing page (grill 2026-09-23, decision ก). It holds, under one
+subfolder per Meter Serial, a meter's Captures **and** its Billing Export File — the customer keeps a
+meter's billing documents together. Empty means both are off: no Capture is written and no Billing
+Export File either — a file is **never** written into another file's folder (the same rule the
+Load Profile CSV's *Output folder* and the *Energy file folder* follow, each for its own file).
+_Avoid_: capture folder (it is not only for captures any more), output dir, export folder
+
+**Capture Sweep**:
+Writing the Capture for every closed Billing Reading that has no document in the current Billing
+Folder — every period the store holds, newest first, every format the licence allows, and never
+over a file that exists (a file present is done, whatever wrote it; delete it to re-issue). The
+folder itself is the only record of what is done: nothing persists which periods were swept. It
+runs only when someone presses **Save all**; the automatic capture of a new closed period is not a
+sweep. A swept document carries the values of the moment it is written (a Classic image's
+Statistics Summary, a PDF's print time), exactly as a download-time render does.
+_Avoid_: backfill (dissolved, ADR 0009), regenerate (v1's per-period tool), re-capture
+
+**Save all**:
+The Billing page's admin action replacing *Save billing file now*: rewrites every device's Billing
+Export File and runs a Capture Sweep over every device, in short slices between the scheduler's
+regular jobs so a meter read is never delayed; answers at once and reports progress on the page
+(kept in memory only, gone on restart). Pressed while running, it says so and queues nothing.
+_Avoid_: save billing file now, sync, regenerate all
+
 **Billing Export File**:
 One row per **closed** billing period per meter — `<meter>-billing.csv`, 24 columns in the
 customer's order — holding **every** closed period and rewritten whole every cycle, because
@@ -447,7 +473,8 @@ billing is never purged from our store (ADR 0023). The Open Period is never expo
 `bill_date` advances on every read (see *Open Period*). `Record No` counts closed periods for
 that meter oldest-first, **not** lines in the file. Its `Record Status` column
 reads `closed` on every row and is **not the same column** as `Record Status` in the Load
-Profile CSV, which is an *Interval Status* word.
+Profile CSV, which is an *Interval Status* word. It lives in the **Billing Folder**, inside the
+meter's own subfolder beside its Captures (grill 2026-09-23); no Billing Folder, no file.
 _Avoid_: billing CSV, billing file, bill export (one name, so a grep finds every mention)
 
 **Energy Export File**:
@@ -455,7 +482,8 @@ One row per device and local calendar day for the last 90 days — `<meter>-ener
 `Date` plus the eight Time-of-Use columns the page shows — **rewritten whole every cycle from the
 stored Energy Summary** (ADR 0023), so it is never more than one cycle behind the page. **Save to
 file** writes a chosen range to its own file. It carries **no total row**; the total belongs on
-the page.
+the page. Written only into its own *Energy file folder* (Energy Summary page); empty means no
+file — never another file's folder (grill 2026-09-23).
 _Avoid_: energy CSV, TOU file, summary export
 
 **Output Parity**:
