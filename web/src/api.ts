@@ -375,9 +375,6 @@ export interface BillingSettings {
   /** The Capture Style (ADR 0028) — what the next `.png` written on any
    * path looks like; `standard` on an install that never chose. */
   capture_style: CaptureStyle;
-  /** The billing file's own folder (2026-09-23) — `""` means the Load
-   * Profile page's Output folder is used, exactly as before the key existed. */
-  export_billing_output_dir: string;
 }
 
 /** The Energy Summary page's one setting: the Energy file's own folder — `""`
@@ -1733,18 +1730,16 @@ export const api = {
     ),
 
   /**
-   * Save `capture_dir` — admin-only. An empty string disables capture; a
-   * non-empty value is validated server-side (ADR 0010) and a rejection
-   * comes back as a 422 the caller renders via `ApiRequestError.message`.
+   * Save `capture_dir` — the Billing folder: the captures and, since 2026-09-23,
+   * the billing file too — admin-only. An empty string disables capture (the
+   * billing file then uses the Load Profile page's Output folder); a non-empty
+   * value is validated server-side (ADR 0010) and a rejection comes back as a
+   * 422 the caller renders via `ApiRequestError.message`.
    */
-  updateBillingSettings: (captureDir: string, captureStyle: CaptureStyle, billingOutputDir: string) =>
+  updateBillingSettings: (captureDir: string, captureStyle: CaptureStyle) =>
     request<BillingSettings>("/api/billing/settings", {
       method: "PUT",
-      body: JSON.stringify({
-        capture_dir: captureDir,
-        capture_style: captureStyle,
-        export_billing_output_dir: billingOutputDir,
-      }),
+      body: JSON.stringify({ capture_dir: captureDir, capture_style: captureStyle }),
     }),
 
   /** The Energy file's folder (2026-09-23) — any authenticated role reads it. */

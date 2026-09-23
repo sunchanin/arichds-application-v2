@@ -95,7 +95,7 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
           <Text type="secondary">
             These settings govern every export file — the Load Profile CSV, the billing file and the Energy file —
             each written to its own folder: the Load Profile CSV to the Output folder on the Load Profile page, the
-            billing file to the Billing file folder on the Billing page, the Energy file to the Energy file folder on
+            billing file to the Billing folder on the Billing page (beside its captures), the Energy file to the Energy file folder on
             the Energy Summary page (a folder left empty uses the Load Profile page's). Energy values are always
             exported in kWh/kvarh: they do not follow the Display unit setting on the Settings page. Each file holds
             the same window ARICHDS holds: the Load Profile CSV appends new intervals every cycle and is trimmed to

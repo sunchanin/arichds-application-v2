@@ -1,13 +1,15 @@
 """Each export file has its own folder (customer request, 2026-09-23;
 `.scratch/export-folders/spec.md`).
 
-``export_output_dir`` stays the Load Profile CSV's folder; the billing file and
-the Energy file gain ``export_billing_output_dir`` / ``export_energy_output_dir``,
-each set on its own page's endpoint, and an **empty** one means "use the Load
-Profile CSV folder" — so an install that set one folder before this change
-keeps writing exactly where it did. Every test seeds two distinct folders and
-asserts which one the file landed in, so a reader that forgot the fallback,
-or one that read the wrong key, moves a path.
+``export_output_dir`` stays the Load Profile CSV's folder; the billing file
+follows the Billing page's one folder, ``capture_dir`` (owner decision ก,
+2026-09-23 — the captures' folder, the file at its top level and the captures
+one subfolder per meter below); the Energy file gains
+``export_energy_output_dir`` on its own page's endpoint. An **empty** one means
+"use the Load Profile CSV folder" — so an install that set one folder before
+this change keeps writing exactly where it did. Every test seeds two distinct
+folders and asserts which one the file landed in, so a reader that forgot the
+fallback, or one that read the wrong key, moves a path.
 """
 
 from __future__ import annotations
@@ -33,13 +35,14 @@ from arichds.db.app_settings import (
     CAPTURE_DIR_KEY,
     EXPORT_AUTO_SAVE_ENABLED_KEY,
     EXPORT_BILLING_FILENAME_TMPL_KEY,
-    EXPORT_BILLING_OUTPUT_DIR_KEY,
     EXPORT_CSV_FILENAME_TMPL_KEY,
     EXPORT_ENERGY_FILENAME_TMPL_KEY,
     EXPORT_ENERGY_OUTPUT_DIR_KEY,
     EXPORT_OUTPUT_DIR_KEY,
+    billing_export_dir,
     set_setting,
 )
+from arichds.db.models import Setting
 from arichds.db.session import session_scope
 
 pytestmark = pytest.mark.usefixtures("fake_meter")
@@ -52,7 +55,7 @@ def local_today():
 def set_folders(*, load_profile: Path | None, billing: Path | None = None, energy: Path | None = None) -> None:
     with session_scope() as session:
         set_setting(session, EXPORT_OUTPUT_DIR_KEY, str(load_profile) if load_profile else "")
-        set_setting(session, EXPORT_BILLING_OUTPUT_DIR_KEY, str(billing) if billing else "")
+        set_setting(session, CAPTURE_DIR_KEY, str(billing) if billing else "")
         set_setting(session, EXPORT_ENERGY_OUTPUT_DIR_KEY, str(energy) if energy else "")
         set_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, "true")
         set_setting(session, EXPORT_CSV_FILENAME_TMPL_KEY, "[serial].csv")
@@ -77,52 +80,29 @@ def make_device(admin_client: TestClient) -> int:
     return response.json()["data"]["id"]
 
 
-class TestTheBillingPageSetting:
-    def test_a_fresh_database_answers_empty(self, admin_client: TestClient) -> None:
-        assert admin_client.get("/api/billing/settings").json()["data"]["export_billing_output_dir"] == ""
+class TestTheBillingPageHasOneFolder:
+    """Owner decision ก: `export_billing_output_dir` is gone — the billing file
+    follows `capture_dir`. A body still carrying the old key is accepted and the
+    key is ignored (Pydantic's default), so a stale page cannot break Save."""
 
-    def test_an_admin_round_trips_the_folder_beside_the_capture_folder(
+    def test_the_settings_carry_no_billing_file_folder(self, admin_client: TestClient) -> None:
+        assert "export_billing_output_dir" not in admin_client.get("/api/billing/settings").json()["data"]
+
+    def test_a_stale_body_naming_the_old_key_saves_the_capture_dir_and_nothing_else(
         self, admin_client: TestClient, tmp_path: Path
     ) -> None:
         response = admin_client.put(
-            "/api/billing/settings", json={"capture_dir": "", "export_billing_output_dir": str(tmp_path)}
+            "/api/billing/settings", json={"capture_dir": str(tmp_path), "export_billing_output_dir": "C:/elsewhere"}
         )
 
         assert response.status_code == 200, response.text
-        data = admin_client.get("/api/billing/settings").json()["data"]
-        assert data["export_billing_output_dir"] == str(tmp_path.resolve())
-        assert data["capture_dir"] == ""
+        assert response.json()["data"]["capture_dir"] == str(tmp_path.resolve())
+        with session_scope() as session:
+            assert billing_export_dir(session) == str(tmp_path.resolve())
 
-    def test_a_relative_folder_is_422_and_nothing_is_saved(self, admin_client: TestClient) -> None:
-        response = admin_client.put(
-            "/api/billing/settings", json={"capture_dir": "", "export_billing_output_dir": "rel/dir"}
-        )
-
-        assert response.status_code == 422, response.text
-        assert "export_billing_output_dir" in response.text
-        assert admin_client.get("/api/billing/settings").json()["data"]["export_billing_output_dir"] == ""
-
-    def test_omitting_the_folder_keeps_the_stored_value(self, admin_client: TestClient, tmp_path: Path) -> None:
-        admin_client.put("/api/billing/settings", json={"capture_dir": "", "export_billing_output_dir": str(tmp_path)})
-
-        response = admin_client.put("/api/billing/settings", json={"capture_dir": ""})
-
-        assert response.status_code == 200, response.text
-        assert response.json()["data"]["export_billing_output_dir"] == str(tmp_path.resolve())
-
-    def test_an_empty_string_clears_it(self, admin_client: TestClient, tmp_path: Path) -> None:
-        admin_client.put("/api/billing/settings", json={"capture_dir": "", "export_billing_output_dir": str(tmp_path)})
-
-        response = admin_client.put("/api/billing/settings", json={"capture_dir": "", "export_billing_output_dir": ""})
-
-        assert response.json()["data"]["export_billing_output_dir"] == ""
-
-    def test_a_plain_user_reads_and_is_refused_on_write(self, user_client: TestClient, tmp_path: Path) -> None:
-        assert user_client.get("/api/billing/settings").status_code == 200
-        response = user_client.put(
-            "/api/billing/settings", json={"capture_dir": "", "export_billing_output_dir": str(tmp_path)}
-        )
-        assert response.status_code == 403
+    def test_migration_0023_removed_the_orphan_row(self, admin_client: TestClient) -> None:
+        with session_scope() as session:
+            assert session.get(Setting, "export_billing_output_dir") is None
 
 
 class TestTheEnergyPageSetting:
@@ -160,7 +140,7 @@ class TestTheEnergyPageSetting:
 
 
 class TestTheBillingFileFolder:
-    def test_the_billing_file_lands_in_its_own_folder_not_the_load_profile_one(
+    def test_the_billing_file_lands_in_the_billing_folder_not_the_load_profile_one(
         self, admin_client: TestClient, tmp_path: Path
     ) -> None:
         from arichds.export.billing_csv import export_device_billing
@@ -212,8 +192,8 @@ class TestTheBillingFileFolder:
         response = admin_client.post(f"/api/billing/export?device_id={device_id}")
 
         assert response.status_code == 422, response.text
-        assert "Billing file folder" in response.text
-        assert "export_billing_output_dir" in response.text
+        assert "Billing folder" in response.text
+        assert "capture_dir" in response.text
 
 
 class TestTheEnergyFileFolder:
@@ -283,8 +263,6 @@ class TestTheUploadCycleReadsEachFolder:
         for folder in (lp, bill, energy):
             folder.mkdir()
         set_folders(load_profile=lp, billing=bill, energy=energy)
-        with session_scope() as session:
-            set_setting(session, CAPTURE_DIR_KEY, "")
         make_device(admin_client)
         serial = DEFAULT_FAKE_SERIAL
         (lp / f"{serial}.csv").write_bytes(b"lp\n")
@@ -316,8 +294,6 @@ class TestTheUploadCycleReadsEachFolder:
         lp = tmp_path / "lp"
         lp.mkdir()
         set_folders(load_profile=lp, billing=None, energy=None)
-        with session_scope() as session:
-            set_setting(session, CAPTURE_DIR_KEY, "")
         make_device(admin_client)
         serial = DEFAULT_FAKE_SERIAL
         (lp / f"{serial}-billing.csv").write_text("bill\n")
@@ -326,3 +302,33 @@ class TestTheUploadCycleReadsEachFolder:
         file_upload_cycle(transport=transport)
 
         assert set(transport.puts) == {f"export/{serial}-billing.csv"}
+
+    def test_the_billing_file_in_the_billing_folder_is_sent_once_as_an_export_never_as_a_capture(
+        self,
+        admin_client: TestClient,
+        license_features,  # noqa: F811 — the fixture imported above
+        tmp_path: Path,
+    ) -> None:
+        """The captures' walk must skip the folder's top level: the billing file
+        (and the writer's temp file beside it) live there since decision ก."""
+        from arichds.fileupload.cycle import file_upload_cycle
+
+        license_features(["file_upload_destination"])
+        _configure_sftp()
+        bill = tmp_path / "bill"
+        bill.mkdir()
+        set_folders(load_profile=None, billing=bill)
+        make_device(admin_client)
+        serial = DEFAULT_FAKE_SERIAL
+        (bill / f"{serial}-billing.csv").write_bytes(b"bill\n")
+        (bill / f".{serial}-billing.abc123.tmp").write_bytes(b"half\n")
+        (bill / serial).mkdir()
+        (bill / serial / "2026-09-01.pdf").write_bytes(b"%PDF-fake")
+        transport = InMemoryTransport(manifest=None)
+
+        file_upload_cycle(transport=transport)
+
+        assert set(transport.puts) == {
+            f"export/{serial}-billing.csv",
+            f"captures/{serial}/2026-09-01.pdf",
+        }

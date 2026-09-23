@@ -243,16 +243,22 @@ def _export_candidates(
 
 
 def _capture_candidates(capture_dir: Path) -> list[_Candidate]:
-    """Every file under *capture_dir*, mirrored one-to-one under
-    ``captures/`` (ADR 0025 decision 4). Not filtered by device — ADR 0015's
-    own layout (``<capture_dir>/<serial>/<bill_date>.{pdf,xlsx,png}``)
+    """Every file in a **subfolder** of *capture_dir*, mirrored one-to-one
+    under ``captures/`` (ADR 0025 decision 4). Not filtered by device —
+    ADR 0015's own layout (``<capture_dir>/<serial>/<bill_date>.{pdf,xlsx,png}``)
     already names each file's Meter Serial in its own path, so walking the
-    folder whole reproduces the remote layout with no correlation logic."""
+    subfolders reproduces the remote layout with no correlation logic.
+
+    A file at the folder's **top level** is never a capture: since owner
+    decision ก (2026-09-23) the billing file lives there too — it is an
+    *export* candidate, found by :func:`_export_candidates` against its own
+    template, and must not be sent a second time as ``captures/<name>``
+    (nor its atomic-replace temp file at all)."""
     if not capture_dir.is_dir():
         return []
     candidates: list[_Candidate] = []
     for path in sorted(capture_dir.rglob("*")):
-        if path.is_file():
+        if path.is_file() and path.parent != capture_dir:
             relative = path.relative_to(capture_dir).as_posix()
             candidates.append(_Candidate(relative_path=f"captures/{relative}", local_path=path))
     return candidates

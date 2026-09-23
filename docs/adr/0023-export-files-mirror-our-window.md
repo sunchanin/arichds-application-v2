@@ -95,3 +95,11 @@ date format and the three templates are unchanged; the File Upload Destination (
 each file's own folder against that file's template, and the Upload Manifest's keys stay
 `export/<name>`. The owner placed each folder on the page that owns the file rather than on the
 Export Format page. Spec: `.scratch/export-folders/spec.md`.
+
+**Amended the same day (owner decision ก):** the Billing page has **one** folder. The billing file
+follows `capture_dir` — the captures' folder (ADR 0010) — at its top level, while the captures stay
+one subfolder per meter below it (ADR 0015), so the two never collide; `export_billing_output_dir`
+lived for one build (0.8.2) and migration 0023 removes its row. Empty still means the Load Profile
+CSV's folder, and capture off. The File Upload Destination's capture walk skips the folder's top
+level for the same reason: the billing file is sent once, as `export/<name>`, never again as a
+capture. The Energy file keeps its own folder.

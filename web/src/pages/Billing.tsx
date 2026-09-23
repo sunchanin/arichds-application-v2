@@ -299,7 +299,7 @@ function allMetersColumns(scale: DisplayUnitScale): ColumnsType<AllMetersRow> {
   ];
 }
 
-type CaptureSettingsForm = { capture_dir: string; capture_style: CaptureStyle; export_billing_output_dir: string };
+type CaptureSettingsForm = { capture_dir: string; capture_style: CaptureStyle };
 
 const CAPTURE_STYLE_OPTIONS: { label: string; value: CaptureStyle }[] = [
   { label: "Standard", value: "standard" },
@@ -307,9 +307,10 @@ const CAPTURE_STYLE_OPTIONS: { label: string; value: CaptureStyle }[] = [
 ];
 
 /**
- * The page's folders: `capture_dir` (M6b, issue #22), the billing file's own
- * folder (2026-09-23 — empty means the Load Profile page's Output folder) and
- * the Capture Style (ADR 0028). Editable by an admin only; a `user` sees the values and every
+ * The page's one folder, `capture_dir` (M6b, issue #22) — the captures' folder
+ * and, since 2026-09-23 (owner decision ก), the billing file's too, at its top
+ * level; empty disables capture and sends the billing file back to the Load
+ * Profile page's Output folder — and the Capture Style (ADR 0028). Editable by an admin only; a `user` sees the values and every
  * control is disabled — the same read/change split the API has.
  *
  * Changing the folder while captures already exist confirms first — the
@@ -335,11 +336,7 @@ function CaptureSettingsCard({
       .billingSettings()
       .then((data) => {
         setSettings(data);
-        form.setFieldsValue({
-          capture_dir: data.capture_dir,
-          capture_style: data.capture_style,
-          export_billing_output_dir: data.export_billing_output_dir,
-        });
+        form.setFieldsValue({ capture_dir: data.capture_dir, capture_style: data.capture_style });
       })
       .catch((err: unknown) => surface(err, "Could not load the capture settings."));
     // Loaded once on mount — the form owns edits from then on.
@@ -347,17 +344,13 @@ function CaptureSettingsCard({
   }, []);
 
   const save = useCallback(
-    (captureDir: string, captureStyle: CaptureStyle, billingOutputDir: string) => {
+    (captureDir: string, captureStyle: CaptureStyle) => {
       setSaving(true);
       api
-        .updateBillingSettings(captureDir, captureStyle, billingOutputDir)
+        .updateBillingSettings(captureDir, captureStyle)
         .then((data) => {
           setSettings(data);
-          form.setFieldsValue({
-            capture_dir: data.capture_dir,
-            capture_style: data.capture_style,
-            export_billing_output_dir: data.export_billing_output_dir,
-          });
+          form.setFieldsValue({ capture_dir: data.capture_dir, capture_style: data.capture_style });
           message.success("Capture settings saved.");
         })
         .catch((err: unknown) => surface(err, "Could not save the capture settings."))
@@ -377,32 +370,25 @@ function CaptureSettingsCard({
       // text below must not claim captures already exist — only that some
       // *might*, under whatever folder is currently set.
       modal.confirm({
-        title: "Change the capture folder?",
-        content: `${settings.capture_count} closed billing period(s) exist. Any captures already written under the current folder stay exactly where they are and will no longer be reachable from this page.`,
+        title: "Change the Billing folder?",
+        content: `${settings.capture_count} closed billing period(s) exist. Any captures already written under the current folder stay exactly where they are and will no longer be reachable from this page. The billing file is written into the new folder on the next 15-minute cycle.`,
         okText: "Change folder",
-        onOk: () => save(next, values.capture_style, values.export_billing_output_dir.trim()),
+        onOk: () => save(next, values.capture_style),
       });
       return;
     }
-    save(next, values.capture_style, values.export_billing_output_dir.trim());
+    save(next, values.capture_style);
   };
 
   return (
-    <Card size="small" title="Folders">
+    <Card size="small" title="Billing folder">
       <Form form={form} layout="vertical" onFinish={onFinish} disabled={!editable}>
         <Form.Item
           name="capture_dir"
           label="Folder path"
-          extra="Where billing PDF/xlsx captures are written. Leave empty to disable capture."
+          extra="Where the billing captures (PDF/xlsx/PNG, one subfolder per meter) and the billing file (Save billing file now and the 15-minute rewrite) are written. Leave empty to disable capture; the billing file then uses the Output folder on the Load Profile page."
         >
-          <Input placeholder="e.g. C:\Captures" allowClear />
-        </Form.Item>
-        <Form.Item
-          name="export_billing_output_dir"
-          label="Billing file folder"
-          extra="Where the billing file (Save billing file now and the 15-minute rewrite) is written. Leave empty to use the Output folder on the Load Profile page."
-        >
-          <Input placeholder="e.g. C:\BillingExports" allowClear />
+          <Input placeholder="e.g. C:\\Billing" allowClear />
         </Form.Item>
         <Form.Item
           name="capture_style"

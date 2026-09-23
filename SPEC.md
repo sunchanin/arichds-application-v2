@@ -807,8 +807,9 @@ job จับ lock แบบ `background=True` — ชนแล้ว**ข้า
 >
 > ใช้ **สวิตช์เดียว job เดียว** ร่วมกับ Load Profile CSV (§3.5) แยก template ชื่อไฟล์ · **โฟลเดอร์แยกตามไฟล์
 > ตั้งแต่ 2026-09-23** (ลูกค้าขอ, `.scratch/export-folders/spec.md`): Load Profile CSV ใช้ Output folder
-> บนหน้า Load Profile (`export_output_dir` เดิม), billing file ใช้ **Billing file folder** บนหน้า Billing
-> (`export_billing_output_dir`), Energy file ใช้ **Energy file folder** บนหน้า Energy Summary
+> บนหน้า Load Profile (`export_output_dir` เดิม), billing file ใช้ **Billing folder** บนหน้า Billing — โฟลเดอร์
+> เดียวกับ capture (`capture_dir`, เจ้าของเลือก ก 2026-09-23: ไฟล์อยู่ชั้นบน capture อยู่โฟลเดอร์ย่อยตามมิเตอร์)
+> Energy file ใช้ **Energy file folder** บนหน้า Energy Summary
 > (`export_energy_output_dir`) — ช่องว่าง = ใช้โฟลเดอร์ของ Load Profile ต่อไป เครื่องที่ตั้งไว้แล้วไม่เปลี่ยน;
 > FTP upload หาไฟล์จากโฟลเดอร์ของแต่ละไฟล์ key ใน manifest ไม่เปลี่ยน · **ไม่มี feature key ใหม่** ขี่ `billing`
 

@@ -48,7 +48,7 @@ from arichds.api.deps import (
     require_feature,
 )
 from arichds.api.envelope import ApiResponse
-from arichds.capture.paths import validate_capture_dir_setting, validate_directory_setting
+from arichds.capture.paths import validate_capture_dir_setting
 from arichds.capture.screenshot import BrowserCaptureError
 from arichds.capture.service import (
     capture_target_paths,
@@ -71,8 +71,6 @@ from arichds.db.app_settings import (
     CAPTURE_STYLE_KEY,
     DISPLAY_UNIT_SCALE_DEFAULT,
     DISPLAY_UNIT_SCALE_KEY,
-    EXPORT_BILLING_OUTPUT_DIR_DEFAULT,
-    EXPORT_BILLING_OUTPUT_DIR_KEY,
     CaptureStyle,
     billing_export_dir,
     get_setting,
@@ -717,8 +715,8 @@ def export_billing_now(session: SessionDep, device_id: Annotated[int, Query(ge=1
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                "No folder is set for the billing file — set Billing file folder on this page "
-                "(export_billing_output_dir), or the Load Profile page's Output folder (export_output_dir)."
+                "No folder is set for the billing file — set the Billing folder on this page "
+                "(capture_dir), or the Load Profile page's Output folder (export_output_dir)."
             ),
         )
 
@@ -770,8 +768,10 @@ class BillingSettingsOut(BaseModel):
     """The Billing settings, as the Billing page's admin form renders them.
 
     Attributes:
-        capture_dir: The current value — ``""`` means "not configured"
-            (decision 16, issue #22).
+        capture_dir: The Billing folder — the captures' folder (decision 16,
+            issue #22) and, since owner decision ก (2026-09-23), the billing
+            file's too, at its top level. ``""`` means "not configured":
+            capture off, the billing file back in the Load Profile CSV's folder.
         capture_count: How many **closed** billing rows exist right now — the
             rows a capture could exist for. Drives the frontend's "changing
             this orphans N existing captures" warning; the backend never
@@ -779,15 +779,11 @@ class BillingSettingsOut(BaseModel):
         capture_style: The Capture Style (ADR 0028) — what the next ``.png``
             written on any path looks like; ``standard`` on an install that
             never chose.
-        export_billing_output_dir: The billing file's own folder (spec
-            2026-09-23) — ``""`` means the Load Profile page's Output folder
-            is used, exactly as before the key existed.
     """
 
     capture_dir: str
     capture_count: int
     capture_style: CaptureStyle
-    export_billing_output_dir: str
 
 
 class BillingSettingsIn(BaseModel):
@@ -800,8 +796,6 @@ class BillingSettingsIn(BaseModel):
 
     capture_dir: str
     capture_style: CaptureStyle | None = None
-    #: Omitted keeps the stored folder; ``""`` clears it (back to the fallback).
-    export_billing_output_dir: str | None = None
 
 
 def _billing_settings_out(session: Session, capture_dir: str) -> BillingSettingsOut:
@@ -809,9 +803,6 @@ def _billing_settings_out(session: Session, capture_dir: str) -> BillingSettings
         capture_dir=capture_dir,
         capture_count=_closed_billing_count(session),
         capture_style=read_capture_style(session),
-        export_billing_output_dir=get_setting(
-            session, EXPORT_BILLING_OUTPUT_DIR_KEY, EXPORT_BILLING_OUTPUT_DIR_DEFAULT
-        ),
     )
 
 
@@ -861,29 +852,11 @@ def put_billing_settings(
     else:
         value = ""
 
-    billing_dir_value: str | None = None
-    if body.export_billing_output_dir is not None:
-        if body.export_billing_output_dir.strip():
-            try:
-                billing_dir_value = str(
-                    validate_directory_setting(
-                        body.export_billing_output_dir,
-                        get_settings().capture_allowlist_roots(),
-                        setting_name="export_billing_output_dir",
-                    )
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-        else:
-            billing_dir_value = ""
-
     set_setting(session, CAPTURE_DIR_KEY, value)
     if body.capture_style is not None:
         # Switching style rewrites nothing on disk (ADR 0028) — it governs
         # the next write, so there is nothing to validate or warn about.
         set_setting(session, CAPTURE_STYLE_KEY, body.capture_style)
-    if billing_dir_value is not None:
-        set_setting(session, EXPORT_BILLING_OUTPUT_DIR_KEY, billing_dir_value)
     session.commit()
 
     return ApiResponse.ok(_billing_settings_out(session, value))

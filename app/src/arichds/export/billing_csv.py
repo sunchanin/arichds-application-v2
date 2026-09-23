@@ -137,7 +137,7 @@ def _export_locked(device_id: int, *, require_auto_save: bool) -> BillingExportR
             if not enabled:
                 return BillingExportResult(rows_written=0, path=None)
 
-        output_dir_str = billing_export_dir(session)  # its own folder, else the Load Profile CSV's
+        output_dir_str = billing_export_dir(session)  # the Billing folder, else the Load Profile CSV's
         if not output_dir_str:
             return BillingExportResult(rows_written=0, path=None)
 

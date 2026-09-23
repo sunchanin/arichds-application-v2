@@ -8,6 +8,12 @@ Glossary: CONTEXT.md → *Load Profile CSV*, *Billing Export File*, *Energy Expo
 *File Upload Destination*, *Upload Manifest*. **Owner instruction (2026-09-23): the folder for
 each file is set on that file's own page — not gathered on the Export Format page.**
 
+> **Amended 2026-09-23 (owner decision ก, after 0.8.2 shipped):** the Billing page has **one**
+> folder — the billing file follows `capture_dir`, the captures' folder, at its top level (the
+> captures stay one subfolder per meter below it). `export_billing_output_dir` is removed (migration
+> 0023). Stories 1, 6, 8 and the *Billing file folder* wording below read accordingly; the Energy
+> file's own folder and the Load Profile CSV's are unchanged.
+
 ## Problem Statement
 
 The customer keeps the three export files in three places: the billing file goes to the people

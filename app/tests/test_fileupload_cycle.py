@@ -169,7 +169,7 @@ class _NeverCalledTransport:
         raise AssertionError("the cycle talked to a transport it should never have built")
 
 
-def _write_export_files(export_dir: Path, serial: str) -> dict[str, Path]:
+def _write_export_files(export_dir: Path, serial: str, *, billing_dir: Path | None = None) -> dict[str, Path]:
     """The three export files a device with *serial* would have on disk,
     named through the **real** production naming function
     (``arichds.export.format.render_filename``) with the product's own
@@ -177,8 +177,14 @@ def _write_export_files(export_dir: Path, serial: str) -> dict[str, Path]:
     (reviewer finding, ticket 02 round 1, problem 1): the whole point of the
     fix is that the cycle recognises whatever `render_filename` actually
     produces, so the fixture must go through the same function a mutation
-    to it can reach."""
+    to it can reach.
+
+    *billing_dir* is where the billing file goes when the test also sets a
+    capture folder: since owner decision ก (2026-09-23) the billing file follows
+    `capture_dir` whenever that is set (`billing_export_dir`)."""
     export_dir.mkdir(parents=True, exist_ok=True)
+    if billing_dir is not None:
+        billing_dir.mkdir(parents=True, exist_ok=True)
     files: dict[str, Path] = {}
     for template in (
         EXPORT_CSV_FILENAME_TMPL_DEFAULT,
@@ -187,7 +193,10 @@ def _write_export_files(export_dir: Path, serial: str) -> dict[str, Path]:
     ):
         filename = render_filename(template, serial)
         relative = f"export/{filename}"
-        path = export_dir / filename
+        folder = (
+            billing_dir if billing_dir is not None and template == EXPORT_BILLING_FILENAME_TMPL_DEFAULT else export_dir
+        )
+        path = folder / filename
         path.write_text(f"content for {relative}", encoding="utf-8")
         files[relative] = path
     return files
@@ -306,7 +315,7 @@ class TestFirstCycleSendsEverything:
         capture_dir = tmp_path / "captures"
         _configure_dirs(export_dir=export_dir, capture_dir=capture_dir)
         make_device(serial="SN0001")
-        export_files = _write_export_files(export_dir, "SN0001")
+        export_files = _write_export_files(export_dir, "SN0001", billing_dir=capture_dir)
         capture_rel = _write_capture_file(capture_dir, "SN0001")
         transport = InMemoryTransport(manifest=None)
 
@@ -409,7 +418,7 @@ class TestSecondCycleWithNoChanges:
         capture_dir = tmp_path / "captures"
         _configure_dirs(export_dir=export_dir, capture_dir=capture_dir)
         make_device(serial="SN0001")
-        _write_export_files(export_dir, "SN0001")
+        _write_export_files(export_dir, "SN0001", billing_dir=capture_dir)
         _write_capture_file(capture_dir, "SN0001")
 
         first = InMemoryTransport(manifest=None)
