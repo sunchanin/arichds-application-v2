@@ -11,17 +11,18 @@ import "./classic-capture.css";
  * own left edge at 5). Bitmaps, not redrawn: they are the one thing the
  * previous program's look cannot be reproduced from measurements alone.
  */
-const TOOLBAR_ICONS: { file: string; left: number }[] = [
-  { file: "icon-01.png", left: 9 },
-  { file: "icon-02.png", left: 59 },
-  { file: "icon-03.png", left: 109 },
-  { file: "icon-04.png", left: 163 },
-  { file: "icon-05.png", left: 210 },
-  { file: "icon-06.png", left: 265 },
-  { file: "icon-07.png", left: 309 },
-  { file: "icon-08.png", left: 359 },
-  { file: "icon-09.png", left: 411 },
-  { file: "icon-10.png", left: 462 },
+const TOOLBAR_ICONS: { file: string; left: number; top: number }[] = [
+  // The strip shows the first button pressed, with its own frame; only its glyph is cut (ref rows 12..41).
+  { file: "icon-01.png", left: 10, top: 5 },
+  { file: "icon-02.png", left: 59, top: 1 },
+  { file: "icon-03.png", left: 109, top: 1 },
+  { file: "icon-04.png", left: 163, top: 1 },
+  { file: "icon-05.png", left: 210, top: 1 },
+  { file: "icon-06.png", left: 265, top: 1 },
+  { file: "icon-07.png", left: 309, top: 1 },
+  { file: "icon-08.png", left: 359, top: 1 },
+  { file: "icon-09.png", left: 411, top: 1 },
+  { file: "icon-10.png", left: 462, top: 1 },
 ];
 
 /** Absolute text placed by its measured position inside its group. */
@@ -73,7 +74,7 @@ export function ClassicCapture({ request }: { request: CaptureRequest }) {
       <div className="cc-toolbar">
         <div className="cc-toolbar-checked" />
         {TOOLBAR_ICONS.map((icon) => (
-          <img key={icon.file} className="cc-toolbar-icon" style={{ left: icon.left }} src={`/images/classic/${icon.file}`} alt="" />
+          <img key={icon.file} className="cc-toolbar-icon" style={{ left: icon.left, top: icon.top }} src={`/images/classic/${icon.file}`} alt="" />
         ))}
       </div>
 
