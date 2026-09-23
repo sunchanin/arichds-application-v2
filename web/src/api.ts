@@ -1215,15 +1215,23 @@ export interface EnergyExportResult {
   path: string | null;
 }
 
-export interface BillingExportResult {
-  /**
-   * Closed periods the file now holds — every call rewrites the whole file
-   * from every closed period (ADR 0023). Zero means nothing to write, a
-   * hold, or a failure.
-   */
-  rows_written: number;
-  /** The resolved target file path, or `null` when nothing was written. */
-  path: string | null;
+/** The Capture Sweep in flight, or the last one since start (capture-sweep
+ * ticket 04) — `GET /api/billing/save-all/status`; `null` before the first
+ * Save all since the service started. */
+export interface CaptureSweepStatus {
+  running: boolean;
+  started_at: string;
+  finished_at: string | null;
+  billing_files_written: number;
+  captures_written: number;
+  captures_left: number;
+  captures_failed: number;
+}
+
+/** What `POST /api/billing/save-all` answers. */
+export interface SaveAllResult {
+  started: boolean;
+  status: CaptureSweepStatus;
 }
 
 /** How many meters this machine has and may have, from `GET /api/devices/quota`. */
@@ -1711,14 +1719,15 @@ export const api = {
     request<BillingReadNowResult>(`/api/billing/read?device_id=${deviceId}`, { method: "POST" }),
 
   /**
-   * "Save billing file now" — rewrite one device's whole billing file from
-   * every closed period it has (ADR 0023), ignoring `export_auto_save_enabled`
-   * the way "Save CSV now" does. Any authenticated role. `422` when
-   * `export_output_dir` is not configured, which is what makes this the check
-   * an installer uses to prove the folder is right without waiting a cycle.
+   * **Save all** (capture-sweep ticket 04) — replaces "Save billing file now":
+   * every device's billing file rewritten and a Capture Sweep over every
+   * device, in slices between the scheduler's jobs. Admin only; answers at
+   * once. `422` while the Billing folder is empty, `409` while one is running.
    */
-  exportBillingNow: (deviceId: number) =>
-    request<BillingExportResult>(`/api/billing/export?device_id=${deviceId}`, { method: "POST" }),
+  billingSaveAll: () => request<SaveAllResult>("/api/billing/save-all", { method: "POST" }),
+
+  /** The sweep's progress — any authenticated role; `null` before the first Save all since start. */
+  billingSaveAllStatus: () => request<CaptureSweepStatus | null>("/api/billing/save-all/status"),
 
   /**
    * Save the Energy Summary for one device and range to a file (M13, issue 02).

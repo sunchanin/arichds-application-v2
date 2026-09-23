@@ -316,6 +316,13 @@ FILEUPLOAD_INTERVAL_SEC: Final[int] = 900
 # server never holds the scheduler thread past this many seconds.
 FILEUPLOAD_BUDGET_SEC: Final[float] = 60.0
 JOB_FILE_UPLOAD: Final[str] = "file_upload"
+
+# How long one **Capture Sweep** slice may run before it re-queues itself on
+# the one-shot lane (capture-sweep ticket 04, grill 2026-09-23 Q5): the
+# capture that crosses this line completes (a PNG can take up to
+# CAPTURE_BUDGET_SECONDS), then the regular jobs get the thread. A constant,
+# not a setting — the owner's one number.
+CAPTURE_SWEEP_SLICE_SEC: Final[float] = 60.0
 # HTTPS transport timeouts (ticket 03) — the same connect/read split
 # CENTRAL_PUSH_CONNECT_TIMEOUT_SEC/CENTRAL_PUSH_READ_TIMEOUT_SEC establish,
 # deliberately its own constants rather than an alias: retuning the push's

@@ -814,6 +814,12 @@ job จับ lock แบบ `background=True` — ชนแล้ว**ข้า
 > (`export_energy_output_dir`) — **ช่องว่าง = ไม่เขียนไฟล์นั้น** (capture-sweep ticket 02, 2026-09-23: ไม่มี
 > fallback ไปโฟลเดอร์ของไฟล์อื่น ปุ่ม Save ของหน้านั้นตอบ 422 ว่าโฟลเดอร์ว่าง);
 > FTP upload หาไฟล์จากโฟลเดอร์ของแต่ละไฟล์ key ใน manifest ไม่เปลี่ยน · **ไม่มี feature key ใหม่** ขี่ `billing`
+>
+> **Save all** (capture-sweep ticket 04, 2026-09-23) แทนที่ปุ่ม *Save billing file now*: admin กดครั้งเดียว →
+> เขียน billing file ของทุกอุปกรณ์ + **Capture Sweep** (CONTEXT.md — เขียน capture ทุกงวดปิดที่ยังไม่มี PDF ใน
+> Billing Folder ปัจจุบัน ใหม่สุดก่อน ไม่ทับไฟล์ที่มี) ทำเป็นช่วงละ 60 วิบน one-shot lane ให้ job ประจำแทรกได้;
+> ตอบทันที สถานะในหน่วยความจำ (`GET /api/billing/save-all/status`) ทุก role อ่านได้; ไม่มี sweep อัตโนมัติ —
+> ย้ายโฟลเดอร์แล้วต้องกด (เจ้าของเลือก)
 
 > ⚠️ **ชุดคอลัมน์ขยาย 40 → 60 ที่ M4c (grill 2026-08-09) — เกณฑ์ของ §3.6 เองบังคับ**
 >

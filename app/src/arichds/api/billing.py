@@ -43,6 +43,7 @@ from arichds.api.deps import (
     AdminDep,
     FeatureDisabledError,
     LicenseServiceDep,
+    SchedulerDep,
     SessionDep,
     get_current_user,
     require_feature,
@@ -58,6 +59,7 @@ from arichds.capture.service import (
     write_png_capture,
     write_xlsx_capture,
 )
+from arichds.capture.sweep import SweepStatus, start_capture_sweep, sweep_status
 from arichds.config import get_settings
 from arichds.constants import (
     BILLING_BEHIND_DAYS,
@@ -80,7 +82,6 @@ from arichds.db.app_settings import (
 )
 from arichds.db.billing_query import latest_closed_per_device
 from arichds.db.models import BillingReading, Device
-from arichds.export.billing_csv import export_device_billing
 from arichds.licensing.features import feature_enabled
 
 router = APIRouter(
@@ -696,61 +697,80 @@ def trigger_billing_read(
     )
 
 
-class BillingExportOut(BaseModel):
-    """What "Save billing file now" did (M13, issue 01).
+class CaptureSweepStatusOut(BaseModel):
+    """The Capture Sweep in flight, or the last one since start — what the
+    Billing page's progress line shows every role (capture-sweep ticket 04).
+    Mirrors :class:`arichds.capture.sweep.SweepStatus` field for field."""
 
-    Mirrors ``api/load_profile.py``'s ``LoadProfileExportResult`` field for
-    field — two export files an operator drives the same way should not report
-    what they did in two different shapes.
+    running: bool
+    started_at: datetime
+    finished_at: datetime | None
+    billing_files_written: int
+    captures_written: int
+    captures_left: int
+    captures_failed: int
 
-    Attributes:
-        rows_written: How many closed periods the file now holds — the whole
-            file is rewritten from every closed period on every call (ADR
-            0023). Zero means there is nothing to write, the call held (no
-            output folder, no meter serial), or the write failed.
-        path: The file written, or ``None`` when nothing was written.
+
+class SaveAllOut(BaseModel):
+    """What ``POST /api/billing/save-all`` answers: the sweep was queued, and
+    the status as it stood the moment it was."""
+
+    started: bool
+    status: CaptureSweepStatusOut
+
+
+def _sweep_status_out(status: SweepStatus | None) -> CaptureSweepStatusOut | None:
+    if status is None:
+        return None
+    return CaptureSweepStatusOut(
+        running=status.running,
+        started_at=status.started_at,
+        finished_at=status.finished_at,
+        billing_files_written=status.billing_files_written,
+        captures_written=status.captures_written,
+        captures_left=status.captures_left,
+        captures_failed=status.captures_failed,
+    )
+
+
+@router.post("/save-all")
+def save_all(session: SessionDep, scheduler: SchedulerDep, _admin: AdminDep) -> ApiResponse[SaveAllOut]:
+    """**Save all** (capture-sweep ticket 04) — replaces *Save billing file now*:
+    rewrite every device's Billing Export File and run a **Capture Sweep**
+    (CONTEXT.md) over every device, in slices on the Scheduler's one-shot lane.
+    Admin only: it writes files for the whole machine and holds Edge for
+    minutes, the same class of act as setting the folder.
+
+    Answers at once. 422 while the Billing Folder is empty — the sweep has no
+    folder to fill and the billing file is written only there (ticket 02) —
+    and 409 while a sweep is already in flight (grill Q7): the page's button
+    is loading whenever the status says running, so a second press is a race,
+    not an intent. Progress is read from ``GET .../save-all/status``.
     """
-
-    rows_written: int
-    path: str | None
-
-
-@router.post("/export")
-def export_billing_now(session: SessionDep, device_id: Annotated[int, Query(ge=1)]) -> ApiResponse[BillingExportOut]:
-    """ "Save billing file now" — rewrite *device_id*'s whole billing file from
-    every closed period it has (ADR 0023).
-
-    Any authenticated role, the same as every other read/export surface on this
-    router: exporting stored device data is not an admin act.
-
-    **Ignores ``export_auto_save_enabled``**, exactly as "Save CSV now" does —
-    an operator pressing this has already expressed intent, and making them
-    flip a *background* switch first would be a trap. It runs the same
-    function under the same per-device lock the scheduler job uses, so the two
-    never race and rewrite the file at once — there is no watermark for them
-    to share any more; the whole file is what either writer produces.
-
-    **``export_output_dir`` is still required.** The scheduler job no-ops
-    quietly when it is empty; this is a person pressing a button, so an
-    unconfigured destination is a 422 with an actionable sentence rather than a
-    silent "0 rows written" 200. This is also the check that makes the button
-    worth having: it is how an installer proves the folder is right without
-    waiting a cycle to find out.
-    """
-    _require_device_exists(session, device_id)
     if not billing_export_dir(session):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "Billing folder is empty — set it on this page (capture_dir). "
-                "The billing file is written only there, never to another file's folder."
+                "Save all writes the billing files and the captures only there."
             ),
         )
+    if start_capture_sweep(scheduler) == "already_running":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Save all is already running — wait for it to finish."
+        )
+    current = _sweep_status_out(sweep_status())
+    assert current is not None  # just started
+    return ApiResponse.ok(SaveAllOut(started=True, status=current))
 
-    result = export_device_billing(device_id, require_auto_save=False)
-    return ApiResponse.ok(
-        BillingExportOut(rows_written=result.rows_written, path=str(result.path) if result.path else None)
-    )
+
+@router.get("/save-all/status")
+def save_all_status() -> ApiResponse[CaptureSweepStatusOut | None]:
+    """The Capture Sweep in flight or the last one since start — ``None``
+    before the first Save all since the service started (ADR 0008: nothing
+    persisted). Any authenticated role: a ``user`` sees the progress an admin
+    started, without the button."""
+    return ApiResponse.ok(_sweep_status_out(sweep_status()))
 
 
 #: Every ``billing_readings`` column that is not part of a row's identity —

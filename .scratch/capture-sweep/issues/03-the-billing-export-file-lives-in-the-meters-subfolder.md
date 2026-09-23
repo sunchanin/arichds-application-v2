@@ -35,7 +35,6 @@ file
 `<Billing Folder>/<serial>/<name>`; `_export_candidates` lists a per-meter subfolder for the billing pair,
 `_capture_candidates(billing_tmpl=)` skips the top level, temp files and the billing file in a meter's
 subfolder. Tests: stale top-level file untouched; upload puts exactly `{export/<name>: b"bill
-",
-captures/<serial>/<pdf>}` with a stale top-level copy and a temp file present. Mutations: dropping the
+", captures/<serial>/<pdf>}` with a stale top-level copy and a temp file present. Mutations: dropping the
 capture-walk exclusion fails 1, listing the top level instead of the subfolder fails 2. Scoped suites 156
 green; `pnpm lint && pnpm build` green; full gate at the batch's end (ticket 05).

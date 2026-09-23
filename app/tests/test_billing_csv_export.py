@@ -505,48 +505,54 @@ class TestAChangedHeadIsReflectedOnTheNextCycle:
         assert len(written) == 1
 
 
-class TestSaveBillingFileNowThroughTheApi:
-    """The button an installer presses to prove the output folder is right,
-    rather than waiting a whole cycle to find out — which is the failure issue
-    017 shipped to a customer."""
+class TestSaveAllThroughTheApi:
+    """*Save billing file now* became **Save all** (capture-sweep ticket 04):
+    admin-only, the whole machine, the billing files first. Its own suite is
+    `test_capture_sweep.py`; this pins only what this file used to pin about
+    the button — the folder check, the auto-save switch, who may press it."""
 
-    def test_an_unconfigured_output_dir_is_a_422_with_an_actionable_sentence(
+    @pytest.fixture(autouse=True)
+    def _fresh_sweep(self):
+        from arichds.capture.sweep import reset_sweep_status
+
+        reset_sweep_status()
+        yield
+        reset_sweep_status()
+
+    def test_an_empty_billing_folder_is_a_422_with_an_actionable_sentence(
         self, migrated_db: Settings, admin_client
     ) -> None:
         """The scheduler job no-ops quietly here. A person pressing a button
-        must not get a silent "0 rows written" 200 instead of being told the
-        destination was never set."""
+        must not get a silent 200 instead of being told the folder was never set."""
         device_id = make_device()
         seed(device_id, JAN, import_active_kwh_total=100.0)
 
-        response = admin_client.post(f"/api/billing/export?device_id={device_id}")
+        response = admin_client.post("/api/billing/save-all")
 
         assert response.status_code == 422, response.text
         assert "capture_dir" in response.text  # this page's own folder — never the Load Profile one (ticket 02)
 
     def test_it_ignores_the_auto_save_switch(self, migrated_db: Settings, admin_client, tmp_path: Path) -> None:
+        from test_capture_sweep import RecordingScheduler
+
         device_id = make_device()
         configure(output_dir=tmp_path, auto_save_enabled=False)
         seed(device_id, JAN, import_active_kwh_total=100.0)
+        scheduler = RecordingScheduler()
+        admin_client.app.state.scheduler = scheduler
 
-        response = admin_client.post(f"/api/billing/export?device_id={device_id}")
+        response = admin_client.post("/api/billing/save-all")
+        scheduler.drain()
 
         assert response.status_code == 200, response.text
-        assert response.json()["data"]["rows_written"] == 1
+        assert len(data_rows(tmp_path / "SN-1" / "SN-1-billing.csv")) == 1
 
-    def test_a_plain_user_may_press_it(self, migrated_db: Settings, user_client, tmp_path: Path) -> None:
-        """Exporting stored device data is not an admin act — the same rule
-        "Save CSV now" follows."""
-        device_id = make_device()
-        configure(output_dir=tmp_path)
-        seed(device_id, JAN, import_active_kwh_total=100.0)
-
-        assert user_client.post(f"/api/billing/export?device_id={device_id}").status_code == 200
-
-    def test_an_unknown_device_is_404(self, migrated_db: Settings, admin_client, tmp_path: Path) -> None:
+    def test_a_plain_user_may_not_press_it(self, migrated_db: Settings, user_client, tmp_path: Path) -> None:
+        """Unlike the per-device button it replaces: Save all writes files for
+        the whole machine and holds Edge for minutes (grill Q3)."""
         configure(output_dir=tmp_path)
 
-        assert admin_client.post("/api/billing/export?device_id=999").status_code == 404
+        assert user_client.post("/api/billing/save-all").status_code == 403
 
     def test_an_anonymous_caller_is_refused(self, migrated_db: Settings, anon_client) -> None:
-        assert anon_client.post("/api/billing/export?device_id=1").status_code == 401
+        assert anon_client.post("/api/billing/save-all").status_code == 401

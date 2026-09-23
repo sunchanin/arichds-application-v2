@@ -23,12 +23,12 @@ in as the sweep goes.
 **Blocked by:** 01 (the `_2.png` of a pair must render, or the sweep fails ninety seconds per pair
 every run), 03 (the billing file's path and the 422 wording it shares)
 
-**Status:** ready-for-agent
+**Status:** done (2026-09-23)
 
-- [ ] The per-device export endpoint is replaced by the admin-only Save all endpoint and its status
+- [x] The per-device export endpoint is replaced by the admin-only Save all endpoint and its status
       endpoint (any authenticated role reads status); the page's button reads **Save all**, is
       rendered for an admin only, and the progress line is visible to a `user`
-- [ ] Tests through the endpoint and the slice function with the fake meter and the screenshot
+- [x] Tests through the endpoint and the slice function with the fake meter and the screenshot
       fake trigger: two devices with N closed periods and an empty folder end with N PDFs (and the
       xlsx/PNG the licence allows) after the slices run; a pre-existing PDF keeps its bytes and its
       period is not counted written; `captured_at` is stamped only for written periods; writes
@@ -36,10 +36,22 @@ every run), 03 (the billing file's path and the 422 wording it shares)
       press while running; a period made unwritable is counted `failed` and the rest are written;
       with the budget constant shrunk a slice stops and re-queues, and the regular jobs' hook runs
       between slices; status is `None` after a scheduler restart
-- [ ] Mutation checks recorded in the report: dropping the existence check rewrites or raises on a
+- [x] Mutation checks recorded in the report: dropping the existence check rewrites or raises on a
       pre-existing file; reversing the order; dropping the re-queue leaves `captures_left` non-zero
-- [ ] The sweep's PNG writes go through the same capture lock as a hand-pressed download
-- [ ] CONTEXT.md's *Save all* / *Capture Sweep* entries hold; CLAUDE.md's 0010/0015/0028 digests
+- [x] The sweep's PNG writes go through the same capture lock as a hand-pressed download
+- [x] CONTEXT.md's *Save all* / *Capture Sweep* entries hold; CLAUDE.md's 0010/0015/0028 digests
       mention Save all and the sweep in one sentence each
-- [ ] Gate: `ruff format --check`, `ruff check`, `pytest -n auto` (app), `pnpm lint && pnpm build`
+- [x] Gate: `ruff format --check`, `ruff check`, `pytest -n auto` (app), `pnpm lint && pnpm build`
       (web); the real-Edge integration test handed to the owner for an administrator shell
+
+**Evidence:** `capture/sweep.py` (`start_capture_sweep`, `run_sweep_slice`, `SweepStatus`, in-memory slot);
+`POST /api/billing/save-all` (AdminDep, 422 empty folder, 409 running) + `GET .../save-all/status`;
+`CAPTURE_SWEEP_SLICE_SEC = 60`; the per-device export endpoint is gone. `test_capture_sweep.py` — 15 tests
+through the endpoint pair and the slice function with `RecordingScheduler` + the PNG stub: all formats
+written, existing PDF kept and not counted (not even as failed), newest first per device, Paused swept,
+licence without captures = billing files only, folder move fills the new folder, failure counted and the
+rest written, budget-zero slices write one each and re-queue (left 3→0, billing files once), status None
+after reset, 422/409/403/401, old endpoint 404/405. Mutations: dropping the existence check, reversing the
+order, dropping the re-queue — each fails its test. Page: Save all button (admin), progress line (every
+role), 2 s polling while running, table reload on finish. `pnpm lint && pnpm build` green; full gate at
+ticket 05. Real-Edge run: owner, admin shell (`ARICHDS_TEST_EDGE=1`).

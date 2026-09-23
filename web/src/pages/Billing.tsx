@@ -21,7 +21,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import type { TabsProps } from "antd/es/tabs";
 import dayjs, { type Dayjs } from "dayjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiRequestError,
@@ -34,6 +34,7 @@ import {
   type BillingPage as BillingPageData,
   type BillingRow,
   type BillingSettings,
+  type CaptureSweepStatus,
   type BillingStatus,
   type CaptureStyle,
   type Device,
@@ -535,30 +536,53 @@ export function Billing({ role }: { role: "admin" | "user" }) {
       .finally(() => setImageDownloading(false));
   }, [deviceId, message, surface]);
 
-  // "Save billing file now" (M13, issue 01) — the same shape "Save CSV now"
-  // has on the Load Profile page, and for the same reason it is worth having:
-  // it is how an installer proves the output folder is right without waiting
-  // a whole cycle to find out. An unconfigured folder comes back as a 422 with
-  // an actionable sentence, which `surface` renders.
-  const [exporting, setExporting] = useState(false);
+  // "Save all" (capture-sweep ticket 04) — replaces "Save billing file now":
+  // every device's billing file rewritten and a Capture Sweep (CONTEXT.md)
+  // over every device, in slices between the scheduler's jobs. The request
+  // answers at once; this page polls the status while it runs, and every
+  // role sees the progress line — only an admin has the button. When a
+  // sweep finishes the table reloads so the Captured column fills in.
+  const [sweep, setSweep] = useState<CaptureSweepStatus | null>(null);
+  const [startingSweep, setStartingSweep] = useState(false);
+  const sweepRunning = sweep?.running ?? false;
 
-  const onSaveFile = useCallback(() => {
-    if (deviceId === undefined) return;
-    setExporting(true);
+  const refreshSweep = useCallback(
+    () =>
+      api
+        .billingSaveAllStatus()
+        .then(setSweep)
+        .catch(() => undefined),
+    [],
+  );
+
+  useEffect(() => {
+    if (captureRequest) return;
+    void refreshSweep();
+  }, [refreshSweep]);
+
+  useEffect(() => {
+    if (!sweepRunning) return;
+    const timer = window.setInterval(() => void refreshSweep(), 2000);
+    return () => window.clearInterval(timer);
+  }, [sweepRunning, refreshSweep]);
+
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !sweepRunning) setRefreshTick((tick) => tick + 1);
+    wasRunning.current = sweepRunning;
+  }, [sweepRunning]);
+
+  const onSaveAll = useCallback(() => {
+    setStartingSweep(true);
     api
-      .exportBillingNow(deviceId)
+      .billingSaveAll()
       .then((result) => {
-        if (result.rows_written === 0) {
-          message.info("No new billing periods to export.");
-          return;
-        }
-        message.success(
-          `Exported ${result.rows_written} period(s) to ${result.path ?? "the billing file"}.`,
-        );
+        setSweep(result.status);
+        message.success("Save all started — the billing files first, then every missing capture.");
       })
-      .catch((err: unknown) => surface(err, "Could not save the billing file now."))
-      .finally(() => setExporting(false));
-  }, [deviceId, message, surface]);
+      .catch((err: unknown) => surface(err, "Could not start Save all."))
+      .finally(() => setStartingSweep(false));
+  }, [message, surface]);
 
   // Read now (issue #44, D11) — one whole-buffer round trip (ADR 0009), one
   // toast, one refresh. `refreshTick` is the minimal trigger the fetch
@@ -840,20 +864,21 @@ export function Billing({ role }: { role: "admin" | "user" }) {
             {/* Hidden in capture mode (D13, issue #44) — a button offering to
                 talk to a meter has no place in a headless screenshot a human
                 carries to a customer (ADR 0015/0017). */}
-            {captureRequest ? null : (
-              <Tooltip
-                title={
-                  deviceId === undefined
-                    ? "Choose one device first."
-                    : "Rewrites this meter's billing file in the export folder with every closed period now."
-                }
-              >
+            {captureRequest || role !== "admin" ? null : (
+              <Tooltip title="Rewrites every meter's billing file in the Billing folder and writes every capture that folder is missing — press after an install or a folder move. Runs in the background; the line below shows progress.">
                 <span>
-                  <Button onClick={onSaveFile} loading={exporting} disabled={deviceId === undefined}>
-                    Save billing file now
+                  <Button onClick={onSaveAll} loading={startingSweep || sweepRunning}>
+                    Save all
                   </Button>
                 </span>
               </Tooltip>
+            )}
+            {captureRequest || !sweep ? null : (
+              <Text type="secondary">
+                Save all {sweep.running ? "running" : `finished ${stamp(sweep.finished_at ?? sweep.started_at)}`}:{" "}
+                {sweep.billing_files_written} billing file(s), {sweep.captures_written} capture(s) written,{" "}
+                {sweep.captures_left} left, {sweep.captures_failed} failed
+              </Text>
             )}
             {captureRequest ? null : (
               <Tooltip

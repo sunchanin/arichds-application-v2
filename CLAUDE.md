@@ -50,7 +50,12 @@ MySQL, and ~30 tables.
   a capture is a document a human carries to a customer, a backup is not; **do not "make these
   consistent"**; **fully implemented**: the `settings` table, `capture_dir` API/form, path
   validation, the two renderers off one shared section module, the hardened write and the
-  render-on-miss download all landed with issue #22/M6b) ·
+  render-on-miss download all landed with issue #22/M6b; **Save all / the Capture Sweep since
+  capture-sweep ticket 04, 2026-09-23**: `capture/sweep.py` writes every closed period's missing
+  Capture into the current Billing Folder — the folder is the state, nothing persisted, never over
+  an existing file — in 60 s slices on the one-shot lane, admin-only `POST /api/billing/save-all` +
+  `GET .../save-all/status`, replacing the per-device *Save billing file now*; a moved folder is
+  filled by pressing it, never automatically — the owner's choice) ·
   0011 (a model's capabilities come from its **driver**, not the catalog — **reverses** the
   "catalog copied from v1 verbatim, locked" rule for the three capability booleans only, because
   v1's flags claimed 9/6/6 models against drivers that implement 3/1/1; keys, brands, order and

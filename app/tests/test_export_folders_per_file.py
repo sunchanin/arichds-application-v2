@@ -192,27 +192,36 @@ class TestTheBillingFileFolder:
         assert result.path is None and result.rows_written == 0
         assert not list(tmp_path.rglob("*billing*"))
 
-    def test_save_billing_file_now_needs_no_load_profile_folder_when_its_own_is_set(
+    def test_save_all_needs_no_load_profile_folder_when_the_billing_folder_is_set(
         self, admin_client: TestClient, tmp_path: Path
     ) -> None:
+        from test_capture_sweep import RecordingScheduler
+
+        from arichds.capture.sweep import reset_sweep_status
+
+        reset_sweep_status()
         bill = tmp_path / "bill"
         set_folders(load_profile=None, billing=bill)
         device_id = make_device(admin_client)
         seed_billing(device_id, JAN, import_active_kwh_total=100.0)
+        scheduler = RecordingScheduler()
+        admin_client.app.state.scheduler = scheduler
 
-        response = admin_client.post(f"/api/billing/export?device_id={device_id}")
+        response = admin_client.post("/api/billing/save-all")
+        scheduler.drain()
+        reset_sweep_status()
 
         assert response.status_code == 200, response.text
-        assert Path(response.json()["data"]["path"]).parent == (bill / DEFAULT_FAKE_SERIAL).resolve()
+        assert (bill / DEFAULT_FAKE_SERIAL / f"{DEFAULT_FAKE_SERIAL}-billing.csv").exists()
 
-    def test_save_billing_file_now_is_422_naming_this_pages_folder_even_with_the_load_profile_folder_set(
+    def test_save_all_is_422_naming_this_pages_folder_even_with_the_load_profile_folder_set(
         self, admin_client: TestClient, tmp_path: Path
     ) -> None:
         set_folders(load_profile=tmp_path / "lp", billing=None)
         device_id = make_device(admin_client)
         seed_billing(device_id, JAN, import_active_kwh_total=100.0)
 
-        response = admin_client.post(f"/api/billing/export?device_id={device_id}")
+        response = admin_client.post("/api/billing/save-all")
 
         assert response.status_code == 422, response.text
         assert "Billing folder is empty" in response.text
