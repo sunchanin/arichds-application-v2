@@ -21,12 +21,14 @@ Two different uses, deliberately not conflated (decision 17, issue #22):
 from __future__ import annotations
 
 import os
-import re
 import stat
 from pathlib import Path
 
-#: Characters that are unsafe in a path component used as a directory name.
-_SERIAL_UNSAFE_RE = re.compile(r"[/\\\x00]")
+# `sanitize_meter_serial` lives in `arichds.filename_tokens` since capture-sweep
+# ticket 03 — the package top, because `fileupload/cycle.py` names a meter's
+# subfolder with it and may not import from `capture/`. Re-exported here so
+# every existing caller keeps its import.
+from arichds.filename_tokens import sanitize_meter_serial as sanitize_meter_serial
 
 
 def validate_directory_setting(path_str: str, allowlist: list[Path], *, setting_name: str = "capture_dir") -> Path:
@@ -113,31 +115,6 @@ def validate_capture_dir_setting(path_str: str, allowlist: list[Path]) -> Path:
         ValueError: On any rejection, with an operator-actionable sentence.
     """
     return validate_directory_setting(path_str, allowlist, setting_name="capture_dir")
-
-
-def sanitize_meter_serial(serial: str) -> str:
-    """Validate ``meter_serial`` for use as a directory path component.
-
-    Rejects an empty string, ``/`` or ``\\``, a ``..`` substring, and a NUL
-    byte — the same rules as v1 (``billing/paths.py:98-125``).
-
-    Args:
-        serial: Raw ``meter_serial`` from the ``BillingReading`` row.
-
-    Returns:
-        The serial string unchanged if valid.
-
-    Raises:
-        ValueError: On any rejection — the caller decides whether to skip the
-            capture or 404/422 a download.
-    """
-    if not serial:
-        raise ValueError("meter_serial must not be empty")
-    if ".." in serial:
-        raise ValueError(f"meter_serial contains '..': {serial!r}")
-    if _SERIAL_UNSAFE_RE.search(serial):
-        raise ValueError(f"meter_serial contains unsafe characters: {serial!r}")
-    return serial
 
 
 def ensure_within_allowlist(final_path: Path, allowlist: list[Path]) -> None:

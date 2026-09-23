@@ -88,4 +88,37 @@ def export_filename_pattern(template: str, meter_token: str) -> re.Pattern[str]:
     return re.compile(f"^{pattern}$")
 
 
-__all__ = ["export_filename_pattern", "render_filename_tokens"]
+#: The characters a Meter Serial may not carry as a path component — the
+#: same rule as v1 (`billing/paths.py:98-125`).
+_SERIAL_UNSAFE_RE = re.compile(r"[/\\\x00]")
+
+
+def sanitize_meter_serial(serial: str) -> str:
+    """Validate ``meter_serial`` for use as a directory path component.
+
+    Rejects an empty string, ``/`` or ``\\``, a ``..`` substring, and a NUL
+    byte — the same rules as v1 (``billing/paths.py:98-125``). Lives here, at
+    the package top, since capture-sweep ticket 03: the capture subfolder, the
+    billing file's subfolder and the upload cycle's listing all name a meter's
+    folder with it, and ``fileupload/`` may not import from ``capture/``.
+
+    Args:
+        serial: Raw ``meter_serial`` from the ``BillingReading`` row.
+
+    Returns:
+        The serial string unchanged if valid.
+
+    Raises:
+        ValueError: On any rejection — the caller decides whether to skip the
+            capture or 404/422 a download.
+    """
+    if not serial:
+        raise ValueError("meter_serial must not be empty")
+    if ".." in serial:
+        raise ValueError(f"meter_serial contains '..': {serial!r}")
+    if _SERIAL_UNSAFE_RE.search(serial):
+        raise ValueError(f"meter_serial contains unsafe characters: {serial!r}")
+    return serial
+
+
+__all__ = ["export_filename_pattern", "render_filename_tokens", "sanitize_meter_serial"]
