@@ -716,7 +716,7 @@ def export_billing_now(session: SessionDep, device_id: Annotated[int, Query(ge=1
     if not output_dir:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="export_output_dir is not configured — nothing to export to. Set it on the Export Format page.",
+            detail="export_output_dir is not configured — nothing to export to. Set it on the Load Profile page (Output folder).",
         )
 
     result = export_device_billing(device_id, require_auto_save=False)
