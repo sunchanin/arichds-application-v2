@@ -32,7 +32,7 @@ sentence for every role, re-read when the sweep finishes. Tests `TestCapturesMis
 Review round (reviewer agent, APPROVED_WITH_FIXES): fix 1 a crashed slice ends the sweep; fix 2 a document
 already present stamps Captured from its mtime (else an upgraded site counts forever); fixes 3/4 texts.
 Nits 5/6 left as noted. Full gate after the fixes: 2641 passed, 77 skipped (`pytest -n auto`); ruff green;
-`pnpm lint && pnpm build` green. Installer `installer\Outputrichds-setup-0.8.4.exe`, 38,148,768 bytes,
+`pnpm lint && pnpm build` green. Installer `installer/Output/arichds-setup-0.8.4.exe`, 38,148,768 bytes,
 SHA256 f34b7e79914356e9703ab19748763545519d61a680ae0d0795692dd61a17d2a4 (built from this tree).
 Upgrade note: an install that set only the Load Profile folder stops getting a billing file and an
 Energy file until their folders are set; the top-level billing file is left for the owner to remove.
