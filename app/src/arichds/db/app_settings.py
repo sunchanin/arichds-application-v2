@@ -80,9 +80,23 @@ EXPORT_ENERGY_FILENAME_TMPL_DEFAULT = "[meter]-energy.csv"
 EXPORT_AUTO_SAVE_ENABLED_KEY = "export_auto_save_enabled"
 EXPORT_AUTO_SAVE_ENABLED_DEFAULT = "false"
 
-#: `""` means "not configured" — same convention as CAPTURE_DIR_DEFAULT.
+#: `""` means "not configured" — same convention as CAPTURE_DIR_DEFAULT. Since
+#: 2026-09-23 (`.scratch/export-folders/spec.md`, the customer's request) this is
+#: the **Load Profile CSV's** folder — the billing file and the Energy file have
+#: their own keys below and fall back to this one while theirs are empty, so an
+#: install that set one folder before the change keeps writing where it did.
 EXPORT_OUTPUT_DIR_KEY = "export_output_dir"
 EXPORT_OUTPUT_DIR_DEFAULT = ""
+
+#: The billing file's own folder, set on the Billing page; `""` = use
+#: EXPORT_OUTPUT_DIR_KEY's value. Read only through :func:`billing_export_dir`.
+EXPORT_BILLING_OUTPUT_DIR_KEY = "export_billing_output_dir"
+EXPORT_BILLING_OUTPUT_DIR_DEFAULT = ""
+
+#: The Energy file's own folder, set on the Energy Summary page; `""` = use
+#: EXPORT_OUTPUT_DIR_KEY's value. Read only through :func:`energy_export_dir`.
+EXPORT_ENERGY_OUTPUT_DIR_KEY = "export_energy_output_dir"
+EXPORT_ENERGY_OUTPUT_DIR_DEFAULT = ""
 
 #: The five Database Destination keys (SPEC §3.10, ADR 0016, issue #46) — the
 #: connection to the customer's own MariaDB/MySQL. Machine-wide, same as every
@@ -215,6 +229,25 @@ def read_capture_style(session: Session) -> CaptureStyle:
     never cached."""
     stored = get_setting(session, CAPTURE_STYLE_KEY, CAPTURE_STYLE_DEFAULT)
     return "classic" if stored == "classic" else "standard"
+
+
+def load_profile_export_dir(session: Session) -> str:
+    """The Load Profile CSV's folder, `""` when unset."""
+    return get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT).strip()
+
+
+def billing_export_dir(session: Session) -> str:
+    """The billing file's folder: its own setting, else the Load Profile CSV's
+    (spec, 2026-09-23) — the one place that fallback lives, so the writer, the
+    Save-now button and the File Upload Destination cannot disagree on it."""
+    own = get_setting(session, EXPORT_BILLING_OUTPUT_DIR_KEY, EXPORT_BILLING_OUTPUT_DIR_DEFAULT).strip()
+    return own or load_profile_export_dir(session)
+
+
+def energy_export_dir(session: Session) -> str:
+    """The Energy file's folder: its own setting, else the Load Profile CSV's."""
+    own = get_setting(session, EXPORT_ENERGY_OUTPUT_DIR_KEY, EXPORT_ENERGY_OUTPUT_DIR_DEFAULT).strip()
+    return own or load_profile_export_dir(session)
 
 
 def set_setting(session: Session, key: str, value: str) -> None:

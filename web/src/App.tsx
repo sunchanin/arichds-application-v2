@@ -245,7 +245,7 @@ export default function App() {
       ) : active === "billing" ? (
         <Billing role={session.role} />
       ) : active === "energy-summary" ? (
-        <EnergySummary />
+        <EnergySummary role={session.role} />
       ) : active === "holidays" ? (
         <Holidays role={session.role} />
       ) : active === "special-days" ? (

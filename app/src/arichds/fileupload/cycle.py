@@ -62,9 +62,10 @@ from arichds.db.app_settings import (
     EXPORT_CSV_FILENAME_TMPL_KEY,
     EXPORT_ENERGY_FILENAME_TMPL_DEFAULT,
     EXPORT_ENERGY_FILENAME_TMPL_KEY,
-    EXPORT_OUTPUT_DIR_DEFAULT,
-    EXPORT_OUTPUT_DIR_KEY,
+    billing_export_dir,
+    energy_export_dir,
     get_setting,
+    load_profile_export_dir,
 )
 from arichds.db.models import Device
 from arichds.db.session import session_scope
@@ -171,50 +172,50 @@ def _is_export_temp_file(name: str) -> bool:
 
 
 def _export_candidates(
-    export_dir: Path, *, csv_tmpl: str, billing_tmpl: str, energy_tmpl: str, devices: Sequence[Device], counts: _Counts
+    folders: Sequence[tuple[Path, str]], *, devices: Sequence[Device], counts: _Counts
 ) -> list[_Candidate]:
     """The export files each device with a Meter Serial currently has on
-    disk under *export_dir* — found by **listing** the folder once and
-    matching each entry against the three filename templates
+    disk — found by **listing** each folder once and matching its entries
+    against that file's own template
     (:func:`~arichds.filename_tokens.export_filename_pattern`), never by
-    predicting a name and hoping it exists (spec.md "Files in scope": "the
-    three export files the export folder holds for it" — the file on disk
-    is the contract, module docstring). A device with no Meter Serial
-    contributes nothing and is counted once, not once per template (SPEC
-    story 12 / spec.md Testing Decisions: "a device without a Meter Serial
-    is skipped and counted").
+    predicting a name and hoping it exists (spec.md "Files in scope": the
+    file on disk is the contract, module docstring). *folders* is the
+    ordered ``(folder, template)`` pairs — the Load Profile CSV's, the
+    billing file's, the Energy file's (each file has its own folder since
+    2026-09-23, `.scratch/export-folders/spec.md`; two files may share one).
+    A device with no Meter Serial contributes nothing and is counted once,
+    not once per template (SPEC story 12 / spec.md Testing Decisions).
 
-    Non-recursive — `export_dir` holds no subfolders, unlike the capture
-    folder. ``export/writer.py``'s own atomic-replace temp files are
-    excluded; nothing else under `export_dir` is ever a candidate.
+    Non-recursive — an export folder holds no subfolders, unlike the
+    capture folder. ``export/writer.py``'s own atomic-replace temp files are
+    excluded; nothing else in a folder is ever a candidate.
 
-    Every match for a device's *csv_tmpl* precedes every match for its
-    *billing_tmpl*, which precedes every match for its *energy_tmpl* — the
-    ordering ``TestTransportErrorMidCycle`` relies on. A template carrying
-    ``[date]`` can legitimately match more than one file (one per day it
-    was written), and every match is a candidate — a name predicted for
-    "today" alone is exactly the bug this design replaces (an earlier
-    day's file was permanently invisible to the cycle).
+    Every match for a device's CSV template precedes every match for its
+    billing template, which precedes every match for its Energy template —
+    the ordering ``TestTransportErrorMidCycle`` relies on. A template
+    carrying ``[date]`` can legitimately match more than one file (one per
+    day it was written), and every match is a candidate.
 
-    De-duplicated by relative path as candidates are collected — belt and
-    braces (reviewer finding, ticket 02 round 2): two of the three
-    templates can only ever collide on the same file if neither carries
-    ``[meter]``/``[serial]`` at all, which already breaks the export writer
-    itself, so this is unreachable with any template this product's own
-    settings validation accepts. Without it, a colliding file would be
-    digested, ``put_file``'d and counted twice in one cycle, since the
-    in-cycle compare only consults the manifest as read, never
-    ``sent_entries``.
+    De-duplicated by relative path as candidates are collected — the
+    manifest key is ``export/<name>`` whichever folder the file came from,
+    so a billing file left behind in the Load Profile folder after the
+    billing folder moved is never a second candidate for the same name
+    (the pair listed first for that name wins, and the pairs are in file
+    order, so the file's own folder wins over a stale copy elsewhere).
     """
-    if not export_dir.is_dir():
-        return []
-
-    try:
-        entries = sorted(
-            entry.name for entry in export_dir.iterdir() if entry.is_file() and not _is_export_temp_file(entry.name)
-        )
-    except OSError:
-        return []
+    listings: dict[Path, list[str]] = {}
+    for folder, _template in folders:
+        if folder in listings:
+            continue
+        if not folder.is_dir():
+            listings[folder] = []
+            continue
+        try:
+            listings[folder] = sorted(
+                entry.name for entry in folder.iterdir() if entry.is_file() and not _is_export_temp_file(entry.name)
+            )
+        except OSError:
+            listings[folder] = []
 
     candidates: list[_Candidate] = []
     seen: set[str] = set()
@@ -223,23 +224,21 @@ def _export_candidates(
             counts.files_skipped_no_serial += 1
             continue
         token = device.meter_serial
-        for template in (csv_tmpl, billing_tmpl, energy_tmpl):
+        for folder, template in folders:
             # `export_filename_pattern` escapes *token* before compiling
             # (ADR 0005: a meter-supplied serial is device identity, not
             # operator input), so it cannot widen the match with a regex
-            # metacharacter — this plays the role an earlier version's
-            # path-containment check did when it built a path by string
-            # concatenation; every name here already came from `iterdir()`
-            # above, so there is no path left to escape out of.
+            # metacharacter; every name here came from `iterdir()` above, so
+            # there is no path left to escape out of.
             pattern = export_filename_pattern(template, token)
-            for name in entries:
+            for name in listings[folder]:
                 if not pattern.match(name):
                     continue
                 relative_path = f"export/{name}"
                 if relative_path in seen:
                     continue
                 seen.add(relative_path)
-                candidates.append(_Candidate(relative_path=relative_path, local_path=export_dir / name))
+                candidates.append(_Candidate(relative_path=relative_path, local_path=folder / name))
     return candidates
 
 
@@ -302,7 +301,9 @@ def file_upload_cycle(transport: Transport | None = None) -> None:
 
     with session_scope() as session:
         config = load_config(session)
-        export_dir_str = get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT).strip()
+        export_dir_str = load_profile_export_dir(session)
+        billing_dir_str = billing_export_dir(session)
+        energy_dir_str = energy_export_dir(session)
         capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT).strip()
         csv_tmpl = get_setting(session, EXPORT_CSV_FILENAME_TMPL_KEY, EXPORT_CSV_FILENAME_TMPL_DEFAULT)
         billing_tmpl = get_setting(session, EXPORT_BILLING_FILENAME_TMPL_KEY, EXPORT_BILLING_FILENAME_TMPL_DEFAULT)
@@ -336,6 +337,8 @@ def file_upload_cycle(transport: Transport | None = None) -> None:
         protocol=config.active_protocol,
         machine_id=machine_id,
         export_dir_str=export_dir_str,
+        billing_dir_str=billing_dir_str,
+        energy_dir_str=energy_dir_str,
         capture_dir_str=capture_dir_str,
         csv_tmpl=csv_tmpl,
         billing_tmpl=billing_tmpl,
@@ -350,6 +353,8 @@ def _run_cycle(
     protocol: str,
     machine_id: str,
     export_dir_str: str,
+    billing_dir_str: str,
+    energy_dir_str: str,
     capture_dir_str: str,
     csv_tmpl: str,
     billing_tmpl: str,
@@ -363,17 +368,17 @@ def _run_cycle(
     error: str | None = None
 
     candidates: list[_Candidate] = []
-    if export_dir_str:
-        candidates.extend(
-            _export_candidates(
-                Path(export_dir_str),
-                csv_tmpl=csv_tmpl,
-                billing_tmpl=billing_tmpl,
-                energy_tmpl=energy_tmpl,
-                devices=devices,
-                counts=counts,
-            )
+    folders = [
+        (Path(folder), template)
+        for folder, template in (
+            (export_dir_str, csv_tmpl),
+            (billing_dir_str, billing_tmpl),
+            (energy_dir_str, energy_tmpl),
         )
+        if folder
+    ]
+    if folders:
+        candidates.extend(_export_candidates(folders, devices=devices, counts=counts))
     if capture_dir_str:
         candidates.extend(_capture_candidates(Path(capture_dir_str)))
 

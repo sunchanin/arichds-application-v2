@@ -375,6 +375,15 @@ export interface BillingSettings {
   /** The Capture Style (ADR 0028) — what the next `.png` written on any
    * path looks like; `standard` on an install that never chose. */
   capture_style: CaptureStyle;
+  /** The billing file's own folder (2026-09-23) — `""` means the Load
+   * Profile page's Output folder is used, exactly as before the key existed. */
+  export_billing_output_dir: string;
+}
+
+/** The Energy Summary page's one setting: the Energy file's own folder — `""`
+ * means the Load Profile page's Output folder is used. */
+export interface EnergySettings {
+  export_energy_output_dir: string;
 }
 
 /** `standard` is the Billing page photographed; `classic` reproduces the
@@ -1728,10 +1737,24 @@ export const api = {
    * non-empty value is validated server-side (ADR 0010) and a rejection
    * comes back as a 422 the caller renders via `ApiRequestError.message`.
    */
-  updateBillingSettings: (captureDir: string, captureStyle: CaptureStyle) =>
+  updateBillingSettings: (captureDir: string, captureStyle: CaptureStyle, billingOutputDir: string) =>
     request<BillingSettings>("/api/billing/settings", {
       method: "PUT",
-      body: JSON.stringify({ capture_dir: captureDir, capture_style: captureStyle }),
+      body: JSON.stringify({
+        capture_dir: captureDir,
+        capture_style: captureStyle,
+        export_billing_output_dir: billingOutputDir,
+      }),
+    }),
+
+  /** The Energy file's folder (2026-09-23) — any authenticated role reads it. */
+  energySettings: () => request<EnergySettings>("/api/energy/settings"),
+
+  /** Save the Energy file's folder — admin-only; an empty string means "use the Load Profile page's Output folder". */
+  updateEnergySettings: (energyOutputDir: string) =>
+    request<EnergySettings>("/api/energy/settings", {
+      method: "PUT",
+      body: JSON.stringify({ export_energy_output_dir: energyOutputDir }),
     }),
 
   /**

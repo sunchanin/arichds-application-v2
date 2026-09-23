@@ -805,8 +805,12 @@ job จับ lock แบบ `background=True` — ชนแล้ว**ข้า
 > เซลล์เวลาที่มิเตอร์ไม่เคยตั้งเขียนเป็น `-` ทั้งกรณี NULL และกรณี sentinel `2000-01-01` ของ TCC ·
 > ทศนิยม 4 ตำแหน่งตัดศูนย์ท้าย · หัวไฟล์ 5 บรรทัดตามตัวอย่างลูกค้า
 >
-> ใช้ **โฟลเดอร์เดียว สวิตช์เดียว job เดียว** ร่วมกับ Load Profile CSV (§3.5) — แยกเฉพาะ template
-> ชื่อไฟล์ เพราะอยู่โฟลเดอร์เดียวกันจึงทับกันไม่ได้ · **ไม่มี feature key ใหม่** ขี่ `billing`
+> ใช้ **สวิตช์เดียว job เดียว** ร่วมกับ Load Profile CSV (§3.5) แยก template ชื่อไฟล์ · **โฟลเดอร์แยกตามไฟล์
+> ตั้งแต่ 2026-09-23** (ลูกค้าขอ, `.scratch/export-folders/spec.md`): Load Profile CSV ใช้ Output folder
+> บนหน้า Load Profile (`export_output_dir` เดิม), billing file ใช้ **Billing file folder** บนหน้า Billing
+> (`export_billing_output_dir`), Energy file ใช้ **Energy file folder** บนหน้า Energy Summary
+> (`export_energy_output_dir`) — ช่องว่าง = ใช้โฟลเดอร์ของ Load Profile ต่อไป เครื่องที่ตั้งไว้แล้วไม่เปลี่ยน;
+> FTP upload หาไฟล์จากโฟลเดอร์ของแต่ละไฟล์ key ใน manifest ไม่เปลี่ยน · **ไม่มี feature key ใหม่** ขี่ `billing`
 
 > ⚠️ **ชุดคอลัมน์ขยาย 40 → 60 ที่ M4c (grill 2026-08-09) — เกณฑ์ของ §3.6 เองบังคับ**
 >

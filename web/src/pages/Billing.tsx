@@ -299,7 +299,7 @@ function allMetersColumns(scale: DisplayUnitScale): ColumnsType<AllMetersRow> {
   ];
 }
 
-type CaptureSettingsForm = { capture_dir: string; capture_style: CaptureStyle };
+type CaptureSettingsForm = { capture_dir: string; capture_style: CaptureStyle; export_billing_output_dir: string };
 
 const CAPTURE_STYLE_OPTIONS: { label: string; value: CaptureStyle }[] = [
   { label: "Standard", value: "standard" },
@@ -307,8 +307,9 @@ const CAPTURE_STYLE_OPTIONS: { label: string; value: CaptureStyle }[] = [
 ];
 
 /**
- * The `capture_dir` form (M6b, issue #22) and, beside it, the Capture Style
- * (ADR 0028). Editable by an admin only; a `user` sees the values and every
+ * The page's folders: `capture_dir` (M6b, issue #22), the billing file's own
+ * folder (2026-09-23 — empty means the Load Profile page's Output folder) and
+ * the Capture Style (ADR 0028). Editable by an admin only; a `user` sees the values and every
  * control is disabled — the same read/change split the API has.
  *
  * Changing the folder while captures already exist confirms first — the
@@ -334,7 +335,11 @@ function CaptureSettingsCard({
       .billingSettings()
       .then((data) => {
         setSettings(data);
-        form.setFieldsValue({ capture_dir: data.capture_dir, capture_style: data.capture_style });
+        form.setFieldsValue({
+          capture_dir: data.capture_dir,
+          capture_style: data.capture_style,
+          export_billing_output_dir: data.export_billing_output_dir,
+        });
       })
       .catch((err: unknown) => surface(err, "Could not load the capture settings."));
     // Loaded once on mount — the form owns edits from then on.
@@ -342,13 +347,17 @@ function CaptureSettingsCard({
   }, []);
 
   const save = useCallback(
-    (captureDir: string, captureStyle: CaptureStyle) => {
+    (captureDir: string, captureStyle: CaptureStyle, billingOutputDir: string) => {
       setSaving(true);
       api
-        .updateBillingSettings(captureDir, captureStyle)
+        .updateBillingSettings(captureDir, captureStyle, billingOutputDir)
         .then((data) => {
           setSettings(data);
-          form.setFieldsValue({ capture_dir: data.capture_dir, capture_style: data.capture_style });
+          form.setFieldsValue({
+            capture_dir: data.capture_dir,
+            capture_style: data.capture_style,
+            export_billing_output_dir: data.export_billing_output_dir,
+          });
           message.success("Capture settings saved.");
         })
         .catch((err: unknown) => surface(err, "Could not save the capture settings."))
@@ -371,15 +380,15 @@ function CaptureSettingsCard({
         title: "Change the capture folder?",
         content: `${settings.capture_count} closed billing period(s) exist. Any captures already written under the current folder stay exactly where they are and will no longer be reachable from this page.`,
         okText: "Change folder",
-        onOk: () => save(next, values.capture_style),
+        onOk: () => save(next, values.capture_style, values.export_billing_output_dir.trim()),
       });
       return;
     }
-    save(next, values.capture_style);
+    save(next, values.capture_style, values.export_billing_output_dir.trim());
   };
 
   return (
-    <Card size="small" title="Capture folder">
+    <Card size="small" title="Folders">
       <Form form={form} layout="vertical" onFinish={onFinish} disabled={!editable}>
         <Form.Item
           name="capture_dir"
@@ -387,6 +396,13 @@ function CaptureSettingsCard({
           extra="Where billing PDF/xlsx captures are written. Leave empty to disable capture."
         >
           <Input placeholder="e.g. C:\Captures" allowClear />
+        </Form.Item>
+        <Form.Item
+          name="export_billing_output_dir"
+          label="Billing file folder"
+          extra="Where the billing file (Save billing file now and the 15-minute rewrite) is written. Leave empty to use the Output folder on the Load Profile page."
+        >
+          <Input placeholder="e.g. C:\BillingExports" allowClear />
         </Form.Item>
         <Form.Item
           name="capture_style"

@@ -51,12 +51,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from arichds.acquisition.energy_registers import read_and_store_energy_registers
-from arichds.api.deps import SessionDep, get_current_user, require_feature
+from arichds.api.deps import AdminDep, SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
+from arichds.capture.paths import validate_directory_setting
+from arichds.config import get_settings
 from arichds.constants import (
     MANUAL_READ_LOCK_TIMEOUT_SEC,
 )
-from arichds.db.app_settings import EXPORT_OUTPUT_DIR_DEFAULT, EXPORT_OUTPUT_DIR_KEY, get_setting
+from arichds.db.app_settings import (
+    EXPORT_ENERGY_OUTPUT_DIR_DEFAULT,
+    EXPORT_ENERGY_OUTPUT_DIR_KEY,
+    energy_export_dir,
+    get_setting,
+    set_setting,
+)
 from arichds.db.energy_query import EnergySummaryReport
 from arichds.db.energy_summary_store import stored_energy_summary_rows
 from arichds.db.models import Device, EnergyRegisterReading
@@ -166,11 +174,13 @@ def export_energy_summary(
             detail=f"The range spans {span} days; at most {MAX_DAYS} may be asked for at once.",
         )
 
-    output_dir = get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT).strip()
-    if not output_dir:
+    if not energy_export_dir(session):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="export_output_dir is not configured — nothing to export to. Set it on the Load Profile page.",
+            detail=(
+                "No folder is set for the Energy file — set Energy file folder on this page "
+                "(export_energy_output_dir), or the Load Profile page's Output folder (export_output_dir)."
+            ),
         )
 
     result = export_energy_range(device_id, start_date, end_date)
@@ -248,6 +258,61 @@ _IDENTITY_COLUMNS = frozenset({"id", "device_id", "read_at", "source", "meter_se
 _MEASUREMENT_COLUMN_NAMES: tuple[str, ...] = tuple(
     column.name for column in EnergyRegisterReading.__table__.columns if column.name not in _IDENTITY_COLUMNS
 )
+
+
+class EnergySettingsOut(BaseModel):
+    """The Energy Summary page's one setting (spec 2026-09-23).
+
+    Attributes:
+        export_energy_output_dir: The Energy file's own folder — ``""`` means
+            the Load Profile page's Output folder is used, exactly as before
+            the key existed.
+    """
+
+    export_energy_output_dir: str
+
+
+class EnergySettingsIn(BaseModel):
+    """The body ``PUT /api/energy/settings`` takes — ``""`` clears the folder."""
+
+    export_energy_output_dir: str
+
+
+def _energy_settings_out(session: Session) -> EnergySettingsOut:
+    return EnergySettingsOut(
+        export_energy_output_dir=get_setting(session, EXPORT_ENERGY_OUTPUT_DIR_KEY, EXPORT_ENERGY_OUTPUT_DIR_DEFAULT)
+    )
+
+
+@router.get("/settings")
+def get_energy_settings(session: SessionDep) -> ApiResponse[EnergySettingsOut]:
+    """The Energy file's folder — any authenticated caller, the router's own
+    ``energy_summary`` gate (the page that shows it carries the same gate)."""
+    return ApiResponse.ok(_energy_settings_out(session))
+
+
+@router.put("/settings")
+def put_energy_settings(
+    body: EnergySettingsIn, session: SessionDep, _admin: AdminDep
+) -> ApiResponse[EnergySettingsOut]:
+    """Save the Energy file's folder — admin-only, validated the way every
+    other folder setting is (the capture allowlist, ADR 0010); ``""`` is
+    accepted and means \"use the Load Profile page's Output folder\"."""
+    value = ""
+    if body.export_energy_output_dir.strip():
+        try:
+            value = str(
+                validate_directory_setting(
+                    body.export_energy_output_dir,
+                    get_settings().capture_allowlist_roots(),
+                    setting_name="export_energy_output_dir",
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    set_setting(session, EXPORT_ENERGY_OUTPUT_DIR_KEY, value)
+    session.commit()
+    return ApiResponse.ok(_energy_settings_out(session))
 
 
 def _to_register_row_out(row: EnergyRegisterReading) -> EnergyRegisterRowOut:

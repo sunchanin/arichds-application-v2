@@ -6,6 +6,8 @@ import {
   Descriptions,
   Empty,
   Flex,
+  Form,
+  Input,
   Segmented,
   Select,
   Space,
@@ -27,6 +29,7 @@ import {
   type CatalogEntry,
   type Device,
   type EnergyRegisterRow,
+  type EnergySettings,
   type EnergySummaryDay,
 } from "../api";
 import { ENERGY_COLUMNS, energyTotalCells } from "../energyTotals";
@@ -416,7 +419,60 @@ function MeterRegistersTab({
  * its cells. **Meter Registers is button-triggered only** — there is no
  * scheduler job (decision — a cumulative snapshot is not a cadence).
  */
-export function EnergySummary() {
+/**
+ * The Energy file's own folder (2026-09-23): set here, beside *Save to file*,
+ * because that button and the 15-minute rewrite both write into it. Empty
+ * means the Load Profile page's Output folder, exactly as before the setting
+ * existed. Editable by an admin only; a `user` sees the value.
+ */
+function EnergyFolderCard({ role, surface }: { role: "admin" | "user"; surface: (err: unknown, fallback: string) => void }) {
+  const { message } = App.useApp();
+  const [form] = Form.useForm<EnergySettings>();
+  const [saving, setSaving] = useState(false);
+  const editable = role === "admin";
+
+  useEffect(() => {
+    api
+      .energySettings()
+      .then((data) => form.setFieldsValue(data))
+      .catch((err: unknown) => surface(err, "Could not load the Energy file folder."));
+    // Loaded once on mount — the form owns edits from then on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onFinish = (values: EnergySettings) => {
+    setSaving(true);
+    api
+      .updateEnergySettings(values.export_energy_output_dir.trim())
+      .then((data) => {
+        form.setFieldsValue(data);
+        message.success("Energy file folder saved.");
+      })
+      .catch((err: unknown) => surface(err, "Could not save the Energy file folder."))
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <Card size="small" title="Energy file folder">
+      <Form form={form} layout="vertical" onFinish={onFinish} disabled={!editable}>
+        <Form.Item
+          name="export_energy_output_dir"
+          label="Folder path"
+          extra="Where the Energy file (Save to file and the 15-minute rewrite) is written. Leave empty to use the Output folder on the Load Profile page."
+        >
+          <Input placeholder="e.g. C:\EnergyExports" allowClear />
+        </Form.Item>
+        {editable ? (
+          <Button type="primary" htmlType="submit" loading={saving}>
+            Save
+          </Button>
+        ) : null}
+      </Form>
+    </Card>
+  );
+}
+
+export function EnergySummary({ role }: { role: "admin" | "user" }) {
   const { message } = App.useApp();
   const [tab, setTab] = useState("summary");
   const [devices, setDevices] = useState<Device[]>([]);
@@ -441,6 +497,7 @@ export function EnergySummary() {
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Tabs activeKey={tab} onChange={setTab} items={TAB_ITEMS} />
+      {tab === "summary" ? <EnergyFolderCard role={role} surface={surface} /> : null}
       {tab === "summary" ? (
         <SummaryReportTab devices={devices} surface={surface} />
       ) : (

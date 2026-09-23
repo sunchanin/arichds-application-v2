@@ -61,7 +61,12 @@ class TestGetIsOpenToAnyAuthenticatedCaller:
         response = admin_client.get("/api/billing/settings")
 
         assert response.status_code == 200, response.text
-        assert response.json()["data"] == {"capture_dir": "", "capture_count": 0, "capture_style": "standard"}
+        assert response.json()["data"] == {
+            "capture_dir": "",
+            "capture_count": 0,
+            "capture_style": "standard",
+            "export_billing_output_dir": "",
+        }
 
     def test_a_plain_user_may_read_it(self, user_client: TestClient) -> None:
         assert user_client.get("/api/billing/settings").status_code == 200

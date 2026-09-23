@@ -94,7 +94,9 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           <Text type="secondary">
             These settings govern every export file — the Load Profile CSV, the billing file and the Energy file —
-            and all of them are written to the output folder set on the Load Profile page. Energy values are always
+            each written to its own folder: the Load Profile CSV to the Output folder on the Load Profile page, the
+            billing file to the Billing file folder on the Billing page, the Energy file to the Energy file folder on
+            the Energy Summary page (a folder left empty uses the Load Profile page's). Energy values are always
             exported in kWh/kvarh: they do not follow the Display unit setting on the Settings page. Each file holds
             the same window ARICHDS holds: the Load Profile CSV appends new intervals every cycle and is trimmed to
             the last 90 days once a day; the billing file (every closed period) and the Energy file (the last 90
@@ -126,7 +128,7 @@ export function ExportFormat({ role }: { role: "admin" | "user" }) {
             <Form.Item
               name="export_billing_filename_tmpl"
               label="Billing filename template"
-              extra="The same tokens. Must differ from the CSV filename template — both files are written to the same folder."
+              extra="The same tokens. Must differ from the CSV filename template, since the two files may share a folder."
               rules={[{ required: true, whitespace: true, message: "A filename template is required." }]}
             >
               <Input placeholder="[meter]-billing.csv" />

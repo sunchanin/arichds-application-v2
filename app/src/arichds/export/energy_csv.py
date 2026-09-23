@@ -71,8 +71,7 @@ from arichds.db.app_settings import (
     EXPORT_DATE_FORMAT_KEY,
     EXPORT_ENERGY_FILENAME_TMPL_DEFAULT,
     EXPORT_ENERGY_FILENAME_TMPL_KEY,
-    EXPORT_OUTPUT_DIR_DEFAULT,
-    EXPORT_OUTPUT_DIR_KEY,
+    energy_export_dir,
     get_setting,
 )
 from arichds.db.energy_query import EnergySummaryDay, local_today
@@ -156,7 +155,7 @@ def _resolve_target(session: Session, device_id: int, *, require_auto_save: bool
         if not enabled:
             return None
 
-    output_dir_str = get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT).strip()
+    output_dir_str = energy_export_dir(session)  # its own folder, else the Load Profile CSV's
     if not output_dir_str:
         return None
 

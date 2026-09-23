@@ -52,8 +52,7 @@ from arichds.db.app_settings import (
     EXPORT_BILLING_FILENAME_TMPL_KEY,
     EXPORT_DATE_FORMAT_DEFAULT,
     EXPORT_DATE_FORMAT_KEY,
-    EXPORT_OUTPUT_DIR_DEFAULT,
-    EXPORT_OUTPUT_DIR_KEY,
+    billing_export_dir,
     get_setting,
 )
 from arichds.db.billing_query import closed_periods_with_record_no
@@ -138,7 +137,7 @@ def _export_locked(device_id: int, *, require_auto_save: bool) -> BillingExportR
             if not enabled:
                 return BillingExportResult(rows_written=0, path=None)
 
-        output_dir_str = get_setting(session, EXPORT_OUTPUT_DIR_KEY, EXPORT_OUTPUT_DIR_DEFAULT).strip()
+        output_dir_str = billing_export_dir(session)  # its own folder, else the Load Profile CSV's
         if not output_dir_str:
             return BillingExportResult(rows_written=0, path=None)
 

@@ -82,3 +82,16 @@ export folder grows forever beside it saves nothing.
   mechanism that no longer exists and must be rewritten before either is sent.
 - The on-demand **Save to file** stays, for a chosen range in its own file, but stops being "the
   corrective for a stale archive": the daily file cannot be stale by more than one cycle.
+
+## Amendment 2026-09-23 — each export file has its own folder
+
+The customer keeps the three files in three places, so "the export folder" above is now three:
+`export_output_dir` keeps its key and its meaning as the **Load Profile CSV's** folder (the Load
+Profile page's *Output folder*); the billing file has `export_billing_output_dir` (*Billing file
+folder*, on the Billing page) and the Energy file `export_energy_output_dir` (*Energy file folder*,
+on the Energy Summary page). An empty one means the Load Profile CSV's folder, so an install that
+set one folder before this change keeps writing where it did. The one Auto-save switch, the one
+date format and the three templates are unchanged; the File Upload Destination (ADR 0025) lists
+each file's own folder against that file's template, and the Upload Manifest's keys stay
+`export/<name>`. The owner placed each folder on the page that owns the file rather than on the
+Export Format page. Spec: `.scratch/export-folders/spec.md`.

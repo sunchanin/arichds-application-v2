@@ -311,7 +311,15 @@ MySQL, and ~30 tables.
   `energy_summary` gate, open to any signed-in role; `db/retention.py` purges it on `created_at`
   alongside `device_events`; the recalculation notice now also fires after both imports, which
   ticket 04 had left out) ·
-  0023 (export files **mirror our window and are rewritten, never archived** — **supersedes 0013's
+  0023 (export files **mirror our window and are rewritten, never archived** — **amended 2026-09-23:
+  each export file has its own folder** — `export_output_dir` stays the Load Profile CSV's (Load
+  Profile page), `export_billing_output_dir` is set on the Billing page and `export_energy_output_dir`
+  on the Energy Summary page (`GET`/`PUT /api/energy/settings`, new), each falling back to the Load
+  Profile folder while empty through `db/app_settings.py`'s `billing_export_dir`/`energy_export_dir`
+  — the one place the fallback lives, read by the writers, the two Save-now buttons and
+  `fileupload/cycle.py`, which now lists each file's own folder against its template with the
+  manifest keys unchanged; the owner put each folder on its file's page, not on Export Format
+  (`.scratch/export-folders/spec.md`) — **supersedes 0013's
   M13 amendment**, extends 0020 to the export folder: Load Profile CSV and Energy file hold 90
   days, the Billing file every closed period; LP appends and is trimmed daily with retention, the
   two small files are rewritten whole every cycle; every rewrite is temp-then-replace; Closed
