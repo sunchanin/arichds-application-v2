@@ -23,7 +23,7 @@ from arichds.db.app_settings import (
     EXPORT_AUTO_SAVE_ENABLED_KEY,
     EXPORT_DATE_FORMAT_KEY,
     EXPORT_ENERGY_FILENAME_TMPL_KEY,
-    EXPORT_OUTPUT_DIR_KEY,
+    EXPORT_ENERGY_OUTPUT_DIR_KEY,
     set_setting,
 )
 from arichds.db.energy_summary_store import energy_summary_recompute_cycle, stored_energy_summary_rows
@@ -107,7 +107,8 @@ def configure(
     date_format: str = "yyyy-mm-dd HH:MM:SS",
 ) -> None:
     with session_scope() as session:
-        set_setting(session, EXPORT_OUTPUT_DIR_KEY, str(output_dir))
+        # The Energy file's own folder — never the Load Profile CSV's (capture-sweep ticket 02).
+        set_setting(session, EXPORT_ENERGY_OUTPUT_DIR_KEY, str(output_dir))
         set_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, "true" if auto_save_enabled else "false")
         set_setting(session, EXPORT_ENERGY_FILENAME_TMPL_KEY, filename_tmpl)
         set_setting(session, EXPORT_DATE_FORMAT_KEY, date_format)
@@ -397,7 +398,9 @@ class TestSaveToFileThroughTheApi:
         response = admin_client.post(f"/api/energy/export?device_id={device_id}&start_date={day}&end_date={day}")
 
         assert response.status_code == 422, response.text
-        assert "export_output_dir" in response.text
+        assert (
+            "export_energy_output_dir" in response.text
+        )  # this page's own folder — never the Load Profile one (ticket 02)
 
     def test_a_range_wider_than_the_screen_allows_is_a_422(
         self, migrated_db: Settings, admin_client, tmp_path: Path

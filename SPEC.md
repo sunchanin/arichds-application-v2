@@ -810,7 +810,8 @@ job จับ lock แบบ `background=True` — ชนแล้ว**ข้า
 > บนหน้า Load Profile (`export_output_dir` เดิม), billing file ใช้ **Billing folder** บนหน้า Billing — โฟลเดอร์
 > เดียวกับ capture (`capture_dir`, เจ้าของเลือก ก 2026-09-23: ไฟล์อยู่ชั้นบน capture อยู่โฟลเดอร์ย่อยตามมิเตอร์)
 > Energy file ใช้ **Energy file folder** บนหน้า Energy Summary
-> (`export_energy_output_dir`) — ช่องว่าง = ใช้โฟลเดอร์ของ Load Profile ต่อไป เครื่องที่ตั้งไว้แล้วไม่เปลี่ยน;
+> (`export_energy_output_dir`) — **ช่องว่าง = ไม่เขียนไฟล์นั้น** (capture-sweep ticket 02, 2026-09-23: ไม่มี
+> fallback ไปโฟลเดอร์ของไฟล์อื่น ปุ่ม Save ของหน้านั้นตอบ 422 ว่าโฟลเดอร์ว่าง);
 > FTP upload หาไฟล์จากโฟลเดอร์ของแต่ละไฟล์ key ใน manifest ไม่เปลี่ยน · **ไม่มี feature key ใหม่** ขี่ `billing`
 
 > ⚠️ **ชุดคอลัมน์ขยาย 40 → 60 ที่ M4c (grill 2026-08-09) — เกณฑ์ของ §3.6 เองบังคับ**

@@ -178,8 +178,8 @@ def export_energy_summary(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                "No folder is set for the Energy file — set Energy file folder on this page "
-                "(export_energy_output_dir), or the Load Profile page's Output folder (export_output_dir)."
+                "Energy file folder is empty — set it on this page (export_energy_output_dir). "
+                "The Energy file is written only there, never to another file's folder."
             ),
         )
 

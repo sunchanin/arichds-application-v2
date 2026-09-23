@@ -422,8 +422,8 @@ function MeterRegistersTab({
 /**
  * The Energy file's own folder (2026-09-23): set here, beside *Save to file*,
  * because that button and the 15-minute rewrite both write into it. Empty
- * means the Load Profile page's Output folder, exactly as before the setting
- * existed. Editable by an admin only; a `user` sees the value.
+ * means no Energy file at all — never another file's folder (capture-sweep
+ * ticket 02). Editable by an admin only; a `user` sees the value.
  */
 function EnergyFolderCard({ role, surface }: { role: "admin" | "user"; surface: (err: unknown, fallback: string) => void }) {
   const { message } = App.useApp();
@@ -458,7 +458,7 @@ function EnergyFolderCard({ role, surface }: { role: "admin" | "user"; surface: 
         <Form.Item
           name="export_energy_output_dir"
           label="Folder path"
-          extra="Where the Energy file (Save to file and the 15-minute rewrite) is written. Leave empty to use the Output folder on the Load Profile page."
+          extra="Where the Energy file (Save to file and the 15-minute rewrite) is written. Leave empty to turn the Energy file off — nothing is written to another file's folder."
         >
           <Input placeholder="e.g. C:\EnergyExports" allowClear />
         </Form.Item>

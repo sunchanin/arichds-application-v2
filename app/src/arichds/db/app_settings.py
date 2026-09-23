@@ -82,16 +82,16 @@ EXPORT_AUTO_SAVE_ENABLED_DEFAULT = "false"
 
 #: `""` means "not configured" — same convention as CAPTURE_DIR_DEFAULT. Since
 #: 2026-09-23 (`.scratch/export-folders/spec.md`, the customer's request) this is
-#: the **Load Profile CSV's** folder — the billing file follows CAPTURE_DIR_KEY
-#: (owner decision ก: one Billing folder for the captures and the billing file)
-#: and the Energy file has its own key below; each falls back to this one while
-#: its own is empty, so an install that set one folder before the change keeps
-#: writing where it did.
+#: the **Load Profile CSV's** folder only — the billing file follows CAPTURE_DIR_KEY
+#: (owner decision ก: one Billing Folder for the captures and the billing file)
+#: and the Energy file has its own key below. **No fallback** (capture-sweep
+#: ticket 02, same day): an empty folder turns that file off; a file is never
+#: written into another file's folder.
 EXPORT_OUTPUT_DIR_KEY = "export_output_dir"
 EXPORT_OUTPUT_DIR_DEFAULT = ""
 
-#: The Energy file's own folder, set on the Energy Summary page; `""` = use
-#: EXPORT_OUTPUT_DIR_KEY's value. Read only through :func:`energy_export_dir`.
+#: The Energy file's own folder, set on the Energy Summary page; `""` = no
+#: Energy file. Read only through :func:`energy_export_dir`.
 EXPORT_ENERGY_OUTPUT_DIR_KEY = "export_energy_output_dir"
 EXPORT_ENERGY_OUTPUT_DIR_DEFAULT = ""
 
@@ -234,20 +234,18 @@ def load_profile_export_dir(session: Session) -> str:
 
 
 def billing_export_dir(session: Session) -> str:
-    """The billing file's folder: the Billing page's one folder (CAPTURE_DIR_KEY —
-    the captures' folder, owner decision ก 2026-09-23), else the Load Profile
-    CSV's — the one place that fallback lives, so the writer, the Save-now button
-    and the File Upload Destination cannot disagree on it. The billing file sits
-    at the folder's top level; the captures are one subfolder per meter below it
-    (ADR 0015), so the two never collide."""
-    own = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT).strip()
-    return own or load_profile_export_dir(session)
+    """The billing file's folder — the Billing Folder (CAPTURE_DIR_KEY, the
+    captures' folder, owner decision ก 2026-09-23), `""` when unset: then there
+    is no billing file, never the Load Profile CSV's folder (capture-sweep ticket
+    02). One reader so the writer, the Save button and the File Upload
+    Destination cannot disagree on it."""
+    return get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT).strip()
 
 
 def energy_export_dir(session: Session) -> str:
-    """The Energy file's folder: its own setting, else the Load Profile CSV's."""
-    own = get_setting(session, EXPORT_ENERGY_OUTPUT_DIR_KEY, EXPORT_ENERGY_OUTPUT_DIR_DEFAULT).strip()
-    return own or load_profile_export_dir(session)
+    """The Energy file's folder, `""` when unset — then there is no Energy file,
+    never the Load Profile CSV's folder (capture-sweep ticket 02)."""
+    return get_setting(session, EXPORT_ENERGY_OUTPUT_DIR_KEY, EXPORT_ENERGY_OUTPUT_DIR_DEFAULT).strip()
 
 
 def set_setting(session: Session, key: str, value: str) -> None:

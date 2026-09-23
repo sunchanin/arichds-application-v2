@@ -13,6 +13,10 @@ each file is set on that file's own page — not gathered on the Export Format p
 > captures stay one subfolder per meter below it). `export_billing_output_dir` is removed (migration
 > 0023). Stories 1, 6, 8 and the *Billing file folder* wording below read accordingly; the Energy
 > file's own folder and the Load Profile CSV's are unchanged.
+>
+> **Amended again (capture-sweep ticket 02, 2026-09-23):** the fallback "empty = the Load Profile
+> CSV's folder" is withdrawn — an empty folder turns that file off. See
+> `.scratch/capture-sweep/spec.md`.
 
 ## Problem Statement
 

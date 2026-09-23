@@ -103,3 +103,14 @@ lived for one build (0.8.2) and migration 0023 removes its row. Empty still mean
 CSV's folder, and capture off. The File Upload Destination's capture walk skips the folder's top
 level for the same reason: the billing file is sent once, as `export/<name>`, never again as a
 capture. The Energy file keeps its own folder.
+
+**Amended again the same evening (capture-sweep ticket 02, grill 2026-09-23 Q1/round 3): the
+fallback is withdrawn.** An empty folder turns that file off — no Load Profile CSV without the
+Load Profile page's Output folder, no billing file without the Billing Folder, no Energy file
+without the Energy file folder — and a file is never written into another file's folder. The
+15-minute writers hold quietly, the File Upload Destination lists nothing for that file, and the
+Save button on that page answers 422 naming *its own* empty folder. The owner's reason: a folder
+is where a customer looks for one kind of file; a file appearing somewhere else because a field was
+left blank is a surprise, not a convenience. Consequence they accepted: an install that set only
+the Load Profile folder stops getting a billing file and an Energy file until their folders are
+set. Spec: `.scratch/capture-sweep/spec.md`.

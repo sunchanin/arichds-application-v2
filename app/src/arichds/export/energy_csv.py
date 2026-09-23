@@ -155,7 +155,7 @@ def _resolve_target(session: Session, device_id: int, *, require_auto_save: bool
         if not enabled:
             return None
 
-    output_dir_str = energy_export_dir(session)  # its own folder, else the Load Profile CSV's
+    output_dir_str = energy_export_dir(session)  # its own folder; empty = no Energy file
     if not output_dir_str:
         return None
 

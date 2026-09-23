@@ -22,11 +22,12 @@ endpoint is already keyed by the anchor.
 - [x] The Billing page in capture mode passes the seeded anchor; the Standard drive's request list
       for a period alone on its bill date is pinned unchanged, and for the older member of a pair
       the driver's row wait is satisfied against the fake trigger
-- [x] A test seeds a same-second pair, requests the older member's Standard image through the
-      download path with the fake trigger, and gets a `_2.png`; mutation check: dropping the pair
-      exclusion makes the row wait fail again
-- [x] Gate: `ruff format --check`, `ruff check`, `pytest -n auto` (app), `pnpm lint && pnpm build`
-      (web); the real-Edge integration test (`ARICHDS_TEST_EDGE=1`) is handed to the owner to run
+- [x] A test seeds a same-second pair and proves the page's rows for either member equal
+      `png_source_rows` reversed — the exact list the drive waits for (a fake transport answers
+      whatever ids it is given, so it cannot prove the page's query; the equality can); mutation
+      check: dropping the pair exclusion fails two of the six tests
+- [x] Gate: `ruff format --check`, `ruff check` green; scoped suites green (89 tests); `pnpm lint && pnpm build`
+      green; the full `pytest -n auto` runs once at the batch's end (ticket 05); the real-Edge integration test (`ARICHDS_TEST_EDGE=1`) is handed to the owner to run
       from an administrator shell, with the exact command in the report
 
 **Evidence:** `png_window_filters()` in `capture/service.py` is the one predicate; `png_source_rows` and

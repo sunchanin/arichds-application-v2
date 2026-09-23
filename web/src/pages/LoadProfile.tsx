@@ -297,7 +297,7 @@ function ExportControlsCard({
             name="export_output_dir"
             label="Output folder"
             style={{ marginBottom: 0, minWidth: 320, flex: 1 }}
-            extra="Where the Load Profile CSV files are written — the billing file and the Energy file use it too while the Billing folder (Billing page) or the Energy file folder (Energy Summary page) is empty. Required while Auto-save is on — turn Auto-save off first if you want to clear it."
+            extra="Where the Load Profile CSV files are written — only those; the billing file and the Energy file have their own folders on the Billing and Energy Summary pages. Required while Auto-save is on — turn Auto-save off first if you want to clear it."
           >
             <Input placeholder="e.g. C:\LoadProfileExports" allowClear />
           </Form.Item>

@@ -2,14 +2,13 @@
 `.scratch/export-folders/spec.md`).
 
 ``export_output_dir`` stays the Load Profile CSV's folder; the billing file
-follows the Billing page's one folder, ``capture_dir`` (owner decision ก,
-2026-09-23 — the captures' folder, the file at its top level and the captures
-one subfolder per meter below); the Energy file gains
-``export_energy_output_dir`` on its own page's endpoint. An **empty** one means
-"use the Load Profile CSV folder" — so an install that set one folder before
-this change keeps writing exactly where it did. Every test seeds two distinct
-folders and asserts which one the file landed in, so a reader that forgot the
-fallback, or one that read the wrong key, moves a path.
+follows the Billing Folder, ``capture_dir`` (owner decision ก, 2026-09-23 — the
+captures' folder); the Energy file has ``export_energy_output_dir`` on its own
+page's endpoint. **An empty folder turns that file off** (capture-sweep ticket
+02): a file is never written into another file's folder, and the Save button on
+that page answers 422 naming the empty folder. Every test seeds distinct
+folders and asserts which one the file landed in — or that none did — so a
+reader that re-grew a fallback, or read the wrong key, moves a path.
 """
 
 from __future__ import annotations
@@ -155,19 +154,20 @@ class TestTheBillingFileFolder:
         assert result.path is not None and result.path.parent == bill.resolve()
         assert not (lp / result.path.name).exists()
 
-    def test_an_empty_billing_folder_falls_back_to_the_load_profile_folder(
+    def test_an_empty_billing_folder_writes_no_billing_file_anywhere(
         self, admin_client: TestClient, tmp_path: Path
     ) -> None:
         from arichds.export.billing_csv import export_device_billing
 
-        lp = tmp_path / "lp"
-        set_folders(load_profile=lp, billing=None)
+        lp, energy = tmp_path / "lp", tmp_path / "energy"
+        set_folders(load_profile=lp, billing=None, energy=energy)
         device_id = make_device(admin_client)
         seed_billing(device_id, JAN, import_active_kwh_total=100.0)
 
         result = export_device_billing(device_id, require_auto_save=False)
 
-        assert result.path is not None and result.path.parent == lp.resolve()
+        assert result.path is None and result.rows_written == 0
+        assert not list(tmp_path.rglob("*billing*"))
 
     def test_save_billing_file_now_needs_no_load_profile_folder_when_its_own_is_set(
         self, admin_client: TestClient, tmp_path: Path
@@ -182,18 +182,19 @@ class TestTheBillingFileFolder:
         assert response.status_code == 200, response.text
         assert Path(response.json()["data"]["path"]).parent == bill.resolve()
 
-    def test_save_billing_file_now_names_the_field_on_its_own_page_when_neither_is_set(
-        self, admin_client: TestClient
+    def test_save_billing_file_now_is_422_naming_this_pages_folder_even_with_the_load_profile_folder_set(
+        self, admin_client: TestClient, tmp_path: Path
     ) -> None:
-        set_folders(load_profile=None, billing=None)
+        set_folders(load_profile=tmp_path / "lp", billing=None)
         device_id = make_device(admin_client)
         seed_billing(device_id, JAN, import_active_kwh_total=100.0)
 
         response = admin_client.post(f"/api/billing/export?device_id={device_id}")
 
         assert response.status_code == 422, response.text
-        assert "Billing folder" in response.text
+        assert "Billing folder is empty" in response.text
         assert "capture_dir" in response.text
+        assert not list(tmp_path.rglob("*billing*"))
 
 
 class TestTheEnergyFileFolder:
@@ -210,19 +211,20 @@ class TestTheEnergyFileFolder:
         assert result.path is not None and result.path.parent == energy.resolve()
         assert not (lp / result.path.name).exists()
 
-    def test_an_empty_energy_folder_falls_back_to_the_load_profile_folder(
+    def test_an_empty_energy_folder_writes_no_energy_file_anywhere(
         self, admin_client: TestClient, tmp_path: Path
     ) -> None:
         from arichds.export.energy_csv import export_device_energy
 
-        lp = tmp_path / "lp"
-        set_folders(load_profile=lp, energy=None)
+        lp, bill = tmp_path / "lp", tmp_path / "bill"
+        set_folders(load_profile=lp, billing=bill, energy=None)
         device_id = make_device(admin_client)
         seed_summary_day(device_id, local_today() - timedelta(days=2))
 
         result = export_device_energy(device_id, require_auto_save=False)
 
-        assert result.path is not None and result.path.parent == lp.resolve()
+        assert result.path is None and result.rows_written == 0
+        assert not list(tmp_path.rglob("*energy*"))
 
     def test_save_to_file_uses_the_energy_folder(self, admin_client: TestClient, tmp_path: Path) -> None:
         energy = tmp_path / "energy"
@@ -236,8 +238,10 @@ class TestTheEnergyFileFolder:
         assert response.status_code == 200, response.text
         assert Path(response.json()["data"]["path"]).parent == energy.resolve()
 
-    def test_save_to_file_names_the_field_on_its_own_page_when_neither_is_set(self, admin_client: TestClient) -> None:
-        set_folders(load_profile=None, energy=None)
+    def test_save_to_file_is_422_naming_this_pages_folder_even_with_the_load_profile_folder_set(
+        self, admin_client: TestClient, tmp_path: Path
+    ) -> None:
+        set_folders(load_profile=tmp_path / "lp", energy=None)
         device_id = make_device(admin_client)
         day = local_today() - timedelta(days=2)
         seed_summary_day(device_id, day)
@@ -245,7 +249,8 @@ class TestTheEnergyFileFolder:
         response = admin_client.post(f"/api/energy/export?device_id={device_id}&start_date={day}&end_date={day}")
 
         assert response.status_code == 422, response.text
-        assert "Energy file folder" in response.text
+        assert "Energy file folder is empty" in response.text
+        assert not list(tmp_path.rglob("*energy*"))
 
 
 class TestTheUploadCycleReadsEachFolder:
@@ -281,7 +286,7 @@ class TestTheUploadCycleReadsEachFolder:
         }
         assert transport.puts[f"export/{serial}-billing.csv"] == b"bill\n"
 
-    def test_an_empty_billing_folder_means_the_billing_file_comes_from_the_load_profile_folder(
+    def test_an_empty_billing_folder_sends_no_billing_file_even_when_one_sits_in_the_load_profile_folder(
         self,
         admin_client: TestClient,
         license_features,  # noqa: F811 — the fixture imported above
@@ -296,12 +301,14 @@ class TestTheUploadCycleReadsEachFolder:
         set_folders(load_profile=lp, billing=None, energy=None)
         make_device(admin_client)
         serial = DEFAULT_FAKE_SERIAL
-        (lp / f"{serial}-billing.csv").write_text("bill\n")
+        (lp / f"{serial}-billing.csv").write_bytes(b"bill\n")
+        (lp / f"{serial}-energy.csv").write_bytes(b"energy\n")
+        (lp / f"{serial}.csv").write_bytes(b"lp\n")
         transport = InMemoryTransport(manifest=None)
 
         file_upload_cycle(transport=transport)
 
-        assert set(transport.puts) == {f"export/{serial}-billing.csv"}
+        assert set(transport.puts) == {f"export/{serial}.csv"}
 
     def test_the_billing_file_in_the_billing_folder_is_sent_once_as_an_export_never_as_a_capture(
         self,

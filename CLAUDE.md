@@ -317,9 +317,12 @@ MySQL, and ~30 tables.
   captures' (owner decision ก, same day: the file at the folder's top level, the captures one
   subfolder per meter below, ADR 0015; `export_billing_output_dir` lived for one build and
   migration 0023 drops its row) — and `export_energy_output_dir` is set on the Energy Summary page
-  (`GET`/`PUT /api/energy/settings`, new), each falling back to the Load Profile folder while empty
-  through `db/app_settings.py`'s `billing_export_dir`/`energy_export_dir` — the one place the
-  fallback lives, read by the writers, the two Save-now buttons and `fileupload/cycle.py`, which
+  (`GET`/`PUT /api/energy/settings`, new) — **an empty folder turns that file off** (capture-sweep
+  ticket 02, 2026-09-23: the fallback to the Load Profile folder that 0.8.2/0.8.3 carried is
+  withdrawn; a file is never written into another file's folder, and each page's Save button
+  answers 422 naming its own empty folder) — read through `db/app_settings.py`'s
+  `billing_export_dir`/`energy_export_dir` by the writers, the two Save-now buttons and
+  `fileupload/cycle.py`, which
   lists each file's own folder against its template with the manifest keys unchanged, and whose
   capture walk skips the capture folder's top level so the billing file is never sent twice; the
   owner put each folder on its file's page, not on Export Format (`.scratch/export-folders/spec.md`)

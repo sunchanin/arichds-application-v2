@@ -309,8 +309,8 @@ const CAPTURE_STYLE_OPTIONS: { label: string; value: CaptureStyle }[] = [
 /**
  * The page's one folder, `capture_dir` (M6b, issue #22) — the captures' folder
  * and, since 2026-09-23 (owner decision ก), the billing file's too, at its top
- * level; empty disables capture and sends the billing file back to the Load
- * Profile page's Output folder — and the Capture Style (ADR 0028). Editable by an admin only; a `user` sees the values and every
+ * level; empty turns both off (no capture, no billing file — never another
+ * file's folder, capture-sweep ticket 02) — and the Capture Style (ADR 0028). Editable by an admin only; a `user` sees the values and every
  * control is disabled — the same read/change split the API has.
  *
  * Changing the folder while captures already exist confirms first — the
@@ -386,7 +386,7 @@ function CaptureSettingsCard({
         <Form.Item
           name="capture_dir"
           label="Folder path"
-          extra="Where the billing captures (PDF/xlsx/PNG, one subfolder per meter) and the billing file (Save billing file now and the 15-minute rewrite) are written. Leave empty to disable capture; the billing file then uses the Output folder on the Load Profile page."
+          extra="Where the billing captures (PDF/xlsx/PNG, one subfolder per meter) and the billing file (Save billing file now and the 15-minute rewrite) are written. Leave empty to turn both off — nothing is written to another file's folder."
         >
           <Input placeholder="e.g. C:\\Billing" allowClear />
         </Form.Item>

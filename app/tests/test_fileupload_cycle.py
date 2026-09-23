@@ -24,6 +24,7 @@ from arichds.db.app_settings import (
     EXPORT_CSV_FILENAME_TMPL_KEY,
     EXPORT_ENERGY_FILENAME_TMPL_DEFAULT,
     EXPORT_ENERGY_FILENAME_TMPL_KEY,
+    EXPORT_ENERGY_OUTPUT_DIR_KEY,
     EXPORT_OUTPUT_DIR_KEY,
     FILEUPLOAD_ACTIVE_PROTOCOL_KEY,
     FILEUPLOAD_SFTP_HOST_KEY,
@@ -97,9 +98,17 @@ def _configure_sftp(*, host: str = "sftp.example.com") -> None:
 
 
 def _configure_dirs(*, export_dir: Path | None, capture_dir: Path | None) -> None:
+    """*export_dir* is every export file's folder here — the Load Profile CSV's,
+    the Energy file's, and (through the Billing Folder, which the billing file
+    follows since 2026-09-23 with no fallback, capture-sweep ticket 02) the
+    billing file's too when no *capture_dir* is given; the capture walk skips a
+    folder's top level, so an export folder doubling as the Billing Folder yields
+    no capture candidates. A test that separates the two passes *capture_dir*."""
     with session_scope() as session:
         set_setting(session, EXPORT_OUTPUT_DIR_KEY, str(export_dir) if export_dir is not None else "")
-        set_setting(session, CAPTURE_DIR_KEY, str(capture_dir) if capture_dir is not None else "")
+        set_setting(session, EXPORT_ENERGY_OUTPUT_DIR_KEY, str(export_dir) if export_dir is not None else "")
+        billing_dir = capture_dir if capture_dir is not None else export_dir
+        set_setting(session, CAPTURE_DIR_KEY, str(billing_dir) if billing_dir is not None else "")
 
 
 class InMemoryTransport:

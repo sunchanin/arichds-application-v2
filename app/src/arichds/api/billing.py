@@ -742,8 +742,8 @@ def export_billing_now(session: SessionDep, device_id: Annotated[int, Query(ge=1
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                "No folder is set for the billing file — set the Billing folder on this page "
-                "(capture_dir), or the Load Profile page's Output folder (export_output_dir)."
+                "Billing folder is empty — set it on this page (capture_dir). "
+                "The billing file is written only there, never to another file's folder."
             ),
         )
 
