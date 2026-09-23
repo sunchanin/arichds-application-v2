@@ -65,6 +65,7 @@ class TestGetIsOpenToAnyAuthenticatedCaller:
             "capture_dir": "",
             "capture_count": 0,
             "capture_style": "standard",
+            "captures_missing": 0,
         }
 
     def test_a_plain_user_may_read_it(self, user_client: TestClient) -> None:

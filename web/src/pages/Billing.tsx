@@ -387,7 +387,7 @@ function CaptureSettingsCard({
         <Form.Item
           name="capture_dir"
           label="Folder path"
-          extra="Where each meter's billing documents are written, one subfolder per meter: its PDF/xlsx/PNG captures and its billing file (Save billing file now and the 15-minute rewrite) together. Leave empty to turn both off — nothing is written to another file's folder."
+          extra="Where each meter's billing documents are written, one subfolder per meter: its PDF/xlsx/PNG captures and its billing file (Save all and the 15-minute rewrite) together. Leave empty to turn both off — nothing is written to another file's folder."
         >
           <Input placeholder="e.g. C:\\Billing" allowClear />
         </Form.Item>
@@ -543,6 +543,17 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   // role sees the progress line — only an admin has the button. When a
   // sweep finishes the table reloads so the Captured column fills in.
   const [sweep, setSweep] = useState<CaptureSweepStatus | null>(null);
+  // How many closed periods have no document in this folder yet (ticket 05)
+  // — re-read after a sweep finishes, so the sentence goes away on its own.
+  const [capturesMissing, setCapturesMissing] = useState(0);
+  const refreshMissing = useCallback(
+    () =>
+      api
+        .billingSettings()
+        .then((data) => setCapturesMissing(data.captures_missing))
+        .catch(() => undefined),
+    [],
+  );
   const [startingSweep, setStartingSweep] = useState(false);
   const sweepRunning = sweep?.running ?? false;
 
@@ -558,7 +569,8 @@ export function Billing({ role }: { role: "admin" | "user" }) {
   useEffect(() => {
     if (captureRequest) return;
     void refreshSweep();
-  }, [refreshSweep]);
+    void refreshMissing();
+  }, [refreshSweep, refreshMissing]);
 
   useEffect(() => {
     if (!sweepRunning) return;
@@ -568,9 +580,12 @@ export function Billing({ role }: { role: "admin" | "user" }) {
 
   const wasRunning = useRef(false);
   useEffect(() => {
-    if (wasRunning.current && !sweepRunning) setRefreshTick((tick) => tick + 1);
+    if (wasRunning.current && !sweepRunning) {
+      setRefreshTick((tick) => tick + 1);
+      void refreshMissing();
+    }
     wasRunning.current = sweepRunning;
-  }, [sweepRunning]);
+  }, [sweepRunning, refreshMissing]);
 
   const onSaveAll = useCallback(() => {
     setStartingSweep(true);
@@ -864,6 +879,11 @@ export function Billing({ role }: { role: "admin" | "user" }) {
             {/* Hidden in capture mode (D13, issue #44) — a button offering to
                 talk to a meter has no place in a headless screenshot a human
                 carries to a customer (ADR 0015/0017). */}
+            {captureRequest || capturesMissing === 0 ? null : (
+              <Text type="warning">
+                {capturesMissing} closed period(s) have no document in this folder yet — press Save all.
+              </Text>
+            )}
             {captureRequest || role !== "admin" ? null : (
               <Tooltip title="Rewrites every meter's billing file in the Billing folder and writes every capture that folder is missing — press after an install or a folder move. Runs in the background; the line below shows progress.">
                 <span>

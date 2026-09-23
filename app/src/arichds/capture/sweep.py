@@ -157,7 +157,15 @@ def _missing_targets(session: object, capture_dir: Path) -> list[_Target]:
     the PNG window's own order) — minus the periods that already failed this
     sweep. A period with no stored Meter Serial, or one the serial cannot name
     a folder for, has no document to be missing (the eager path skips it the
-    same way)."""
+    same way).
+
+    A period whose PDF **is** present is done — and, when its *Captured* stamp
+    is empty or older than that file, the stamp is set to the file's own
+    write time (code review, 2026-09-23): *Captured* means "when a document
+    for this period was last written" (CONTEXT.md), the file is the fact,
+    and without this a document that predates the stamp, or one copied into
+    a new folder by hand, would keep the page's "no document yet" count
+    non-zero through every Save all."""
     rows = session.execute(  # type: ignore[attr-defined]
         select(BillingReadingRow, Device.name)
         .join(Device, BillingReadingRow.device_id == Device.id)
@@ -175,6 +183,14 @@ def _missing_targets(session: object, capture_dir: Path) -> list[_Target]:
         except ValueError:
             continue
         if pdf_target.exists():
+            written_at = datetime.fromtimestamp(pdf_target.stat().st_mtime, tz=UTC)
+            stamped = (
+                row.captured_at.replace(tzinfo=UTC)
+                if row.captured_at and row.captured_at.tzinfo is None
+                else row.captured_at
+            )
+            if stamped is None or stamped < written_at:
+                row.captured_at = written_at
             continue
         targets.append(_Target(device_id=row.device_id, device_name=device_name, reading_id=row.id))
     return targets
@@ -192,9 +208,21 @@ def run_sweep_slice(
 
     *budget_sec* and *clock* are seams for tests — the product always calls
     this with the defaults, through :func:`start_capture_sweep`.
+
+    A failure anywhere outside the per-capture guard — the database, the
+    licence, the settings — **ends the sweep** (code review, 2026-09-23): the
+    Scheduler would log the one-shot and drop it, and a status left
+    ``running`` would answer 409 to every later Save all until a restart.
     """
+    try:
+        return _run_slice(scheduler, deadline=clock() + budget_sec, clock=clock)
+    except Exception:  # noqa: BLE001 — a crashed slice must end the sweep, never wedge the button.
+        logger.exception("Save all: the sweep stopped on an error")
+        return _finish()
+
+
+def _run_slice(scheduler: RunSoon, *, deadline: float, clock: Callable[[], float]) -> SweepStatus:
     global _billing_done  # noqa: PLW0603
-    deadline = clock() + budget_sec
     settings = get_settings()
     license_service = current_license_service()
 

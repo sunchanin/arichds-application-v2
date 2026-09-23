@@ -33,7 +33,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from arichds.acquisition.billing import last_billing_change_check_at, read_and_store_billing
@@ -81,7 +81,7 @@ from arichds.db.app_settings import (
     set_setting,
 )
 from arichds.db.billing_query import latest_closed_per_device
-from arichds.db.models import BillingReading, Device
+from arichds.db.models import BillingReading, Device, Setting
 from arichds.licensing.features import feature_enabled
 
 router = APIRouter(
@@ -826,11 +826,19 @@ class BillingSettingsOut(BaseModel):
         capture_style: The Capture Style (ADR 0028) — what the next ``.png``
             written on any path looks like; ``standard`` on an install that
             never chose.
+        captures_missing: How many closed periods have no document in this
+            Billing Folder *yet* (capture-sweep ticket 05) — *Captured* empty,
+            or stamped before the folder was last saved, so a moved folder
+            shows the right number rather than zero. Counted in the database,
+            never by walking the folder: a hint that says "press Save all",
+            while the sweep itself is the authority on what is missing. Zero
+            while the folder is empty (nothing can be missing from no folder).
     """
 
     capture_dir: str
     capture_count: int
     capture_style: CaptureStyle
+    captures_missing: int
 
 
 class BillingSettingsIn(BaseModel):
@@ -850,6 +858,33 @@ def _billing_settings_out(session: Session, capture_dir: str) -> BillingSettings
         capture_dir=capture_dir,
         capture_count=_closed_billing_count(session),
         capture_style=read_capture_style(session),
+        captures_missing=_captures_missing_count(session, capture_dir),
+    )
+
+
+def _captures_missing_count(session: Session, capture_dir: str) -> int:
+    """Closed periods whose *Captured* stamp is empty or older than the moment
+    the Billing Folder was last saved — the ``settings`` row's own
+    ``updated_at`` (capture-sweep ticket 05). Zero while the folder is empty.
+    The row's timestamp is SQLite's ``CURRENT_TIMESTAMP`` — UTC, naive when
+    read back — so it is made aware before the comparison, in Python, rather
+    than trusting two differently-stored datetime columns to compare in SQL."""
+    if not capture_dir.strip():
+        return 0
+    row = session.get(Setting, CAPTURE_DIR_KEY)
+    if row is None or row.updated_at is None:
+        return 0
+    saved_at = _as_utc(row.updated_at)
+    return (
+        session.scalar(
+            select(func.count())
+            .select_from(BillingReading)
+            .where(
+                BillingReading.record_status.is_(None),
+                or_(BillingReading.captured_at.is_(None), BillingReading.captured_at < saved_at),
+            )
+        )
+        or 0
     )
 
 

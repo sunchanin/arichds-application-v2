@@ -375,6 +375,10 @@ export interface BillingSettings {
   /** The Capture Style (ADR 0028) — what the next `.png` written on any
    * path looks like; `standard` on an install that never chose. */
   capture_style: CaptureStyle;
+  /** Closed periods with no document in this Billing folder yet (capture-sweep
+   * ticket 05): `captured_at` empty or older than the folder's last save. A
+   * hint for the Save all sentence; the sweep itself judges by the folder. */
+  captures_missing: number;
 }
 
 /** The Energy Summary page's one setting: the Energy file's own folder — `""`
@@ -1204,9 +1208,9 @@ export interface LoadProfileExportResult {
 }
 
 /**
- * What "Save billing file now" did (M13, issue 01) — the same shape
- * `LoadProfileExportResult` has, because two export files an operator drives
- * the same way should not report what they did in two different shapes.
+ * What the Energy Summary page's "Save to file" did (M13, issue 02) — the same
+ * shape `LoadProfileExportResult` has, because two export files an operator
+ * drives the same way should not report what they did in two different shapes.
  */
 export interface EnergyExportResult {
   /** Local days written. Zero means the range holds no stored readings — normal, not an error. */

@@ -370,7 +370,8 @@ is how the new folder gets them back. Created eagerly,
 synchronously, the moment a closed period is inserted; a missing one is rendered again on
 download rather than tracked as a failure. The Open Period never has one. The Billing page's
 **Captured** column is the moment a document for that period was last written — the automatic
-capture of a new closed period, or a hand-pressed Capture image — stamped on the period only
+capture of a new closed period, a hand-pressed Capture image, or a Capture Sweep (which also
+reads the write time off a document it finds already present) — stamped on the period only
 once the file exists, and blank until then; it is never the bill's own read time, and never
 inferred from the folder being configured (ui-audit ticket 03).
 

@@ -157,7 +157,17 @@ class TestSaveAllWritesEverything:
         scheduler.drain()
 
         assert existing.read_bytes() == b"%PDF-handed-over"
-        assert captured_at(ids["SN-1"][0]) is None
+        # The stamp is the file's own write time, not the sweep's — the document
+        # existed before it (code review fix 2); it is never left empty, or the
+        # page's "no document yet" count would name this period forever.
+        stamped = captured_at(ids["SN-1"][0])
+        assert stamped is not None
+        assert (
+            abs(
+                (stamped.replace(tzinfo=UTC) - datetime.fromtimestamp(existing.stat().st_mtime, tz=UTC)).total_seconds()
+            )
+            < 1
+        )
         assert not existing.with_suffix(".png").exists()  # a PDF present is done; its PNG is the download path's
         status = sweep_status()
         assert status is not None
@@ -241,6 +251,25 @@ class TestSaveAllWritesEverything:
 
 
 class TestFailuresAndSlices:
+    def test_a_slice_that_crashes_outside_a_capture_ends_the_sweep_instead_of_wedging_it(
+        self, admin_client: TestClient, fake_meter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Code review fix 1: a status left `running` would answer 409 to every
+        later Save all until a restart."""
+        seed_two_devices(admin_client, fake_meter)
+        set_capture_dir(tmp_path)
+        monkeypatch.setattr(
+            sweep_module, "_missing_targets", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("db gone"))
+        )
+
+        scheduler, first = press_save_all(admin_client)
+        scheduler.drain()
+
+        status = sweep_status()
+        assert status is not None and status.running is False and status.finished_at is not None
+        assert scheduler.pending == []
+        assert admin_client.post("/api/billing/save-all").status_code == 200  # not wedged at 409
+
     def test_a_period_that_cannot_be_written_is_counted_and_the_rest_are_written(
         self, admin_client: TestClient, fake_meter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -348,3 +377,77 @@ class TestTheEndpointPair:
 
     def test_the_old_per_device_export_endpoint_is_gone(self, admin_client: TestClient) -> None:
         assert admin_client.post("/api/billing/export?device_id=1").status_code in (404, 405)
+
+
+class TestCapturesMissing:
+    """`captures_missing` on the billing settings (ticket 05): *Captured* empty
+    or older than the folder's last save; zero while the folder is empty."""
+
+    def _missing(self, admin_client: TestClient) -> int:
+        return admin_client.get("/api/billing/settings").json()["data"]["captures_missing"]
+
+    def test_periods_never_captured_count_and_a_sweep_clears_them(
+        self, admin_client: TestClient, fake_meter, tmp_path: Path
+    ) -> None:
+        seed_two_devices(admin_client, fake_meter)
+        set_capture_dir(tmp_path)
+        assert self._missing(admin_client) == 4
+
+        scheduler, _response = press_save_all(admin_client)
+        scheduler.drain()
+
+        assert self._missing(admin_client) == 0
+
+    def test_a_document_that_predates_its_stamp_stops_counting_after_a_sweep(
+        self, admin_client: TestClient, fake_meter, tmp_path: Path
+    ) -> None:
+        """An upgraded site: files exist, `captured_at` was never stamped (the
+        column is younger than the folder). One Save all must clear the sentence."""
+        ids = seed_two_devices(admin_client, fake_meter)
+        set_capture_dir(tmp_path)
+        for reading_ids in ids.values():
+            for reading_id in reading_ids:
+                pdf = pdf_for(tmp_path, reading_id)
+                pdf.parent.mkdir(parents=True, exist_ok=True)
+                pdf.write_bytes(b"%PDF-old")
+        assert self._missing(admin_client) == 4
+
+        scheduler, _response = press_save_all(admin_client)
+        scheduler.drain()
+
+        assert self._missing(admin_client) == 0
+        status = sweep_status()
+        assert status is not None and (status.captures_written, status.captures_failed) == (0, 0)
+
+    def test_zero_while_the_folder_is_empty(self, admin_client: TestClient, fake_meter) -> None:
+        seed_two_devices(admin_client, fake_meter)
+        set_capture_dir(None)
+
+        assert self._missing(admin_client) == 0
+
+    def test_a_folder_saved_after_the_captures_counts_them_until_swept_again(
+        self, admin_client: TestClient, fake_meter, tmp_path: Path
+    ) -> None:
+        from sqlalchemy import select
+
+        seed_two_devices(admin_client, fake_meter)
+        set_capture_dir(tmp_path / "old")
+        scheduler, _response = press_save_all(admin_client)
+        scheduler.drain()
+        assert self._missing(admin_client) == 0
+
+        # Those captures happened "earlier" (backdated ten seconds — the folder
+        # row's own save time is CURRENT_TIMESTAMP, second-precise, so the test
+        # moves the stamps rather than sleeping past a second), then the folder
+        # moves: its settings row is saved again, later than every stamp.
+        with session_scope() as session:
+            for row in session.scalars(select(BillingReading)):
+                row.captured_at = row.captured_at - timedelta(seconds=10)
+        set_capture_dir(tmp_path / "new")
+
+        assert self._missing(admin_client) == 4
+
+        scheduler, _response = press_save_all(admin_client)
+        scheduler.drain()
+
+        assert self._missing(admin_client) == 0  # stamped after the save — newer never counts

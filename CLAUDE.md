@@ -55,7 +55,9 @@ MySQL, and ~30 tables.
   Capture into the current Billing Folder — the folder is the state, nothing persisted, never over
   an existing file — in 60 s slices on the one-shot lane, admin-only `POST /api/billing/save-all` +
   `GET .../save-all/status`, replacing the per-device *Save billing file now*; a moved folder is
-  filled by pressing it, never automatically — the owner's choice) ·
+  filled by pressing it, never automatically — the owner's choice; the Billing page's
+  `captures_missing` (ticket 05: *Captured* empty or older than the folder row's own `updated_at`,
+  counted in the database, zero while the folder is empty) is the hint that says so) ·
   0011 (a model's capabilities come from its **driver**, not the catalog — **reverses** the
   "catalog copied from v1 verbatim, locked" rule for the three capability booleans only, because
   v1's flags claimed 9/6/6 models against drivers that implement 3/1/1; keys, brands, order and

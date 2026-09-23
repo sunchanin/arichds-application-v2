@@ -1,6 +1,6 @@
 # Spec — Save all: the Capture Sweep, and each export file only in its own folder
 
-**Status:** ready-for-agent · grilled with the owner 2026-09-23 (grill-with-docs, nine questions over
+**Status:** done 2026-09-23 (tickets 01–05, installer 0.8.4) · grilled with the owner 2026-09-23 (grill-with-docs, nine questions over
 three rounds, every branch settled) · amends `.scratch/export-folders/spec.md` (the folder fallback
 is withdrawn) and 0.8.3's one-folder decision ก (the Billing Export File moves into the meter's
 subfolder). Tracker: local (`.scratch/capture-sweep/issues/` once `/to-tickets` runs); no GitHub
@@ -171,6 +171,12 @@ of writing somewhere else.
   path's render-on-miss does; a period whose PDF exists is done even if its xlsx or PNG is not
   (the download path handles those one at a time, as today). Existing files are never rewritten
   (the O_EXCL write stays).
+- **Review round (2026-09-23):** a period whose PDF is already present has *Captured* set from
+  that file's own write time when the stamp is empty or older than the file — *Captured* means
+  "when a document was last written" and the file is the fact; without it an upgraded site's
+  pre-stamp documents would keep the "no document yet" count non-zero through every Save all.
+  And a slice that fails outside the per-capture guard ends the sweep (status finished) rather
+  than leaving it `running` and every later Save all at 409.
 - A failed period is logged with the device and reading id, counted as `failed`, and skipped;
   nothing persists which periods were swept or failed (ADR 0008 — the folder is the state).
 - Progress lives in one in-memory frozen dataclass, the same shape the File Upload Destination's
