@@ -112,7 +112,10 @@ MySQL, and ~30 tables.
   **fully implemented** with issue #35; **amended by ADR 0029** (billing-sequence ticket 02): the
   stem carries `_<sequence + 1>` for the older members of a same-second pair *only* — a period
   alone on its bill date keeps its unsuffixed name, so nothing already handed over is renamed —
-  and `png_source_rows` counts a pair as two of the ten) ·
+  and `png_source_rows` counts a pair as two of the ten; **amended again 2026-09-23, capture-sweep
+  ticket 03**: the Billing Export File is written into the same `<serial>/` subfolder as the
+  meter's captures — the customer keeps a meter's billing documents together — with the capture
+  names and spans untouched, and a stale top-level file from 0.8.2/0.8.3 never moved or deleted) ·
   0016 (a customer's database is a **destination, not our store** — MySQL cannot express the
   partial unique indexes ADR 0009's invariant rests on, and making their database the store
   would make their downtime our downtime; FTP upload, a customer MySQL and a replicated folder
@@ -314,8 +317,9 @@ MySQL, and ~30 tables.
   0023 (export files **mirror our window and are rewritten, never archived** — **amended 2026-09-23:
   each export file has its own folder** — `export_output_dir` stays the Load Profile CSV's (Load
   Profile page), the billing file follows **`capture_dir`** — the Billing page's one folder, the
-  captures' (owner decision ก, same day: the file at the folder's top level, the captures one
-  subfolder per meter below, ADR 0015; `export_billing_output_dir` lived for one build and
+  captures' (owner decision ก, same day; since capture-sweep ticket 03 the file sits **inside the
+  meter's capture subfolder** beside its PDF/xlsx/PNG, ADR 0015 amended; `export_billing_output_dir`
+  lived for one build and
   migration 0023 drops its row) — and `export_energy_output_dir` is set on the Energy Summary page
   (`GET`/`PUT /api/energy/settings`, new) — **an empty folder turns that file off** (capture-sweep
   ticket 02, 2026-09-23: the fallback to the Load Profile folder that 0.8.2/0.8.3 carried is
@@ -323,8 +327,10 @@ MySQL, and ~30 tables.
   answers 422 naming its own empty folder) — read through `db/app_settings.py`'s
   `billing_export_dir`/`energy_export_dir` by the writers, the two Save-now buttons and
   `fileupload/cycle.py`, which
-  lists each file's own folder against its template with the manifest keys unchanged, and whose
-  capture walk skips the capture folder's top level so the billing file is never sent twice; the
+  lists each file's own folder against its template — the billing file's being the meter's subfolder
+  — with the manifest keys unchanged, and whose capture walk skips the folder's top level and any
+  file matching the billing template in a meter's subfolder, so the billing file is sent once as
+  `export/<name>`; the
   owner put each folder on its file's page, not on Export Format (`.scratch/export-folders/spec.md`)
   — **supersedes 0013's
   M13 amendment**, extends 0020 to the export folder: Load Profile CSV and Energy file hold 90

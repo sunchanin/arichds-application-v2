@@ -91,7 +91,9 @@ def configure(
 ) -> None:
     with session_scope() as session:
         # The billing file's folder is the Billing Folder (`capture_dir`) since
-        # 2026-09-23 — never the Load Profile CSV's (capture-sweep ticket 02).
+        # 2026-09-23 — never the Load Profile CSV's (capture-sweep ticket 02) —
+        # and the file sits in the meter's own subfolder, `<folder>/SN-1/`, beside
+        # its captures (ticket 03).
         set_setting(session, CAPTURE_DIR_KEY, str(output_dir))
         set_setting(session, EXPORT_AUTO_SAVE_ENABLED_KEY, "true" if auto_save_enabled else "false")
         set_setting(session, EXPORT_BILLING_FILENAME_TMPL_KEY, filename_tmpl)
@@ -122,7 +124,7 @@ class TestTheFileTheCustomerAskedFor:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        rows = read_rows(tmp_path / "SN-1-billing.csv")
+        rows = read_rows(tmp_path / "SN-1" / "SN-1-billing.csv")
         assert rows[0] == ["Customer :", "TFTECH"]
         assert rows[1] == ["Site Name :", "Plant A"]
         assert rows[2] == ["Serial Meter :", "SN-1"]
@@ -145,7 +147,7 @@ class TestTheFileTheCustomerAskedFor:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        path = tmp_path / "SN-1-billing.csv"
+        path = tmp_path / "SN-1" / "SN-1-billing.csv"
         assert BILLING_EXPORT_HEADERS.index("Sequence") == BILLING_EXPORT_HEADERS.index("Time") + 1
         assert [
             (cell(path, i, "Record No"), cell(path, i, "Sequence"), cell(path, i, "111 Billing total kWh Total"))
@@ -161,7 +163,7 @@ class TestTheFileTheCustomerAskedFor:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        assert read_rows(tmp_path / "SN-1-billing.csv")[0] == ["Customer :", ""]
+        assert read_rows(tmp_path / "SN-1" / "SN-1-billing.csv")[0] == ["Customer :", ""]
 
     def test_the_four_export_columns_are_present_and_cleanly_spelled(
         self, migrated_db: Settings, tmp_path: Path
@@ -179,7 +181,7 @@ class TestTheFileTheCustomerAskedFor:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        assert cell(tmp_path / "SN-1-billing.csv", 0, "Billing total Export kWh Total") == "12.5"
+        assert cell(tmp_path / "SN-1" / "SN-1-billing.csv", 0, "Billing total Export kWh Total") == "12.5"
 
     def test_there_is_no_rate_d_column(self, migrated_db: Settings, tmp_path: Path) -> None:
         """The customer's contract has three tariffs. Rate D is 0.0 on their own
@@ -199,9 +201,9 @@ class TestOnlyClosedPeriodsReachTheFile:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        rows = data_rows(tmp_path / "SN-1-billing.csv")
+        rows = data_rows(tmp_path / "SN-1" / "SN-1-billing.csv")
         assert len(rows) == 1
-        assert cell(tmp_path / "SN-1-billing.csv", 0, "111 Billing total kWh Total") == "100"
+        assert cell(tmp_path / "SN-1" / "SN-1-billing.csv", 0, "111 Billing total kWh Total") == "100"
 
     def test_a_device_holding_only_an_open_period_writes_no_file(self, migrated_db: Settings, tmp_path: Path) -> None:
         """The customer's own machine is in exactly this state today."""
@@ -212,7 +214,7 @@ class TestOnlyClosedPeriodsReachTheFile:
         result = export_device_billing(device_id, require_auto_save=True)
 
         assert result.rows_written == 0
-        assert not (tmp_path / "SN-1-billing.csv").exists()
+        assert not (tmp_path / "SN-1" / "SN-1-billing.csv").exists()
 
     def test_record_status_reads_closed_on_every_row(self, migrated_db: Settings, tmp_path: Path) -> None:
         device_id = make_device()
@@ -221,7 +223,7 @@ class TestOnlyClosedPeriodsReachTheFile:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        assert cell(tmp_path / "SN-1-billing.csv", 0, "Record Status") == "closed"
+        assert cell(tmp_path / "SN-1" / "SN-1-billing.csv", 0, "Record Status") == "closed"
 
 
 class TestRecordNoCountsFromTheOldestPeriod:
@@ -238,7 +240,7 @@ class TestRecordNoCountsFromTheOldestPeriod:
         seed(device_id, JAN + timedelta(days=62), import_active_kwh_total=300.0)
         export_device_billing(device_id, require_auto_save=True)
 
-        path = tmp_path / "SN-1-billing.csv"
+        path = tmp_path / "SN-1" / "SN-1-billing.csv"
         assert [row[0] for row in data_rows(path)] == ["1", "2", "3"]
 
     def test_the_oldest_period_is_one(self, migrated_db: Settings, tmp_path: Path) -> None:
@@ -249,7 +251,7 @@ class TestRecordNoCountsFromTheOldestPeriod:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        path = tmp_path / "SN-1-billing.csv"
+        path = tmp_path / "SN-1" / "SN-1-billing.csv"
         assert cell(path, 0, "Record No") == "1"
         assert cell(path, 0, "111 Billing total kWh Total") == "100"
 
@@ -263,7 +265,7 @@ class TestTimestampCellsTellNeverApartFromAReading:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        assert cell(tmp_path / "SN-1-billing.csv", 0, "050T Previous Time of kW deman") == "-"
+        assert cell(tmp_path / "SN-1" / "SN-1-billing.csv", 0, "050T Previous Time of kW deman") == "-"
 
     def test_the_meter_epoch_sentinel_also_reads_as_a_dash(self, migrated_db: Settings, tmp_path: Path) -> None:
         """What a SMART TCC stores for the same thing. Left unfiltered it prints
@@ -275,7 +277,7 @@ class TestTimestampCellsTellNeverApartFromAReading:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        assert cell(tmp_path / "SN-1-billing.csv", 0, "050T Previous Time of kW deman") == "-"
+        assert cell(tmp_path / "SN-1" / "SN-1-billing.csv", 0, "050T Previous Time of kW deman") == "-"
 
     def test_a_real_demand_time_is_written_in_meter_local_time(self, migrated_db: Settings, tmp_path: Path) -> None:
         device_id = make_device()
@@ -285,7 +287,9 @@ class TestTimestampCellsTellNeverApartFromAReading:
         export_device_billing(device_id, require_auto_save=True)
 
         # UTC +7 — the same conversion the Load Profile CSV applies.
-        assert cell(tmp_path / "SN-1-billing.csv", 0, "050T Previous Time of kW deman") == "2026-01-13 12:45:00"
+        assert (
+            cell(tmp_path / "SN-1" / "SN-1-billing.csv", 0, "050T Previous Time of kW deman") == "2026-01-13 12:45:00"
+        )
 
     def test_the_bill_date_uses_the_shared_date_format_setting(self, migrated_db: Settings, tmp_path: Path) -> None:
         device_id = make_device()
@@ -294,7 +298,7 @@ class TestTimestampCellsTellNeverApartFromAReading:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        assert cell(tmp_path / "SN-1-billing.csv", 0, "Time") == "01/01/2026 07:00"
+        assert cell(tmp_path / "SN-1" / "SN-1-billing.csv", 0, "Time") == "01/01/2026 07:00"
 
 
 class TestNumbersLookLikeTheCustomersOwnFile:
@@ -317,7 +321,7 @@ class TestNumbersLookLikeTheCustomersOwnFile:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        assert cell(tmp_path / "SN-1-billing.csv", 0, "111 Billing total kWh Total") == expected
+        assert cell(tmp_path / "SN-1" / "SN-1-billing.csv", 0, "111 Billing total kWh Total") == expected
 
     def test_a_missing_value_is_empty_never_zero(self, migrated_db: Settings, tmp_path: Path) -> None:
         """A meter that does not report a register is not a meter reporting
@@ -328,7 +332,7 @@ class TestNumbersLookLikeTheCustomersOwnFile:
 
         export_device_billing(device_id, require_auto_save=True)
 
-        assert cell(tmp_path / "SN-1-billing.csv", 0, "Billing total Export kWh Total") == ""
+        assert cell(tmp_path / "SN-1" / "SN-1-billing.csv", 0, "Billing total Export kWh Total") == ""
 
 
 class TestEveryCycleRewritesTheWholeFile:
@@ -348,7 +352,7 @@ class TestEveryCycleRewritesTheWholeFile:
         second = export_device_billing(device_id, require_auto_save=True)
 
         assert second.rows_written == 1
-        assert len(data_rows(tmp_path / "SN-1-billing.csv")) == 1
+        assert len(data_rows(tmp_path / "SN-1" / "SN-1-billing.csv")) == 1
 
     def test_a_write_failure_writes_zero_rows(self, migrated_db: Settings, tmp_path: Path) -> None:
         """A write that cannot land must not be reported as having written
@@ -362,7 +366,7 @@ class TestEveryCycleRewritesTheWholeFile:
         # A template that renders to a directory makes the open() fail.
         with session_scope() as session:
             set_setting(session, EXPORT_BILLING_FILENAME_TMPL_KEY, "sub")
-        (outside / "sub").mkdir()
+        (outside / "SN-1" / "sub").mkdir(parents=True)  # the file lands in the meter's subfolder (ticket 03)
 
         result = export_device_billing(device_id, require_auto_save=True)
 
@@ -378,7 +382,7 @@ class TestTheAutoSaveSwitch:
         result = export_device_billing(device_id, require_auto_save=True)
 
         assert result.rows_written == 0
-        assert not (tmp_path / "SN-1-billing.csv").exists()
+        assert not (tmp_path / "SN-1" / "SN-1-billing.csv").exists()
 
     def test_save_now_ignores_it(self, migrated_db: Settings, tmp_path: Path) -> None:
         """Pressing a button already expresses intent — making an operator flip
@@ -437,8 +441,8 @@ class TestAChangedHeadIsReflectedOnTheNextCycle:
         seed(device_id, JAN + timedelta(days=31), import_active_kwh_total=200.0)
         export_device_billing(device_id, require_auto_save=True)
 
-        live = tmp_path / "SN-1-billing.csv"
-        assert list(tmp_path.glob("SN-1-billing.*.csv")) == [], "no dated edition may ever be created"
+        live = tmp_path / "SN-1" / "SN-1-billing.csv"
+        assert list((tmp_path / "SN-1").glob("SN-1-billing.*.csv")) == [], "no dated edition may ever be created"
         assert read_rows(live)[1] == ["Site Name :", "Plant B"]
 
     def test_every_closed_period_reaches_the_rewritten_file_under_the_new_head(
@@ -460,7 +464,7 @@ class TestAChangedHeadIsReflectedOnTheNextCycle:
         seed(device_id, JAN + timedelta(days=31), import_active_kwh_total=200.0)
         export_device_billing(device_id, require_auto_save=True)
 
-        rows = data_rows(tmp_path / "SN-1-billing.csv")
+        rows = data_rows(tmp_path / "SN-1" / "SN-1-billing.csv")
         assert [row[0] for row in rows] == ["1", "2"], "both periods must land under the new head"
 
     def test_repeated_head_changes_never_leave_a_dated_file_behind(self, migrated_db: Settings, tmp_path: Path) -> None:
@@ -475,8 +479,8 @@ class TestAChangedHeadIsReflectedOnTheNextCycle:
             seed(device_id, JAN + timedelta(days=31 * index), import_active_kwh_total=200.0)
             export_device_billing(device_id, require_auto_save=True)
 
-        assert list(tmp_path.glob("SN-1-billing.*.csv")) == []
-        assert [row[0] for row in data_rows(tmp_path / "SN-1-billing.csv")] == ["1", "2", "3"]
+        assert list((tmp_path / "SN-1").glob("SN-1-billing.*.csv")) == []
+        assert [row[0] for row in data_rows(tmp_path / "SN-1" / "SN-1-billing.csv")] == ["1", "2", "3"]
 
     def test_a_period_removed_from_billing_readings_disappears_from_the_file(
         self, migrated_db: Settings, tmp_path: Path
@@ -490,14 +494,14 @@ class TestAChangedHeadIsReflectedOnTheNextCycle:
         seed(device_id, JAN, import_active_kwh_total=100.0)
         seed(device_id, JAN + timedelta(days=31), import_active_kwh_total=200.0)
         export_device_billing(device_id, require_auto_save=True)
-        assert len(data_rows(tmp_path / "SN-1-billing.csv")) == 2
+        assert len(data_rows(tmp_path / "SN-1" / "SN-1-billing.csv")) == 2
 
         with session_scope() as session:
             row = session.query(BillingReading).filter_by(device_id=device_id, bill_date=JAN).one()
             session.delete(row)
         export_device_billing(device_id, require_auto_save=True)
 
-        written = [row[0] for row in data_rows(tmp_path / "SN-1-billing.csv")]
+        written = [row[0] for row in data_rows(tmp_path / "SN-1" / "SN-1-billing.csv")]
         assert len(written) == 1
 
 

@@ -3,7 +3,9 @@
 
 ``export_output_dir`` stays the Load Profile CSV's folder; the billing file
 follows the Billing Folder, ``capture_dir`` (owner decision ก, 2026-09-23 — the
-captures' folder); the Energy file has ``export_energy_output_dir`` on its own
+captures' folder), inside the meter's own ``<serial>/`` subfolder beside its
+captures (capture-sweep ticket 03); the Energy file has
+``export_energy_output_dir`` on its own
 page's endpoint. **An empty folder turns that file off** (capture-sweep ticket
 02): a file is never written into another file's folder, and the Save button on
 that page answers 422 naming the empty folder. Every test seeds distinct
@@ -151,8 +153,29 @@ class TestTheBillingFileFolder:
 
         result = export_device_billing(device_id, require_auto_save=False)
 
-        assert result.path is not None and result.path.parent == bill.resolve()
+        assert result.path is not None and result.path.parent == (bill / DEFAULT_FAKE_SERIAL).resolve()
         assert not (lp / result.path.name).exists()
+        assert not (bill / result.path.name).exists()  # never at the folder's top level (ticket 03)
+
+    def test_a_stale_top_level_billing_file_is_left_exactly_as_it_was(
+        self, admin_client: TestClient, tmp_path: Path
+    ) -> None:
+        """0.8.2/0.8.3 wrote the file at the Billing Folder's top level; the owner
+        removes it by hand — the program never deletes a file it may have handed over."""
+        from arichds.export.billing_csv import export_device_billing
+
+        bill = tmp_path / "bill"
+        bill.mkdir()
+        set_folders(load_profile=None, billing=bill)
+        device_id = make_device(admin_client)
+        seed_billing(device_id, JAN, import_active_kwh_total=100.0)
+        stale = bill / f"{DEFAULT_FAKE_SERIAL}-billing.csv"
+        stale.write_bytes(b"stale\n")
+
+        result = export_device_billing(device_id, require_auto_save=False)
+
+        assert result.path == (bill / DEFAULT_FAKE_SERIAL / stale.name).resolve()
+        assert stale.read_bytes() == b"stale\n"
 
     def test_an_empty_billing_folder_writes_no_billing_file_anywhere(
         self, admin_client: TestClient, tmp_path: Path
@@ -180,7 +203,7 @@ class TestTheBillingFileFolder:
         response = admin_client.post(f"/api/billing/export?device_id={device_id}")
 
         assert response.status_code == 200, response.text
-        assert Path(response.json()["data"]["path"]).parent == bill.resolve()
+        assert Path(response.json()["data"]["path"]).parent == (bill / DEFAULT_FAKE_SERIAL).resolve()
 
     def test_save_billing_file_now_is_422_naming_this_pages_folder_even_with_the_load_profile_folder_set(
         self, admin_client: TestClient, tmp_path: Path
@@ -271,7 +294,8 @@ class TestTheUploadCycleReadsEachFolder:
         make_device(admin_client)
         serial = DEFAULT_FAKE_SERIAL
         (lp / f"{serial}.csv").write_bytes(b"lp\n")
-        (bill / f"{serial}-billing.csv").write_bytes(b"bill\n")
+        (bill / serial).mkdir()
+        (bill / serial / f"{serial}-billing.csv").write_bytes(b"bill\n")
         (energy / f"{serial}-energy.csv").write_bytes(b"energy\n")
         # A billing file left behind in the Load Profile folder is not the billing file any more.
         (lp / f"{serial}-billing.csv").write_bytes(b"stale\n")
@@ -316,8 +340,10 @@ class TestTheUploadCycleReadsEachFolder:
         license_features,  # noqa: F811 — the fixture imported above
         tmp_path: Path,
     ) -> None:
-        """The captures' walk must skip the folder's top level: the billing file
-        (and the writer's temp file beside it) live there since decision ก."""
+        """The billing file lives in the meter's subfolder beside its captures
+        (ticket 03): the captures' walk must recognise it by the billing template
+        and leave it to the export listing, skip the writer's temp file beside it,
+        and never send a stale copy left at the folder's top level (0.8.2/0.8.3)."""
         from arichds.fileupload.cycle import file_upload_cycle
 
         license_features(["file_upload_destination"])
@@ -327,15 +353,16 @@ class TestTheUploadCycleReadsEachFolder:
         set_folders(load_profile=None, billing=bill)
         make_device(admin_client)
         serial = DEFAULT_FAKE_SERIAL
-        (bill / f"{serial}-billing.csv").write_bytes(b"bill\n")
-        (bill / f".{serial}-billing.abc123.tmp").write_bytes(b"half\n")
+        (bill / f"{serial}-billing.csv").write_bytes(b"stale\n")  # 0.8.2/0.8.3's top-level file
         (bill / serial).mkdir()
+        (bill / serial / f"{serial}-billing.csv").write_bytes(b"bill\n")
+        (bill / serial / f".{serial}-billing.abc123.tmp").write_bytes(b"half\n")
         (bill / serial / "2026-09-01.pdf").write_bytes(b"%PDF-fake")
         transport = InMemoryTransport(manifest=None)
 
         file_upload_cycle(transport=transport)
 
-        assert set(transport.puts) == {
-            f"export/{serial}-billing.csv",
-            f"captures/{serial}/2026-09-01.pdf",
+        assert transport.puts == {
+            f"export/{serial}-billing.csv": b"bill\n",
+            f"captures/{serial}/2026-09-01.pdf": b"%PDF-fake",
         }

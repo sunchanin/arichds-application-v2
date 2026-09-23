@@ -179,7 +179,12 @@ def _export_locked(device_id: int, *, require_auto_save: bool) -> BillingExportR
         ]
         formatted = format_billing_rows(rows, date_format=date_format)
 
-        final_path = resolved_output_dir / render_filename(filename_tmpl, meter_token)
+        # Inside the meter's own subfolder of the Billing Folder — the same
+        # `<serial>/` its captures use (ADR 0015, amended by capture-sweep
+        # ticket 03: the customer keeps a meter's billing documents together).
+        # `replace_rows` creates the subfolder; a file 0.8.2/0.8.3 left at the
+        # folder's top level is never touched.
+        final_path = resolved_output_dir / meter_token / render_filename(filename_tmpl, meter_token)
         header_block = file_header_block(
             customer=device.customer, site_name=device.site_name, meter_serial=meter_token, file_label=_FILE_LABEL
         )

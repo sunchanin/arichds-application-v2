@@ -51,3 +51,15 @@ explicit request and chose the request. Recorded, not relitigated.
 - **The naming convention itself is unchanged** — still `<capture_dir>/<meter_serial>/<bill_date>`,
   still derived fresh on every render, still never stored in the database (ADR 0010). Only the
   set of extensions grew.
+
+## Amendment 2026-09-23 — the Billing Export File shares the meter's subfolder
+
+The customer keeps a meter's billing documents together (grill 2026-09-23, capture-sweep ticket
+03), so the **Billing Export File** (`<meter>-billing.csv`, ADR 0023) is written into the same
+`<capture_dir>/<meter_serial>/` subfolder as that meter's three captures — the Billing Folder is
+one folder for both (owner decision ก, the same day). The convention above is untouched: the
+captures keep their names and spans, the subfolder is still named by the sanitised Meter Serial
+and never stored, and a stale billing file 0.8.2/0.8.3 left at the folder's top level is never
+moved or deleted (the owner removes it). The File Upload Destination (ADR 0025) still sends the
+billing file as `export/<name>` — its contract does not follow the disk layout — and its capture
+walk recognises the file by the billing template so it is never sent a second time as a capture.

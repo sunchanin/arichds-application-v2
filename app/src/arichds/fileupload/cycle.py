@@ -69,7 +69,7 @@ from arichds.db.app_settings import (
 )
 from arichds.db.models import Device
 from arichds.db.session import session_scope
-from arichds.filename_tokens import export_filename_pattern
+from arichds.filename_tokens import export_filename_pattern, sanitize_meter_serial
 from arichds.fileupload.config import FileUploadConfig, load_config
 from arichds.fileupload.ftps_transport import FtpsTransport
 from arichds.fileupload.https_transport import HttpsTransport
@@ -172,7 +172,7 @@ def _is_export_temp_file(name: str) -> bool:
 
 
 def _export_candidates(
-    folders: Sequence[tuple[Path, str]], *, devices: Sequence[Device], counts: _Counts
+    folders: Sequence[tuple[Path, str, bool]], *, devices: Sequence[Device], counts: _Counts
 ) -> list[_Candidate]:
     """The export files each device with a Meter Serial currently has on
     disk — found by **listing** each folder once and matching its entries
@@ -180,15 +180,22 @@ def _export_candidates(
     (:func:`~arichds.filename_tokens.export_filename_pattern`), never by
     predicting a name and hoping it exists (spec.md "Files in scope": the
     file on disk is the contract, module docstring). *folders* is the
-    ordered ``(folder, template)`` pairs — the Load Profile CSV's, the
-    billing file's, the Energy file's (each file has its own folder since
-    2026-09-23, `.scratch/export-folders/spec.md`; two files may share one).
-    A device with no Meter Serial contributes nothing and is counted once,
-    not once per template (SPEC story 12 / spec.md Testing Decisions).
+    ordered ``(folder, template, per_meter)`` triples — the Load Profile
+    CSV's, the billing file's, the Energy file's (each file has its own
+    folder since 2026-09-23, `.scratch/export-folders/spec.md`). With
+    *per_meter* the file lives in the device's own subfolder of *folder*,
+    named by its Meter Serial — the billing file since capture-sweep ticket
+    03, beside that meter's captures (ADR 0015) — so that subfolder is what
+    is listed for the device, and a stale copy at the folder's top level is
+    never a candidate. A device with no Meter Serial contributes nothing and
+    is counted once, not once per template (SPEC story 12 / spec.md Testing
+    Decisions); one whose serial cannot name a folder contributes nothing to
+    a per-meter pair.
 
-    Non-recursive — an export folder holds no subfolders, unlike the
-    capture folder. ``export/writer.py``'s own atomic-replace temp files are
-    excluded; nothing else in a folder is ever a candidate.
+    Non-recursive — an export folder holds no subfolders of its own, and a
+    meter's subfolder is listed as a folder in its own right.
+    ``export/writer.py``'s own atomic-replace temp files are excluded;
+    nothing else in a folder is ever a candidate.
 
     Every match for a device's CSV template precedes every match for its
     billing template, which precedes every match for its Energy template —
@@ -198,24 +205,26 @@ def _export_candidates(
 
     De-duplicated by relative path as candidates are collected — the
     manifest key is ``export/<name>`` whichever folder the file came from,
-    so a billing file left behind in the Load Profile folder after the
-    billing folder moved is never a second candidate for the same name
-    (the pair listed first for that name wins, and the pairs are in file
-    order, so the file's own folder wins over a stale copy elsewhere).
+    so a billing file left behind in another folder is never a second
+    candidate for the same name (the pair listed first for that name wins,
+    and the pairs are in file order, so the file's own folder wins).
     """
     listings: dict[Path, list[str]] = {}
-    for folder, _template in folders:
-        if folder in listings:
-            continue
-        if not folder.is_dir():
-            listings[folder] = []
-            continue
-        try:
-            listings[folder] = sorted(
-                entry.name for entry in folder.iterdir() if entry.is_file() and not _is_export_temp_file(entry.name)
-            )
-        except OSError:
-            listings[folder] = []
+
+    def listing(folder: Path) -> list[str]:
+        if folder not in listings:
+            if not folder.is_dir():
+                listings[folder] = []
+            else:
+                try:
+                    listings[folder] = sorted(
+                        entry.name
+                        for entry in folder.iterdir()
+                        if entry.is_file() and not _is_export_temp_file(entry.name)
+                    )
+                except OSError:
+                    listings[folder] = []
+        return listings[folder]
 
     candidates: list[_Candidate] = []
     seen: set[str] = set()
@@ -224,43 +233,58 @@ def _export_candidates(
             counts.files_skipped_no_serial += 1
             continue
         token = device.meter_serial
-        for folder, template in folders:
+        for folder, template, per_meter in folders:
+            if per_meter:
+                try:
+                    device_folder = folder / sanitize_meter_serial(token)
+                except ValueError:
+                    continue  # the writer refused this serial as a folder name too — no file to find
+            else:
+                device_folder = folder
             # `export_filename_pattern` escapes *token* before compiling
             # (ADR 0005: a meter-supplied serial is device identity, not
             # operator input), so it cannot widen the match with a regex
             # metacharacter; every name here came from `iterdir()` above, so
             # there is no path left to escape out of.
             pattern = export_filename_pattern(template, token)
-            for name in listings[folder]:
+            for name in listing(device_folder):
                 if not pattern.match(name):
                     continue
                 relative_path = f"export/{name}"
                 if relative_path in seen:
                     continue
                 seen.add(relative_path)
-                candidates.append(_Candidate(relative_path=relative_path, local_path=folder / name))
+                candidates.append(_Candidate(relative_path=relative_path, local_path=device_folder / name))
     return candidates
 
 
-def _capture_candidates(capture_dir: Path) -> list[_Candidate]:
-    """Every file in a **subfolder** of *capture_dir*, mirrored one-to-one
-    under ``captures/`` (ADR 0025 decision 4). Not filtered by device —
-    ADR 0015's own layout (``<capture_dir>/<serial>/<bill_date>.{pdf,xlsx,png}``)
+def _capture_candidates(capture_dir: Path, *, billing_tmpl: str) -> list[_Candidate]:
+    """Every capture document under *capture_dir*, mirrored one-to-one under
+    ``captures/`` (ADR 0025 decision 4). Not filtered by device — ADR 0015's
+    own layout (``<capture_dir>/<serial>/<bill_date>.{pdf,xlsx,png}``)
     already names each file's Meter Serial in its own path, so walking the
     subfolders reproduces the remote layout with no correlation logic.
 
-    A file at the folder's **top level** is never a capture: since owner
-    decision ก (2026-09-23) the billing file lives there too — it is an
-    *export* candidate, found by :func:`_export_candidates` against its own
-    template, and must not be sent a second time as ``captures/<name>``
-    (nor its atomic-replace temp file at all)."""
+    Three things in that tree are **not** captures and are never sent this
+    way: a file at the folder's top level (a billing file 0.8.2/0.8.3 left
+    there — nothing at the top level is a capture); inside a meter's
+    subfolder, the billing file itself — since capture-sweep ticket 03 it
+    lives beside the captures, recognised by *billing_tmpl* against the
+    subfolder's own name as the serial, and it is an *export* candidate that
+    :func:`_export_candidates` already sends as ``export/<name>``; and the
+    export writer's atomic-replace temp file beside it."""
     if not capture_dir.is_dir():
         return []
     candidates: list[_Candidate] = []
     for path in sorted(capture_dir.rglob("*")):
-        if path.is_file() and path.parent != capture_dir:
-            relative = path.relative_to(capture_dir).as_posix()
-            candidates.append(_Candidate(relative_path=f"captures/{relative}", local_path=path))
+        if not path.is_file() or path.parent == capture_dir or _is_export_temp_file(path.name):
+            continue
+        if path.parent.parent == capture_dir and export_filename_pattern(billing_tmpl, path.parent.name).match(
+            path.name
+        ):
+            continue
+        relative = path.relative_to(capture_dir).as_posix()
+        candidates.append(_Candidate(relative_path=f"captures/{relative}", local_path=path))
     return candidates
 
 
@@ -375,18 +399,18 @@ def _run_cycle(
 
     candidates: list[_Candidate] = []
     folders = [
-        (Path(folder), template)
-        for folder, template in (
-            (export_dir_str, csv_tmpl),
-            (billing_dir_str, billing_tmpl),
-            (energy_dir_str, energy_tmpl),
+        (Path(folder), template, per_meter)
+        for folder, template, per_meter in (
+            (export_dir_str, csv_tmpl, False),
+            (billing_dir_str, billing_tmpl, True),  # `<Billing Folder>/<serial>/`, ticket 03
+            (energy_dir_str, energy_tmpl, False),
         )
         if folder
     ]
     if folders:
         candidates.extend(_export_candidates(folders, devices=devices, counts=counts))
     if capture_dir_str:
-        candidates.extend(_capture_candidates(Path(capture_dir_str)))
+        candidates.extend(_capture_candidates(Path(capture_dir_str), billing_tmpl=billing_tmpl))
 
     # A missing or unreadable manifest means "send everything" (ADR 0025
     # decision 2) — the read failing is not the same fact as a put/write

@@ -188,12 +188,14 @@ def _write_export_files(export_dir: Path, serial: str, *, billing_dir: Path | No
     produces, so the fixture must go through the same function a mutation
     to it can reach.
 
-    *billing_dir* is where the billing file goes when the test also sets a
-    capture folder: since owner decision ก (2026-09-23) the billing file follows
-    `capture_dir` whenever that is set (`billing_export_dir`)."""
+    *billing_dir* is the Billing Folder when the test separates it from
+    *export_dir* (`_configure_dirs` makes them one otherwise): since owner
+    decision ก (2026-09-23) the billing file follows `capture_dir`, and since
+    capture-sweep ticket 03 it sits in the meter's own subfolder of it,
+    `<Billing Folder>/<serial>/`, beside that meter's captures."""
     export_dir.mkdir(parents=True, exist_ok=True)
-    if billing_dir is not None:
-        billing_dir.mkdir(parents=True, exist_ok=True)
+    billing_folder = (billing_dir if billing_dir is not None else export_dir) / serial
+    billing_folder.mkdir(parents=True, exist_ok=True)
     files: dict[str, Path] = {}
     for template in (
         EXPORT_CSV_FILENAME_TMPL_DEFAULT,
@@ -202,9 +204,7 @@ def _write_export_files(export_dir: Path, serial: str, *, billing_dir: Path | No
     ):
         filename = render_filename(template, serial)
         relative = f"export/{filename}"
-        folder = (
-            billing_dir if billing_dir is not None and template == EXPORT_BILLING_FILENAME_TMPL_DEFAULT else export_dir
-        )
+        folder = billing_folder if template == EXPORT_BILLING_FILENAME_TMPL_DEFAULT else export_dir
         path = folder / filename
         path.write_text(f"content for {relative}", encoding="utf-8")
         files[relative] = path

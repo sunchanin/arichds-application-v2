@@ -808,7 +808,8 @@ job จับ lock แบบ `background=True` — ชนแล้ว**ข้า
 > ใช้ **สวิตช์เดียว job เดียว** ร่วมกับ Load Profile CSV (§3.5) แยก template ชื่อไฟล์ · **โฟลเดอร์แยกตามไฟล์
 > ตั้งแต่ 2026-09-23** (ลูกค้าขอ, `.scratch/export-folders/spec.md`): Load Profile CSV ใช้ Output folder
 > บนหน้า Load Profile (`export_output_dir` เดิม), billing file ใช้ **Billing folder** บนหน้า Billing — โฟลเดอร์
-> เดียวกับ capture (`capture_dir`, เจ้าของเลือก ก 2026-09-23: ไฟล์อยู่ชั้นบน capture อยู่โฟลเดอร์ย่อยตามมิเตอร์)
+> เดียวกับ capture (`capture_dir`, เจ้าของเลือก ก 2026-09-23) และอยู่ **ในโฟลเดอร์ย่อย `<serial>\` เดียวกับ capture**
+> ของมิเตอร์นั้น (capture-sweep ticket 03, ADR 0015 amended; ไฟล์เก่าที่ค้างชั้นบนไม่ถูกแตะ)
 > Energy file ใช้ **Energy file folder** บนหน้า Energy Summary
 > (`export_energy_output_dir`) — **ช่องว่าง = ไม่เขียนไฟล์นั้น** (capture-sweep ticket 02, 2026-09-23: ไม่มี
 > fallback ไปโฟลเดอร์ของไฟล์อื่น ปุ่ม Save ของหน้านั้นตอบ 422 ว่าโฟลเดอร์ว่าง);
