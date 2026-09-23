@@ -44,22 +44,24 @@ def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = 
     return response.json()["data"]["id"]
 
 
-def seed_closed(device_id: int, bill_date: datetime, meter_serial: str | None = "1232002893", **columns: float) -> None:
+def seed_closed(device_id: int, bill_date: datetime, meter_serial: str | None = "1232002893", **columns: float) -> int:
+    """Store one closed period and return its row id."""
     from arichds.db.models import BillingReading
     from arichds.db.session import session_scope
 
     with session_scope() as session:
-        session.add(
-            BillingReading(
-                device_id=device_id,
-                bill_date=bill_date,
-                read_at=bill_date,
-                record_status=None,
-                source="dlms",
-                meter_serial=meter_serial,
-                **columns,
-            )
+        row = BillingReading(
+            device_id=device_id,
+            bill_date=bill_date,
+            read_at=bill_date,
+            record_status=None,
+            source="dlms",
+            meter_serial=meter_serial,
+            **columns,
         )
+        session.add(row)
+        session.flush()
+        return row.id
 
 
 def seed_open(device_id: int, bill_date: datetime, **columns: float) -> None:
@@ -362,6 +364,86 @@ class TestOrdering:
             BASE - timedelta(days=90),
             BASE - timedelta(days=60),
         ]
+
+
+class TestAnchorWindow:
+    """capture-sweep ticket 01 — `anchor_id` makes the page list exactly the
+    PNG window for that period (`png_source_rows`' own rule, shared, never a
+    second copy): every closed period up to and including the anchor, the
+    newer member of the anchor's same-second pair excluded (ADR 0029). This
+    is what lets the Standard `_2.png` of a pair's older member render at all:
+    `endIso` alone cannot exclude a row stamped on the same second."""
+
+    def _seed_pair(self, admin_client: TestClient, fake_meter: FakeMeterState) -> tuple[int, int, int, int]:
+        device_id = add_device(admin_client, fake_meter)
+        older = seed_closed(device_id, BASE - timedelta(days=30))
+        pair_older = seed_closed(device_id, BASE, sequence=1, import_active_kwh_total=31.18)
+        pair_newer = seed_closed(device_id, BASE, sequence=0, import_active_kwh_total=3118.25)
+        return device_id, older, pair_older, pair_newer
+
+    def test_the_older_member_of_a_pair_lists_its_window_without_the_newer_member(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        _device_id, older, pair_older, pair_newer = self._seed_pair(admin_client, fake_meter)
+
+        response = fetch(admin_client, "closed", anchor_id=pair_older)
+
+        assert response.status_code == 200, response.text
+        assert [row["id"] for row in response.json()["data"]["items"]] == [older, pair_older]
+        assert pair_newer not in [row["id"] for row in response.json()["data"]["items"]]
+
+    def test_the_newer_member_lists_both_members_oldest_first(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        _device_id, older, pair_older, pair_newer = self._seed_pair(admin_client, fake_meter)
+
+        items = fetch(admin_client, "closed", anchor_id=pair_newer).json()["data"]["items"]
+
+        assert [row["id"] for row in items] == [older, pair_older, pair_newer]
+
+    def test_the_window_is_png_source_rows_reversed_for_either_member(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """The page and the image must agree row for row — the drive waits for
+        exactly `png_source_rows` reversed."""
+        from arichds.capture.service import png_source_rows
+        from arichds.db.models import BillingReading
+        from arichds.db.session import session_scope
+
+        _device_id, _older, pair_older, pair_newer = self._seed_pair(admin_client, fake_meter)
+
+        for anchor_id in (pair_older, pair_newer):
+            with session_scope() as session:
+                anchor = session.get(BillingReading, anchor_id)
+                expected = [row.id for row in reversed(png_source_rows(session, anchor))]
+            items = fetch(admin_client, "closed", anchor_id=anchor_id).json()["data"]["items"]
+            assert [row["id"] for row in items] == expected
+
+    def test_the_anchor_scopes_the_device_and_the_serial_by_itself(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id, older, pair_older, _pair_newer = self._seed_pair(admin_client, fake_meter)
+        other_device = add_device(admin_client, fake_meter, serial="SN-2", name="Other")
+        seed_closed(other_device, BASE - timedelta(days=1), meter_serial="SN-2")
+        seed_closed(device_id, BASE - timedelta(days=2), meter_serial="OLD-SERIAL")
+
+        items = fetch(admin_client, "closed", anchor_id=pair_older).json()["data"]["items"]
+
+        assert [row["id"] for row in items] == [older, pair_older]
+
+    def test_an_unknown_anchor_is_404(self, admin_client: TestClient) -> None:
+        assert fetch(admin_client, "closed", anchor_id=999).status_code == 404
+
+    def test_an_open_period_is_not_an_anchor(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        from arichds.db.models import BillingReading
+        from arichds.db.session import session_scope
+
+        device_id = add_device(admin_client, fake_meter)
+        seed_open(device_id, BASE)
+        with session_scope() as session:
+            open_id = session.query(BillingReading).filter_by(record_status="open").one().id
+
+        assert fetch(admin_client, "closed", anchor_id=open_id).status_code == 404
 
 
 class TestSingleRowPageMatchesTheOnePeriodCaptureFallback:

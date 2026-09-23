@@ -641,8 +641,13 @@ export function Billing({ role }: { role: "admin" | "user" }) {
       ? range[1].add(1, "day").startOf("day").toISOString()
       : undefined;
   const meterSerial = captureRequest?.meterSerial ?? undefined;
+  // The anchor the driver seeded (capture mode only, ADR 0029 / capture-sweep
+  // ticket 01): the API lists exactly that period's PNG window — `endIso`
+  // alone cannot leave out the newer member of a same-second pair, so the
+  // `_2.png` of the older member could never match the driver's row wait.
+  const anchorId = captureRequest?.anchorId;
 
-  const scope = `${tab}|${deviceId ?? ALL}|${startIso ?? ""}|${endIso ?? ""}|${meterSerial ?? ""}`;
+  const scope = `${tab}|${deviceId ?? ALL}|${startIso ?? ""}|${endIso ?? ""}|${meterSerial ?? ""}|${anchorId ?? ""}`;
   const shown = loaded?.scope === scope ? loaded.page : null;
 
   // The row holding the newest closed period in the current result, by bill
@@ -667,7 +672,7 @@ export function Billing({ role }: { role: "admin" | "user" }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     void api
-      .billing(tab, deviceId, startIso, endIso, pageSize, (page - 1) * pageSize, meterSerial)
+      .billing(tab, deviceId, startIso, endIso, pageSize, (page - 1) * pageSize, meterSerial, anchorId)
       .then((result) => {
         if (current) setLoaded({ scope, page: result });
       })

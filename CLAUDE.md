@@ -663,7 +663,11 @@ MySQL, and ~30 tables.
   `(meter_serial, bill_date, sequence)`); capture stems get `_<sequence+1>` only for
   `sequence > 0`, so no existing file is renamed; the Billing page shows no column for it and
   **every page now lists periods oldest first** — which changes the Standard capture image's
-  order too. Change Check (0018) unaffected. TC's six rows arrive on the first whole-buffer read
+  order too. Change Check (0018) unaffected. **The older member's Standard `_2.png` renders since
+  capture-sweep ticket 01** (2026-09-23): `GET /api/billing?anchor_id=` applies
+  `capture/service.py::png_window_filters()` — the one predicate `png_source_rows` selects by — so the
+  page in capture mode lists the anchor's window without the pair's newer member, which `end` alone
+  could never exclude (before this the drive timed out after 90 s on every pair). TC's six rows arrive on the first whole-buffer read
   of the new build, no manual step)
   **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
   TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".

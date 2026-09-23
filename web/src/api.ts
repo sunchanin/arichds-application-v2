@@ -1666,12 +1666,16 @@ export const api = {
     limit: number,
     offset: number,
     meterSerial?: string,
+    /** The seeded anchor (capture mode only): the page lists exactly that
+     * period's PNG window, the newer member of its same-second pair excluded. */
+    anchorId?: number,
   ) => {
     const params = new URLSearchParams({ status: billingStatus, limit: String(limit), offset: String(offset) });
     if (deviceId !== undefined) params.set("device_id", String(deviceId));
     if (startIso !== undefined) params.set("start", startIso);
     if (endIso !== undefined) params.set("end", endIso);
     if (meterSerial !== undefined) params.set("meter_serial", meterSerial);
+    if (anchorId !== undefined) params.set("anchor_id", String(anchorId));
     return request<BillingPage>(`/api/billing?${params.toString()}`);
   },
 

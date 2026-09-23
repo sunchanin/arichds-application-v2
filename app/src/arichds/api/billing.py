@@ -53,6 +53,7 @@ from arichds.capture.screenshot import BrowserCaptureError
 from arichds.capture.service import (
     capture_target_paths,
     png_source_rows,
+    png_window_filters,
     write_pdf_capture,
     write_png_capture,
     write_xlsx_capture,
@@ -295,6 +296,17 @@ def list_billing_readings(
     end: Annotated[datetime | None, Query(description="**Exclusive** upper bound on bill_date, UTC")] = None,
     limit: Annotated[int, Query(ge=1, le=500, description="Page size")] = 100,
     offset: Annotated[int, Query(ge=0, description="Rows to skip")] = 0,
+    anchor_id: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            description=(
+                "A closed Billing Reading's id: list exactly its PNG window — its own device and "
+                "meter_serial, every closed period up to and including it, the newer member of its "
+                "same-second pair excluded (ADR 0029). What the capture driver seeds."
+            ),
+        ),
+    ] = None,
 ) -> ApiResponse[BillingPage]:
     """Return one page of Billing Readings — page one is the **newest**
     periods, and every page is read **oldest first** (ADR 0029): within a
@@ -311,6 +323,14 @@ def list_billing_readings(
     which has always filtered on it — without this param the two would
     disagree the moment a device's meter is swapped (ADR 0005) and stay
     disagreeing until enough new-serial periods accumulated on their own.
+
+    ``anchor_id`` (capture-sweep ticket 01) goes the rest of the way: the
+    page in capture mode passes the anchor the driver seeded, and this
+    endpoint applies :func:`~arichds.capture.service.png_window_filters` —
+    the *same* clauses ``png_source_rows`` selects by — so the older member
+    of a same-second pair (``_2.png``) can be listed without the newer one,
+    which ``end`` alone (a bill_date bound) could never exclude. 404 for an
+    id that is not a closed period.
     """
     if device_id is not None:
         _require_device_exists(session, device_id)
@@ -336,6 +356,13 @@ def list_billing_readings(
         filters.append(BillingReading.bill_date >= lower)
     if upper is not None:
         filters.append(BillingReading.bill_date < upper)
+    if anchor_id is not None:
+        anchor = session.get(BillingReading, anchor_id)
+        if anchor is None or anchor.record_status is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"No closed Billing Reading with id {anchor_id}."
+            )
+        filters.extend(png_window_filters(anchor))
     # Built once and used by both queries below, for the reason
     # api/load_profile.py:165-168 gives: `total` is only meaningful as the
     # unpaged count of *the same* filter.

@@ -85,6 +85,28 @@ def write_xlsx_capture(
     write_capture(target, lambda: render_billing_xlsx(row, device_name, scale=scale), allowlist)
 
 
+def png_window_filters(anchor: Any) -> list[Any]:
+    """The WHERE clauses that define *anchor*'s PNG window — the one rule
+    :func:`png_source_rows` selects by and the Billing page's list endpoint
+    applies for ``anchor_id`` (capture-sweep ticket 01), so the rows the drive
+    waits for and the rows the page shows cannot disagree: same device and
+    ``meter_serial`` as the anchor, closed periods only, every period up to
+    and including the anchor — within its same-second pair only the anchor
+    and any *older* member (ADR 0029), never the newer one."""
+    return [
+        BillingReadingRow.device_id == anchor.device_id,
+        BillingReadingRow.meter_serial == anchor.meter_serial,
+        BillingReadingRow.record_status.is_(None),
+        or_(
+            BillingReadingRow.bill_date < anchor.bill_date,
+            and_(
+                BillingReadingRow.bill_date == anchor.bill_date,
+                BillingReadingRow.sequence >= anchor.sequence,
+            ),
+        ),
+    ]
+
+
 def png_source_rows(session: Any, anchor: Any) -> list[Any]:
     """The rows the PNG capture is built from (D4, issue #35).
 
@@ -106,18 +128,7 @@ def png_source_rows(session: Any, anchor: Any) -> list[Any]:
     return list(
         session.scalars(
             select(BillingReadingRow)
-            .where(
-                BillingReadingRow.device_id == anchor.device_id,
-                BillingReadingRow.meter_serial == anchor.meter_serial,
-                BillingReadingRow.record_status.is_(None),
-                or_(
-                    BillingReadingRow.bill_date < anchor.bill_date,
-                    and_(
-                        BillingReadingRow.bill_date == anchor.bill_date,
-                        BillingReadingRow.sequence >= anchor.sequence,
-                    ),
-                ),
-            )
+            .where(*png_window_filters(anchor))
             .order_by(BillingReadingRow.bill_date.desc(), BillingReadingRow.sequence.asc())
             .limit(10)
         )
