@@ -11,12 +11,15 @@ is the write:
 * **Every read is the whole buffer** (ADR 0009). There is no window, no
   watermark, and therefore no "Backfill" left as a concept: a device with no
   stored rows and a device read yesterday are read identically.
-* **Closed periods dedupe on ``(device_id, bill_date)`` and are never
-  rewritten.** A ``bill_date`` seen before with a *different* value is skipped
+* **Closed periods dedupe on ``(device_id, bill_date, sequence)`` and are
+  never rewritten.** A key seen before with a *different* value is skipped
   and logged, never overwritten — stored history is not something a later read
   gets to correct (ADR 0009's "Consequences": ``Delete all data`` is the only
   way to repair a wrong value, and it is a repair tool for values that were
-  wrong on *our* side, not the meter's).
+  wrong on *our* side, not the meter's). ``sequence`` is the Billing Sequence
+  (ADR 0029): a meter can stamp two periods on one second, and the store —
+  not the driver — numbers the members of such a group from the newest as
+  the meter lists them, so every model gets it with no driver change.
 * **The Open Period is one row per device, found by ``record_status``, never
   by ``bill_date``** — its Bill Date advances on every read, which is the
   entire reason the slot exists (CONTEXT.md — Open Period).
@@ -34,8 +37,9 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from arichds.acquisition.drivers.base import BillingReading, MeterDriver
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
@@ -73,6 +77,13 @@ class BillingReadResult:
         open_updated: Whether the device's Open Period slot was inserted or
             changed by this read.
         error: An operator-facing sentence, or None. Never contains a password.
+        captured: How many **captures** this read wrote — one per newly
+            inserted closed period that produced a document (issue 02).
+            Deliberately not derivable from :attr:`stored`: with captures
+            switched off (no capture folder, or no ``auto_capture``
+            entitlement) periods are stored and nothing is written at all,
+            and a capture that fails is logged and swallowed rather than
+            failing the read. Always ``0`` when nothing was written.
         skipped: True when a **background** read gave the Transport Endpoint
             up rather than queue for it (ADR 0006). Not a failure and never an
             ``error``. Only the background path can set it.
@@ -82,6 +93,7 @@ class BillingReadResult:
     stored: int
     open_updated: bool
     error: str | None
+    captured: int = 0
     skipped: bool = False
 
 
@@ -180,10 +192,9 @@ def read_and_store_billing(
     # §3.6, decision 11) — capture is eager but must never make a meter read
     # wait on a network share, and must never hold the endpoint a moment
     # longer than the read itself needs it.
-    if new_closed_ids:
-        _capture_new_closed_periods(new_closed_ids, device_name)
+    captured = _capture_new_closed_periods(new_closed_ids, device_name) if new_closed_ids else 0
 
-    return BillingReadResult(supported=True, stored=stored, open_updated=open_updated, error=error)
+    return BillingReadResult(supported=True, stored=stored, open_updated=open_updated, error=error, captured=captured)
 
 
 def _read_while_holding(
@@ -215,7 +226,24 @@ def _read_while_holding(
         # than an unhandled exception reaching the API or `billing_cycle`'s
         # per-device guard.
         readings = driver.read_billing()
-        stored, open_updated, new_closed_ids = _store(device_id, device_name, readings, read_at)
+        # `getattr` with a True default, not a direct attribute read: the
+        # declaration lives on `DlmsProfileDriver` (issue 016 D1), and
+        # `Smw110Driver` extends `DlmsDriver` instead, so it genuinely does
+        # not have the attribute -- and must not be given one it cannot
+        # honour. A driver that does not declare is one with an Open Period,
+        # which is the behaviour every driver had before this.
+        stored, open_updated, new_closed_ids = _store(
+            device_id,
+            device_name,
+            readings,
+            read_at,
+            profile_has_open_period=getattr(driver, "BILLING_PROFILE_HAS_OPEN_PERIOD", True),
+            # Entry order is a property of the profile, declared per driver
+            # (ADR 0018, `BILLING_NEWEST_ENTRY_FIRST`); the Billing Sequence
+            # is counted from the newest, so the store must know which end
+            # the list starts at.
+            newest_first=getattr(driver, "BILLING_NEWEST_ENTRY_FIRST", True),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Billing read of %s at %s failed", device_name, endpoint)
         return 0, False, [], f"The read of {endpoint} stopped after a {type(exc).__name__}."
@@ -225,45 +253,197 @@ def _read_while_holding(
     return stored, open_updated, new_closed_ids, None
 
 
-def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> None:
+def _capture_new_closed_periods(reading_ids: list[int], device_name: str) -> int:
     """Render and write captures for newly-inserted closed periods (decision
     11, SPEC §3.6, issue #22).
 
     Called after the Transport Endpoint lock is released and after the rows
     committed — capture never holds the endpoint and never blocks a meter
-    read. Gated on ``auto_capture`` (PDF) / ``billing_excel_export`` (xlsx
-    alongside it), checked fresh through the process-wide LicenseService
-    holder (:mod:`arichds.licensing.current`) — this path has no
-    ``Request``, unlike :func:`~arichds.api.deps.require_feature`.
+    read. Gated on ``auto_capture`` (PDF) — the outer gate on the whole eager
+    path, so with it off nothing is written regardless of the other two
+    flags — with ``billing_excel_export`` (xlsx) and ``billing_image_export``
+    (PNG, M7 slice 4, issue #35, D3) checked alongside it, all fresh through
+    the process-wide LicenseService holder (:mod:`arichds.licensing.current`)
+    — this path has no ``Request``, unlike
+    :func:`~arichds.api.deps.require_feature`.
 
     A capture failure is logged and never propagates: a meter read that
     succeeded must not be reported as failed because a network share was
     unavailable or a row went missing between commit and this call.
+
+    Returns:
+        How many captures were actually written (issue 02) — ``0`` from every
+        early return below, and one short of the total for each period whose
+        render raised. This is what the operator's confirmation reports, so it
+        must never count a document that does not exist.
     """
     settings = get_settings()
     license_service = current_license_service()
     if not feature_enabled("auto_capture", license_service=license_service, settings=settings):
-        return
+        return 0
 
     with session_scope() as session:
         capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
         display_unit_scale = get_setting(session, DISPLAY_UNIT_SCALE_KEY, DISPLAY_UNIT_SCALE_DEFAULT)
     if not capture_dir_str.strip():
         logger.debug("Capture skipped for %s — capture_dir is not configured", device_name)
-        return
+        return 0
 
     capture_dir = Path(capture_dir_str)
     write_excel = feature_enabled("billing_excel_export", license_service=license_service, settings=settings)
+    write_image = feature_enabled("billing_image_export", license_service=license_service, settings=settings)
 
+    written = 0
     for reading_id in reading_ids:
         try:
             with session_scope() as session:
                 row = session.get(BillingReadingRow, reading_id)
                 if row is None:
                     continue
-                capture_reading(row, device_name, capture_dir, write_excel=write_excel, scale=display_unit_scale)
+                capture_reading(
+                    row,
+                    device_name,
+                    capture_dir,
+                    write_excel=write_excel,
+                    write_image=write_image,
+                    scale=display_unit_scale,
+                )
+                # Stamped only once the document exists (ui-audit ticket 03):
+                # a raise above leaves the row exactly as it was, so the
+                # Captured column never names a file that was not written.
+                row.captured_at = datetime.now(UTC)
+                written += 1
         except Exception:  # noqa: BLE001 — capture must never fail the read that produced the row.
             logger.exception("Capture failed for %s reading id %s", device_name, reading_id)
+    return written
+
+
+#: When the Billing Change Check (ADR 0018) last ran, on any device — the
+#: Billing page's **Auto** indicator (ui-audit ticket 10). In memory only: the
+#: scheduler holds no persisted state (ADR 0008), so it reads None after a
+#: restart until the first Load Profile cycle rides past.
+_last_change_check_at: datetime | None = None
+
+
+def mark_billing_change_check(now_utc: datetime) -> None:
+    """Record that the change check ran at *now_utc*."""
+    global _last_change_check_at  # noqa: PLW0603 — one process-wide slot, same shape as dataout/status.py
+    _last_change_check_at = now_utc
+
+
+def last_billing_change_check_at() -> datetime | None:
+    """When the change check last ran since the service started, or None."""
+    return _last_change_check_at
+
+
+def reset_billing_change_check() -> None:
+    """Forget the stamp — for tests, which share one process."""
+    global _last_change_check_at  # noqa: PLW0603
+    _last_change_check_at = None
+
+
+def billing_change_check(driver: MeterDriver, device_id: int) -> bool:
+    """The Billing Change Check (ADR 0018, corrected by issue #43's D1/D2) —
+    decides whether the whole-buffer billing read should run this Load
+    Profile tick.
+
+    Called only from inside :func:`~arichds.acquisition.load_profile._read_while_holding`,
+    on an already-connected driver, on the **background** path only (D7) —
+    never a second association, and never from a Manual Read.
+
+    **The signal is the newest CLOSED period's bill date, not the newest
+    entry's** (D1): the newest entry is the Open Period on every model this
+    product reads today, and its Bill Date advances on every single read
+    (CONTEXT.md — Open Period) — comparing against it would trigger the
+    whole-buffer read on every tick, exactly the cost this check exists to
+    avoid.
+
+    **Compared on `device_id` alone, never `(device, meter_serial)`** (D2):
+    both driver read paths store ``meter_serial=None`` when the serial
+    register read fails after the buffer was already read
+    (`_dlms_profile.py`, `smw110.py`), so a serial filter would exclude
+    legitimately stored rows, `MAX` would come back `NULL` forever, and this
+    check would fire a full read every cycle.
+
+    **`entriesInUse` is read by the driver but is never this function's
+    signal** (D13) — it saturates once a ring is full
+    (`docs/meter-notes/smw110w4-scan.md:71`, a billing ring reaches its own
+    ceiling after roughly a year on this fleet); the newest closed
+    `bill_date` cannot saturate the same way, and this function has no
+    visibility into `entriesInUse` at all — it only ever asks the driver for
+    a `bill_date`.
+
+    Returns:
+        True when the whole-buffer read should run: nothing is stored for
+        this device yet (D4 — a freshly added device gets its billing inside
+        one cycle rather than waiting up to a day), or the newest closed
+        period the meter reports differs from the newest closed period
+        already stored (D3 — exact inequality, never ``>``: a buffer that
+        moved *backwards* is still worth re-reading, and the whole-buffer
+        write path is idempotent). Any failure — an unsupported driver, an
+        unreadable buffer, a DB error — is logged and swallowed, returning
+        False: the daily full read stays the backstop (D9).
+    """
+    mark_billing_change_check(datetime.now(UTC))
+    try:
+        newest_closed = driver.billing_newest_closed_bill_date()
+    except Exception:  # noqa: BLE001 — D9: an optional trigger must never break the walk it rides on.
+        logger.exception(
+            "Billing change check failed for device id %s — the daily read stays the only signal", device_id
+        )
+        return False
+
+    if newest_closed is None:
+        return False
+
+    try:
+        with session_scope() as session:
+            stored_newest = session.scalar(
+                select(func.max(BillingReadingRow.bill_date)).where(
+                    BillingReadingRow.device_id == device_id,
+                    # D2 — device_id alone, and D1's "closed only": the Open
+                    # Period slot's bill_date advances on every read and must
+                    # never win this MAX.
+                    BillingReadingRow.record_status.is_(None),
+                )
+            )
+    except Exception:  # noqa: BLE001 — same rule, the DB side of the check.
+        logger.exception("Billing change check's stored lookup failed for device id %s", device_id)
+        return False
+
+    if stored_newest is None:
+        # D4 — nothing stored yet: trigger, so a freshly added device gets
+        # its billing inside one Load Profile cycle rather than waiting up
+        # to a day. Accepted degenerate case: if the whole-buffer read this
+        # triggers persistently stores nothing (a driver bug, a malformed
+        # buffer), this branch re-triggers every single LP cycle — bounded
+        # at one full read per cycle, no worse than a naive fifteen-minute
+        # billing job would cost, and now attributable in the log line
+        # below rather than a silent repeat.
+        logger.info(
+            "Billing change check: device id %s has no stored closed period yet "
+            "(meter's newest closed: %s) — triggering the whole-buffer read",
+            device_id,
+            newest_closed.isoformat(),
+        )
+        return True
+
+    # SQLite hands back naive datetimes; every row in this table is UTC by
+    # the normalization contract (module docstring).
+    stored_newest = stored_newest.replace(tzinfo=UTC)
+    changed = newest_closed != stored_newest  # D3 — != not >.
+    if changed:
+        # The only line that says the feature is doing anything at all on an
+        # ordinary tick — without it an operator has no way to tell a
+        # triggered read from a coincidentally-scheduled daily one.
+        logger.info(
+            "Billing change check: device id %s's newest closed period changed "
+            "(meter: %s, stored: %s) — triggering the whole-buffer read",
+            device_id,
+            newest_closed.isoformat(),
+            stored_newest.isoformat(),
+        )
+    return changed
 
 
 def billing_cycle() -> None:
@@ -303,11 +483,21 @@ def billing_cycle() -> None:
 
 
 def _store(
-    device_id: int, device_name: str, readings: list[BillingReading], read_at: datetime
+    device_id: int,
+    device_name: str,
+    readings: list[BillingReading],
+    read_at: datetime,
+    *,
+    profile_has_open_period: bool = True,
+    newest_first: bool = True,
 ) -> tuple[int, bool, list[int]]:
     """Write the whole buffer in one unit of work: closed periods first, then
     the Open Period slot — the newly closed period must exist before the slot
     moves off it (ADR 0009).
+
+    *newest_first* says which end of *readings* the meter's newest entry is
+    at; the Billing Sequence of each closed period is its position among the
+    entries sharing its bill date, counted from that end (ADR 0029).
 
     Returns:
         ``(closed periods inserted, whether the open slot changed, the ids of
@@ -320,12 +510,20 @@ def _store(
 
     closed = [reading for reading in readings if not reading.is_open]
     open_reading = next((reading for reading in readings if reading.is_open), None)
+    if not newest_first:
+        closed.reverse()
+    seen: dict[datetime, int] = {}
+    sequenced: list[tuple[BillingReading, int]] = []
+    for reading in closed:
+        sequence = seen.get(reading.bill_date, 0)
+        seen[reading.bill_date] = sequence + 1
+        sequenced.append((reading, sequence))
 
     stored = 0
     new_closed_ids: list[int] = []
     with session_scope() as session:
-        for reading in closed:
-            new_id = _upsert_closed(session, device_id, device_name, reading, read_at)
+        for reading, sequence in sequenced:
+            new_id = _upsert_closed(session, device_id, device_name, reading, sequence, read_at)
             if new_id is not None:
                 stored += 1
                 new_closed_ids.append(new_id)
@@ -333,8 +531,43 @@ def _store(
         open_updated = False
         if open_reading is not None:
             open_updated = _upsert_open(session, device_id, open_reading, read_at)
+        elif not profile_has_open_period:
+            # Issue 016 — this family's profile cannot produce an Open Period,
+            # so a slot holding one is a leftover from before the driver said
+            # so, and nothing will ever overwrite it. Clearing it here is what
+            # makes the fix self-healing on the next read: no migration, no
+            # repair script, the same shape ADR 0008 chose for the watermark.
+            #
+            # Deliberately NOT unconditional. A driver that *does* have an Open
+            # Period and momentarily returns none is a different situation, and
+            # deleting there would be a behaviour change with no evidence
+            # behind it.
+            open_updated = _clear_open(session, device_id, device_name)
 
     return stored, open_updated, new_closed_ids
+
+
+def _measurement_differs(stored_value: Any, incoming_value: Any) -> bool:
+    """Compare one stored measurement column to the freshly-read value for
+    the same column (issue #45).
+
+    Exact comparison, no tolerance: fifty of the sixty columns are floats,
+    stored and read back unchanged as SQLite ``REAL`` values, and
+    ``None == None`` must count as equal. **Ten are not floats at all** —
+    the Demand Time columns are ``DateTime(timezone=True)``, and SQLAlchemy
+    2.0.51 does not round-trip ``tzinfo`` through SQLite (measured): an
+    aware value written comes back naive. A naive *stored* datetime is
+    re-attached to UTC before comparing — every row in this table is UTC by
+    the normalization contract
+    (module docstring) — the same reattachment :func:`billing_change_check`
+    already does at ``stored_newest.replace(tzinfo=UTC)`` and the house
+    pattern at ``api/billing.py``'s ``_ensure_utc_or_none``. A stored value
+    that is not itself a naive datetime, or an incoming value that is not a
+    datetime at all, is compared as-is.
+    """
+    if isinstance(stored_value, datetime) and stored_value.tzinfo is None and isinstance(incoming_value, datetime):
+        stored_value = stored_value.replace(tzinfo=UTC)
+    return stored_value != incoming_value
 
 
 def _upsert_closed(
@@ -342,10 +575,12 @@ def _upsert_closed(
     device_id: int,
     device_name: str,
     reading: BillingReading,
+    sequence: int,
     read_at: datetime,
 ) -> int | None:
     """Insert a closed period if absent; skip and WARN if it exists with a
-    different value; silent no-op if it exists and matches exactly.
+    different value; silent no-op if it exists and matches exactly. The key
+    is ``(device_id, bill_date, sequence)`` (ADR 0029).
 
     Returns:
         The new row's id if one was inserted, else None.
@@ -354,6 +589,7 @@ def _upsert_closed(
         select(BillingReadingRow).where(
             BillingReadingRow.device_id == device_id,
             BillingReadingRow.bill_date == reading.bill_date,
+            BillingReadingRow.sequence == sequence,
             BillingReadingRow.record_status.is_(None),
         )
     )
@@ -363,6 +599,7 @@ def _upsert_closed(
         row = BillingReadingRow(
             device_id=device_id,
             bill_date=reading.bill_date,
+            sequence=sequence,
             read_at=read_at,
             record_status=None,
             source=reading.source,
@@ -376,16 +613,50 @@ def _upsert_closed(
         session.flush()
         return row.id
 
-    # Exact comparison, no tolerance: both sides are round-tripped SQLite REALs
-    # of the same computation, and None == None must count as equal.
-    if any(getattr(existing, key) != value for key, value in incoming.items()):
+    if any(_measurement_differs(getattr(existing, key), value) for key, value in incoming.items()):
         logger.warning(
-            "Billing period for device %s at bill_date %s is already stored with a different value — "
+            "Billing period for device %s at bill_date %s sequence %d is already stored with a different value — "
             "skipping (stored history is never rewritten)",
             device_name,
             reading.bill_date.isoformat(),
+            sequence,
         )
     return None
+
+
+def _clear_open(
+    session,  # noqa: ANN001 — a Session, typed by its only caller.
+    device_id: int,
+    device_name: str,
+) -> bool:
+    """Delete the device's Open Period slot, if it has one (issue 016).
+
+    Only ever called for a driver that declares its billing profile holds no
+    Open Period, so any row found here predates that declaration. Logged at
+    INFO rather than deleted in silence: a row disappearing from the Current
+    tab is exactly the kind of thing an operator will otherwise report as a
+    second bug.
+
+    Returns:
+        True if a row was deleted -- the caller reports it as the open slot
+        having changed, which it has.
+    """
+    row = session.scalars(
+        select(BillingReadingRow).where(
+            BillingReadingRow.device_id == device_id,
+            BillingReadingRow.record_status == "open",
+        )
+    ).first()
+    if row is None:
+        return False
+
+    logger.info(
+        "Billing: %s's meter family has no Open Period, so the stale open row for %s was removed",
+        device_name,
+        row.bill_date,
+    )
+    session.delete(row)
+    return True
 
 
 def _upsert_open(

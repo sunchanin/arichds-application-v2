@@ -46,19 +46,50 @@ _DRIVERS = (Prometer100Driver, Saral305Driver, Premier550Driver, SmartTccDriver)
 #: (D=27) borrows the D=7 instantaneous sibling; total PF (D=24) borrows the
 #: same D=7 family. A sibling whose D transition is not in this table is
 #: either a typo or a genuinely new borrow this test has not been taught
-#: about yet — either way it must not pass silently. ``dict.get`` returning
-#: ``None`` for an unknown capture ``D`` fails closed: ``None`` never equals
-#: an ``int`` sibling ``D``, so a brand-new borrow must be added here
-#: deliberately rather than slipping through.
-_ALLOWED_D_TRANSITIONS: dict[int, int] = {29: 8, 27: 7, 24: 7}
+#: about yet — either way it must not pass silently. An unknown capture ``D``
+#: fails closed: ``dict.get`` returns an empty set and nothing is a member of
+#: it, so a brand-new borrow must be added here deliberately rather than
+#: slipping through.
+#:
+#: A capture ``D`` may map to **more than one** sibling ``D`` (M13, issue 06):
+#: the four average-power columns are all captured at ``D=5``, but the two
+#: import ones borrow the ``D=7`` instantaneous sibling while the two export
+#: ones borrow the ``D=6`` max-demand sibling — measured on WP079074,
+#: 2026-09-09, where the export ``D=7`` siblings are denied outright. One
+#: allowed value per capture ``D`` cannot express that, so the value is a set.
+_ALLOWED_D_TRANSITIONS: dict[int, frozenset[int]] = {
+    29: frozenset({8}),
+    27: frozenset({7}),
+    24: frozenset({7}),
+    5: frozenset({7, 6}),
+}
 
 #: Columns explicitly known to have no working sibling — deliberate, listed
-#: here with a reason, not a silent ``sibling_obis=None``. Empty today: every
-#: column this issue's three drivers map has a declared sibling (D12 still
-#: applies at read time if that sibling turns out to be unreadable on a real
-#: meter — see ``avg_geo_pf``'s note in
+#: here with a reason, not a silent absent sibling. D12 still applies at read
+#: time if a declared sibling turns out to be unreadable on a real meter (see
+#: ``avg_geo_pf``'s note in
 #: ``docs/meter-notes/cewe-billing-capture-objects.md``).
-_KNOWN_NO_SIBLING: frozenset[tuple[type, int, tuple[str, int]]] = frozenset()
+#:
+#: Five entries, all from M13 issue 06, and they are two different reasons:
+#:
+#: * The **Interval Status word** is a class-1 Data object. It is a passthrough
+#:   column that carries a raw bitmap, not a measurement — there is no scaler
+#:   to borrow because there is no scale. A sibling here would be meaningless.
+#: * The **SMART TCC phase angles** are captured at ``D=7`` — the instantaneous
+#:   register itself — so the address a CEWE column would borrow from *is* the
+#:   capture address, and there is nothing left to fall back to. If that family
+#:   denies its own address the way CEWE meters do, these three come back NULL;
+#:   that cannot be checked, because the test meter has answered on neither
+#:   port since 2026-08-09. The driver records how to verify it.
+_KNOWN_NO_SIBLING: frozenset[tuple[type, int, tuple[str, int]]] = frozenset(
+    {
+        (Prometer100Driver, 1, ("1.0.96.5.4.255", 2)),
+        (Premier550Driver, 1, ("1.0.96.5.4.255", 2)),
+        (SmartTccDriver, 1, ("1.0.81.7.40.255", 2)),
+        (SmartTccDriver, 1, ("1.0.81.7.51.255", 2)),
+        (SmartTccDriver, 1, ("1.0.81.7.62.255", 2)),
+    }
+)
 
 
 def _shares_quantity_group(capture_obis: str, sibling_obis: str) -> bool:
@@ -79,16 +110,23 @@ def _d_transition_is_known(capture_obis: str, sibling_obis: str) -> bool:
     one of :data:`_ALLOWED_D_TRANSITIONS`'s known routes."""
     capture_d = int(capture_obis.split(".")[3])
     sibling_d = int(sibling_obis.split(".")[3])
-    return _ALLOWED_D_TRANSITIONS.get(capture_d) == sibling_d
+    return sibling_d in _ALLOWED_D_TRANSITIONS.get(capture_d, frozenset())
 
 
 def _all_load_profile_columns():
     """Yield ``(driver_cls, logger_id, key, field, sibling_obis, unit)`` for
-    every column every CEWE driver declares."""
+    every column every CEWE driver declares — **once per declared sibling**,
+    and once with ``None`` for a column that declares none (M13, issue 04: a
+    column may now name more than one, each with its own COSEM class, and every
+    one of them has to hold this rule)."""
     for driver_cls in _DRIVERS:
         for logger_id, column_map in driver_cls.LOAD_PROFILE_COLUMN_MAP.items():
-            for key, (field, sibling_obis, unit) in column_map.items():
-                yield driver_cls, logger_id, key, field, sibling_obis, unit
+            for key, column in column_map.items():
+                if not column.scaler_siblings:
+                    yield driver_cls, logger_id, key, column.field, None, column.unit
+                    continue
+                for sibling_obis, _cosem_class in column.scaler_siblings:
+                    yield driver_cls, logger_id, key, column.field, sibling_obis, column.unit
 
 
 class TestSiblingSharesTheCaptureColumnsQuantityGroup:
@@ -121,7 +159,7 @@ class TestSiblingSharesTheCaptureColumnsQuantityGroup:
                 failures.append(
                     f"{driver_cls.__name__} logger {logger_id} field {field!r}: "
                     f"capture D={capture_d} -> sibling D={sibling_d} is not a known transition "
-                    f"(expected D={_ALLOWED_D_TRANSITIONS.get(capture_d)})"
+                    f"(allowed: {sorted(_ALLOWED_D_TRANSITIONS.get(capture_d, frozenset()))})"
                 )
         assert not failures, "\n".join(failures)
 

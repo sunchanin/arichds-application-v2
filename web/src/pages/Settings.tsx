@@ -1,7 +1,8 @@
 import { App, Card, Segmented, Space, Typography } from "antd";
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiRequestError, api, isLicenseLapsed, type DisplayUnitScale } from "../api";
+import { ApiRequestError, api, isLicenseLapsed, type DisplayUnitScale, type LicenseStatus } from "../api";
+import { LicenseCard } from "../components/LicenseCard";
 
 const { Text } = Typography;
 
@@ -11,21 +12,37 @@ const OPTIONS: { label: string; value: DisplayUnitScale }[] = [
 ];
 
 /**
- * Settings — the machine-wide display-unit setting (kW/kWh vs W/Wh; a CR,
- * not part of any milestone's original shape).
+ * Settings — the machine-wide settings page. Two cards today:
  *
- * **One value for the whole machine, not per user** (owner ruling). Every
- * authenticated role can see this page and its current value — the control
- * itself is disabled for a `user`, matching the backend's own admin-only
- * `PUT`, the same split `Billing.tsx`'s `capture_dir` form already uses.
+ * 1. **Display unit** — kW/kWh vs W/Wh (a CR, not part of any milestone's
+ *    original shape).
+ * 2. **License** (`components/LicenseCard.tsx`, issue 011) — what this machine
+ *    is licensed to, and the only place a license that *still works* can be
+ *    replaced. The Activation page is a gate `App.tsx` stops rendering the
+ *    moment the machine is active, so without this card renewing a lease meant
+ *    deleting `license.lic` by hand.
  *
- * **Never changes the database or an API payload** — this only decides how
- * a value is rendered, on the Billing, Load Profile and capture PDF/xlsx
- * output (`web/src/units.ts` does the actual conversion, on the Billing and
- * Load Profile pages). Every readings endpoint keeps returning
+ * Both follow the same read/change split: **one value for the whole machine,
+ * not per user** (owner ruling), every authenticated role sees the page and
+ * its current values, and the controls are disabled for a `user` — matching
+ * each backend's own admin-only write, the same split `Billing.tsx`'s
+ * `capture_dir` form already uses.
+ *
+ * The display-unit setting **never changes the database or an API payload** —
+ * it only decides how a value is rendered, on the Billing, Load Profile and
+ * capture PDF/xlsx output (`web/src/units.ts` does the actual conversion, on
+ * the Billing and Load Profile pages). Every readings endpoint keeps returning
  * kWh/kvarh/kW/kvar regardless of this setting.
  */
-export function Settings({ role }: { role: "admin" | "user" }) {
+export function Settings({
+  role,
+  status,
+  onActivated,
+}: {
+  role: "admin" | "user";
+  status: LicenseStatus;
+  onActivated: () => void;
+}) {
   const { message } = App.useApp();
   const [scale, setScale] = useState<DisplayUnitScale | null>(null);
   const [saving, setSaving] = useState(false);
@@ -75,6 +92,8 @@ export function Settings({ role }: { role: "admin" | "user" }) {
           />
         </Space>
       </Card>
+
+      <LicenseCard status={status} role={role} onActivated={onActivated} />
     </Space>
   );
 }

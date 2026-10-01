@@ -32,9 +32,11 @@ from __future__ import annotations
 from typing import Any
 
 from gurux_dlms.enums import Unit
+from gurux_dlms.objects import GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
-from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver
+from arichds.acquisition.drivers._dlms import read_battery_status_via
+from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver, LpColumn
 from arichds.acquisition.obis import INSTANTANEOUS_OBIS
 
 #: This model's own read timeout — 90 s, wider than every other CEWE model's
@@ -51,23 +53,38 @@ _READ_TIMEOUT_SEC = 90
 #: Logger 1 (F7, meter-notes:94-98) — energy only, nothing electrical. Every
 #: column carries a sibling OBIS (review finding 1) — the live 2026-08-09
 #: scan showed this model denies every own-address ``scaler_unit`` read.
-_LOGGER_1_COLUMNS: dict[tuple[str, int], tuple[str, str | None, Unit]] = {
-    ("1.0.1.29.0.255", 2): ("import_active_kwh", "1.0.1.8.0.255", Unit.ACTIVE_ENERGY),
-    ("1.0.2.29.0.255", 2): ("export_active_kwh", "1.0.2.8.0.255", Unit.ACTIVE_ENERGY),
-    ("1.0.3.29.0.255", 2): ("import_reactive_kvarh", "1.0.3.8.0.255", Unit.REACTIVE_ENERGY),
-    ("1.0.4.29.0.255", 2): ("export_reactive_kvarh", "1.0.4.8.0.255", Unit.REACTIVE_ENERGY),
+_LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
+    ("1.0.1.29.0.255", 2): LpColumn(
+        "import_active_kwh", Unit.ACTIVE_ENERGY, scaler_siblings=(("1.0.1.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.2.29.0.255", 2): LpColumn(
+        "export_active_kwh", Unit.ACTIVE_ENERGY, scaler_siblings=(("1.0.2.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.3.29.0.255", 2): LpColumn(
+        "import_reactive_kvarh", Unit.REACTIVE_ENERGY, scaler_siblings=(("1.0.3.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.4.29.0.255", 2): LpColumn(
+        "export_reactive_kvarh", Unit.REACTIVE_ENERGY, scaler_siblings=(("1.0.4.8.0.255", GXDLMSRegister),)
+    ),
+    # ── M13, issue 06 — the only one of the eleven this model records ────────
+    # Confirmed live on 2026-09-09 (`scripts/probe_capture_objects.py` against
+    # 49.229.159.44:50001): Logger 1's seven columns include `1.0.96.5.4.255`
+    # at attribute 2 as a class-1 Data object. Same word, same 13 bits and the
+    # same decoder as the Prometer 100's — this family shares it. Passthrough:
+    # no scaler exists, and the raw integer is what is stored.
+    ("1.0.96.5.4.255", 2): LpColumn("interval_status_flag", Unit.NO_UNIT, passthrough=True),
 }
 
 #: Logger 2 (F7, meter-notes:109-113) — V/I only. Cumulative energy
 #: (``1.0.1/2/3/4.8.0.255``) and per-phase power factor are captured by the
 #: meter but deliberately not mapped here — see the module docstring (D16).
-_LOGGER_2_COLUMNS: dict[tuple[str, int], tuple[str, str | None, Unit]] = {
-    ("1.0.32.27.0.255", 2): ("volt_l1", "1.0.32.7.0.255", Unit.VOLTAGE),
-    ("1.0.52.27.0.255", 2): ("volt_l2", "1.0.52.7.0.255", Unit.VOLTAGE),
-    ("1.0.72.27.0.255", 2): ("volt_l3", "1.0.72.7.0.255", Unit.VOLTAGE),
-    ("1.0.31.27.0.255", 2): ("current_l1", "1.0.31.7.0.255", Unit.CURRENT),
-    ("1.0.51.27.0.255", 2): ("current_l2", "1.0.51.7.0.255", Unit.CURRENT),
-    ("1.0.71.27.0.255", 2): ("current_l3", "1.0.71.7.0.255", Unit.CURRENT),
+_LOGGER_2_COLUMNS: dict[tuple[str, int], LpColumn] = {
+    ("1.0.32.27.0.255", 2): LpColumn("volt_l1", Unit.VOLTAGE, scaler_siblings=(("1.0.32.7.0.255", GXDLMSRegister),)),
+    ("1.0.52.27.0.255", 2): LpColumn("volt_l2", Unit.VOLTAGE, scaler_siblings=(("1.0.52.7.0.255", GXDLMSRegister),)),
+    ("1.0.72.27.0.255", 2): LpColumn("volt_l3", Unit.VOLTAGE, scaler_siblings=(("1.0.72.7.0.255", GXDLMSRegister),)),
+    ("1.0.31.27.0.255", 2): LpColumn("current_l1", Unit.CURRENT, scaler_siblings=(("1.0.31.7.0.255", GXDLMSRegister),)),
+    ("1.0.51.27.0.255", 2): LpColumn("current_l2", Unit.CURRENT, scaler_siblings=(("1.0.51.7.0.255", GXDLMSRegister),)),
+    ("1.0.71.27.0.255", 2): LpColumn("current_l3", Unit.CURRENT, scaler_siblings=(("1.0.71.7.0.255", GXDLMSRegister),)),
 }
 
 
@@ -80,7 +97,7 @@ class Premier550Driver(DlmsProfileDriver):
     _LOGICAL_SERVER_ADDRESS = "0"
     _AUTHENTICATION = "Low"
 
-    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], tuple[str, str | None, Unit]]] = {
+    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], LpColumn]] = {
         1: _LOGGER_1_COLUMNS,
         2: _LOGGER_2_COLUMNS,
     }
@@ -143,3 +160,15 @@ class Premier550Driver(DlmsProfileDriver):
         CEWE model uses :data:`~arichds.constants.DLMS_INTER_REQUEST_DELAY_MS`
         (200 ms)."""
         return 500
+
+    def supports_battery(self) -> bool:
+        """Yes — the CEWE battery-status register (``0.0.96.6.1.255``, M7-2,
+        issue #29)."""
+        return True
+
+    def read_battery_status(self) -> str | None:
+        """Read the battery status — the shared
+        :func:`~arichds.acquisition.drivers._dlms.read_battery_status_via`
+        mechanism; this model needs no override of the read itself, only of
+        the capability flag."""
+        return read_battery_status_via(self)

@@ -68,6 +68,20 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ARICHDS_", env_file=".env", extra="ignore")
 
     data_dir: Path = Path("./data")
+
+    @field_validator("data_dir")
+    @classmethod
+    def _absolute_data_dir(cls, value: Path) -> Path:
+        """Resolve ``data_dir`` once, against the cwd the process **started**
+        in. Every derived path (``db_path``, ``log_dir``, …) is built from it,
+        and the lifespan changes the working directory into ``log_dir``
+        right after startup (ui-audit ticket 06, for the vendored Gurux
+        ``logFile.txt``); a relative default re-resolved per access would
+        follow that chdir and ``fastapi dev`` would migrate a brand-new empty
+        database under ``data/logs/data/`` (found in review). Resolving here
+        makes the derived paths chdir-independent by construction."""
+        return value.resolve()
+
     port: int = 8000
     host: str = "0.0.0.0"
     log_level: str = "INFO"
@@ -174,6 +188,32 @@ class Settings(BaseSettings):
         return self.data_dir.resolve() / "secret"
 
     @property
+    def tmp_dir(self) -> Path:
+        """The headless-screenshot capture browser's **one, reused** Edge
+        profile directory (ADR 0017, issue #38; fixed and shared rather
+        than per-capture, issue #40).
+
+        This service process runs as ``LocalSystem`` and never touches this
+        directory itself — Edge does, launched under a Windows scheduled
+        task registered to ``NT AUTHORITY\\LOCAL SERVICE``
+        (``installer/register-capture-task.ps1``, ``capture/screenshot.py``).
+        The task's action is fixed at install time, so the profile directory
+        can no longer be minted fresh per capture (that account has no
+        access to create one anywhere else) — captures are serialised
+        instead (``capture/screenshot.py``'s ``_CAPTURE_LOCK``, decision D9)
+        so the one directory is never used by two captures at once.
+
+        Deliberately **not** the OS temp directory: under the capture
+        browser's account, ``%TEMP%`` resolves to
+        ``C:\\Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\Temp``,
+        which is outside the ``[Dirs] Permissions:`` grant the installer
+        gives that account — the *only* one it needs, since the service
+        itself is ``LocalSystem`` and needs no grant at all. Inside
+        :attr:`data_dir` instead, so it is covered by construction.
+        """
+        return self.data_dir.resolve() / "tmp"
+
+    @property
     def jwt_secret_path(self) -> Path:
         """Absolute path to the per-install JWT signing secret (ADR 0003).
 
@@ -188,7 +228,14 @@ class Settings(BaseSettings):
         SQLite will not create a missing parent directory, and neither will the
         rotating log handler — so this runs before either is opened.
         """
-        for directory in (self.data_dir.resolve(), self.license_dir, self.log_dir, self.secret_dir, self.backup_dir):
+        for directory in (
+            self.data_dir.resolve(),
+            self.license_dir,
+            self.log_dir,
+            self.secret_dir,
+            self.backup_dir,
+            self.tmp_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
 
 

@@ -10,13 +10,14 @@ by ``record_status``, never by ``bill_date``.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fakes import FakeMeterState
+from fakes import FakeMeterState, FakeSmw110Driver
 from sqlalchemy import select
 
-from arichds.acquisition.billing import billing_cycle, read_and_store_billing
+from arichds.acquisition.billing import billing_change_check, billing_cycle, read_and_store_billing
 from arichds.acquisition.drivers.base import BillingReading
 from arichds.acquisition.locks import EndpointLocks
 from arichds.config import Settings
@@ -94,6 +95,23 @@ ENTRY_3 = BillingReading(
     import_active_kwh_total=189917.399,
 )
 
+#: A closed period carrying a populated Demand Time column (issue #45) — the
+#: existing ENTRY_1/2/3 fixtures leave all ten Demand Time fields ``None``,
+#: which is exactly why the aware-vs-naive comparison bug (production: every
+#: closed row with a captured max demand warns on every re-read) was
+#: invisible to the suite. Live-probe evidence (2026-08-25, Prometer 100
+#: 203.170.151.152:4059): every one of a device's closed periods with a
+#: non-null Demand Time column warns, every re-read, identically.
+ENTRY_WITH_DEMAND_TIME = BillingReading(
+    bill_date=datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC),
+    source=SOURCE_DLMS,
+    is_open=False,
+    meter_serial="1232002893",
+    import_active_kwh_total=198685.030,
+    max_demand_import_active_kw_total=127.570966,
+    max_demand_import_active_time_total=datetime(2026, 7, 10, 7, 45, tzinfo=UTC),
+)
+
 
 class TestRereadingIsANoOp:
     def test_reading_the_same_buffer_twice_stores_nothing_new(self, device_id: int, fake_meter: FakeMeterState) -> None:
@@ -129,6 +147,113 @@ class TestRereadingIsANoOp:
             import_active_kwh_total=ENTRY_2.import_active_kwh_total + 0.001,
         ).as_columns()
         assert a != b
+
+
+class TestRereadingWithDemandTimeIsANoOp:
+    """Issue #45 — reproduces the production condition directly: a closed
+    period whose Demand Time columns are populated must not warn on a
+    re-read of unchanged data."""
+
+    def test_rereading_an_unchanged_closed_period_with_demand_time_logs_no_warning(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_WITH_DEMAND_TIME]
+        read_and_store_billing(device_id, now=NOW)
+
+        with caplog.at_level("WARNING"):
+            result = read_and_store_billing(device_id, now=NOW)
+
+        messages = [record.message for record in caplog.records]
+        assert not any("already stored with a different value" in m for m in messages)
+        # A masked exception in the comparison would surface as `error`, not
+        # a WARNING — checked so a raising comparison can't hide behind the
+        # broad `except Exception` around the read+store call.
+        assert result.error is None
+
+    def test_a_period_whose_demand_time_columns_are_all_none_also_reads_with_no_warning(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """ENTRY_2's ten Demand Time fields are all ``None`` — the other half
+        of the domain :func:`_measurement_differs` must get right: ``None``
+        is never a datetime, so the reattachment must not run at all here."""
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2]
+        read_and_store_billing(device_id, now=NOW)
+
+        with caplog.at_level("WARNING"):
+            result = read_and_store_billing(device_id, now=NOW)
+
+        messages = [record.message for record in caplog.records]
+        assert not any("already stored with a different value" in m for m in messages)
+        assert result.error is None
+
+    def test_rereading_with_an_aware_bill_date_reports_zero_newly_stored(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """Regression guard for the ``bill_date`` lookup at ``_upsert_closed``
+        (:467-473 in issue #45's prompt) — it must keep finding the stored
+        row by an aware incoming ``bill_date`` against SQLite's naive
+        return, exactly as before this fix; a naive bind here would silently
+        re-insert every closed period on every read."""
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2, ENTRY_3]
+        read_and_store_billing(device_id, now=NOW)
+
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 0
+        assert result.error is None
+
+
+class TestADifferingDemandTimeIsSkipped:
+    """Issue #45 — the fix must not silence a genuine Demand Time change; it
+    only fixes the comparison of a value that did not actually change."""
+
+    def test_a_changed_demand_time_value_for_an_already_stored_period_is_not_rewritten(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_WITH_DEMAND_TIME]
+        read_and_store_billing(device_id, now=NOW)
+        stored_before = closed_rows(device_id)[0].max_demand_import_active_time_total
+
+        changed = BillingReading(
+            bill_date=ENTRY_WITH_DEMAND_TIME.bill_date,
+            source=SOURCE_DLMS,
+            is_open=False,
+            meter_serial="1232002893",
+            import_active_kwh_total=198685.030,
+            max_demand_import_active_kw_total=127.570966,
+            max_demand_import_active_time_total=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),  # a different capture time
+        )
+        fake_meter.billing_rows = [ENTRY_1, changed]
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert closed_rows(device_id)[0].max_demand_import_active_time_total == stored_before
+        assert result.stored == 0
+
+    def test_a_changed_demand_time_value_logs_a_warning(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_WITH_DEMAND_TIME]
+        read_and_store_billing(device_id, now=NOW)
+
+        changed = BillingReading(
+            bill_date=ENTRY_WITH_DEMAND_TIME.bill_date,
+            source=SOURCE_DLMS,
+            is_open=False,
+            meter_serial="1232002893",
+            import_active_kwh_total=198685.030,
+            max_demand_import_active_kw_total=127.570966,
+            max_demand_import_active_time_total=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),
+        )
+        fake_meter.billing_rows = [ENTRY_1, changed]
+
+        with caplog.at_level("WARNING"):
+            read_and_store_billing(device_id, now=NOW)
+
+        messages = [record.message for record in caplog.records]
+        assert any(
+            "already stored with a different value" in m and ENTRY_WITH_DEMAND_TIME.bill_date.isoformat() in m
+            for m in messages
+        )
 
 
 class TestADifferingClosedPeriodIsSkipped:
@@ -396,6 +521,117 @@ class TestItNeverTouchesDeviceStatus:
             assert device.consecutive_failures == 0
 
 
+class _StubBillingDriver:
+    """The minimal seam :func:`billing_change_check` actually depends on —
+    not a full :class:`MeterDriver`, so these tests exercise the check's own
+    D2/D3/D4/D9 logic without any DLMS mechanics (those are covered against
+    the real drivers in ``test_dlms_profile_seams.py`` /
+    ``test_smw110_billing.py``)."""
+
+    def __init__(self, newest_closed: datetime | None = None, error: Exception | None = None) -> None:
+        self._newest_closed = newest_closed
+        self._error = error
+        self.calls = 0
+
+    def billing_newest_closed_bill_date(self) -> datetime | None:
+        self.calls += 1
+        if self._error is not None:
+            raise self._error
+        return self._newest_closed
+
+
+class TestBillingChangeCheck:
+    """D1-D4, D9, D13 — issue #43, ADR 0018 (corrected)."""
+
+    def test_no_stored_closed_rows_triggers(self, device_id: int) -> None:
+        """D4 — a freshly added device with nothing stored yet gets its
+        billing inside one Load Profile cycle rather than waiting a day."""
+        driver = _StubBillingDriver(newest_closed=datetime(2026, 7, 31, 10, 0, tzinfo=UTC))
+
+        assert billing_change_check(driver, device_id) is True
+
+    def test_an_unchanged_newest_closed_period_does_not_trigger(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2]
+        read_and_store_billing(device_id, now=NOW)
+        driver = _StubBillingDriver(newest_closed=ENTRY_2.bill_date)
+
+        assert billing_change_check(driver, device_id) is False
+
+    def test_a_genuinely_new_closed_period_triggers(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2]
+        read_and_store_billing(device_id, now=NOW)
+        driver = _StubBillingDriver(newest_closed=ENTRY_1.bill_date)  # a period the store has never seen closed
+
+        assert billing_change_check(driver, device_id) is True
+
+    def test_the_stored_open_slot_never_wins_the_comparison(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        """D2 — ``record_status IS NULL`` filter. Mutation: dropping it lets
+        the open slot's ever-advancing bill_date win the stored-side MAX,
+        which would make this compare ENTRY_2 (unchanged closed) against
+        ENTRY_1 (the open slot) and wrongly trigger."""
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2]  # ENTRY_1 open, ENTRY_2 closed
+        read_and_store_billing(device_id, now=NOW)
+        driver = _StubBillingDriver(newest_closed=ENTRY_2.bill_date)  # the closed period, unchanged
+
+        assert billing_change_check(driver, device_id) is False
+
+    def test_a_stored_closed_row_with_no_meter_serial_still_counts(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """D2 — compared on ``device_id`` alone, never
+        ``(device, meter_serial)``. Mutation: filtering on meter_serial would
+        exclude a legitimately stored row whose ``meter_serial`` is ``None``
+        — the real failure mode both driver read paths hit when the serial
+        register read fails *after* the billing buffer was already read
+        (`_dlms_profile.py`, `smw110.py`) — making the stored-side ``MAX``
+        come back ``NULL`` and firing a full read every single cycle."""
+        no_serial_closed = BillingReading(
+            bill_date=ENTRY_2.bill_date,
+            source=SOURCE_DLMS,
+            is_open=False,
+            meter_serial=None,  # the serial-read-failed-after-buffer-read case
+            import_active_kwh_total=198685.030,
+        )
+        fake_meter.billing_rows = [ENTRY_1, no_serial_closed]
+        read_and_store_billing(device_id, now=NOW)
+        driver = _StubBillingDriver(newest_closed=ENTRY_2.bill_date)  # unchanged
+
+        assert billing_change_check(driver, device_id) is False
+
+    def test_a_backward_moving_bill_date_still_triggers(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        """D3 — ``!=``, not ``>``. A buffer that appears to have moved
+        backwards (a wrapped ring, a re-provisioned meter) is still worth
+        re-reading; the whole-buffer write path is idempotent."""
+        fake_meter.billing_rows = [ENTRY_1, ENTRY_2]
+        read_and_store_billing(device_id, now=NOW)
+        driver = _StubBillingDriver(newest_closed=ENTRY_3.bill_date)  # earlier than the stored ENTRY_2
+
+        assert billing_change_check(driver, device_id) is True
+
+    def test_a_driver_that_cannot_answer_does_not_trigger(self, device_id: int) -> None:
+        """The base-class default (``None``) must degrade to 'no trigger',
+        never raise or crash the walk it rides on."""
+        driver = _StubBillingDriver(newest_closed=None)
+
+        assert billing_change_check(driver, device_id) is False
+
+    def test_a_raising_driver_is_swallowed_and_does_not_trigger(self, device_id: int) -> None:
+        """D9 — any failure inside the check is swallowed."""
+        driver = _StubBillingDriver(error=RuntimeError("meter refused the billing profile"))
+
+        assert billing_change_check(driver, device_id) is False
+
+    def test_a_raising_driver_logs_a_warning(self, device_id: int, caplog: pytest.LogCaptureFixture) -> None:
+        driver = _StubBillingDriver(error=RuntimeError("meter refused the billing profile"))
+
+        with caplog.at_level("WARNING"):
+            billing_change_check(driver, device_id)
+
+        assert any(str(device_id) in record.message for record in caplog.records)
+
+
 class TestBillingCycle:
     def test_it_reads_every_enabled_non_offline_device(self, migrated_db: Settings, fake_meter: FakeMeterState) -> None:
         fake_meter.billing_rows = [ENTRY_1]
@@ -429,3 +665,222 @@ class TestBillingCycle:
         assert fake_meter.billing_reads == 1
         assert len(closed_rows(working_id)) == 0
         assert open_row(working_id) is not None
+
+
+class TestAProfileWithNoOpenPeriodClearsAStaleSlot:
+    """Issue 016 — a customer's SMART TCC had a closed cut sitting in the Open
+    Period slot, put there by ``_classify_open``'s positional fallback. Fixing
+    the classifier alone would have left that row where it is forever (nothing
+    overwrites a slot a read never fills), so the same period would have shown
+    in **both** tabs. The read clears it instead.
+    """
+
+    def test_a_declared_no_open_period_driver_removes_the_stale_row(
+        self, device_id: int, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange the exact broken state: one open row, no history.
+        fake_meter.billing_rows = [ENTRY_1]
+        read_and_store_billing(device_id, now=NOW)
+        assert open_row(device_id) is not None, "arrange failed: no open row to clear"
+
+        # The driver now declares what the real SmartTccDriver declares, and
+        # returns the same period as a CLOSED cut, which is what the fixed
+        # classifier produces.
+        monkeypatch.setattr(FakeSmw110Driver, "BILLING_PROFILE_HAS_OPEN_PERIOD", False, raising=False)
+        fake_meter.billing_rows = [replace(ENTRY_1, is_open=False)]
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert open_row(device_id) is None, "the stale open row survived -- it would show in both tabs"
+        assert [row.bill_date for row in closed_rows(device_id)] == [ENTRY_1.bill_date.replace(tzinfo=None)]
+
+    def test_a_driver_that_does_not_declare_keeps_its_open_row(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """The clearing is NOT unconditional. A driver with a real Open Period
+        that momentarily returns none must keep the slot it already has --
+        deleting there would be a behaviour change with nothing behind it."""
+        fake_meter.billing_rows = [ENTRY_1]
+        read_and_store_billing(device_id, now=NOW)
+        assert open_row(device_id) is not None
+
+        fake_meter.billing_rows = [replace(ENTRY_1, is_open=False)]
+        read_and_store_billing(device_id, now=NOW)
+
+        assert open_row(device_id) is not None, "an undeclared driver's open slot must survive"
+
+
+# ─── ADR 0029 — every entry the meter holds, keyed by Billing Sequence ─────────
+
+
+def _closed(bill_date: datetime, kwh: float) -> BillingReading:
+    return BillingReading(
+        bill_date=bill_date, source=SOURCE_DLMS, is_open=False, meter_serial="WP089573", import_active_kwh_total=kwh
+    )
+
+
+#: Site TC's Prometer 100 buffer, 2026-09-22, newest entry first as the driver
+#: hands it over: thirteen closed periods in six same-second pairs — one pair
+#: differing in value (the register before and after a x100 scaling), two
+#: pairs identical in every column, plus an odd one out — and the Open Period.
+_T1 = datetime(2026, 9, 19, 8, 59, 50, tzinfo=UTC)
+_T2 = datetime(2026, 9, 19, 8, 58, 40, tzinfo=UTC)
+_T3 = datetime(2026, 9, 12, 17, 53, 45, tzinfo=UTC)
+_T4 = datetime(2026, 9, 12, 17, 42, 50, tzinfo=UTC)
+_T5 = datetime(2026, 9, 11, 13, 20, 40, tzinfo=UTC)
+_T6 = datetime(2026, 9, 11, 13, 19, 15, tzinfo=UTC)
+_T7 = datetime(2026, 9, 11, 13, 18, 5, tzinfo=UTC)
+TC_OPEN = BillingReading(
+    bill_date=datetime(2026, 9, 20, 12, 34, 37, tzinfo=UTC),
+    source=SOURCE_DLMS,
+    is_open=True,
+    meter_serial="WP089573",
+    import_active_kwh_total=3807.03,
+)
+TC_BUFFER = [
+    TC_OPEN,
+    _closed(_T1, 3118.2458),  # History 1
+    _closed(_T1, 31.1777),  # History 2 — same second, the value before scaling
+    _closed(_T2, 31.1777),  # History 3
+    _closed(_T2, 31.1777),  # History 4 — identical in every column
+    _closed(_T3, 0.0),
+    _closed(_T3, 0.0),
+    _closed(_T4, 0.0),
+    _closed(_T4, 0.0),
+    _closed(_T5, 0.0),
+    _closed(_T5, 0.0),
+    _closed(_T6, 0.0),
+    _closed(_T6, 0.0),
+    _closed(_T7, 0.0),
+]
+
+
+def keyed(device_id: int) -> list[tuple[datetime, int, float | None]]:
+    """Every closed row as ``(bill_date, sequence, kWh)``, oldest first then by sequence."""
+    with session_scope() as session:
+        rows = session.scalars(
+            select(BillingReadingRow)
+            .where(BillingReadingRow.device_id == device_id, BillingReadingRow.record_status.is_(None))
+            .order_by(BillingReadingRow.bill_date, BillingReadingRow.sequence)
+        ).all()
+        return [(row.bill_date.replace(tzinfo=UTC), row.sequence, row.import_active_kwh_total) for row in rows]
+
+
+class TestEveryEntryTheMeterHoldsIsStored:
+    def test_thirteen_entries_in_six_pairs_store_thirteen_rows(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert len(closed_rows(device_id)) == 13
+
+    def test_the_newest_of_a_pair_is_sequence_zero_and_the_next_is_one(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """History 1 (3118.25, after scaling) is 0; History 2 (31.18, before) is 1
+        — counted from the newest as the meter lists them, never from the oldest."""
+        fake_meter.billing_rows = TC_BUFFER
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert [k for k in keyed(device_id) if k[0] == _T1] == [(_T1, 0, 3118.2458), (_T1, 1, 31.1777)]
+
+    def test_a_pair_identical_in_every_column_is_still_two_rows(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert [k for k in keyed(device_id) if k[0] == _T2] == [(_T2, 0, 31.1777), (_T2, 1, 31.1777)]
+
+    def test_a_bill_date_with_one_period_is_sequence_zero(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+
+        read_and_store_billing(device_id, now=NOW)
+
+        assert [k for k in keyed(device_id) if k[0] == _T7] == [(_T7, 0, 0.0)]
+
+    def test_the_open_period_is_still_one_slot(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+
+        read_and_store_billing(device_id, now=NOW)
+        read_and_store_billing(device_id, now=NOW)
+
+        row = open_row(device_id)
+        assert row is not None and row.sequence == 0
+        with session_scope() as session:
+            assert (
+                session.scalar(
+                    select(BillingReadingRow.id)
+                    .where(BillingReadingRow.device_id == device_id, BillingReadingRow.record_status == "open")
+                    .limit(2)
+                    .offset(1)
+                )
+                is None
+            )
+
+
+class TestADriverThatListsOldestFirst:
+    """No shipped driver declares `BILLING_NEWEST_ENTRY_FIRST = False`, so the
+    store's reverse is pinned here directly (code review 2026-09-22): the
+    sequence is counted from the newest member whichever end the list starts at."""
+
+    def test_the_sequence_still_counts_from_the_newest_member(self, device_id: int) -> None:
+        from arichds.acquisition.billing import _store
+
+        oldest_first = list(reversed([r for r in TC_BUFFER if not r.is_open]))
+
+        _store(device_id, "Main Incomer", oldest_first, NOW, newest_first=False)
+
+        assert [k for k in keyed(device_id) if k[0] == _T1] == [(_T1, 0, 3118.2458), (_T1, 1, 31.1777)]
+        assert len(keyed(device_id)) == 13
+
+
+class TestRereadingAPairedBufferIsANoOp:
+    def test_a_second_read_stores_nothing_and_warns_nothing(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+        read_and_store_billing(device_id, now=NOW)
+        before = keyed(device_id)
+
+        with caplog.at_level("WARNING"):
+            result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 0
+        assert keyed(device_id) == before
+        assert not [r for r in caplog.records if "already stored" in r.message]
+
+    def test_the_meter_dropping_the_older_member_of_a_pair_leaves_every_key_intact(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """The ring drops its oldest entry first — History 13 here — so a group
+        can lose its `1` and keep its `0`, and the survivors' keys never move."""
+        fake_meter.billing_rows = TC_BUFFER
+        read_and_store_billing(device_id, now=NOW)
+        before = keyed(device_id)
+
+        fake_meter.billing_rows = TC_BUFFER[:-1]  # the oldest entry has fallen off the ring
+        result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 0
+        assert keyed(device_id) == before
+
+    def test_a_changed_value_under_a_stored_key_is_skipped_with_the_existing_warning(
+        self, device_id: int, fake_meter: FakeMeterState, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake_meter.billing_rows = TC_BUFFER
+        read_and_store_billing(device_id, now=NOW)
+
+        changed = list(TC_BUFFER)
+        changed[2] = _closed(_T1, 99.0)  # History 2 (sequence 1) now reads differently
+        fake_meter.billing_rows = changed
+        with caplog.at_level("WARNING"):
+            result = read_and_store_billing(device_id, now=NOW)
+
+        assert result.stored == 0
+        assert [k for k in keyed(device_id) if k[0] == _T1] == [(_T1, 0, 3118.2458), (_T1, 1, 31.1777)]
+        assert any("already stored with a different value" in r.message for r in caplog.records)

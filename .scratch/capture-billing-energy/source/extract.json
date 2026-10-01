@@ -1,0 +1,1776 @@
+{
+  "kind": "xlsx",
+  "sheets": [
+    {
+      "index": 1,
+      "name": "Billing อันเก่า",
+      "state": "visible",
+      "dimension": "A1:AT53",
+      "text_cells": 13,
+      "non_empty_cells": 13,
+      "images": [
+        {
+          "file": "images/01-billing-อันเก่า-1.png",
+          "anchor": "A1",
+          "format": "png"
+        },
+        {
+          "file": "images/01-billing-อันเก่า-2.png",
+          "anchor": "G1",
+          "format": "png"
+        },
+        {
+          "file": "images/01-billing-อันเก่า-3.png",
+          "anchor": "H2",
+          "format": "png"
+        },
+        {
+          "file": "images/01-billing-อันเก่า-4.jpg",
+          "anchor": "AF29",
+          "format": "jpg"
+        },
+        {
+          "file": "images/01-billing-อันเก่า-5.png",
+          "anchor": "AS29",
+          "format": "png"
+        }
+      ],
+      "blocks": [
+        {
+          "range": "AF10:AF12",
+          "rows": 3,
+          "cols": 1,
+          "cells": 3,
+          "preview": [
+            [
+              "สามารถกดดูได้ด้วยว่า ที่ไหนไม่ดึงในตามรอบของการดึงบิลล่าสุด"
+            ],
+            [
+              "และตั้งการดึงซ้ำได้ให้ดึงซ้ำทุกๆ15 นาทีจนกว่าจะได้  เพราะบางทีสื่อสารอาจจะ"
+            ],
+            [
+              "ไม่สเถียรเอง  แต่อยากให้ดึงซ่ำตลอด"
+            ]
+          ]
+        },
+        {
+          "range": "AF14:AF15",
+          "rows": 2,
+          "cols": 1,
+          "cells": 2,
+          "preview": [
+            [
+              "เวลา capture จะเดขึ้นเวลาดึงแบบ manual และ auto"
+            ],
+            [
+              "***ถ้าสามารถทำให้ หน้า billing แบบไม่ต้องเปิดหน้านี้ใว้ตลอดและ cap จากหลังบ้านก็ได้นะ โดยหน้า cap เป็นแบบที่ตกลงกันล่าสุด หรือให้เห็นประมาณรูปนี้กก็ได้"
+            ]
+          ]
+        },
+        {
+          "range": "AF17:AF18",
+          "rows": 2,
+          "cols": 1,
+          "cells": 2,
+          "preview": [
+            [
+              "เพิ่มให้แสดงที่ตัดบิลทั้งหมดเพิ่ม"
+            ],
+            [
+              "Bill total คือมิเตอร์ทั้งหมดที่มีการตัดบิลแบบไม่สนใจรอบการตัดบิล แต่ที่ทำมาแล้วสนใจในรอบตัดบิลปัจจุบัน"
+            ]
+          ]
+        },
+        {
+          "range": "AF20:AF20",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "ถ้า capture ของรายตัวให้มี ไฮไลน์ แบบนี้ในบิลล่าสุดด้วย"
+            ]
+          ]
+        },
+        {
+          "range": "AF24:AF27",
+          "rows": 4,
+          "cols": 1,
+          "cells": 4,
+          "preview": [
+            [
+              "**** อยากได้รูปและสามารถ campare ค่าแสดงในบิลและรูปที่ cap ได้ โดยจะทำต่อยอดไปที่เว็บ"
+            ],
+            [
+              "ที่พวก sino กับทางซันและโจ"
+            ],
+            [
+              "โดยเวลาเช็คค่าคือสีที่ไฮไลต์ให้ตรงกัน กับรูปที่ cap  แต่ทำเมนูแยกในการตรวจสอบได้"
+            ],
+            [
+              "*** จะทำในส่วนของเว็บที่ฟอร์มของเว็บที่เกี่ยวกับงานไฟฟาเท่านั้น  โดยฟอร์มจะเป็นของไฟฟ้า และผู้ขายไฟหลัก"
+            ]
+          ]
+        },
+        {
+          "range": "AT53:AT53",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "ส่วนมากจะเทียบค่าก่อนและค่าล่าสุดที่ตัดบิล"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "AF10",
+          "value": "สามารถกดดูได้ด้วยว่า ที่ไหนไม่ดึงในตามรอบของการดึงบิลล่าสุด"
+        },
+        {
+          "ref": "AF11",
+          "value": "และตั้งการดึงซ้ำได้ให้ดึงซ้ำทุกๆ15 นาทีจนกว่าจะได้  เพราะบางทีสื่อสารอาจจะ"
+        },
+        {
+          "ref": "AF12",
+          "value": "ไม่สเถียรเอง  แต่อยากให้ดึงซ่ำตลอด"
+        },
+        {
+          "ref": "AF14",
+          "value": "เวลา capture จะเดขึ้นเวลาดึงแบบ manual และ auto"
+        },
+        {
+          "ref": "AF15",
+          "value": "***ถ้าสามารถทำให้ หน้า billing แบบไม่ต้องเปิดหน้านี้ใว้ตลอดและ cap จากหลังบ้านก็ได้นะ โดยหน้า cap เป็นแบบที่ตกลงกันล่าสุด หรือให้เห็นประมาณรูปนี้กก็ได้"
+        },
+        {
+          "ref": "AF17",
+          "value": "เพิ่มให้แสดงที่ตัดบิลทั้งหมดเพิ่ม"
+        },
+        {
+          "ref": "AF18",
+          "value": "Bill total คือมิเตอร์ทั้งหมดที่มีการตัดบิลแบบไม่สนใจรอบการตัดบิล แต่ที่ทำมาแล้วสนใจในรอบตัดบิลปัจจุบัน"
+        },
+        {
+          "ref": "AF20",
+          "value": "ถ้า capture ของรายตัวให้มี ไฮไลน์ แบบนี้ในบิลล่าสุดด้วย"
+        },
+        {
+          "ref": "AF24",
+          "value": "**** อยากได้รูปและสามารถ campare ค่าแสดงในบิลและรูปที่ cap ได้ โดยจะทำต่อยอดไปที่เว็บ"
+        },
+        {
+          "ref": "AF25",
+          "value": "ที่พวก sino กับทางซันและโจ"
+        },
+        {
+          "ref": "AF26",
+          "value": "โดยเวลาเช็คค่าคือสีที่ไฮไลต์ให้ตรงกัน กับรูปที่ cap  แต่ทำเมนูแยกในการตรวจสอบได้"
+        },
+        {
+          "ref": "AF27",
+          "value": "*** จะทำในส่วนของเว็บที่ฟอร์มของเว็บที่เกี่ยวกับงานไฟฟาเท่านั้น  โดยฟอร์มจะเป็นของไฟฟ้า และผู้ขายไฟหลัก"
+        },
+        {
+          "ref": "AT53",
+          "value": "ส่วนมากจะเทียบค่าก่อนและค่าล่าสุดที่ตัดบิล"
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "name": "Bill ใหม่",
+      "state": "visible",
+      "dimension": "A1:F60",
+      "text_cells": 1,
+      "non_empty_cells": 1,
+      "images": [
+        {
+          "file": "images/02-bill-ใหม่-1.png",
+          "anchor": "A1",
+          "format": "png"
+        },
+        {
+          "file": "images/02-bill-ใหม่-2.png",
+          "anchor": "D18",
+          "format": "png"
+        },
+        {
+          "file": "images/02-bill-ใหม่-3.png",
+          "anchor": "D63",
+          "format": "png"
+        },
+        {
+          "file": "images/02-bill-ใหม่-4.png",
+          "anchor": "F66",
+          "format": "png"
+        },
+        {
+          "file": "images/02-bill-ใหม่-5.png",
+          "anchor": "F70",
+          "format": "png"
+        }
+      ],
+      "blocks": [
+        {
+          "range": "F60:F60",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "*** อยากได้แบบเก่านะ แต่แสดงเวลา cap มันจะ cap รายตัวไปเรื่อยๆจนครบที่ add เข้าระบบ"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "F60",
+          "value": "*** อยากได้แบบเก่านะ แต่แสดงเวลา cap มันจะ cap รายตัวไปเรื่อยๆจนครบที่ add เข้าระบบ"
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "name": "รูปแบบไฟล์ billing-auto",
+      "state": "visible",
+      "dimension": "A1:T17",
+      "text_cells": 38,
+      "non_empty_cells": 130,
+      "images": [],
+      "blocks": [
+        {
+          "range": "A1:B5",
+          "rows": 5,
+          "cols": 2,
+          "cells": 9,
+          "preview": [
+            [
+              "Customer :",
+              "TFTECH"
+            ],
+            [
+              "Site Name :",
+              "TFTECH"
+            ],
+            [
+              "Serial Meter :",
+              "WP080672"
+            ],
+            [
+              "Setting :",
+              1
+            ]
+          ]
+        },
+        {
+          "range": "A7:T12",
+          "rows": 6,
+          "cols": 20,
+          "cells": 120,
+          "preview": [
+            [
+              "Record No",
+              "Time",
+              "111 Billing total kWh Total",
+              "010 Billing total kWh Rate A",
+              "020 Billing total kWh Rate B",
+              "030 Billing total kWh Rate C",
+              "050 Previous kW demand Rate A",
+              "050T Previous Time of kW deman",
+              "060 Previous kW demand Rate B",
+              "060T Previous Time of kW deman",
+              "070 Previous kW demand Rate C",
+              "070T Previous Time of kW deman",
+              "015 Cumul kW demand Rate A",
+              "016 Cumul kW demand Rate B",
+              "017 Cumul kW demand Rate C",
+              "222 Billing total Varh Total",
+              "280 Previous Var demand Total",
+              "280T Previous Time of Var dem",
+              "118 Cumul Var demand Total",
+              "Record Status"
+            ],
+            [
+              1,
+              "2026-05-07 14:25:50",
+              0,
+              0,
+              0,
+              0,
+              0,
+              "-",
+              0,
+              "-",
+              0,
+              "-",
+              0,
+              0,
+              0,
+              999570.1281,
+              0,
+              "-",
+              0,
+              ".........."
+            ],
+            [
+              2,
+              "2026-06-01 00:00:00",
+              34056212.8065,
+              21097929.0393,
+              2963699.6283,
+              9994584.1389,
+              287117.9808,
+              "2026-05-16 12:45:00",
+              185018.308,
+              "2026-05-29 18:45:00",
+              290892.4976,
+              "2026-05-28 05:45:00",
+              287117.9808,
+              185018.308,
+              290892.4976,
+              1303610.0586,
+              1133.814,
+              "2026-05-24 23:00:00",
+              1133.814,
+              ".........."
+            ],
+            [
+              3,
+              "2026-07-01 00:00:00",
+              78437359.1224,
+              49559188.3778,
+              7089266.9151,
+              21788903.8295,
+              290194.5516,
+              "2026-06-13 12:15:00",
+              187135.3868,
+              "2026-06-09 18:30:00",
+              302223.2176,
+              "2026-06-09 18:30:00",
+              577312.5324,
+              372153.6948,
+              593115.7152,
+              1673522.0859,
+              1137.7888,
+              "2026-06-08 02:15:00",
+              2271.6028,
+              ".........."
+            ]
+          ]
+        },
+        {
+          "range": "C17:C17",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "**** ตัวอย่างปกติ ที่โหลด Auto"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "A1",
+          "value": "Customer :"
+        },
+        {
+          "ref": "B1",
+          "value": "TFTECH"
+        },
+        {
+          "ref": "A2",
+          "value": "Site Name :"
+        },
+        {
+          "ref": "B2",
+          "value": "TFTECH"
+        },
+        {
+          "ref": "A3",
+          "value": "Serial Meter :"
+        },
+        {
+          "ref": "B3",
+          "value": "WP080672"
+        },
+        {
+          "ref": "A4",
+          "value": "Setting :"
+        },
+        {
+          "ref": "B4",
+          "value": 1
+        },
+        {
+          "ref": "A5",
+          "value": "Billing :"
+        },
+        {
+          "ref": "A7",
+          "value": "Record No"
+        },
+        {
+          "ref": "B7",
+          "value": "Time"
+        },
+        {
+          "ref": "C7",
+          "value": "111 Billing total kWh Total"
+        },
+        {
+          "ref": "D7",
+          "value": "010 Billing total kWh Rate A"
+        },
+        {
+          "ref": "E7",
+          "value": "020 Billing total kWh Rate B"
+        },
+        {
+          "ref": "F7",
+          "value": "030 Billing total kWh Rate C"
+        },
+        {
+          "ref": "G7",
+          "value": "050 Previous kW demand Rate A"
+        },
+        {
+          "ref": "H7",
+          "value": "050T Previous Time of kW deman"
+        },
+        {
+          "ref": "I7",
+          "value": "060 Previous kW demand Rate B"
+        },
+        {
+          "ref": "J7",
+          "value": "060T Previous Time of kW deman"
+        },
+        {
+          "ref": "K7",
+          "value": "070 Previous kW demand Rate C"
+        },
+        {
+          "ref": "L7",
+          "value": "070T Previous Time of kW deman"
+        },
+        {
+          "ref": "M7",
+          "value": "015 Cumul kW demand Rate A"
+        },
+        {
+          "ref": "N7",
+          "value": "016 Cumul kW demand Rate B"
+        },
+        {
+          "ref": "O7",
+          "value": "017 Cumul kW demand Rate C"
+        },
+        {
+          "ref": "P7",
+          "value": "222 Billing total Varh Total"
+        },
+        {
+          "ref": "Q7",
+          "value": "280 Previous Var demand Total"
+        },
+        {
+          "ref": "R7",
+          "value": "280T Previous Time of Var dem"
+        },
+        {
+          "ref": "S7",
+          "value": "118 Cumul Var demand Total"
+        },
+        {
+          "ref": "T7",
+          "value": "Record Status"
+        },
+        {
+          "ref": "A8",
+          "value": 1
+        },
+        {
+          "ref": "B8",
+          "value": {
+            "iso": "2026-05-07 14:25:50",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "C8",
+          "value": 0
+        },
+        {
+          "ref": "D8",
+          "value": 0
+        },
+        {
+          "ref": "E8",
+          "value": 0
+        },
+        {
+          "ref": "F8",
+          "value": 0
+        },
+        {
+          "ref": "G8",
+          "value": 0
+        },
+        {
+          "ref": "H8",
+          "value": "-"
+        },
+        {
+          "ref": "I8",
+          "value": 0
+        },
+        {
+          "ref": "J8",
+          "value": "-"
+        },
+        {
+          "ref": "K8",
+          "value": 0
+        },
+        {
+          "ref": "L8",
+          "value": "-"
+        },
+        {
+          "ref": "M8",
+          "value": 0
+        },
+        {
+          "ref": "N8",
+          "value": 0
+        },
+        {
+          "ref": "O8",
+          "value": 0
+        },
+        {
+          "ref": "P8",
+          "value": 999570.1281
+        },
+        {
+          "ref": "Q8",
+          "value": 0
+        },
+        {
+          "ref": "R8",
+          "value": "-"
+        },
+        {
+          "ref": "S8",
+          "value": 0
+        },
+        {
+          "ref": "T8",
+          "value": ".........."
+        },
+        {
+          "ref": "A9",
+          "value": 2
+        },
+        {
+          "ref": "B9",
+          "value": {
+            "iso": "2026-06-01 00:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "C9",
+          "value": 34056212.8065
+        },
+        {
+          "ref": "D9",
+          "value": 21097929.0393
+        },
+        {
+          "ref": "E9",
+          "value": 2963699.6283
+        },
+        {
+          "ref": "F9",
+          "value": 9994584.1389
+        },
+        {
+          "ref": "G9",
+          "value": 287117.9808
+        },
+        {
+          "ref": "H9",
+          "value": {
+            "iso": "2026-05-16 12:45:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "I9",
+          "value": 185018.308
+        },
+        {
+          "ref": "J9",
+          "value": {
+            "iso": "2026-05-29 18:45:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "K9",
+          "value": 290892.4976
+        },
+        {
+          "ref": "L9",
+          "value": {
+            "iso": "2026-05-28 05:45:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "M9",
+          "value": 287117.9808
+        },
+        {
+          "ref": "N9",
+          "value": 185018.308
+        },
+        {
+          "ref": "O9",
+          "value": 290892.4976
+        },
+        {
+          "ref": "P9",
+          "value": 1303610.0586
+        },
+        {
+          "ref": "Q9",
+          "value": 1133.814
+        },
+        {
+          "ref": "R9",
+          "value": {
+            "iso": "2026-05-24 23:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "S9",
+          "value": 1133.814
+        },
+        {
+          "ref": "T9",
+          "value": ".........."
+        },
+        {
+          "ref": "A10",
+          "value": 3
+        },
+        {
+          "ref": "B10",
+          "value": {
+            "iso": "2026-07-01 00:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "C10",
+          "value": 78437359.1224
+        },
+        {
+          "ref": "D10",
+          "value": 49559188.3778
+        },
+        {
+          "ref": "E10",
+          "value": 7089266.9151
+        },
+        {
+          "ref": "F10",
+          "value": 21788903.8295
+        },
+        {
+          "ref": "G10",
+          "value": 290194.5516
+        },
+        {
+          "ref": "H10",
+          "value": {
+            "iso": "2026-06-13 12:15:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "I10",
+          "value": 187135.3868
+        },
+        {
+          "ref": "J10",
+          "value": {
+            "iso": "2026-06-09 18:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "K10",
+          "value": 302223.2176
+        },
+        {
+          "ref": "L10",
+          "value": {
+            "iso": "2026-06-09 18:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "M10",
+          "value": 577312.5324
+        },
+        {
+          "ref": "N10",
+          "value": 372153.6948
+        },
+        {
+          "ref": "O10",
+          "value": 593115.7152
+        },
+        {
+          "ref": "P10",
+          "value": 1673522.0859
+        },
+        {
+          "ref": "Q10",
+          "value": 1137.7888
+        },
+        {
+          "ref": "R10",
+          "value": {
+            "iso": "2026-06-08 02:15:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "S10",
+          "value": 2271.6028
+        },
+        {
+          "ref": "T10",
+          "value": ".........."
+        },
+        {
+          "ref": "A11",
+          "value": 4
+        },
+        {
+          "ref": "B11",
+          "value": {
+            "iso": "2026-08-01 00:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "C11",
+          "value": 121829880.5614
+        },
+        {
+          "ref": "D11",
+          "value": 76689311.9567
+        },
+        {
+          "ref": "E11",
+          "value": 10036250.3306
+        },
+        {
+          "ref": "F11",
+          "value": 35104318.2741
+        },
+        {
+          "ref": "G11",
+          "value": 306884.0024
+        },
+        {
+          "ref": "H11",
+          "value": {
+            "iso": "2026-07-25 12:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "I11",
+          "value": 182074.804
+        },
+        {
+          "ref": "J11",
+          "value": {
+            "iso": "2026-07-02 18:45:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "K11",
+          "value": 286530.716
+        },
+        {
+          "ref": "L11",
+          "value": {
+            "iso": "2026-07-02 18:45:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "M11",
+          "value": 884196.5348
+        },
+        {
+          "ref": "N11",
+          "value": 554228.4988
+        },
+        {
+          "ref": "O11",
+          "value": 879646.4312
+        },
+        {
+          "ref": "P11",
+          "value": 2058556.1677
+        },
+        {
+          "ref": "Q11",
+          "value": 1132.466
+        },
+        {
+          "ref": "R11",
+          "value": {
+            "iso": "2026-07-27 05:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "S11",
+          "value": 3404.0688
+        },
+        {
+          "ref": "T11",
+          "value": ".........."
+        },
+        {
+          "ref": "A12",
+          "value": 5
+        },
+        {
+          "ref": "B12",
+          "value": {
+            "iso": "2026-09-01 00:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "C12",
+          "value": 164822588.4104
+        },
+        {
+          "ref": "D12",
+          "value": 101303383.4997
+        },
+        {
+          "ref": "E12",
+          "value": 13115285.9038
+        },
+        {
+          "ref": "F12",
+          "value": 50403919.0069
+        },
+        {
+          "ref": "G12",
+          "value": 302265.4472
+        },
+        {
+          "ref": "H12",
+          "value": {
+            "iso": "2026-08-02 14:15:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "I12",
+          "value": 185789.6124
+        },
+        {
+          "ref": "J12",
+          "value": {
+            "iso": "2026-08-23 18:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "K12",
+          "value": 300117.8484
+        },
+        {
+          "ref": "L12",
+          "value": {
+            "iso": "2026-08-20 18:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "M12",
+          "value": 1186461.982
+        },
+        {
+          "ref": "N12",
+          "value": 740018.1112
+        },
+        {
+          "ref": "O12",
+          "value": 1179764.2796
+        },
+        {
+          "ref": "P12",
+          "value": 2453442.8566
+        },
+        {
+          "ref": "Q12",
+          "value": 1135.1252
+        },
+        {
+          "ref": "R12",
+          "value": {
+            "iso": "2026-08-24 04:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "S12",
+          "value": 4539.194
+        },
+        {
+          "ref": "T12",
+          "value": ".........."
+        },
+        {
+          "ref": "C17",
+          "value": "**** ตัวอย่างปกติ ที่โหลด Auto"
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "name": "รูปแบบไฟล์ billing-ไม่ auto ",
+      "state": "visible",
+      "dimension": "A1:X17",
+      "text_cells": 42,
+      "non_empty_cells": 134,
+      "images": [],
+      "blocks": [
+        {
+          "range": "A1:B5",
+          "rows": 5,
+          "cols": 2,
+          "cells": 9,
+          "preview": [
+            [
+              "Customer :",
+              "TFTECH"
+            ],
+            [
+              "Site Name :",
+              "TFTECH"
+            ],
+            [
+              "Serial Meter :",
+              "WP080672"
+            ],
+            [
+              "Setting :",
+              1
+            ]
+          ]
+        },
+        {
+          "range": "A7:X12",
+          "rows": 6,
+          "cols": 24,
+          "cells": 124,
+          "preview": [
+            [
+              "Record No",
+              "Time",
+              "111 Billing total kWh Total",
+              "010 Billing total kWh Rate A",
+              "020 Billing total kWh Rate B",
+              "030 Billing total kWh Rate C",
+              " Billing total Export kWh Total",
+              "Billing total  Export  kWh Rate A",
+              " Billing total   Export kWh Rate B",
+              " Billing total  Export  kWh Rate C",
+              "050 Previous kW demand Rate A",
+              "050T Previous Time of kW deman",
+              "060 Previous kW demand Rate B",
+              "060T Previous Time of kW deman",
+              "070 Previous kW demand Rate C",
+              "070T Previous Time of kW deman",
+              "015 Cumul kW demand Rate A",
+              "016 Cumul kW demand Rate B",
+              "017 Cumul kW demand Rate C",
+              "222 Billing total Varh Total",
+              "280 Previous Var demand Total",
+              "280T Previous Time of Var dem",
+              "118 Cumul Var demand Total",
+              "Record Status"
+            ],
+            [
+              1,
+              "2026-05-07 14:25:50",
+              0,
+              0,
+              0,
+              0,
+              null,
+              null,
+              null,
+              null,
+              0,
+              "-",
+              0,
+              "-",
+              0,
+              "-",
+              0,
+              0,
+              0,
+              999570.1281,
+              0,
+              "-",
+              0,
+              ".........."
+            ],
+            [
+              2,
+              "2026-06-01 00:00:00",
+              34056212.8065,
+              21097929.0393,
+              2963699.6283,
+              9994584.1389,
+              null,
+              null,
+              null,
+              null,
+              287117.9808,
+              "2026-05-16 12:45:00",
+              185018.308,
+              "2026-05-29 18:45:00",
+              290892.4976,
+              "2026-05-28 05:45:00",
+              287117.9808,
+              185018.308,
+              290892.4976,
+              1303610.0586,
+              1133.814,
+              "2026-05-24 23:00:00",
+              1133.814,
+              ".........."
+            ],
+            [
+              3,
+              "2026-07-01 00:00:00",
+              78437359.1224,
+              49559188.3778,
+              7089266.9151,
+              21788903.8295,
+              null,
+              null,
+              null,
+              null,
+              290194.5516,
+              "2026-06-13 12:15:00",
+              187135.3868,
+              "2026-06-09 18:30:00",
+              302223.2176,
+              "2026-06-09 18:30:00",
+              577312.5324,
+              372153.6948,
+              593115.7152,
+              1673522.0859,
+              1137.7888,
+              "2026-06-08 02:15:00",
+              2271.6028,
+              ".........."
+            ]
+          ]
+        },
+        {
+          "range": "C17:C17",
+          "rows": 1,
+          "cols": 1,
+          "cells": 1,
+          "preview": [
+            [
+              "**** ตัวอย่างปกติ ที่โหลด เอง โดยเลือกที่มี export ด้วย"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "A1",
+          "value": "Customer :"
+        },
+        {
+          "ref": "B1",
+          "value": "TFTECH"
+        },
+        {
+          "ref": "A2",
+          "value": "Site Name :"
+        },
+        {
+          "ref": "B2",
+          "value": "TFTECH"
+        },
+        {
+          "ref": "A3",
+          "value": "Serial Meter :"
+        },
+        {
+          "ref": "B3",
+          "value": "WP080672"
+        },
+        {
+          "ref": "A4",
+          "value": "Setting :"
+        },
+        {
+          "ref": "B4",
+          "value": 1
+        },
+        {
+          "ref": "A5",
+          "value": "Billing :"
+        },
+        {
+          "ref": "A7",
+          "value": "Record No"
+        },
+        {
+          "ref": "B7",
+          "value": "Time"
+        },
+        {
+          "ref": "C7",
+          "value": "111 Billing total kWh Total"
+        },
+        {
+          "ref": "D7",
+          "value": "010 Billing total kWh Rate A"
+        },
+        {
+          "ref": "E7",
+          "value": "020 Billing total kWh Rate B"
+        },
+        {
+          "ref": "F7",
+          "value": "030 Billing total kWh Rate C"
+        },
+        {
+          "ref": "G7",
+          "value": " Billing total Export kWh Total"
+        },
+        {
+          "ref": "H7",
+          "value": "Billing total  Export  kWh Rate A"
+        },
+        {
+          "ref": "I7",
+          "value": " Billing total   Export kWh Rate B"
+        },
+        {
+          "ref": "J7",
+          "value": " Billing total  Export  kWh Rate C"
+        },
+        {
+          "ref": "K7",
+          "value": "050 Previous kW demand Rate A"
+        },
+        {
+          "ref": "L7",
+          "value": "050T Previous Time of kW deman"
+        },
+        {
+          "ref": "M7",
+          "value": "060 Previous kW demand Rate B"
+        },
+        {
+          "ref": "N7",
+          "value": "060T Previous Time of kW deman"
+        },
+        {
+          "ref": "O7",
+          "value": "070 Previous kW demand Rate C"
+        },
+        {
+          "ref": "P7",
+          "value": "070T Previous Time of kW deman"
+        },
+        {
+          "ref": "Q7",
+          "value": "015 Cumul kW demand Rate A"
+        },
+        {
+          "ref": "R7",
+          "value": "016 Cumul kW demand Rate B"
+        },
+        {
+          "ref": "S7",
+          "value": "017 Cumul kW demand Rate C"
+        },
+        {
+          "ref": "T7",
+          "value": "222 Billing total Varh Total"
+        },
+        {
+          "ref": "U7",
+          "value": "280 Previous Var demand Total"
+        },
+        {
+          "ref": "V7",
+          "value": "280T Previous Time of Var dem"
+        },
+        {
+          "ref": "W7",
+          "value": "118 Cumul Var demand Total"
+        },
+        {
+          "ref": "X7",
+          "value": "Record Status"
+        },
+        {
+          "ref": "A8",
+          "value": 1
+        },
+        {
+          "ref": "B8",
+          "value": {
+            "iso": "2026-05-07 14:25:50",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "C8",
+          "value": 0
+        },
+        {
+          "ref": "D8",
+          "value": 0
+        },
+        {
+          "ref": "E8",
+          "value": 0
+        },
+        {
+          "ref": "F8",
+          "value": 0
+        },
+        {
+          "ref": "K8",
+          "value": 0
+        },
+        {
+          "ref": "L8",
+          "value": "-"
+        },
+        {
+          "ref": "M8",
+          "value": 0
+        },
+        {
+          "ref": "N8",
+          "value": "-"
+        },
+        {
+          "ref": "O8",
+          "value": 0
+        },
+        {
+          "ref": "P8",
+          "value": "-"
+        },
+        {
+          "ref": "Q8",
+          "value": 0
+        },
+        {
+          "ref": "R8",
+          "value": 0
+        },
+        {
+          "ref": "S8",
+          "value": 0
+        },
+        {
+          "ref": "T8",
+          "value": 999570.1281
+        },
+        {
+          "ref": "U8",
+          "value": 0
+        },
+        {
+          "ref": "V8",
+          "value": "-"
+        },
+        {
+          "ref": "W8",
+          "value": 0
+        },
+        {
+          "ref": "X8",
+          "value": ".........."
+        },
+        {
+          "ref": "A9",
+          "value": 2
+        },
+        {
+          "ref": "B9",
+          "value": {
+            "iso": "2026-06-01 00:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "C9",
+          "value": 34056212.8065
+        },
+        {
+          "ref": "D9",
+          "value": 21097929.0393
+        },
+        {
+          "ref": "E9",
+          "value": 2963699.6283
+        },
+        {
+          "ref": "F9",
+          "value": 9994584.1389
+        },
+        {
+          "ref": "K9",
+          "value": 287117.9808
+        },
+        {
+          "ref": "L9",
+          "value": {
+            "iso": "2026-05-16 12:45:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "M9",
+          "value": 185018.308
+        },
+        {
+          "ref": "N9",
+          "value": {
+            "iso": "2026-05-29 18:45:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "O9",
+          "value": 290892.4976
+        },
+        {
+          "ref": "P9",
+          "value": {
+            "iso": "2026-05-28 05:45:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "Q9",
+          "value": 287117.9808
+        },
+        {
+          "ref": "R9",
+          "value": 185018.308
+        },
+        {
+          "ref": "S9",
+          "value": 290892.4976
+        },
+        {
+          "ref": "T9",
+          "value": 1303610.0586
+        },
+        {
+          "ref": "U9",
+          "value": 1133.814
+        },
+        {
+          "ref": "V9",
+          "value": {
+            "iso": "2026-05-24 23:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "W9",
+          "value": 1133.814
+        },
+        {
+          "ref": "X9",
+          "value": ".........."
+        },
+        {
+          "ref": "A10",
+          "value": 3
+        },
+        {
+          "ref": "B10",
+          "value": {
+            "iso": "2026-07-01 00:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "C10",
+          "value": 78437359.1224
+        },
+        {
+          "ref": "D10",
+          "value": 49559188.3778
+        },
+        {
+          "ref": "E10",
+          "value": 7089266.9151
+        },
+        {
+          "ref": "F10",
+          "value": 21788903.8295
+        },
+        {
+          "ref": "K10",
+          "value": 290194.5516
+        },
+        {
+          "ref": "L10",
+          "value": {
+            "iso": "2026-06-13 12:15:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "M10",
+          "value": 187135.3868
+        },
+        {
+          "ref": "N10",
+          "value": {
+            "iso": "2026-06-09 18:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "O10",
+          "value": 302223.2176
+        },
+        {
+          "ref": "P10",
+          "value": {
+            "iso": "2026-06-09 18:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "Q10",
+          "value": 577312.5324
+        },
+        {
+          "ref": "R10",
+          "value": 372153.6948
+        },
+        {
+          "ref": "S10",
+          "value": 593115.7152
+        },
+        {
+          "ref": "T10",
+          "value": 1673522.0859
+        },
+        {
+          "ref": "U10",
+          "value": 1137.7888
+        },
+        {
+          "ref": "V10",
+          "value": {
+            "iso": "2026-06-08 02:15:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "W10",
+          "value": 2271.6028
+        },
+        {
+          "ref": "X10",
+          "value": ".........."
+        },
+        {
+          "ref": "A11",
+          "value": 4
+        },
+        {
+          "ref": "B11",
+          "value": {
+            "iso": "2026-08-01 00:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "C11",
+          "value": 121829880.5614
+        },
+        {
+          "ref": "D11",
+          "value": 76689311.9567
+        },
+        {
+          "ref": "E11",
+          "value": 10036250.3306
+        },
+        {
+          "ref": "F11",
+          "value": 35104318.2741
+        },
+        {
+          "ref": "K11",
+          "value": 306884.0024
+        },
+        {
+          "ref": "L11",
+          "value": {
+            "iso": "2026-07-25 12:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "M11",
+          "value": 182074.804
+        },
+        {
+          "ref": "N11",
+          "value": {
+            "iso": "2026-07-02 18:45:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "O11",
+          "value": 286530.716
+        },
+        {
+          "ref": "P11",
+          "value": {
+            "iso": "2026-07-02 18:45:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "Q11",
+          "value": 884196.5348
+        },
+        {
+          "ref": "R11",
+          "value": 554228.4988
+        },
+        {
+          "ref": "S11",
+          "value": 879646.4312
+        },
+        {
+          "ref": "T11",
+          "value": 2058556.1677
+        },
+        {
+          "ref": "U11",
+          "value": 1132.466
+        },
+        {
+          "ref": "V11",
+          "value": {
+            "iso": "2026-07-27 05:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "W11",
+          "value": 3404.0688
+        },
+        {
+          "ref": "X11",
+          "value": ".........."
+        },
+        {
+          "ref": "A12",
+          "value": 5
+        },
+        {
+          "ref": "B12",
+          "value": {
+            "iso": "2026-09-01 00:00:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "C12",
+          "value": 164822588.4104
+        },
+        {
+          "ref": "D12",
+          "value": 101303383.4997
+        },
+        {
+          "ref": "E12",
+          "value": 13115285.9038
+        },
+        {
+          "ref": "F12",
+          "value": 50403919.0069
+        },
+        {
+          "ref": "K12",
+          "value": 302265.4472
+        },
+        {
+          "ref": "L12",
+          "value": {
+            "iso": "2026-08-02 14:15:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "M12",
+          "value": 185789.6124
+        },
+        {
+          "ref": "N12",
+          "value": {
+            "iso": "2026-08-23 18:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "O12",
+          "value": 300117.8484
+        },
+        {
+          "ref": "P12",
+          "value": {
+            "iso": "2026-08-20 18:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "Q12",
+          "value": 1186461.982
+        },
+        {
+          "ref": "R12",
+          "value": 740018.1112
+        },
+        {
+          "ref": "S12",
+          "value": 1179764.2796
+        },
+        {
+          "ref": "T12",
+          "value": 2453442.8566
+        },
+        {
+          "ref": "U12",
+          "value": 1135.1252
+        },
+        {
+          "ref": "V12",
+          "value": {
+            "iso": "2026-08-24 04:30:00",
+            "type": "datetime"
+          }
+        },
+        {
+          "ref": "W12",
+          "value": 4539.194
+        },
+        {
+          "ref": "X12",
+          "value": ".........."
+        },
+        {
+          "ref": "C17",
+          "value": "**** ตัวอย่างปกติ ที่โหลด เอง โดยเลือกที่มี export ด้วย"
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "name": "Energy",
+      "state": "visible",
+      "dimension": "A1:Z21",
+      "text_cells": 2,
+      "non_empty_cells": 2,
+      "images": [
+        {
+          "file": "images/05-energy-1.png",
+          "anchor": "A1",
+          "format": "png"
+        }
+      ],
+      "blocks": [
+        {
+          "range": "Z20:Z21",
+          "rows": 2,
+          "cols": 1,
+          "cells": 2,
+          "preview": [
+            [
+              "ให้มีปุ่มบันทึกด้วย เก็บเหมือน load profile ละ billing "
+            ],
+            [
+              "และรูปแบบฟอร์มเอาตามโปรแกรมได้เลย"
+            ]
+          ]
+        }
+      ],
+      "cells": [
+        {
+          "ref": "Z20",
+          "value": "ให้มีปุ่มบันทึกด้วย เก็บเหมือน load profile ละ billing "
+        },
+        {
+          "ref": "Z21",
+          "value": "และรูปแบบฟอร์มเอาตามโปรแกรมได้เลย"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "sheets": 5,
+    "text_cells": 96,
+    "images": 11
+  },
+  "source": {
+    "original_path": "C:\\Users\\HP\\Downloads\\แก้ไข capture และฟอร์ม billing+เมนู  sum energy.xlsx",
+    "copied_to": ".scratch\\capture-billing-energy\\source\\แก้ไข capture และฟอร์ม billing+เมนู  sum energy.xlsx",
+    "sha256": "fab6b4563f651552c59fef2305f4880f25b0ef061b1f56c6dcb40ff8f84f3bb2",
+    "size_bytes": 1055578,
+    "extracted_at": "2026-09-08T12:42:43"
+  }
+}

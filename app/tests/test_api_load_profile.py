@@ -29,6 +29,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import mint_meter_activation_code
 from fakes import FakeMeterState
 from fastapi.testclient import TestClient
 
@@ -51,7 +52,9 @@ BASE = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
 def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = "SN-1", **overrides: object) -> int:
     """Create a device through the real API and return its id."""
     fake_meter.meter_serial = serial
-    response = client.post("/api/devices", json={**DEVICE, **overrides})
+    payload = {**DEVICE, **overrides}
+    payload.setdefault("meter_activation_code", mint_meter_activation_code(meter_serial=serial))
+    response = client.post("/api/devices", json=payload)
     assert response.status_code == 201, response.text
     return response.json()["data"]["id"]
 
@@ -197,6 +200,230 @@ class TestClientFaults:
         assert response.status_code == 422, response.text
 
 
+class TestReadNow:
+    """D7/D8, issue #44 — the Load Profile page's own Read now route.
+    Mirrors ``api/energy.py``'s ``trigger_energy_register_read``."""
+
+    def test_any_authenticated_role_gets_200(
+        self, user_client: TestClient, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter, model="smw110", brand="mitsu")
+
+        response = user_client.post(f"/api/load-profile/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+
+    def test_an_unknown_device_is_404(self, admin_client: TestClient) -> None:
+        response = admin_client.post("/api/load-profile/read?device_id=999")
+
+        assert response.status_code == 404
+
+    def test_an_unsupported_model_is_404(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """``prometer100`` has no driver-level load profile — the default payload."""
+        device_id = add_device(admin_client, fake_meter)
+
+        response = admin_client.post(f"/api/load-profile/read?device_id={device_id}")
+
+        assert response.status_code == 404
+
+    def test_a_meter_failure_is_a_200_with_the_verdict_on_the_payload(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter, model="smw110", brand="mitsu")
+        fake_meter.connect_error = ConnectionError("boom")
+
+        response = admin_client.post(f"/api/load-profile/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        body = response.json()["data"]
+        assert body["error"] is not None
+        assert body["stored"] == 0
+
+    def test_it_stores_and_reports_the_fields(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        from arichds.acquisition.drivers.base import IntervalReading
+
+        device_id = add_device(admin_client, fake_meter, model="smw110", brand="mitsu")
+        fake_meter.load_profile_rows = [
+            IntervalReading(
+                read_at=(datetime.now(UTC) - timedelta(hours=1)).replace(microsecond=0),
+                source="dlms",
+                logger_id=1,
+                interval_sec=900,
+                import_active_kwh=13.13,
+            )
+        ]
+
+        response = admin_client.post(f"/api/load-profile/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        body = response.json()["data"]
+        assert body["stored"] == 1
+        assert body["error"] is None
+        assert body["through"] is not None
+        assert body["history_remains"] is False
+
+    def test_it_never_reads_billing(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """D7 — this route runs only its own job."""
+        device_id = add_device(admin_client, fake_meter, model="smw110", brand="mitsu")
+
+        admin_client.post(f"/api/load-profile/read?device_id={device_id}")
+
+        assert fake_meter.billing_reads == 0
+
+    def test_it_takes_the_manual_path(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """D4/D7, minor 4 review round 1 — never ``background=True``. A
+        background acquisition returns ``skipped=True, stored=0, error=None``
+        the moment the endpoint is busy, so the button would report "no new
+        data" to an operator without ever telling them the read never ran —
+        D4's exact failure mode, now guarded for this route too."""
+        from arichds.acquisition.load_profile import LoadProfileReadResult
+
+        calls: list[dict[str, object]] = []
+
+        def spy(device_id: int, **kwargs: object) -> LoadProfileReadResult:
+            calls.append(kwargs)
+            return LoadProfileReadResult(supported=True, stored=0, through=None, budget_exhausted=False, error=None)
+
+        monkeypatch.setattr("arichds.api.load_profile.read_and_store_load_profile", spy)
+        device_id = add_device(admin_client, fake_meter, model="smw110", brand="mitsu")
+
+        response = admin_client.post(f"/api/load-profile/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        assert len(calls) == 1
+        assert calls[0].get("background") is not True, "the route took the background path, not Manual"
+
+    def test_it_never_touches_device_status(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """D7 — no liveness probe, so even a meter failure here leaves
+        ``devices.status``/``status_checked_at`` exactly as they were."""
+        from arichds.db.models import Device
+        from arichds.db.session import session_scope
+
+        device_id = add_device(admin_client, fake_meter, model="smw110", brand="mitsu")
+        with session_scope() as session:
+            device = session.get(Device, device_id)
+            assert device is not None
+            before = (device.status, device.status_checked_at, device.consecutive_failures)
+
+        fake_meter.connect_error = ConnectionError("boom")
+        admin_client.post(f"/api/load-profile/read?device_id={device_id}")
+
+        with session_scope() as session:
+            device = session.get(Device, device_id)
+            assert device is not None
+            after = (device.status, device.status_checked_at, device.consecutive_failures)
+        assert after == before
+
+    def test_history_remains_is_true_after_a_budget_exhausted_advance_then_false_once_caught_up(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """Minor 2, review round 1 — pins ``history_remains`` in **both**
+        directions over HTTP. Hardcoding ``history_remains=False`` on the
+        route left every other test in this file green (issue #44's own
+        review found this) because none of them ever drove a walk that both
+        exhausts its budget and genuinely advances the watermark.
+
+        The route has no ``budget_sec`` parameter, so the clock itself is
+        faked to force the budget wall after exactly one chunk — mirrors
+        ``test_load_profile_job.py``'s own ``TestTheBudget`` shape, adapted
+        to go through HTTP where ``budget_sec`` cannot be passed directly.
+        """
+        import itertools
+
+        from arichds.acquisition.drivers.base import IntervalReading
+        from arichds.db.models import LoadProfileReading
+        from arichds.db.session import session_scope
+
+        device_id = add_device(admin_client, fake_meter, model="smw110", brand="mitsu")
+        now = datetime.now(UTC).replace(microsecond=0)
+        watermark = now - timedelta(hours=60)
+
+        with session_scope() as session:
+            session.add(
+                LoadProfileReading(
+                    device_id=device_id,
+                    read_at=watermark,
+                    source="dlms",
+                    logger_id=1,
+                    interval_sec=900,
+                    import_active_kwh=1.0,
+                )
+            )
+        # One row per chunk of a 60h/24h-chunk, three-chunk walk — the first
+        # (within [watermark, watermark+24h]) lets chunk one genuinely
+        # advance the watermark before the fake clock stops the walk; the
+        # other two are only reachable once the walk is allowed to finish.
+        fake_meter.load_profile_rows = [
+            IntervalReading(
+                read_at=watermark + timedelta(hours=10),
+                source="dlms",
+                logger_id=1,
+                interval_sec=900,
+                import_active_kwh=1.0,
+            ),
+            IntervalReading(
+                read_at=watermark + timedelta(hours=30),
+                source="dlms",
+                logger_id=1,
+                interval_sec=900,
+                import_active_kwh=1.0,
+            ),
+            IntervalReading(
+                read_at=watermark + timedelta(hours=59),
+                source="dlms",
+                logger_id=1,
+                interval_sec=900,
+                import_active_kwh=1.0,
+            ),
+        ]
+
+        # First `time.monotonic()` call sets the deadline; every call after
+        # reports far in the future, so the second chunk's check trips the
+        # budget immediately — chunk one still ran (it always does), so the
+        # watermark already moved from `watermark` to `watermark + 10h`.
+        #
+        # Rebinds the `time` NAME inside `load_profile.py`'s own module
+        # namespace, not the process-wide `time.monotonic` — the request
+        # runs through Starlette's threadpool/anyio machinery, which calls
+        # the real `time.monotonic()` internally for its own scheduling, and
+        # a global patch consumes calls unpredictably against those, not
+        # against the walk. Rebinding only `load_profile`'s own `time`
+        # reference leaves every other module's `time.monotonic()` untouched.
+        #
+        # A scoped `MonkeyPatch.context()` rather than the `monkeypatch`
+        # fixture — the fixture is shared with `fake_meter` (same function
+        # scope), so calling `.undo()` on it would also undo `fake_meter`'s
+        # own driver-registry patch, sending the second call at a real socket.
+        class _FastClock:
+            def __init__(self) -> None:
+                self._calls = itertools.count()
+
+            def monotonic(self) -> float:
+                return 0.0 if next(self._calls) == 0 else 1_000_000.0
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("arichds.acquisition.load_profile.time", _FastClock())
+            first = admin_client.post(f"/api/load-profile/read?device_id={device_id}")
+
+        assert first.status_code == 200, first.text
+        first_body = first.json()["data"]
+        assert first_body["stored"] == 1, first_body
+        assert first_body["history_remains"] is True, first_body
+
+        # The real clock again (the context above already exited): this call
+        # has nothing left to stop it partway, so it walks to the end and
+        # catches up. `stored` is 3, not 2 — the new watermark's own 24h
+        # first chunk re-reads the boundary row (inclusive bounds) alongside
+        # the next real one, same as the first call's own boundary re-read;
+        # what this assertion is actually pinning is `history_remains`.
+        second = admin_client.post(f"/api/load-profile/read?device_id={device_id}")
+        assert second.status_code == 200, second.text
+        second_body = second.json()["data"]
+        assert second_body["history_remains"] is False, second_body
+
+
 class TestPaging:
     def test_the_default_page_is_a_hundred_rows_of_a_larger_total(
         self, admin_client: TestClient, fake_meter: FakeMeterState
@@ -228,16 +455,29 @@ class TestPaging:
         assert response.json()["data"]["total"] == 30
 
 
-#: The five of the twelve columns an SMW110W4 never fills. Four are the ones
-#: SPEC §3.5 lists as "added at M4c"; ``freq`` is the fifth, and it is easy to
-#: miss — the driver's own docstring (``smw110.py``) records that this model's
-#: load profile has no frequency column at all.
+#: The columns an SMW110W4 never fills. Four are the ones SPEC §3.5 lists as
+#: "added at M4c"; ``freq`` is the fifth, and it is easy to miss — the driver's
+#: own docstring (``smw110.py``) records that this model's load profile has no
+#: frequency column at all. The eleven added at M13 issue 06 join them: this
+#: model records none of them either, and the page's contract is that an absent
+#: column is present and null, never dropped.
 UNSOURCED_ON_SMW110 = (
     "import_reactive_kvarh",
     "export_active_kwh",
     "export_reactive_kvarh",
     "avg_geo_pf",
     "freq",
+    "phase_angle_a",
+    "phase_angle_b",
+    "phase_angle_c",
+    "interval_status_flag",
+    "import_active_kw",
+    "import_reactive_kvar",
+    "export_active_kw",
+    "export_reactive_kvar",
+    "volt_l1_l2",
+    "volt_l2_l3",
+    "volt_l3_l1",
 )
 
 
@@ -308,6 +548,10 @@ class TestColumns:
             "current_l1",
             "current_l2",
             "current_l3",
+            # The one derived value (M13, issue 07) — the decoded wording of
+            # `interval_status_flag`, computed on the server so the page and
+            # the CSV cannot word one bitmap differently.
+            "interval_status",
         }
 
 

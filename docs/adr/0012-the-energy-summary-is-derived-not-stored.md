@@ -1,6 +1,7 @@
 # The Energy Summary is derived on every request, and is deliberately not reproducible
 
-Status: accepted (2026-08-11, owner decision during M7 grilling). **Implemented**, M7-1 (issue
+Status: **superseded by ADR 0022** (2026-09-14, M14 grill: the Energy Summary is now stored and
+recomputed over the whole window every cycle). Originally accepted (2026-08-11, owner decision during M7 grilling). **Implemented**, M7-1 (issue
 #28): `GET /api/energy/summary` (`app/src/arichds/api/energy.py`) aggregates the TOU buckets live
 from `load_profile_readings` on every request, bounded to 31 local days exactly as this ADR's
 Consequences section requires. No `energy_summary` table, no cache, no invalidation shipped. The
@@ -101,3 +102,46 @@ nobody has measured as slow.
 
 **Make the peak window a setting now, on the argument that the settings page is in this
 milestone.** Rejected above: the milestone's convenience is not a reason for the knob to exist.
+
+---
+
+## Amendment (M13, issues 02 + 03) — the summary now leaves files on disk, and they are snapshots, not records
+
+M13 gave the Energy Summary an export file: one row per day, appended daily by the same job
+that writes the other two export files, plus a **Save to file** button that re-saves any range
+the operator picks (`f6bfe08`). Nothing above is reversed — there is still no
+`energy_summary` table, no cache, and no invalidation; the API still aggregates live on every
+request. But this ADR's Consequences told the reader that anything a customer can hold belongs
+to Billing, and a customer can now hold this. That needs settling rather than leaving the two
+statements side by side.
+
+**A row in the Energy Summary file is a snapshot of a derivation, not a document of record.**
+It says *what the buckets were when that row was written*, and the file is honest about
+nothing more than that. It is not a second store, it is not authoritative over the live
+aggregate, and it is never reconciled back: if the file and the page disagree, **the page is
+right** and the file is old.
+
+Two mechanisms make that stance liveable rather than merely declared:
+
+- **The file admits it drifts.** Adding, editing or deleting a Holiday retroactively changes
+  what an earlier day should report (that is this ADR's whole point), so the Holidays page
+  reports how many meters' files already hold an affected day and points at the Save button
+  (`0295532`). The warning stays on screen until dismissed, because it asks the operator to do
+  something later. A store would have to self-heal; a snapshot only has to say it is stale.
+- **The 90-day catch-up has the same shape.** Interval Readings that arrive late never reach
+  the already-written daily row. Same answer, same button.
+
+**The boundary that does not move**: reproducibility still belongs to Billing. Billing stores
+what the meter itself froze and never recomputes, so a bill can be reproduced years later. An
+Energy Summary file **cannot** be, by construction — regenerate last January today and a
+holiday entered since will change it. Anyone who needs a number to survive a holiday edit is
+looking for Billing, and this amendment does not give them a second option.
+
+**Why the file exists at all**, given the above: the customer asked for it (requirement D1),
+and the thing they asked for is *a record of what they were shown*, which is a weaker and
+achievable claim than *a record of what was true*. At the time this ADR was written, ADR 0013's
+closed-edition rule applied to it like any other export file — the head changes, the file
+closes, a dated edition stays behind, so the drift was visible in the folder rather than hidden
+inside one growing file. **That rule is itself superseded by ADR 0023** (M14 ticket 02): a head
+change now rewrites the file in place instead, so this paragraph is history, not current
+behaviour.

@@ -3,11 +3,20 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api, type LicenseStatus } from "./api";
 import { type Session, clearSession, getSession, onSessionChange, setSession } from "./auth";
+import { captureRequest } from "./capture";
 import { AppShell } from "./components/AppShell";
+import { type Page, pageFeatureKey, toPage } from "./features";
 import { Activation } from "./pages/Activation";
+import { AppLog } from "./pages/AppLog";
+import { Battery } from "./pages/Battery";
 import { Billing } from "./pages/Billing";
+import { CentralPush } from "./pages/CentralPush";
+import { ClassicCapture } from "./pages/ClassicCapture";
+import { DatabaseDestination } from "./pages/DatabaseDestination";
 import { Devices } from "./pages/Devices";
 import { EnergySummary } from "./pages/EnergySummary";
+import { ExportFormat } from "./pages/ExportFormat";
+import { FileUploadDestination } from "./pages/FileUploadDestination";
 import { Holidays } from "./pages/Holidays";
 import { LoadProfile } from "./pages/LoadProfile";
 import { Login } from "./pages/Login";
@@ -17,35 +26,6 @@ import { Setup } from "./pages/Setup";
 import { SpecialDays } from "./pages/SpecialDays";
 import { Users } from "./pages/Users";
 import { LICENSE_POLL_MS } from "./theme";
-
-/** The in-shell pages. Every other menu key belongs to a milestone that has not shipped. */
-type Page =
-  | "devices"
-  | "load-profile"
-  | "records"
-  | "billing"
-  | "energy-summary"
-  | "holidays"
-  | "special-days"
-  | "users"
-  | "settings";
-
-const PAGES: readonly Page[] = [
-  "devices",
-  "load-profile",
-  "records",
-  "billing",
-  "energy-summary",
-  "holidays",
-  "special-days",
-  "users",
-  "settings",
-];
-
-/** Read a menu key as a page, falling back to Devices for anything unrecognised. */
-function toPage(key: string): Page {
-  return PAGES.includes(key as Page) ? (key as Page) : "devices";
-}
 
 /**
  * Routes on state, not on a URL — and from M2-1 the first question is auth.
@@ -73,7 +53,12 @@ export default function App() {
   const [status, setStatus] = useState<LicenseStatus | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [page, setPage] = useState<Page>("devices");
+  // Capture mode (ADR 0017, issue #38) starts on Billing instead of Devices —
+  // no menu click, so the headless renderer never touches the sider. Read
+  // once via `useState`'s lazy initializer, matching `session` above; a
+  // capture request never changes mid-session so this never needs to react
+  // to it again.
+  const [page, setPage] = useState<Page>(() => (captureRequest ? "billing" : "devices"));
 
   // A 401 anywhere in the app clears the session; this is what turns that into
   // a re-render back to Login, without any page knowing about any other page.
@@ -198,39 +183,93 @@ export default function App() {
     return <Activation status={status} role={session.role} onActivated={() => void refreshStatus()} />;
   }
 
-  // A `user` never reaches the Users page: the menu entry is absent for them,
-  // and this second check is what keeps a stale `page` from surviving a
-  // demotion that landed while the page was open. Load Profile and Records need
-  // no such gate — reading stored readings is open to both roles.
-  const active: Page = page === "users" && session.role !== "admin" ? "devices" : page;
+  // The Classic Capture Style (ADR 0028): a page no menu reaches and no URL
+  // names, rendered in place of the whole shell only when the seeded request
+  // says so — the headless renderer photographs it at a fixed 1280×709. A
+  // request saying `standard` (or nothing) falls through to the Billing page
+  // inside the shell, exactly as before.
+  if (captureRequest?.style === "classic") {
+    return <ClassicCapture request={captureRequest} />;
+  }
+
+  // A `user` never reaches the Users, App Log, or Data-out Destination
+  // pages: their menu entries are absent for them, and this second check is
+  // what keeps a stale `page` from surviving a demotion that landed while
+  // the page was open. Load Profile and Records need no such gate — reading
+  // stored readings is open to both roles.
+  const active: Page =
+    (page === "users" ||
+      page === "app-log" ||
+      page === "database-destination" ||
+      page === "file-upload-destination" ||
+      page === "central-push") &&
+    session.role !== "admin"
+      ? "devices"
+      : page;
+
+  // Issue 012 — the same mapping that hides a menu entry decides what is
+  // rendered when the page is reached anyway (a stale `page`, a licence
+  // replaced while it was open, a capture request), so the hide rule and the
+  // fallback rule cannot disagree. Deliberately **not** a redirect the way the
+  // role guard above is: a role demotion means "this is not yours", where an
+  // unlicensed feature means "this machine does not have this" — and silently
+  // landing on Devices would leave the operator wondering what happened.
+  // Only a `feature` entitlement can produce this message — `always`/`never`
+  // pages (Central Push; none today) answer `null` from `pageFeatureKey` and
+  // always render normally.
+  const requiredFeature = pageFeatureKey(active);
+  const featureMissing = requiredFeature !== null && !status.enabled_features.includes(requiredFeature);
 
   return (
     <AppShell
       licensedTo={status.customer}
+      enabledFeatures={status.enabled_features}
       username={session.username}
       role={session.role}
       activeKey={active}
       onNavigate={(key) => setPage(toPage(key))}
       onSignOut={() => void signOut()}
     >
-      {active === "users" ? (
+      {featureMissing ? (
+        <Result
+          status="info"
+          title="That feature is not enabled on this installation"
+          subTitle="Open Settings → License to see what this machine is licensed for, or contact your vendor."
+        />
+      ) : active === "users" ? (
         <Users currentUserId={session.id} />
       ) : active === "load-profile" ? (
-        <LoadProfile />
+        <LoadProfile role={session.role} />
       ) : active === "records" ? (
         <Records />
       ) : active === "billing" ? (
         <Billing role={session.role} />
       ) : active === "energy-summary" ? (
-        <EnergySummary />
+        <EnergySummary role={session.role} />
       ) : active === "holidays" ? (
         <Holidays role={session.role} />
       ) : active === "special-days" ? (
         <SpecialDays />
+      ) : active === "battery" ? (
+        <Battery />
+      ) : active === "export-format" ? (
+        <ExportFormat role={session.role} />
+      ) : active === "app-log" ? (
+        <AppLog />
       ) : active === "settings" ? (
-        <Settings role={session.role} />
+        <Settings role={session.role} status={status} onActivated={() => void refreshStatus()} />
+      ) : active === "database-destination" ? (
+        <DatabaseDestination />
+      ) : active === "file-upload-destination" ? (
+        <FileUploadDestination />
+      ) : active === "central-push" ? (
+        <CentralPush />
       ) : (
-        <Devices role={session.role} />
+        <Devices
+          role={session.role}
+          licensedModels={status.licensed_models}
+          meterActivationRequired={status.meter_activation_required}
+        />
       )}
     </AppShell>
   );

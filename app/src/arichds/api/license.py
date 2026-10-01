@@ -23,7 +23,9 @@ from pydantic import BaseModel, Field
 
 from arichds.api.deps import AdminDep, LicenseServiceDep, get_current_user
 from arichds.api.envelope import ApiResponse
+from arichds.config import get_settings
 from arichds.constants import ERROR_LICENSE_INVALID
+from arichds.licensing.features import effective_features
 from arichds.licensing.service import LicenseState
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,31 @@ class LicenseStatus(BaseModel):
         mode: ``"offline"`` or ``"leased"``, when known.
         expires_at: Lease end (UTC), or None for a non-expiring license.
         max_meters: Device quota, or None for unlimited.
+        enabled_features: The **effective** feature set — ``.env FEATURES ∩
+            licence`` — already resolved, sorted, and never null: an empty
+            list means nothing is enabled, and the machine's own
+            ``SELLABLE_FEATURE_KEYS`` are never re-derived on the client
+            (issue 012, D1/D3). ``[]`` whenever the machine is not active,
+            because a Limited Mode state carries ``features=None`` and that
+            grandfathers everything (issue 012, D2).
+        licensed_models: The licensed meter model keys (issue 015), **raw**
+            rather than resolved — unlike ``enabled_features``, a model has
+            no second source (no ``.env`` equivalent) to intersect against,
+            so there is nothing to resolve and pretending otherwise would
+            invent a concept. Sorted when it is a list. ``None`` means every
+            catalogued model may be added (including on a Limited Mode
+            state, whose ``models`` is always ``None`` — meaningless there,
+            since Limited Mode blocks ``/api/*`` wholesale before any device
+            handler runs); ``[]`` means none may be added.
+        meter_activation_required: Whether this machine demands a **Meter
+            Activation Code** per meter (issue 01) — **resolved, not raw**,
+            unlike ``licensed_models``. There is nothing here for the client
+            to interpret, only the rule "unstated means not required", and
+            sending the licence's own tri-state would put that rule in a
+            second language; the raw value stays on the signed payload for
+            anyone auditing a code. ``False`` on a machine that is not
+            active — meaningless there, since Limited Mode blocks ``/api/*``
+            before any device can be added at all.
     """
 
     machine_id: str
@@ -51,6 +78,9 @@ class LicenseStatus(BaseModel):
     mode: str | None = None
     expires_at: datetime | None = None
     max_meters: int | None = None
+    enabled_features: list[str] = Field(default_factory=list)
+    licensed_models: list[str] | None = None
+    meter_activation_required: bool = False
 
 
 class ActivateRequest(BaseModel):
@@ -64,6 +94,40 @@ class ActivateRequest(BaseModel):
     code: str = Field(min_length=1, description="The Activation Code issued by the vendor.")
 
 
+def _enabled_features(state: LicenseState) -> list[str]:
+    """The effective feature set for *state*, as the SPA's menu reads it.
+
+    Deliberately the same two steps
+    :func:`~arichds.licensing.features.feature_enabled` takes, in the same
+    order, so the left nav and ``require_feature`` cannot drift about what
+    "enabled" means (issue 012, D2): refuse everything unless the licence is
+    valid — a Limited Mode state carries ``features=None``, which
+    :func:`~arichds.licensing.features.effective_features` grandfathers — then
+    intersect ``.env FEATURES`` with the licence.
+
+    Settings are read per call via :func:`~arichds.config.get_settings` rather
+    than injected, matching ``deps.require_feature`` and ``api.billing``; and
+    the licence is read from the *passed* state, so nothing here is cached
+    across an activation (ADR 0001).
+    """
+    if not state.valid:
+        return []
+    return sorted(effective_features(get_settings().enabled_feature_keys(), state.features))
+
+
+def _licensed_models(state: LicenseState) -> list[str] | None:
+    """The raw licensed model list for *state*, sorted — or ``None`` (decision C).
+
+    Not gated on ``state.valid``: an invalid state's ``models`` is already
+    ``None`` (``_from_verification``'s invalid branch carries none of the
+    entitlement fields), so this needs no separate validity check the way
+    :func:`_enabled_features` does — there is no "grandfather everything"
+    risk to guard against, because ``None`` is already the correct answer
+    for an inactive machine.
+    """
+    return sorted(state.models) if state.models is not None else None
+
+
 def _to_status(machine_id: str, state: LicenseState) -> LicenseStatus:
     """Project a :class:`LicenseState` onto the API shape."""
     return LicenseStatus(
@@ -74,6 +138,9 @@ def _to_status(machine_id: str, state: LicenseState) -> LicenseStatus:
         mode=state.mode,
         expires_at=state.expires_at,
         max_meters=state.max_meters,
+        enabled_features=_enabled_features(state),
+        licensed_models=_licensed_models(state),
+        meter_activation_required=bool(state.require_meter_activation),
     )
 
 

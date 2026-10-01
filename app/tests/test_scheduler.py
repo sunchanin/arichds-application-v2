@@ -16,6 +16,7 @@ owns the job wrapped around it.
 from __future__ import annotations
 
 import logging
+import pathlib
 import threading
 import time
 from collections.abc import Iterator
@@ -26,6 +27,7 @@ import pytest
 from fakes import fake_meter_state
 from sqlalchemy import select
 
+from arichds.acquisition.battery import battery_cycle
 from arichds.acquisition.billing import billing_cycle
 from arichds.acquisition.drivers.base import IntervalReading
 from arichds.acquisition.load_profile import (
@@ -35,19 +37,36 @@ from arichds.acquisition.load_profile import (
 )
 from arichds.acquisition.locks import endpoint_locks
 from arichds.acquisition.status import DeviceStatus
+from arichds.centralpush.cycle import central_push_cycle
 from arichds.config import Settings
 from arichds.constants import (
     BACKUP_INTERVAL_SEC,
+    BATTERY_INTERVAL_SEC,
     BILLING_INTERVAL_SEC,
+    CENTRAL_PUSH_INTERVAL_SEC,
+    CSV_EXPORT_INTERVAL_SEC,
+    DBDEST_SYNC_INTERVAL_SEC,
+    ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
+    FILEUPLOAD_INTERVAL_SEC,
+    JOB_CENTRAL_PUSH,
+    JOB_DBDEST_SYNC,
+    JOB_ENERGY_SUMMARY_RECOMPUTE,
+    JOB_FILE_UPLOAD,
+    JOB_LP_CSV_TRIM,
     LOAD_PROFILE_INTERVAL_SEC,
+    LP_CSV_TRIM_INTERVAL_SEC,
     MANUAL_READ_LOCK_TIMEOUT_SEC,
     RETENTION_INTERVAL_SEC,
     SOURCE_DLMS,
 )
+from arichds.dataout.sync import database_destination_cycle
 from arichds.db.backup import backup_database
+from arichds.db.energy_summary_store import energy_summary_recompute_cycle
 from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 from arichds.db.retention import purge_expired
 from arichds.db.session import session_scope
+from arichds.export.csv_export import csv_export_cycle, csv_trim_cycle
+from arichds.fileupload.cycle import file_upload_cycle
 from arichds.jobs.scheduler import Job, Scheduler, default_jobs
 from arichds.licensing.service import STATE_ACTIVE, STATE_LIMITED, LicenseState
 
@@ -258,6 +277,95 @@ class TestJobsWithDifferentIntervalsCoexist:
         assert len(daily) == 1, f"the daily job ran {len(daily)} times — it is following the frequent job's cadence"
 
 
+class TestRunSoon:
+    """D2/D3, issue #44 — the one-shot lane a new device's first load-profile
+    read rides so it does not wait for `LOAD_PROFILE_INTERVAL_SEC`."""
+
+    def test_a_queued_one_shot_runs(self) -> None:
+        ran = threading.Event()
+        scheduler = Scheduler(jobs=[Job(name="fake", interval_sec=0.02, fn=lambda: None)])
+        scheduler.start()
+        try:
+            scheduler.run_soon("one_shot", ran.set)
+            assert ran.wait(timeout=2.0), "the queued one-shot never ran"
+        finally:
+            scheduler.stop()
+
+    def test_a_one_shot_runs_within_about_a_second_against_a_900s_registry(self) -> None:
+        """D3 — `run_soon` must wake the thread, or a one-shot queued behind
+        the real registry's 900 s interval would sit for up to fifteen
+        minutes — indistinguishable from not implementing this at all."""
+        ran = threading.Event()
+        scheduler = Scheduler(jobs=[Job(name="slow_cadence", interval_sec=900.0, fn=lambda: None)])
+        scheduler.start()
+        try:
+            started = time.monotonic()
+            scheduler.run_soon("one_shot", ran.set)
+            assert ran.wait(timeout=1.0), "the one-shot did not run within ~1s against a 900s registry"
+            elapsed = time.monotonic() - started
+            assert elapsed < 1.0, f"the one-shot took {elapsed:.2f}s — it waited for the 900s interval"
+        finally:
+            scheduler.stop()
+
+    def test_a_raising_one_shot_costs_only_itself(self, caplog: pytest.LogCaptureFixture) -> None:
+        def boom() -> None:
+            raise RuntimeError("the one-shot blew up")
+
+        ran = threading.Event()
+        scheduler = Scheduler(jobs=[Job(name="slow_cadence", interval_sec=900.0, fn=lambda: None)])
+        scheduler.start()
+        with caplog.at_level(logging.ERROR, logger="arichds.jobs.scheduler"):
+            try:
+                scheduler.run_soon("boom", boom)
+                scheduler.run_soon("good", ran.set)
+                assert ran.wait(timeout=1.0), "the good one-shot behind a raising one never ran"
+            finally:
+                scheduler.stop()
+        assert "boom" in caplog.text, "the raising one-shot's name was not logged"
+        assert "the one-shot blew up" in caplog.text, "the traceback of the failing one-shot was not logged"
+
+    def test_run_soon_before_start_runs_on_the_first_pass(self) -> None:
+        ran = threading.Event()
+        scheduler = Scheduler(jobs=[])
+        scheduler.run_soon("early", ran.set)
+        try:
+            scheduler.start()
+            assert ran.wait(timeout=2.0), "a one-shot queued before start() was never run"
+        finally:
+            scheduler.stop()
+
+    def test_a_one_shot_after_a_stop_that_left_a_stuck_thread_still_runs_on_the_new_one(self) -> None:
+        """D3 — the wake is bound per `start()`, the same rule `_shutdown`
+        follows and for the same reason: a thread abandoned by a previous
+        `stop()` must not be able to swallow a wake meant for its replacement."""
+        release = threading.Event()
+        in_stuck = threading.Event()
+
+        def stuck() -> None:
+            in_stuck.set()
+            release.wait(timeout=10)
+
+        scheduler = Scheduler(jobs=[], stop_timeout=0.1)
+        scheduler.start()
+        try:
+            scheduler.run_soon("stuck", stuck)
+            assert in_stuck.wait(timeout=5), "the stuck one-shot never started"
+            scheduler.stop()  # the thread is still parked inside `stuck`, past the join timeout
+
+            scheduler.start()  # a fresh thread, its own wake
+
+            ran = threading.Event()
+            scheduler.run_soon("after_restart", ran.set)
+            assert ran.wait(timeout=2.0), "the one-shot queued after restart never ran on the new thread"
+        finally:
+            release.set()
+            scheduler.stop()
+        # The stale first thread only observes shutdown and exits *after*
+        # `release.set()` above unblocks it from inside `stuck()` — waited out
+        # explicitly so it cannot leak into the next test's thread count.
+        assert wait_until(lambda: not live_scheduler_threads()), "a scheduler thread leaked past this test"
+
+
 class TestStopIsPrompt:
     """Shutdown must not wait out an interval — the real one is 900 s."""
 
@@ -342,6 +450,71 @@ class TestStopIsPrompt:
         finally:
             release.set()
 
+    def test_a_stop_landing_exactly_at_wake_clear_still_lets_the_thread_exit(self) -> None:
+        """Minor 3, review round 1 — a `stop()` landing between the old
+        shutdown recheck and `wake.clear()` had the clear() throw away the
+        very wake `stop()` had just set, then `wake.wait()` parked forever
+        (empty registry, `delay` is `None`, nothing left to wake it). The fix
+        moves the recheck to *after* the clear().
+
+        Reproduced deterministically: `threading.Event` is patched with a
+        subclass whose first `.clear()` call parks until released, so the
+        test can set `shutdown` and `wake` itself — exactly what `stop()`
+        does — and only then let the parked `clear()` proceed, landing the
+        race in the same spot every run rather than hoping for a timing
+        accident.
+        """
+
+        real_event = threading.Event  # captured before the patch below, so
+        # _RaceEvent's own helper Events are real ones — constructing them
+        # via the patched `threading.Event` would recurse forever.
+
+        class _RaceEvent(threading.Event):
+            def __init__(self) -> None:
+                super().__init__()
+                self.about_to_clear = real_event()
+                self.release_clear = real_event()
+                self._armed = True
+
+            def clear(self) -> None:
+                if self._armed:
+                    self._armed = False
+                    self.about_to_clear.set()
+                    assert self.release_clear.wait(timeout=5), "the race trigger never fired"
+                super().clear()
+
+        scheduler = Scheduler(jobs=[])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(threading, "Event", _RaceEvent)
+            scheduler.start()
+
+        wake = scheduler._wake
+        assert isinstance(wake, _RaceEvent), "the scheduler's own wake was not constructed under the patch"
+        try:
+            assert wake.about_to_clear.wait(timeout=5), "the thread never reached wake.clear()"
+
+            # Exactly what stop() does — done here directly, and BEFORE
+            # releasing the parked clear(), so the clear() unavoidably
+            # discards this wake the moment it proceeds. This is "a stop()
+            # landing between the shutdown check and wake.clear()", made
+            # deterministic rather than a timing race.
+            scheduler._shutdown.set()
+            scheduler._wake.set()
+            wake.release_clear.set()
+
+            started = time.monotonic()
+            scheduler.stop()
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 5, (
+                f"stop() waited {elapsed:.1f}s — the thread parked on wake.wait() instead of exiting once "
+                "shutdown was observed"
+            )
+            assert wait_until(lambda: not live_scheduler_threads()), "the thread never exited"
+        finally:
+            wake.release_clear.set()  # in case an assertion above failed before reaching it
+            scheduler.stop()
+
 
 class TestSchedulerFollowsLicenseState:
     """SPEC §3.9 — jobs stop in Limited Mode and start on activation, no restart (ADR 0001)."""
@@ -380,22 +553,102 @@ class TestSchedulerMasterSwitch:
 
 
 class TestTheDefaultRegistry:
-    """D12 — four jobs at M6a. M8 adds sync one line at a time."""
+    """D12 — ten jobs at M14 ticket 08 (`central_push`, ADR 0024, added last,
+    one behind `dbdest_sync` — the second job that talks to a machine we do
+    not own)."""
 
-    def test_it_holds_the_load_profile_billing_backup_and_retention_jobs(self) -> None:
+    def test_it_holds_all_eleven_jobs_in_order(self) -> None:
         jobs = default_jobs()
 
-        # Asserted deliberately so that whoever adds M8's sync has to come
+        # Asserted deliberately so that whoever adds the next job has to come
         # here and update the count on purpose.
-        assert len(jobs) == 4
-        assert [job.name for job in jobs] == ["load_profile", "billing", "backup", "retention"]
+        assert len(jobs) == 11
+        assert [job.name for job in jobs] == [
+            "load_profile",
+            "energy_summary_recompute",
+            "csv_export",
+            "billing",
+            "battery",
+            "backup",
+            "retention",
+            "lp_csv_trim",
+            "dbdest_sync",
+            "central_push",
+            "file_upload",
+        ]
         assert [job.interval_sec for job in jobs] == [
             LOAD_PROFILE_INTERVAL_SEC,
+            ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
+            CSV_EXPORT_INTERVAL_SEC,
             BILLING_INTERVAL_SEC,
+            BATTERY_INTERVAL_SEC,
             BACKUP_INTERVAL_SEC,
             RETENTION_INTERVAL_SEC,
+            LP_CSV_TRIM_INTERVAL_SEC,
+            DBDEST_SYNC_INTERVAL_SEC,
+            CENTRAL_PUSH_INTERVAL_SEC,
+            FILEUPLOAD_INTERVAL_SEC,
         ]
-        assert [job.fn for job in jobs] == [load_profile_cycle, billing_cycle, backup_database, purge_expired]
+        assert [job.fn for job in jobs] == [
+            load_profile_cycle,
+            energy_summary_recompute_cycle,
+            csv_export_cycle,
+            billing_cycle,
+            battery_cycle,
+            backup_database,
+            purge_expired,
+            csv_trim_cycle,
+            database_destination_cycle,
+            central_push_cycle,
+            file_upload_cycle,
+        ]
+
+    def test_central_push_is_registered_behind_dbdest_sync(self) -> None:
+        names = [job.name for job in default_jobs()]
+
+        assert names.index(JOB_CENTRAL_PUSH) == names.index(JOB_DBDEST_SYNC) + 1
+
+    def test_file_upload_is_registered_last_behind_central_push(self) -> None:
+        """ADR 0025 decision 5 — the third job that talks to a machine we do
+        not own, registered one behind the Central Push."""
+        names = [job.name for job in default_jobs()]
+
+        assert names.index(JOB_FILE_UPLOAD) == names.index(JOB_CENTRAL_PUSH) + 1
+        assert names[-1] == JOB_FILE_UPLOAD
+
+    def test_lp_csv_trim_is_registered_immediately_behind_retention(self) -> None:
+        """Ticket 05 — the daily trim runs right behind the daily purge, at
+        the same cadence, so it never drifts from `RETENTION_DAYS` by hand."""
+        names = [job.name for job in default_jobs()]
+
+        assert names.index(JOB_LP_CSV_TRIM) == names.index("retention") + 1
+
+    def test_lp_csv_trim_shares_retentions_own_constant_not_a_copy(self) -> None:
+        """The interval must be the same object as `RETENTION_INTERVAL_SEC`,
+        not a second constant that happens to equal it today — mirrors
+        `test_energy_summary_recompute_is_registered_immediately_behind_load_profile`'s
+        own reasoning, aliased rather than duplicated."""
+        import arichds.constants as constants
+
+        assert LP_CSV_TRIM_INTERVAL_SEC == RETENTION_INTERVAL_SEC == 86400
+        source = pathlib.Path(constants.__file__).read_text(encoding="utf-8")
+        assert "LP_CSV_TRIM_INTERVAL_SEC: Final[int] = RETENTION_INTERVAL_SEC" in source
+
+    def test_energy_summary_recompute_is_registered_immediately_behind_load_profile(self) -> None:
+        """ADR 0022, M14 ticket 01 — the recompute must run against this
+        pass's freshest rows, immediately behind the load-profile cycle."""
+        names = [job.name for job in default_jobs()]
+
+        assert names.index(JOB_ENERGY_SUMMARY_RECOMPUTE) == names.index("load_profile") + 1
+
+    def test_csv_export_is_registered_immediately_behind_the_energy_summary_recompute(self) -> None:
+        """D-10 — the index gap is what makes "runs after the LP cycle in the
+        same pass" real, not merely hoped for. The energy-summary recompute
+        (ADR 0022) now sits between them, so this is one hop further back
+        than it used to be — still immediately behind the job ahead of it."""
+        names = [job.name for job in default_jobs()]
+
+        assert names.index("csv_export") == names.index(JOB_ENERGY_SUMMARY_RECOMPUTE) + 1
 
     def test_backup_runs_before_retention(self) -> None:
         """Deliberate order (issue #19): the backup still holds the rows retention
@@ -409,6 +662,51 @@ class TestTheDefaultRegistry:
     def test_it_returns_a_fresh_list_each_call(self) -> None:
         """A function, not a module constant — one ``setattr`` swaps it whole."""
         assert default_jobs() is not default_jobs()
+
+    def test_the_database_destination_sync_is_registered_third_to_last(self) -> None:
+        """Issue #46, **superseded by M14 ticket 08** (ADR 0024) and again by
+        ticket 02 (ADR 0025): the Database Destination sync was last until
+        `central_push` took that slot, and `central_push` was last until
+        `file_upload` took it — it is still the first of the three network
+        jobs that talk to a machine we do not own, and everything ahead of
+        all three is a meter read or a local disk job that should not queue
+        behind any of them within a pass (jobs run sequentially on one
+        thread).
+        """
+        jobs = default_jobs()
+        names = [job.name for job in jobs]
+        index = names.index(JOB_DBDEST_SYNC)
+
+        assert index == len(jobs) - 3
+        assert jobs[index].interval_sec == DBDEST_SYNC_INTERVAL_SEC
+        assert jobs[index].fn is database_destination_cycle
+
+    def test_the_sync_interval_is_its_own_constant_not_the_load_profile_one(self) -> None:
+        """`CSV_EXPORT_INTERVAL_SEC` aliases `LOAD_PROFILE_INTERVAL_SEC`
+        because that job runs in the same pass right behind it; this one does
+        not, and `constants.py:126-129` already refuses to share a constant
+        between independent policies. They are equal today and must not be the
+        same object.
+        """
+        import arichds.constants as constants
+
+        assert DBDEST_SYNC_INTERVAL_SEC == 900
+        source = pathlib.Path(constants.__file__).read_text(encoding="utf-8")
+        assert "DBDEST_SYNC_INTERVAL_SEC: Final[int] = 900" in source
+        assert "DBDEST_SYNC_INTERVAL_SEC: Final[int] = LOAD_PROFILE_INTERVAL_SEC" not in source
+
+
+class TestBillingIntervalStaysDaily:
+    """D12, issue #43 — the Billing Change Check (ADR 0018) makes
+    ``BILLING_INTERVAL_SEC`` a backstop rather than the primary detection
+    path, but it must stay at 86400. ``TestTheDefaultRegistry`` above asserts
+    intervals by **constant reference** (``[job.interval_sec for job in
+    jobs] == [..., BILLING_INTERVAL_SEC, ...]``), so it stays green even if
+    someone edits the constant's own value to 900 — this asserts the
+    literal."""
+
+    def test_billing_interval_is_still_one_day_in_seconds(self) -> None:
+        assert BILLING_INTERVAL_SEC == 86400
 
 
 # ─── The load-profile cycle (D5–D7) ───────────────────────────────────────────

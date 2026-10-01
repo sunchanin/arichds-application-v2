@@ -57,3 +57,27 @@ class TestSpecialDaysSupportMatchesCatalog:
             pytest.skip(f"{model} supports special days — nothing to prove here")
         with pytest.raises(NotImplementedError):
             driver.read_special_days()
+
+
+@pytest.mark.parametrize("model", sorted(_registry()))
+class TestBatterySupportMatchesCatalog:
+    """M7-2, issue #29 — same shape as the two classes above, for
+    ``supports_battery``/``read_battery_status``."""
+
+    def test_supports_battery_matches_catalog_flag(self, model: str) -> None:
+        driver_cls = _registry()[model]
+        driver = driver_cls(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+
+        assert driver.supports_battery() == CATALOG[model].supports_battery, (
+            f"{model}: supports_battery()={driver.supports_battery()} but "
+            f"CATALOG[{model!r}].supports_battery={CATALOG[model].supports_battery}"
+        )
+
+    def test_unsupported_driver_raises_not_implemented(self, model: str) -> None:
+        driver_cls = _registry()[model]
+        driver = driver_cls(ConnectionParams.net("198.51.100.9", 4059), password="secret")
+
+        if driver.supports_battery():
+            pytest.skip(f"{model} supports battery — nothing to prove here")
+        with pytest.raises(NotImplementedError):
+            driver.read_battery_status()

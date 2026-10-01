@@ -86,7 +86,7 @@ from gurux_dlms.objects import GXDLMSRegister
 
 from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers._dlms import read_energy_registers_via, read_special_days_via
-from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver
+from arichds.acquisition.drivers._dlms_profile import DlmsProfileDriver, LpColumn
 from arichds.acquisition.drivers.base import EnergyRegisterReading, SpecialDayEntry
 from arichds.acquisition.obis import INSTANTANEOUS_OBIS
 
@@ -113,18 +113,65 @@ _INTER_FRAME_DELAY_MS = 500
 #: unmapped columns are. ``freq`` maps to nothing (F3 — only the
 #: instantaneous ``1.0.14.7.0.255`` exists, not a capture column) and stays
 #: ``None`` on every row.
-_LOGGER_1_COLUMNS: dict[tuple[str, int], tuple[str, str | None, Unit]] = {
-    ("1.0.1.29.0.255", 2): ("import_active_kwh", "1.0.1.8.0.255", Unit.ACTIVE_ENERGY),
-    ("1.0.2.29.0.255", 2): ("export_active_kwh", "1.0.2.8.0.255", Unit.ACTIVE_ENERGY),
-    ("1.0.3.29.0.255", 2): ("import_reactive_kvarh", "1.0.3.8.0.255", Unit.REACTIVE_ENERGY),
-    ("1.0.4.29.0.255", 2): ("export_reactive_kvarh", "1.0.4.8.0.255", Unit.REACTIVE_ENERGY),
-    ("1.0.32.27.0.255", 2): ("volt_l1", "1.0.32.7.0.255", Unit.VOLTAGE),
-    ("1.0.52.27.0.255", 2): ("volt_l2", "1.0.52.7.0.255", Unit.VOLTAGE),
-    ("1.0.72.27.0.255", 2): ("volt_l3", "1.0.72.7.0.255", Unit.VOLTAGE),
-    ("1.0.31.27.0.255", 2): ("current_l1", "1.0.31.7.0.255", Unit.CURRENT),
-    ("1.0.51.27.0.255", 2): ("current_l2", "1.0.51.7.0.255", Unit.CURRENT),
-    ("1.0.71.27.0.255", 2): ("current_l3", "1.0.71.7.0.255", Unit.CURRENT),
-    ("1.0.13.27.0.255", 2): ("avg_geo_pf", "1.0.13.7.0.255", Unit.NONE),
+_LOGGER_1_COLUMNS: dict[tuple[str, int], LpColumn] = {
+    ("1.0.1.29.0.255", 2): LpColumn(
+        "import_active_kwh", Unit.ACTIVE_ENERGY, scaler_siblings=(("1.0.1.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.2.29.0.255", 2): LpColumn(
+        "export_active_kwh", Unit.ACTIVE_ENERGY, scaler_siblings=(("1.0.2.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.3.29.0.255", 2): LpColumn(
+        "import_reactive_kvarh", Unit.REACTIVE_ENERGY, scaler_siblings=(("1.0.3.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.4.29.0.255", 2): LpColumn(
+        "export_reactive_kvarh", Unit.REACTIVE_ENERGY, scaler_siblings=(("1.0.4.8.0.255", GXDLMSRegister),)
+    ),
+    ("1.0.32.27.0.255", 2): LpColumn("volt_l1", Unit.VOLTAGE, scaler_siblings=(("1.0.32.7.0.255", GXDLMSRegister),)),
+    ("1.0.52.27.0.255", 2): LpColumn("volt_l2", Unit.VOLTAGE, scaler_siblings=(("1.0.52.7.0.255", GXDLMSRegister),)),
+    ("1.0.72.27.0.255", 2): LpColumn("volt_l3", Unit.VOLTAGE, scaler_siblings=(("1.0.72.7.0.255", GXDLMSRegister),)),
+    ("1.0.31.27.0.255", 2): LpColumn("current_l1", Unit.CURRENT, scaler_siblings=(("1.0.31.7.0.255", GXDLMSRegister),)),
+    ("1.0.51.27.0.255", 2): LpColumn("current_l2", Unit.CURRENT, scaler_siblings=(("1.0.51.7.0.255", GXDLMSRegister),)),
+    ("1.0.71.27.0.255", 2): LpColumn("current_l3", Unit.CURRENT, scaler_siblings=(("1.0.71.7.0.255", GXDLMSRegister),)),
+    ("1.0.13.27.0.255", 2): LpColumn("avg_geo_pf", Unit.NONE, scaler_siblings=(("1.0.13.7.0.255", GXDLMSRegister),)),
+    # ── M13, issue 06 — the three of the eleven this family records ──────────
+    # **NOT HARDWARE-VERIFIED.** These three come from the 2026-07-18 round-4
+    # scan (`docs/meter-notes/tcc-obis-scan.md`, Logger 1's capture list), and
+    # the test meter (203.170.148.103) has answered on neither 4059 nor 50001
+    # since 2026-08-09, so nothing here has been read off a live ST-3CL.
+    #
+    # Two specifics a reader should not assume from the CEWE entries above:
+    # this family captures phase angle at **E=40/51/62 with D=7**, the
+    # instantaneous register itself, where CEWE captures E=4/15/26 at D=27; and
+    # because the capture address IS the D=7 address, there is no D=7 sibling
+    # to borrow from — the own-address read is the only route. On CEWE meters
+    # that route is refused for every measurement column, so if this family
+    # behaves the same way these three will be NULL rather than wrong.
+    #
+    # To verify when the meter is reachable, from `app/` — both commands are
+    # read-only and take one association each:
+    #
+    #   PYTHONPATH=src .venv/Scripts/python.exe scripts/probe_capture_objects.py \
+    #       --host 203.170.148.103 --port 4059 --model smart_tcc
+    #   PYTHONPATH=src .venv/Scripts/python.exe scripts/probe_lp_column_fill.py \
+    #       --host 203.170.148.103 --port 4059 --model smart_tcc
+    #
+    # The first confirms the three addresses are still in Logger 1's capture
+    # list; the second reads one interval through the shipped
+    # `read_load_profile()` and reports whether the three columns filled. If
+    # they are NULL, the own address is denied and this family needs a sibling
+    # declared, exactly as CEWE's columns do.
+    #
+    # (`--host` is required and there is no default, which is why this names
+    # the address; an earlier version of this note omitted it and could not be
+    # run as written.)
+    #
+    # The Interval Status word stays **unmapped**: this family captures
+    # `0.0.96.10.1.255`, a different object whose bit meanings nobody has
+    # verified. v1 refused to map it and recorded why; mapping it would store a
+    # number nothing can decode (CONTEXT.md — Interval Status).
+    ("1.0.81.7.40.255", 2): LpColumn("phase_angle_a", Unit.PHASE_ANGLE_DEGREE),
+    ("1.0.81.7.51.255", 2): LpColumn("phase_angle_b", Unit.PHASE_ANGLE_DEGREE),
+    ("1.0.81.7.62.255", 2): LpColumn("phase_angle_c", Unit.PHASE_ANGLE_DEGREE),
 }
 
 
@@ -166,12 +213,23 @@ class SmartTccDriver(DlmsProfileDriver):
     #: state, not a fault.
     RESET_REASON_KEY: tuple[str, int] | None = None
 
+    #: Issue 016 — this family's Scheme 1 buffer holds **closed cuts only**, so
+    #: no row it returns is ever the Open Period. Measured on a real 3CL on
+    #: 2026-07-24: 148 capture columns holding one real cut
+    #: (``docs/meter-notes/tcc-obis-scan.md:597``), and the same note's line 605
+    #: records that open/closed must come from the bill date rather than from
+    #: entry position. Without this, :meth:`_classify_open`'s positional
+    #: fallback labelled a customer's closed August cut as the Open Period: it
+    #: filled the Current tab, left History empty, and — because the open slot
+    #: is overwritten in place — would have been erased by the next cut.
+    BILLING_PROFILE_HAS_OPEN_PERIOD: bool = False
+
     #: D5/F9 — Register, not ExtendedRegister: the one COSEM-class difference
     #: this family has from CEWE. Max demand (``D=6``) stays ExtendedRegister
     #: on both, unaffected by this declaration.
     CUMUL_DEMAND_COSEM_CLASS: type = GXDLMSRegister
 
-    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], tuple[str, str | None, Unit]]] = {1: _LOGGER_1_COLUMNS}
+    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], LpColumn]] = {1: _LOGGER_1_COLUMNS}
 
     def __init__(self, conn: ConnectionParams, password: str, **kwargs: Any) -> None:
         """Initialise the driver.

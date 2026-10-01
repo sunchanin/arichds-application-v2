@@ -130,13 +130,14 @@ class TestGetObisMapReturnsTheInstantaneousSet:
 
 
 class TestLoadProfileLogger1ColumnMap:
-    """D7/D8 — Logger 1 only, 11 mapped columns out of the 35 the scan
-    recorded."""
+    """D7/D8 — Logger 1 only, 14 mapped columns out of the 35 the scan
+    recorded (11 at M4c issue #25, plus the three phase angles at M13 issue
+    06)."""
 
     def test_only_logger_1_is_declared(self) -> None:
         assert set(SmartTccDriver.LOAD_PROFILE_COLUMN_MAP) == {1}
 
-    def test_logger_1_has_exactly_the_eleven_documented_columns(self) -> None:
+    def test_logger_1_has_exactly_the_documented_columns(self) -> None:
         columns = SmartTccDriver.LOAD_PROFILE_COLUMN_MAP[1]
         expected_fields = {
             "import_active_kwh",
@@ -150,14 +151,30 @@ class TestLoadProfileLogger1ColumnMap:
             "current_l2",
             "current_l3",
             "avg_geo_pf",
+            # M13, issue 06 — this family's own E=40/51/62 addresses at D=7,
+            # from the 2026-07-18 scan and NOT hardware-verified since (the
+            # meter answers on neither port). See the driver's own note.
+            "phase_angle_a",
+            "phase_angle_b",
+            "phase_angle_c",
         }
-        actual_fields = {field for field, _sibling, _unit in columns.values()}
+        actual_fields = {column.field for column in columns.values()}
         assert actual_fields == expected_fields
+
+    def test_the_interval_status_word_stays_unmapped(self) -> None:
+        """This family captures ``0.0.96.10.1.255``, a different object from
+        CEWE's ``1.0.96.5.4.255`` and one whose bit meanings nobody has
+        verified on hardware. v1 refused to map it and recorded why; mapping it
+        would store a number nothing can decode (CONTEXT.md — Interval
+        Status)."""
+        columns = SmartTccDriver.LOAD_PROFILE_COLUMN_MAP[1]
+        assert "interval_status_flag" not in {column.field for column in columns.values()}
+        assert not [obis for obis, _attr in columns if obis == "0.0.96.10.1.255"]
 
     def test_frequency_maps_to_nothing(self) -> None:
         """F3 — Logger 1 has no frequency capture column on this family."""
         columns = SmartTccDriver.LOAD_PROFILE_COLUMN_MAP[1]
-        actual_fields = {field for field, _sibling, _unit in columns.values()}
+        actual_fields = {column.field for column in columns.values()}
         assert "freq" not in actual_fields
 
     def test_supports_load_profile_is_true(self) -> None:
@@ -283,12 +300,19 @@ class TestBillDateComesFromClockNotTheNearMiss:
         assert readings[0].bill_date == datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
 
 
-class TestOpenClosedPositionalFallbackIsSilent:
-    """D5/F7 — TCC declares no reset-reason register; entry 0 is open by
-    position, and no "reset-reason" WARNing fires (unlike a CEWE model whose
-    declared key is merely absent from one read)."""
+class TestThisFamilyHasNoOpenPeriod:
+    """Issue 016 — Scheme 1 holds closed cuts only, so no row a TCC read
+    returns is ever the Open Period, and no "reset-reason" WARNing fires
+    (unlike a CEWE model whose declared key is merely absent from one read).
 
-    def test_entry_zero_is_open_with_no_reset_reason_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    This class replaces one that asserted the opposite. The old assertion
+    (`readings[0].is_open is True`) was the defect written down: it pinned
+    `_classify_open`'s positional fallback, which on a profile with no open
+    period is wrong by construction. A customer's closed August cut took the
+    Current slot because of it, with History left empty.
+    """
+
+    def test_the_only_entry_is_closed_with_no_reset_reason_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         columns = _minimal_billing_capture_list()
         reader = FakeTccBillingReader(
             columns,
@@ -300,8 +324,44 @@ class TestOpenClosedPositionalFallbackIsSilent:
         with caplog.at_level("WARNING"):
             readings = driver.read_billing()
 
-        assert readings[0].is_open is True
+        assert readings[0].is_open is False
         assert not any("reset-reason" in record.message.lower() for record in caplog.records)
+
+    def test_no_row_is_open_even_when_the_buffer_holds_several(self) -> None:
+        """The real shape of the customer's meter, generalised: every entry is
+        a cut, so every entry must come back closed -- not merely "not the
+        first one"."""
+        columns = _minimal_billing_capture_list()
+        reader = FakeTccBillingReader(
+            columns,
+            entries_in_use=3,
+            buffer=[
+                [datetime(2026, 9, 1, 0, 0), None, 3, datetime(2000, 1, 1, 0, 0)],
+                [datetime(2026, 8, 1, 0, 0), None, 2, datetime(2000, 1, 1, 0, 0)],
+                [datetime(2026, 7, 14, 16, 0), None, 1, datetime(2000, 1, 1, 0, 0)],
+            ],
+        )
+        driver = _build_driver(reader)
+
+        readings = driver.read_billing()
+
+        assert len(readings) == 3
+        assert [reading.is_open for reading in readings] == [False, False, False]
+
+    def test_the_declaration_is_what_decides_it(self) -> None:
+        """Not an accident of this buffer: flipping the declaration on a
+        subclass brings the positional fallback back, which is what makes the
+        assertions above about the declaration rather than about the data."""
+        columns = _minimal_billing_capture_list()
+        reader = FakeTccBillingReader(
+            columns,
+            entries_in_use=1,
+            buffer=[[datetime(2026, 7, 14, 16, 0), None, 1, datetime(2000, 1, 1, 0, 0)]],
+        )
+        driver = _build_driver(reader)
+        driver.BILLING_PROFILE_HAS_OPEN_PERIOD = True
+
+        assert driver.read_billing()[0].is_open is True
 
 
 class TestScheme2IsNeverRead:

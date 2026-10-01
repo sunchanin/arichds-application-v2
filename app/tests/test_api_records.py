@@ -32,6 +32,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import mint_meter_activation_code
 from fakes import FakeMeterState
 from fastapi.testclient import TestClient
 
@@ -61,7 +62,9 @@ DAY_START = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
 def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = "SN-1", **overrides: object) -> int:
     """Create a device through the real API and return its id."""
     fake_meter.meter_serial = serial
-    response = client.post("/api/devices", json={**DEVICE, **overrides})
+    payload = {**DEVICE, **overrides}
+    payload.setdefault("meter_activation_code", mint_meter_activation_code(meter_serial=serial))
+    response = client.post("/api/devices", json=payload)
     assert response.status_code == 201, response.text
     return response.json()["data"]["id"]
 

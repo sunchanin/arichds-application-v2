@@ -663,6 +663,75 @@ class Smw110Driver(DlmsDriver):
             )
         return readings
 
+    def billing_newest_closed_bill_date(self) -> datetime | None:
+        """The Billing Change Check's per-tick signal (ADR 0018, D1/D11/D13,
+        issue #43) — same span mechanics as :meth:`read_billing`, reading
+        only the newest two entries rather than the whole buffer.
+
+        Entry ordering on this profile is newest-first
+        (:attr:`BILLING_NEWEST_ENTRY_FIRST` stays at the base default,
+        ``True``) — position 0 is the Open Period exactly as
+        :meth:`read_billing` treats it (``is_open = position == 0``), so this
+        reads it and returns the *next* row's ``bill_date`` — the newest
+        closed period — never entry 1's.
+
+        Every failure path returns ``None`` — an unreadable buffer must leave
+        the Load Profile walk this rides on exactly as it was (D9), never
+        break it.
+        """
+        if self._reader is None or self._client is None:
+            return None
+        try:
+            pg = GXDLMSProfileGeneric(BILLING_PROFILE_OBIS)
+            self._client.objects.append(pg)
+
+            self._reader.read(pg, 3)  # populates pg.captureObjects — live, never cached (D7)
+            # entriesInUse tells us the buffer is non-empty — never the
+            # change signal itself (D13, docs/meter-notes/smw110w4-scan.md:71).
+            entries_in_use = int(self._reader.read(pg, 7))
+            if entries_in_use <= 0:
+                return None
+
+            full_capture_objects = list(pg.captureObjects)
+            span = full_capture_objects[: self.BILLING_COLUMN_SPAN]
+            positions = positions_by_obis_attr(span)
+            expected_cell_count = len(span)
+            clock_pos = positions.get((_CLOCK_OBIS, 2))
+            if clock_pos is None:
+                return None
+
+            count = min(2, entries_in_use)
+            index = 1 if self.BILLING_NEWEST_ENTRY_FIRST else max(1, entries_in_use - 1)
+
+            original_capture_objects = pg.captureObjects
+            try:
+                request = self._client.readRowsByEntry(pg, index, count, span)
+                reply = GXReplyData()
+                self._reader.readDataBlock(request, reply)
+                pg.captureObjects = span
+                rows = self._client.updateValue(pg, 2, reply.value) or []
+            finally:
+                pg.captureObjects = original_capture_objects
+
+            if not self.BILLING_NEWEST_ENTRY_FIRST:
+                rows = list(reversed(rows))  # newest first either way (D11)
+
+            for position, row in enumerate(rows):
+                if len(row) != expected_cell_count:
+                    continue
+                local_dt = coerce_clock_cell(row[clock_pos])
+                if local_dt is None:
+                    continue
+                is_open = position == 0
+                if not is_open:
+                    return meter_local_to_utc(local_dt)
+            return None
+        except Exception:  # noqa: BLE001 — an optional signal must never break the walk it rides on (D9).
+            logger.info(
+                "%s: could not read the newest closed billing period — the daily backstop stands", self.model_name
+            )
+            return None
+
     def supports_energy_registers(self) -> bool:
         """Yes — the twenty standalone ``D=8`` energy registers (M7-1, issue
         #28)."""

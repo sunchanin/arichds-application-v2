@@ -190,6 +190,33 @@ class TestLicenseService:
     def test_machine_id_is_exposed_for_the_activation_page(self, settings: Settings, this_machine: str) -> None:
         assert LicenseService(settings.license_path).machine_id == TEST_MACHINE_ID
 
+    def test_models_survives_into_the_valid_state(
+        self, settings: Settings, this_machine: str, vendor_keys: Path, vendor_cli
+    ) -> None:
+        """Issue 015 — ``LicenseState.models`` is carried through the valid
+        branch of ``_from_verification``, exactly as ``features`` is."""
+        service = LicenseService(settings.license_path)
+        code = issue_code(vendor_cli, vendor_keys, machine_id=TEST_MACHINE_ID, models=["prometer100"])
+
+        state = service.activate(code)
+
+        assert state.valid
+        assert state.models == ["prometer100"]
+
+    def test_an_invalid_state_carries_no_models(
+        self, settings: Settings, this_machine: str, vendor_keys: Path, vendor_cli
+    ) -> None:
+        """A rejected code's state carries none of the entitlement fields —
+        grandfathering, harmless because Limited Mode blocks ``/api/*``
+        wholesale before any device handler runs."""
+        service = LicenseService(settings.license_path)
+        code = issue_code(vendor_cli, vendor_keys, machine_id=OTHER_MACHINE_ID, models=["prometer100"])
+
+        state = service.activate(code)
+
+        assert not state.valid
+        assert state.models is None
+
 
 # ─── End-to-end through the real app ──────────────────────────────────────────
 
@@ -313,3 +340,258 @@ class TestActivationAppliesLive:
         assert body["state"] == "active"
         assert body["customer"] == "Ryosan"
         assert body["mode"] == "offline"
+
+
+class TestReplacingALiveLicense:
+    """Settings → License (issue 011) — the endpoint on an **active** machine.
+
+    ``TestLicenseService`` above already pins the same rules one layer down, and
+    ``test_rejected_code_returns_the_reason_and_stays_limited`` pins a rejection
+    on a *limited* machine. What is new here is the pair the new card rests on:
+    a second code really does replace a live license through the API, and a
+    rejected one leaves an **already licensed** machine byte-for-byte as it was.
+
+    The negative assertion is the point. Each rejection compares the *whole*
+    ``/api/license/status`` body captured before the attempt against the one
+    after — not merely ``state == "active"`` — because a row that checks only
+    the field it expects to survive passes while a neighbouring field is
+    quietly rewritten.
+    """
+
+    def _license_with(self, client: TestClient, vendor_cli, vendor_keys: Path, **kwargs) -> dict:
+        """Put a working license on the machine and return its status body."""
+        code = issue_code(vendor_cli, vendor_keys, machine_id=TEST_MACHINE_ID, **kwargs)
+        assert client.post("/api/license/activate", json={"code": code}).json()["success"] is True
+        return client.get("/api/license/status").json()["data"]
+
+    def _assert_rejected_and_unchanged(self, client: TestClient, before: dict, bad_code: str, reason: str) -> None:
+        """A refused code: right reason, nothing moved, machine still usable."""
+        response = client.post("/api/license/activate", json={"code": bad_code})
+
+        assert response.status_code == 200  # the request succeeded; the code did not
+        body = response.json()
+        assert body["success"] is False
+        assert body["error"]["code"] == ERROR_LICENSE_INVALID
+        assert body["error"]["reason"] == reason
+        assert client.get("/api/license/status").json()["data"] == before
+        assert client.get("/api/devices").status_code == 200
+
+    def test_a_second_code_replaces_the_first_on_a_live_machine(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        """R1 — the whole point of issue 011: no restart, no file deleted by hand."""
+        before = self._license_with(client, vendor_cli, vendor_keys, customer="Acme Co", max_meters=1)
+        assert before["customer"] == "Acme Co"
+        assert before["max_meters"] == 1
+        assert client.get("/api/devices/quota").json()["data"]["max_meters"] == 1
+
+        code = issue_code(vendor_cli, vendor_keys, machine_id=TEST_MACHINE_ID, customer="Ryosan", max_meters=5)
+        response = client.post("/api/license/activate", json={"code": code})
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        after = client.get("/api/license/status").json()["data"]
+        assert after["state"] == "active"
+        assert after["customer"] == "Ryosan"
+        assert after["max_meters"] == 5
+        # Same running app object — the new quota is in force on the next call.
+        assert client.get("/api/devices/quota").json()["data"]["max_meters"] == 5
+
+    def test_a_code_for_another_machine_changes_nothing(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        """R2 — the commonest paste accident: someone else's code."""
+        before = self._license_with(client, vendor_cli, vendor_keys, customer="Acme Co", max_meters=1)
+
+        bad = issue_code(vendor_cli, vendor_keys, machine_id=OTHER_MACHINE_ID, customer="Someone Else")
+
+        self._assert_rejected_and_unchanged(client, before, bad, ac.WRONG_MACHINE)
+
+    def test_an_expired_lease_changes_nothing(self, client: TestClient, vendor_cli, vendor_keys: Path) -> None:
+        """R3 — an old renewal code re-pasted must not end the working lease."""
+        before = self._license_with(client, vendor_cli, vendor_keys, customer="Acme Co", max_meters=1)
+
+        bad = issue_code(
+            vendor_cli,
+            vendor_keys,
+            machine_id=TEST_MACHINE_ID,
+            customer="Acme Co",
+            mode="leased",
+            expires_at=datetime.now(UTC) - timedelta(days=1),
+        )
+
+        self._assert_rejected_and_unchanged(client, before, bad, ac.EXPIRED)
+
+    def test_a_tampered_code_changes_nothing(self, client: TestClient, vendor_cli, vendor_keys: Path) -> None:
+        """R4 — an edited ``max_meters`` cannot cost the machine its license."""
+        before = self._license_with(client, vendor_cli, vendor_keys, customer="Acme Co", max_meters=1)
+
+        payload = vendor_cli.build_payload(customer="Acme Co", machine_id=TEST_MACHINE_ID)
+        signed = vendor_cli.sign_payload(vendor_keys.read_bytes(), payload)
+        payload["max_meters"] = 9999
+        bad = ac.encode_activation_code(payload, ac._b64url_decode(signed.split(".")[1]))
+
+        self._assert_rejected_and_unchanged(client, before, bad, ac.INVALID_SIGNATURE)
+
+    def test_rubbish_changes_nothing(self, client: TestClient, vendor_cli, vendor_keys: Path) -> None:
+        """R5 — a half-copied line, the thing an operator actually does."""
+        before = self._license_with(client, vendor_cli, vendor_keys, customer="Acme Co", max_meters=1)
+
+        self._assert_rejected_and_unchanged(client, before, "obvious rubbish", ac.MALFORMED)
+
+    def test_a_leased_license_reports_its_expiry_and_unlimited_meters(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        """Probe P1 — the card's ``Leased`` / ``Unlimited`` row values.
+
+        Not in the required table. The card renders ``mode``/``expires_at``/
+        ``max_meters`` and has an empty state for each; nothing pinned that a
+        *live* lease reports a non-null ``expires_at`` alongside a null
+        ``max_meters``, which is the only combination the "Unlimited" string
+        can come from on an expiring license.
+        """
+        expires = datetime.now(UTC) + timedelta(days=30)
+        body = self._license_with(
+            client, vendor_cli, vendor_keys, customer="Acme Co", mode="leased", expires_at=expires
+        )
+
+        assert body["state"] == "active"
+        assert body["mode"] == "leased"
+        assert body["max_meters"] is None
+        assert datetime.fromisoformat(body["expires_at"]) == expires
+
+    def test_an_unlimited_offline_license_reports_both_fields_null(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        """Probe P2 — the card's ``No expiry`` / ``Unlimited`` empty states.
+
+        Not in the required table. The card decides those two strings on
+        ``expires_at === null`` and ``max_meters === null``; if either arrived
+        as ``0`` or an empty string instead, the card would silently render
+        ``1970-01-01`` or ``0`` and nobody would notice.
+        """
+        body = self._license_with(client, vendor_cli, vendor_keys, customer="Acme Co")
+
+        assert body["state"] == "active"
+        assert body["expires_at"] is None
+        assert body["max_meters"] is None
+
+    def test_the_rejection_envelope_describes_the_code_not_the_machine(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        """Probe P3 — the trap the card must not fall into.
+
+        Not in the required table. On a rejection the failure envelope's
+        ``data`` is a projection of *the rejected code*, so it says
+        ``state: "limited"`` while this machine is happily active. Nothing may
+        read it: ``web/src/api.ts``'s ``request()`` throws ``data`` away on
+        ``success: false``, which is what keeps the card from announcing that a
+        working machine has gone limited. Pinned here so a future "improvement"
+        that surfaces ``data`` has to walk past a test that says why not.
+        """
+        self._license_with(client, vendor_cli, vendor_keys, customer="Acme Co", max_meters=1)
+        bad = issue_code(vendor_cli, vendor_keys, machine_id=OTHER_MACHINE_ID, customer="Someone Else")
+
+        body = client.post("/api/license/activate", json={"code": bad}).json()
+
+        assert body["success"] is False
+        assert body["data"]["state"] == "limited"
+        assert body["data"]["customer"] == "Someone Else"
+        # ...while the machine itself never moved.
+        assert client.get("/api/license/status").json()["data"]["state"] == "active"
+        assert client.get("/api/license/status").json()["data"]["customer"] == "Acme Co"
+
+
+class TestStatusExposesLicensedModels:
+    """``GET /api/license/status`` carries ``licensed_models`` (issue 015, D-C).
+
+    Raw, not resolved: unlike ``enabled_features`` (``.env FEATURES ∩
+    licence``), a model has no second source to intersect against, so the
+    licence's own list is exposed as-is — sorted, and ``null`` reaches the
+    client as ``null`` so the three states (``null`` / ``[]`` / a list) stay
+    distinguishable, which is the entire point of D2.
+
+    Uses ``issue_code``/``vendor_keys`` rather than the shared ``relicense``
+    fixture: this module's own ``client`` fixture trusts a vendor key local
+    to this file (``vendor_keys``), not ``conftest``'s process-wide one, so a
+    code signed through ``relicense`` (which always uses the latter) would
+    verify as ``INVALID_SIGNATURE`` here.
+    """
+
+    def _status(self, client: TestClient, vendor_cli, vendor_keys: Path, **kwargs) -> dict:
+        code = issue_code(vendor_cli, vendor_keys, machine_id=TEST_MACHINE_ID, **kwargs)
+        assert client.post("/api/license/activate", json={"code": code}).json()["success"] is True
+        return client.get("/api/license/status").json()["data"]
+
+    def test_a_licence_with_no_models_list_reports_null(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        body = self._status(client, vendor_cli, vendor_keys, models=None)
+        assert body["licensed_models"] is None
+
+    def test_a_licence_with_an_empty_models_list_reports_an_empty_list(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        body = self._status(client, vendor_cli, vendor_keys, models=[])
+        assert body["licensed_models"] == []
+
+    def test_a_models_list_is_sorted(self, client: TestClient, vendor_cli, vendor_keys: Path) -> None:
+        body = self._status(client, vendor_cli, vendor_keys, models=["saral305", "premier550", "prometer100"])
+        assert body["licensed_models"] == ["premier550", "prometer100", "saral305"]
+
+    def test_a_machine_that_is_not_active_reports_null(self, unlicensed_client: TestClient) -> None:
+        """A Limited Mode state carries ``models=None`` (``LicenseService._limited``);
+        this must not be confused with a licence that explicitly grants every
+        model — the field simply is not meaningful off an invalid state."""
+        assert unlicensed_client.post("/api/auth/setup", json=ADMIN_CREDENTIALS).status_code == 201
+        token = login_token(unlicensed_client, ADMIN_CREDENTIALS)
+
+        payload = unlicensed_client.get("/api/license/status", headers={"Authorization": f"Bearer {token}"}).json()[
+            "data"
+        ]
+
+        assert payload["state"] == "limited"
+        assert payload["licensed_models"] is None
+
+
+class TestStatusExposesTheMeterActivationRequirement:
+    """``GET /api/license/status`` carries ``meter_activation_required``
+    (full-version licence, issue 01).
+
+    **Resolved, not raw** — unlike ``licensed_models``. There is nothing for
+    the browser to interpret here, only the rule "unstated means not
+    required", and sending the raw tri-state would put that rule in a second
+    language. The raw value stays on the signed payload for anyone auditing
+    a code.
+
+    Uses ``issue_code``/``vendor_keys`` for the reason
+    ``TestStatusExposesLicensedModels`` gives: this module's ``client``
+    trusts a vendor key local to this file.
+    """
+
+    def _status(self, client: TestClient, vendor_cli, vendor_keys: Path, **kwargs) -> dict:
+        code = issue_code(vendor_cli, vendor_keys, machine_id=TEST_MACHINE_ID, **kwargs)
+        assert client.post("/api/license/activate", json={"code": code}).json()["success"] is True
+        return client.get("/api/license/status").json()["data"]
+
+    def test_a_licence_that_says_nothing_reports_not_required(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        body = self._status(client, vendor_cli, vendor_keys)
+
+        assert body["meter_activation_required"] is False
+
+    def test_a_licence_that_states_the_requirement_reports_required(
+        self, client: TestClient, vendor_cli, vendor_keys: Path
+    ) -> None:
+        body = self._status(client, vendor_cli, vendor_keys, require_meter_activation=True)
+
+        assert body["meter_activation_required"] is True
+
+    def test_it_is_a_boolean_never_the_raw_tri_state(self, client: TestClient, vendor_cli, vendor_keys: Path) -> None:
+        """The browser must never receive `null` here and have to know that
+        `null` means not required — that is the rule this field exists to
+        keep out of TypeScript."""
+        body = self._status(client, vendor_cli, vendor_keys)
+
+        assert isinstance(body["meter_activation_required"], bool)

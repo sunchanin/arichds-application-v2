@@ -1,4 +1,21 @@
-import { App, Button, Card, DatePicker, Descriptions, Empty, Flex, Select, Space, Table, Tabs } from "antd";
+import {
+  App,
+  Button,
+  Card,
+  DatePicker,
+  Descriptions,
+  Empty,
+  Flex,
+  Form,
+  Input,
+  Segmented,
+  Select,
+  Space,
+  Table,
+  Tabs,
+  Tooltip,
+  Typography,
+} from "antd";
 import type { DescriptionsItemType } from "antd/es/descriptions";
 import type { ColumnsType } from "antd/es/table";
 import type { TabsProps } from "antd/es/tabs";
@@ -12,8 +29,10 @@ import {
   type CatalogEntry,
   type Device,
   type EnergyRegisterRow,
+  type EnergySettings,
   type EnergySummaryDay,
 } from "../api";
+import { ENERGY_COLUMNS, energyTotalCells } from "../energyTotals";
 import { type UnitKind, scaleValue, unitLabel, useDisplayUnitScale } from "../units";
 
 const { RangePicker } = DatePicker;
@@ -37,6 +56,17 @@ const TAB_ITEMS: TabsProps["items"] = [
   { key: "registers", label: "Meter Registers" },
 ];
 
+type SummaryMode = "single" | "range";
+
+const MODE_OPTIONS: { label: string; value: SummaryMode }[] = [
+  { label: "Single day", value: "single" },
+  { label: "Range", value: "range" },
+];
+
+/** Shared by both the single-day `DatePicker` and the `RangePicker` (issue
+ * #36, D4) so the two controls cannot drift apart on what "today" means. */
+const disabledDate = (current: Dayjs) => current.isAfter(dayjs().endOf("day"));
+
 function SummaryReportTab({
   devices,
   surface,
@@ -47,6 +77,7 @@ function SummaryReportTab({
   const { message } = App.useApp();
   const scale = useDisplayUnitScale();
   const [deviceId, setDeviceId] = useState<number | undefined>(undefined);
+  const [mode, setMode] = useState<SummaryMode>("range");
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, "day"), dayjs()]);
   const [days, setDays] = useState<EnergySummaryDay[]>([]);
   const [loading, setLoading] = useState(false);
@@ -90,28 +121,51 @@ function SummaryReportTab({
     };
   }, [deviceId, range, surface]);
 
+  // "Save to file" (M13, issue 02) — the corrective for a stale daily file.
+  // The scheduler writes one row per finished day and never revisits it, so a
+  // Holiday entered late, or readings that arrived through a backfill, leave
+  // the archive disagreeing with this screen. Pressing this writes a file that
+  // agrees with what is shown right now, under a name carrying the range so it
+  // can never overwrite the archive.
+  const [exporting, setExporting] = useState(false);
+
+  const onSaveFile = useCallback(() => {
+    if (deviceId === undefined) return;
+    setExporting(true);
+    api
+      .exportEnergySummary(deviceId, range[0].format("YYYY-MM-DD"), range[1].format("YYYY-MM-DD"))
+      .then((result) => {
+        if (result.rows_written === 0) {
+          message.info("No data in this range to save.");
+          return;
+        }
+        message.success(`Saved ${result.rows_written} day(s) to ${result.path ?? "the energy file"}.`);
+      })
+      .catch((err: unknown) => surface(err, "Could not save the Energy Summary to a file."))
+      .finally(() => setExporting(false));
+  }, [deviceId, message, range, surface]);
+
   const shownDays = deviceId === undefined ? [] : days;
 
-  const columns: ColumnsType<EnergySummaryDay> = useMemo(() => {
-    const kwh = (title: string, dataIndex: keyof EnergySummaryDay) => ({
-      title: `${title} (${unitLabel("energy", scale)})`,
-      dataIndex,
-      key: dataIndex,
-      width: 130,
-      render: (value: number) => num2(scaleValue(value, scale) ?? null),
-    });
-    return [
+  // Same function value feeds the day columns' `render` and the total row's
+  // formatter (issue #36, D13) — there is one place that can disagree with
+  // the display-unit setting, and it is wrong for both rows at once or
+  // neither.
+  const renderKwh = useMemo(() => (value: number) => num2(scaleValue(value, scale) ?? null), [scale]);
+
+  const columns: ColumnsType<EnergySummaryDay> = useMemo(
+    () => [
       { title: "Date", dataIndex: "date", key: "date", width: 110, fixed: "left" as const },
-      kwh("Peak Import", "peak_import_kwh"),
-      kwh("Off-Peak Import", "offpeak_import_kwh"),
-      kwh("Holiday Import", "holiday_import_kwh"),
-      kwh("Total Import", "total_import_kwh"),
-      kwh("Peak Export", "peak_export_kwh"),
-      kwh("Off-Peak Export", "offpeak_export_kwh"),
-      kwh("Holiday Export", "holiday_export_kwh"),
-      kwh("Total Export", "total_export_kwh"),
-    ];
-  }, [scale]);
+      ...ENERGY_COLUMNS.map(({ title, key }) => ({
+        title: `${title} (${unitLabel("energy", scale)})`,
+        dataIndex: key,
+        key,
+        width: 130,
+        render: renderKwh,
+      })),
+    ],
+    [scale, renderKwh],
+  );
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -125,26 +179,60 @@ function SummaryReportTab({
             style={{ minWidth: 260 }}
             aria-label="Device"
           />
-          <RangePicker
-            value={range}
-            allowClear={false}
-            disabledDate={(current) => current.isAfter(dayjs().endOf("day"))}
-            onChange={(dates) => {
-              const [from, to] = dates ?? [];
-              if (!from || !to) return;
-              // The server refuses a span over MAX_DAYS with 422 — clamped
-              // here too so the picker never sends a request the API will
-              // only reject. Named explicitly rather than silently snapping
-              // back to the previous range, which left no clue why the
-              // picker "didn't take" the selection.
-              if (to.diff(from, "day") + 1 > MAX_DAYS) {
-                message.info(`A Summary Report request may span at most ${MAX_DAYS} days.`);
-                return;
-              }
-              setRange([from, to]);
+          <Segmented<SummaryMode>
+            value={mode}
+            options={MODE_OPTIONS}
+            onChange={(next) => {
+              // Range -> Single day collapses to range[1], the range's end
+              // (issue #36, D5): always <= today (D4), and the day the
+              // operator was already looking at the edge of.
+              if (next === "single") setRange([range[1], range[1]]);
+              // Single day -> Range restores the 7-day default window
+              // (ui-audit ticket 07): leaving the range at [d, d] opened Range
+              // mode collapsed to one day, which read as a bug.
+              if (next === "range") setRange([dayjs().subtract(6, "day"), dayjs()]);
+              setMode(next);
             }}
-            aria-label="Date range"
+            aria-label="Mode"
           />
+          {mode === "single" ? (
+            <DatePicker
+              value={range[0]}
+              allowClear={false}
+              disabledDate={disabledDate}
+              onChange={(d) => {
+                if (!d) return;
+                setRange([d, d]);
+              }}
+              aria-label="Date"
+            />
+          ) : (
+            <RangePicker
+              value={range}
+              allowClear={false}
+              disabledDate={disabledDate}
+              onChange={(dates) => {
+                const [from, to] = dates ?? [];
+                if (!from || !to) return;
+                // The server refuses a span over MAX_DAYS with 422 — clamped
+                // here too so the picker never sends a request the API will
+                // only reject. Named explicitly rather than silently snapping
+                // back to the previous range, which left no clue why the
+                // picker "didn't take" the selection.
+                if (to.diff(from, "day") + 1 > MAX_DAYS) {
+                  message.info(`A Summary Report request may span at most ${MAX_DAYS} days.`);
+                  return;
+                }
+                setRange([from, to]);
+              }}
+              aria-label="Date range"
+            />
+          )}
+          <Tooltip title="Writes the range shown here to a file in the export folder. Use it after entering a holiday for a day the daily file already recorded.">
+            <Button onClick={onSaveFile} loading={exporting} disabled={deviceId === undefined}>
+              Save to file
+            </Button>
+          </Tooltip>
         </Flex>
       </Card>
       <Card size="small">
@@ -156,6 +244,22 @@ function SummaryReportTab({
           columns={columns}
           scroll={{ x: 110 + 130 * 8 }}
           pagination={false}
+          summary={() => {
+            const totals = energyTotalCells(shownDays, renderKwh);
+            if (!totals) return null;
+            return (
+              <Table.Summary.Row>
+                <Table.Summary.Cell index={0}>
+                  <Typography.Text strong>Total</Typography.Text>
+                </Table.Summary.Cell>
+                {totals.map((cell, i) => (
+                  <Table.Summary.Cell key={ENERGY_COLUMNS[i].key} index={i + 1}>
+                    <Typography.Text strong>{cell}</Typography.Text>
+                  </Table.Summary.Cell>
+                ))}
+              </Table.Summary.Row>
+            );
+          }}
           locale={{
             emptyText: (
               <Empty
@@ -282,6 +386,7 @@ function MeterRegistersTab({
             value={deviceId}
             onChange={setDeviceId}
             options={deviceOptions}
+            notFoundContent="No meter on this machine exposes Energy Registers"
             placeholder="Select a device"
             style={{ minWidth: 260 }}
             aria-label="Device"
@@ -314,7 +419,60 @@ function MeterRegistersTab({
  * its cells. **Meter Registers is button-triggered only** — there is no
  * scheduler job (decision — a cumulative snapshot is not a cadence).
  */
-export function EnergySummary() {
+/**
+ * The Energy file's own folder (2026-09-23): set here, beside *Save to file*,
+ * because that button and the 15-minute rewrite both write into it. Empty
+ * means no Energy file at all — never another file's folder (capture-sweep
+ * ticket 02). Editable by an admin only; a `user` sees the value.
+ */
+function EnergyFolderCard({ role, surface }: { role: "admin" | "user"; surface: (err: unknown, fallback: string) => void }) {
+  const { message } = App.useApp();
+  const [form] = Form.useForm<EnergySettings>();
+  const [saving, setSaving] = useState(false);
+  const editable = role === "admin";
+
+  useEffect(() => {
+    api
+      .energySettings()
+      .then((data) => form.setFieldsValue(data))
+      .catch((err: unknown) => surface(err, "Could not load the Energy file folder."));
+    // Loaded once on mount — the form owns edits from then on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onFinish = (values: EnergySettings) => {
+    setSaving(true);
+    api
+      .updateEnergySettings(values.export_energy_output_dir.trim())
+      .then((data) => {
+        form.setFieldsValue(data);
+        message.success("Energy file folder saved.");
+      })
+      .catch((err: unknown) => surface(err, "Could not save the Energy file folder."))
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <Card size="small" title="Energy file folder">
+      <Form form={form} layout="vertical" onFinish={onFinish} disabled={!editable}>
+        <Form.Item
+          name="export_energy_output_dir"
+          label="Folder path"
+          extra="Where the Energy file (Save to file and the 15-minute rewrite) is written. Leave empty to turn the Energy file off — nothing is written to another file's folder."
+        >
+          <Input placeholder="e.g. C:\EnergyExports" allowClear />
+        </Form.Item>
+        {editable ? (
+          <Button type="primary" htmlType="submit" loading={saving}>
+            Save
+          </Button>
+        ) : null}
+      </Form>
+    </Card>
+  );
+}
+
+export function EnergySummary({ role }: { role: "admin" | "user" }) {
   const { message } = App.useApp();
   const [tab, setTab] = useState("summary");
   const [devices, setDevices] = useState<Device[]>([]);
@@ -339,6 +497,7 @@ export function EnergySummary() {
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Tabs activeKey={tab} onChange={setTab} items={TAB_ITEMS} />
+      {tab === "summary" ? <EnergyFolderCard role={role} surface={surface} /> : null}
       {tab === "summary" ? (
         <SummaryReportTab devices={devices} surface={surface} />
       ) : (

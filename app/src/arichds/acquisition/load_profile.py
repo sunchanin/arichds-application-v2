@@ -62,6 +62,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from arichds.acquisition.billing import billing_change_check, read_and_store_billing
 from arichds.acquisition.drivers.base import IntervalReading, MeterDriver
 from arichds.acquisition.locks import EndpointLocks, endpoint_locks
 from arichds.acquisition.poller import build_driver
@@ -105,6 +106,13 @@ class LoadProfileReadResult:
             ``error``: nothing was asked of the meter, nothing was lost, and the
             next cycle reads it from the same watermark. Only the background
             path can set it, so Read now never sees it.
+        advanced: True when at least one logger's own stored watermark is
+            **strictly later** than it was before this call (issue #44, review
+            round 1's fix). The one thing :attr:`history_remains` actually
+            needs — see its own docstring for why ``stored`` cannot answer
+            this question. Defaults to False so a background-skip or an
+            unsupported-driver construction, neither of which reads anything,
+            needs no extra argument.
     """
 
     supported: bool
@@ -115,6 +123,45 @@ class LoadProfileReadResult:
     # Defaulted so every existing construction — and `api/devices.py`, which
     # renders the Read now modal — needs no change.
     skipped: bool = False
+    advanced: bool = False
+
+    @property
+    def history_remains(self) -> bool:
+        """Whether another call to :func:`read_and_store_load_profile` would
+        make progress (D9, issue #44) — **not** ``budget_exhausted`` alone,
+        and, as of review round 1, **not** ``stored > 0`` either.
+
+        The first cut of this property used ``budget_exhausted and stored >
+        0``, and that is wrong: the driver's window is inclusive on both
+        bounds (module docstring, "the boundary row is re-read and
+        upserted"), so a call whose only write is that boundary row reports
+        ``stored >= 1`` with the watermark **exactly unchanged**. On a meter
+        with a recording gap starting right at the watermark — powered down
+        or relocated for months while it kept its buffer — that made every
+        call report ``stored=1, budget_exhausted=True`` forever, and
+        ``history_remains`` never went false. Since this drives a Manual
+        Read that outranks background work on that Transport Endpoint (ADR
+        0006) and the Load Profile page loops on it with no iteration cap
+        (D11), that is not merely wrong, it is a button that presses itself
+        without limit — the exact thing ADR 0006's acceptance of background
+        starvation was conditioned on staying bounded.
+
+        ``advanced`` is the real signal: whether a logger's own watermark is
+        strictly later than it was before this call. A re-stored boundary
+        row leaves the watermark exactly where it was, so it does not count,
+        no matter how many rows ``stored`` says were written. A call that
+        stores nothing at all cannot advance a watermark either — the
+        ``(budget_exhausted=True, stored=0)`` case still resolves to False,
+        as it always did, just now for the more fundamental reason.
+        ``_backfill_start``'s own docstring records the failure this whole
+        property closes — a meter whose buffer is shallower than the
+        backfill window can spend its whole budget on empty chunks and store
+        zero rows, and looping on that call is provably infinite, not merely
+        slow. The ordinary Load Profile cycle is what eventually clamps the
+        backfill start to the meter's own oldest entry
+        (:func:`_backfill_start`) and heals both cases on its own.
+        """
+        return self.budget_exhausted and self.advanced
 
 
 def read_and_store_load_profile(
@@ -214,6 +261,7 @@ def read_and_store_load_profile(
     stored = 0
     budget_exhausted = False
     error: str | None = None
+    trigger_billing = False
 
     if background:
         # Never blocks, and never preempts what is in flight. A tick that cannot
@@ -233,14 +281,14 @@ def read_and_store_load_profile(
                     error=None,
                     skipped=True,
                 )
-            stored, budget_exhausted, error = _read_while_holding(
-                driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec
+            stored, budget_exhausted, error, trigger_billing = _read_while_holding(
+                driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec, True
             )
     else:
         try:
             with registry.get(endpoint).manual(timeout=lock_timeout_sec):
-                stored, budget_exhausted, error = _read_while_holding(
-                    driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec
+                stored, budget_exhausted, error, trigger_billing = _read_while_holding(
+                    driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec, False
                 )
         except TimeoutError as exc:
             # Reachable from the manual path only — ``background()`` yields False
@@ -251,12 +299,39 @@ def read_and_store_load_profile(
             error = f"The line to {endpoint} was still busy after {lock_timeout_sec:g}s — nothing was read."
             _ = exc
 
+    # The Billing Change Check's whole-buffer read, when it fires, runs here
+    # — AFTER the Transport Endpoint lock above has already been released
+    # (D5, ADR 0018, issue #43). `PriorityEndpointLock` is not reentrant
+    # (`locks.py`): calling this from *inside* either `with` block above
+    # would hit `try_acquire_background` -> False and return `skipped=True`
+    # silently, so the trigger would never fire in production while every
+    # fake-lock unit test stayed green. `read_and_store_billing` is called
+    # unchanged (D6) — same function Read now and the daily job call, so
+    # ADR 0009's write path and the eager capture path (`billing.py:183-184`)
+    # both run exactly as they do today. *registry* is threaded through
+    # explicitly (rather than left to default to the process-wide one) so a
+    # caller that passed its own `locks=` — every test in this module — gets
+    # a billing read that takes the *same* Transport Endpoint lock the walk
+    # just released, not a different registry that would never collide.
+    if trigger_billing:
+        read_and_store_billing(device_id, locks=registry, background=True)
+
+    # One query serves both `through` and `advanced` — `_through` would
+    # otherwise run the identical `_per_logger_watermarks` select a second
+    # time. Reached whether the walk stored rows, stored nothing, or the
+    # Manual path timed out on a busy endpoint (per_logger_start then equals
+    # per_logger_after and `advanced` is correctly False).
+    with session_scope() as session:
+        per_logger_after = _per_logger_watermarks(session, device_id)
+    through = min(per_logger_after.values()) if per_logger_after else None
+
     return LoadProfileReadResult(
         supported=True,
         stored=stored,
-        through=_through(device_id),
+        through=through,
         budget_exhausted=budget_exhausted,
         error=error,
+        advanced=_advanced(per_logger_start, per_logger_after),
     )
 
 
@@ -268,28 +343,53 @@ def _read_while_holding(
     per_logger_start: dict[int, datetime | None],
     now_utc: datetime,
     budget_sec: float,
-) -> tuple[int, bool, str | None]:
-    """Connect once, walk every logger's window, disconnect — the endpoint
-    already held for the whole visit (D3, M4c issue #24).
+    run_billing_check: bool,
+) -> tuple[int, bool, str | None, bool]:
+    """Connect once, walk every logger's window, run the Billing Change
+    Check, disconnect — the endpoint already held for the whole visit (D3,
+    M4c issue #24; the check added at D8, issue #43).
 
     Extracted so the two acquisition paths differ **only** in how they take the
     lock: the read itself must not depend on who asked for it, or the priority
     rule would quietly become a second code path through the meter.
 
+    Args:
+        run_billing_check: True only on the background path (D7, ADR 0018) —
+            a Manual Read ("Read now") must not silently grow a whole
+            billing read plus capture-file writes on a path someone is
+            waiting on.
+
+    The check itself runs **after** the walk and **before** `disconnect()`
+    (D8) — after, because the walk is this call's actual purpose and its
+    budget bounds how long the endpoint is held; before disconnect, because
+    it needs the same live association the walk just used. It is gated on
+    `driver.supports_billing()` here (not inside
+    :func:`~arichds.acquisition.billing.billing_change_check`, which has no
+    way to ask that question) and any failure inside the check itself is
+    already swallowed by that function (D9) — this call site adds no second
+    guard, because a function documented to never raise needs none.
+
     Returns:
         ``(rows stored across every logger, whether any logger's walk hit the
-        shared budget, the first error sentence encountered or None)``.
+        shared budget, the first error sentence encountered or None, whether
+        the whole-buffer billing read should run — decided here but executed
+        by the caller only after this function's own endpoint acquisition has
+        ended, D5)``.
     """
     try:
         driver.connect()
     except Exception as exc:  # noqa: BLE001 — every meter failure becomes a sentence, never a 500.
         logger.exception("Load profile read of %s at %s failed to connect", device_name, endpoint)
-        return 0, False, f"The read of {endpoint} stopped after a {type(exc).__name__}."
+        return 0, False, f"The read of {endpoint} stopped after a {type(exc).__name__}.", False
     else:
         # `_walk` returns its own error rather than raising: a failure on chunk
         # three must still report the two chunks already committed, and an
         # exception unwinding past here would lose that count.
-        return _walk_every_logger(driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec)
+        stored, budget_exhausted, error = _walk_every_logger(
+            driver, device_id, device_name, endpoint, per_logger_start, now_utc, budget_sec
+        )
+        trigger_billing = run_billing_check and driver.supports_billing() and billing_change_check(driver, device_id)
+        return stored, budget_exhausted, error, trigger_billing
     finally:
         driver.disconnect()
 
@@ -581,3 +681,26 @@ def _through(device_id: int) -> datetime | None:
     with session_scope() as session:
         per_logger = _per_logger_watermarks(session, device_id)
     return min(per_logger.values()) if per_logger else None
+
+
+def _advanced(before: dict[int, datetime | None], after: dict[int, datetime]) -> bool:
+    """Whether any logger's own watermark moved strictly later than it was
+    before this call — the real termination signal for
+    :attr:`LoadProfileReadResult.history_remains` (issue #44, review round 1).
+
+    Deliberately **not** "were rows stored": the driver's window is inclusive
+    on both bounds (module docstring), so re-reading and re-upserting the
+    boundary row reports rows stored with the watermark exactly unchanged.
+    Comparing *before* (``per_logger_start``, taken before the walk) against
+    *after* (``per_logger_after``, read back from the table once the walk and
+    the Billing Change Check have both finished) is what tells a real advance
+    apart from that re-write.
+
+    A logger absent from *after* has no stored rows at all and cannot have
+    advanced. A logger whose *before* value was ``None`` (never read) counts
+    as advanced the moment it gains any row, matching every other watermark
+    comparison in this module.
+    """
+    return any(
+        before.get(logger_id) is None or mark_after > before[logger_id] for logger_id, mark_after in after.items()
+    )

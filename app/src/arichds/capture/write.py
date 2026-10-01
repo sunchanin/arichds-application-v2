@@ -13,10 +13,18 @@ invariant):
 1. :func:`~arichds.capture.paths.ensure_within_allowlist` on the
    fully-constructed path (cheap, no I/O).
 2. Render the bytes.
-3. Stepwise ``os.mkdir(..., 0o700)`` for each missing ancestor.
+3. Stepwise ``os.mkdir`` for each missing ancestor — **with no mode argument**
+   (issue 017): on Windows ``0o700`` is the one mode CPython does not ignore,
+   and it replaces inheritance with an ACL granting SYSTEM, Administrators and
+   OWNER RIGHTS. The service is LocalSystem, so that list excludes the operator
+   whose folder this is. Inheriting the operator-chosen parent is the point.
 4. ``lstat`` the parent and reject a symlink or non-directory.
 5. Atomic write: ``O_EXCL|O_NOFOLLOW|O_BINARY``, mode ``0o600``, ``fsync``;
-   unlink-the-partial on ``OSError``.
+   unlink-the-partial on ``OSError``. The ``0o600`` stays: on Windows a file's
+   mode only drives the read-only attribute and its ACL comes from the
+   containing directory, so step 3 already decides who can read it. On POSIX it
+   would make the file owner-only — noted rather than fixed, since this product
+   ships on Windows.
 
 Unlike v1's ``_atomic_write`` this has no ``replace_existing`` — v2 has no
 regenerate endpoint (ADR 0010), so a capture is written exactly once, ever,
@@ -70,7 +78,17 @@ def write_capture(target: Path, render: Callable[[], bytes], allowlist: list[Pat
         directory = next_up
     for directory in reversed(to_create):
         with contextlib.suppress(FileExistsError):  # a concurrent writer beat us to this ancestor
-            os.mkdir(str(directory), 0o700)
+            # No mode argument, deliberately (issue 017). `os.mkdir`'s docstring
+            # says the mode is ignored on Windows; `0o700` is the exception
+            # CPython special-cases, and it replaces inheritance with an ACL
+            # granting SYSTEM, Administrators and OWNER RIGHTS only. The service
+            # runs as LocalSystem (ADR 0017), so the operator's own account is
+            # not on that list -- their Syncthing agent was denied the folder it
+            # exists to ship. A capture is a document a human carries to a
+            # customer (ADR 0010); inheriting the ACL of the directory that same
+            # human chose is the point, and it is what `export/csv_export.py`
+            # already does for the Load Profile CSV beside it.
+            os.mkdir(str(directory))
 
     try:
         parent_stat = os.lstat(str(parent))

@@ -179,15 +179,15 @@ export function Records() {
             // grid with it (AppShell.tsx states the rule).
             <Text type={CELL_TYPE[cell.status]}>{cellText(cell)}</Text>
           );
-          return cell.status === "period_changed" ? (
-            <Tooltip
-              title={`More than one capture period this day. Expected ${cell.expected} at ${cell.interval_sec} s.`}
-            >
-              {text}
-            </Tooltip>
-          ) : (
-            text
-          );
+          // A short day's `(-N)` gets the sentence behind the number
+          // (ui-audit ticket 07); a period change keeps its own.
+          const hint =
+            cell.status === "period_changed"
+              ? `More than one capture period this day. Expected ${cell.expected} at ${cell.interval_sec} s.`
+              : cell.status === "short" && cell.expected !== null
+                ? `${cell.expected - cell.count} interval(s) fewer than the ${cell.expected} expected — still to come if this is today, otherwise not in the meter's buffer.`
+                : null;
+          return hint === null ? text : <Tooltip title={hint}>{text}</Tooltip>;
         },
       })),
     ],

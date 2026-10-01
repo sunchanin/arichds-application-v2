@@ -22,22 +22,42 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from arichds.acquisition.battery import battery_cycle
 from arichds.acquisition.billing import billing_cycle
 from arichds.acquisition.load_profile import load_profile_cycle
+from arichds.centralpush.cycle import central_push_cycle
 from arichds.constants import (
     BACKUP_INTERVAL_SEC,
+    BATTERY_INTERVAL_SEC,
     BILLING_INTERVAL_SEC,
+    CENTRAL_PUSH_INTERVAL_SEC,
+    CSV_EXPORT_INTERVAL_SEC,
+    DBDEST_SYNC_INTERVAL_SEC,
+    ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
+    FILEUPLOAD_INTERVAL_SEC,
     JOB_BACKUP,
+    JOB_BATTERY,
     JOB_BILLING,
+    JOB_CENTRAL_PUSH,
+    JOB_CSV_EXPORT,
+    JOB_DBDEST_SYNC,
+    JOB_ENERGY_SUMMARY_RECOMPUTE,
+    JOB_FILE_UPLOAD,
     JOB_LOAD_PROFILE,
+    JOB_LP_CSV_TRIM,
     JOB_RETENTION,
     LOAD_PROFILE_INTERVAL_SEC,
+    LP_CSV_TRIM_INTERVAL_SEC,
     RETENTION_INTERVAL_SEC,
     SCHEDULER_MIN_SLEEP_SEC,
     SCHEDULER_STOP_JOIN_TIMEOUT_SEC,
 )
+from arichds.dataout.sync import database_destination_cycle
 from arichds.db.backup import backup_database
+from arichds.db.energy_summary_store import energy_summary_recompute_cycle
 from arichds.db.retention import purge_expired
+from arichds.export.csv_export import csv_export_cycle, csv_trim_cycle
+from arichds.fileupload.cycle import file_upload_cycle
 from arichds.licensing.service import LicenseState
 
 logger = logging.getLogger(__name__)
@@ -95,6 +115,17 @@ class Scheduler:
         self._enabled = enabled
         self._stop_timeout = stop_timeout
         self._shutdown = threading.Event()
+        # The one-shot lane (D2/D3, issue #44) — `_wake` is bound fresh in
+        # `start()`, exactly like `_shutdown` above and for the same reason
+        # (see `start()`'s comment): a thread abandoned by a previous
+        # `stop()` must keep watching the wake it was given, not a
+        # replacement's. `_pending` and its lock are process-lifetime, not
+        # per-run, because a `run_soon` called before the first `start()` (or
+        # between a `stop()` and the next `start()`) must still run on the
+        # next pass rather than being lost.
+        self._wake: threading.Event | None = None
+        self._pending: list[tuple[str, Callable[[], None]]] = []
+        self._pending_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._guard = threading.Lock()
         self._running = False
@@ -126,10 +157,15 @@ class Scheduler:
             # the next start()'s unset event and run on forever beside its
             # replacement. Same rule as Poller._worker, one thread instead of n.
             self._shutdown = threading.Event()
+            # Same rule, same reason, for the one-shot lane's wake (D3): a
+            # stale thread's own wake must not be the one a future run_soon()
+            # sets.
+            self._wake = threading.Event()
             shutdown = self._shutdown
+            wake = self._wake
             self._thread = threading.Thread(
                 target=self._run,
-                args=(shutdown,),
+                args=(shutdown, wake),
                 name="arichds-scheduler",
                 daemon=True,
             )
@@ -153,6 +189,11 @@ class Scheduler:
             if not self._running:
                 return
             self._shutdown.set()
+            # Also wakes a thread parked in `wake.wait(delay)` — without this,
+            # stop() would wait out the sleep exactly the way TestStopIsPrompt
+            # already guards `_shutdown` against.
+            if self._wake is not None:
+                self._wake.set()
             thread = self._thread
             self._thread = None
             self._running = False
@@ -171,11 +212,12 @@ class Scheduler:
                 return
         logger.info("Scheduler stopped")
 
-    def _run(self, shutdown: threading.Event) -> None:
-        """Run every due job, then sleep until the next one is due.
+    def _run(self, shutdown: threading.Event, wake: threading.Event) -> None:
+        """Run every queued one-shot, then every due job, then sleep until the
+        next thing to do.
 
-        ``shutdown`` is the event bound when this thread was created, NOT
-        ``self._shutdown`` — see :meth:`start`.
+        ``shutdown`` and ``wake`` are the events bound when this thread was
+        created, NOT ``self._shutdown`` / ``self._wake`` — see :meth:`start`.
 
         Two timing rules, both deliberate:
 
@@ -188,6 +230,12 @@ class Scheduler:
           queued twice. There are no catch-up runs: for the load-profile job the
           watermark already makes a late cycle read everything it missed, and a
           job that stacks up would be reading the same meter twice at once.
+
+        **One-shots run before the due jobs, every pass** (D2, issue #44) — a
+        one-shot queued by :meth:`run_soon` while this thread is mid-sleep is
+        drained the moment it wakes, ahead of whatever the registry has due,
+        so a person who just added a device is never queued behind the site's
+        whole load-profile cycle.
         """
         logger.info("Scheduler thread started")
         # Due immediately: the first pass runs everything.
@@ -195,6 +243,18 @@ class Scheduler:
 
         while not shutdown.is_set():
             now = time.monotonic()
+
+            for name, fn in self._drain_pending():
+                # Same per-item shutdown check as the jobs loop below, and the
+                # same reason: a one-shot already running is never interrupted,
+                # but one still queued must not start after shutdown.
+                if shutdown.is_set():
+                    break
+                try:
+                    fn()
+                except Exception:  # noqa: BLE001 — one bad one-shot must never kill the thread or the jobs behind it.
+                    logger.exception("One-shot job %s failed", name)
+
             for index, job in enumerate(self._jobs):
                 # Checked per job, not just per pass: a job already running is
                 # never interrupted, but one that has not started must not begin
@@ -217,13 +277,86 @@ class Scheduler:
                     logger.exception("Job %s failed", job.name)
                 due[index] = time.monotonic() + job.interval_sec
 
-            # Event.wait doubles as the sleep and the shutdown check, so stopping
-            # never waits out a full interval. With an empty registry there is no
-            # next due time and it waits for the shutdown alone.
+            # `wake` doubles as the sleep and as run_soon()'s wakeup, the same
+            # way `shutdown` doubles as the sleep and the shutdown check — so
+            # neither stopping nor a queued one-shot ever waits out a full
+            # interval. With an empty registry there is no next due time and
+            # this waits for a wake (a shutdown or a run_soon) alone.
             delay = max(min(due) - time.monotonic(), SCHEDULER_MIN_SLEEP_SEC) if due else None
-            if shutdown.wait(delay):
+
+            wake.clear()
+
+            # Re-checked here, immediately AFTER the clear() above and not
+            # only at the top of the `while` — a one-shot or a job can
+            # legitimately outlast stop()'s join (a load-profile cycle can,
+            # and so can a stuck one-shot), so this thread may still be
+            # running well after stop() returned. `stop()` sets `shutdown`
+            # and then `wake`, in that order; checking `shutdown` *before*
+            # this clear() (an earlier version of this method did) leaves a
+            # window where a `stop()` landing between that check and this
+            # clear() sets both events, and the clear() right here then
+            # discards the very wake `stop()` used to unstick this thread —
+            # which then blocks on `wake.wait()` below with nothing left to
+            # wake it, forever with an empty registry (`delay` is `None`).
+            # Checking after the clear() closes that window: whichever of
+            # the two events `stop()` reaches first, this check (or the
+            # `wake.wait()` two lines down, if `stop()` finishes setting
+            # `wake` in the instant right after this check) still catches it.
+            if shutdown.is_set():
                 break
+
+            if self._has_pending():
+                # Closes the gap between the drain above and this clear(): a
+                # run_soon() landing in that gap sets `wake` and would
+                # otherwise be discarded right here, then sit unseen for up to
+                # `delay` — 900s against the real registry.
+                continue
+            wake.wait(delay)
         logger.info("Scheduler thread stopped")
+
+    # ── The one-shot lane (D2/D3, issue #44) ─────────────────────────────────
+
+    def run_soon(self, name: str, fn: Callable[[], None]) -> None:
+        """Queue *fn* to run once, on the job thread, as soon as it can get to it.
+
+        This is what lets a new device's first load-profile read happen within
+        seconds of Create rather than waiting up to ``LOAD_PROFILE_INTERVAL_SEC``
+        (issue #44) — without a second thread, a bare ``threading.Thread`` in
+        the request handler, or reading inline in the request. *fn* runs on
+        **this** Scheduler's one thread, wrapped in the same try/except
+        discipline a registered job gets (see :meth:`_run`): a raising one-shot
+        is logged and costs nothing beyond itself.
+
+        Safe to call before the first :meth:`start`, or between a :meth:`stop`
+        and the next :meth:`start` — *fn* is queued regardless and runs on the
+        next pass, the same way a registered job runs immediately on a fresh
+        thread's first pass (D10).
+
+        Args:
+            name: What this one-shot is called in logs. The only thing that
+                identifies it, mirroring :class:`Job`.
+            fn: The work. Takes nothing and returns nothing.
+        """
+        with self._pending_lock:
+            self._pending.append((name, fn))
+        # Read after appending, under no lock: `_wake` is only ever replaced
+        # wholesale by start() (a fresh Event, never mutated in place), so a
+        # stale reference here is at worst a wake this call happens to miss —
+        # already covered by the next pass draining `_pending` regardless.
+        wake = self._wake
+        if wake is not None:
+            wake.set()
+
+    def _drain_pending(self) -> list[tuple[str, Callable[[], None]]]:
+        """Take every queued one-shot, leaving the queue empty."""
+        with self._pending_lock:
+            pending, self._pending = self._pending, []
+        return pending
+
+    def _has_pending(self) -> bool:
+        """Whether a one-shot is queued and not yet drained."""
+        with self._pending_lock:
+            return bool(self._pending)
 
     # ── License integration (ADR 0001) ───────────────────────────────────────
 
@@ -267,9 +400,31 @@ def default_jobs() -> list[Job]:
     """
     return [
         Job(name=JOB_LOAD_PROFILE, interval_sec=LOAD_PROFILE_INTERVAL_SEC, fn=load_profile_cycle),
+        # Registered immediately behind load_profile, at the same interval
+        # (ADR 0022, M14 ticket 01) — a pure disk job with no meter and no
+        # Transport Endpoint lock, so it runs against this pass's freshest
+        # rows before CSV export reads the same window.
+        Job(
+            name=JOB_ENERGY_SUMMARY_RECOMPUTE,
+            interval_sec=ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC,
+            fn=energy_summary_recompute_cycle,
+        ),
+        # Registered immediately behind the recompute, at the same interval
+        # (D-10, M7 slice 3, issue #30) — a pure disk job with no meter and
+        # no Transport Endpoint lock, so it does not belong inside
+        # load_profile_cycle's own error handling. The registry runs jobs in
+        # order within one pass, which gives v1's "export right after the
+        # cycle" ordering for free.
+        Job(name=JOB_CSV_EXPORT, interval_sec=CSV_EXPORT_INTERVAL_SEC, fn=csv_export_cycle),
         # Billing sits with the other read job, before backup/retention — a
         # read job belongs with the read job (M6a, issue #21).
         Job(name=JOB_BILLING, interval_sec=BILLING_INTERVAL_SEC, fn=billing_cycle),
+        # Battery sits with the other read jobs too, before backup/retention
+        # (M7-2, issue #29) — hourly, not daily: the day-guard inside
+        # battery_cycle() is what keeps this at one meter read per device per
+        # day in the common case; the hourly cadence exists only to survive a
+        # skipped background tick (see battery.py's module docstring, D1).
+        Job(name=JOB_BATTERY, interval_sec=BATTERY_INTERVAL_SEC, fn=battery_cycle),
         # Backup runs BEFORE retention, deliberately (M5c, issue #19): the
         # backup then still contains the rows retention is about to delete, so a
         # retention bug stays recoverable for the seven days of backups that are
@@ -277,4 +432,34 @@ def default_jobs() -> list[Job]:
         # side of that trade by a wide margin.
         Job(name=JOB_BACKUP, interval_sec=BACKUP_INTERVAL_SEC, fn=backup_database),
         Job(name=JOB_RETENTION, interval_sec=RETENTION_INTERVAL_SEC, fn=purge_expired),
+        # Registered immediately behind retention, at retention's own
+        # cadence (ADR 0023, M14 ticket 05) — the daily job that keeps the
+        # Load Profile CSV bounded to 90 days runs right behind the daily
+        # job that keeps the database bounded to the same window, so the
+        # two can never drift apart.
+        Job(name=JOB_LP_CSV_TRIM, interval_sec=LP_CSV_TRIM_INTERVAL_SEC, fn=csv_trim_cycle),
+        # The Database Destination sync (issue #46, SPEC §3.10) — **last,
+        # deliberately**. It is the only job here that talks to a machine we
+        # do not own, and the only one that can legitimately consume its
+        # whole wall-clock budget (a first-run backfill was 61,023 rows on the
+        # design probe). Everything ahead of it is a meter read or a local
+        # disk job, and jobs run sequentially in registry order on the one
+        # thread, so putting it anywhere earlier would let a slow customer
+        # database delay a meter read within the same pass.
+        Job(name=JOB_DBDEST_SYNC, interval_sec=DBDEST_SYNC_INTERVAL_SEC, fn=database_destination_cycle),
+        # The Central Push (ADR 0024, SPEC §3.8, M14 ticket 08) — **last**,
+        # one job behind the Database Destination sync, deliberately: it is
+        # the SECOND job that talks to a machine we do not own, and jobs run
+        # sequentially in registry order on the one thread, so putting it
+        # anywhere earlier would let a slow team server delay the customer's
+        # own database sync (or a meter read) within the same pass.
+        Job(name=JOB_CENTRAL_PUSH, interval_sec=CENTRAL_PUSH_INTERVAL_SEC, fn=central_push_cycle),
+        # The File Upload Destination (ADR 0025, SPEC §3.8, ticket 02) —
+        # **last**, one job behind the Central Push, deliberately: it is the
+        # THIRD job that talks to a machine we do not own, and jobs run
+        # sequentially in registry order on the one thread, so putting it
+        # anywhere earlier would let a slow file server delay the Central
+        # Push, the Database Destination sync, or a meter read within the
+        # same pass.
+        Job(name=JOB_FILE_UPLOAD, interval_sec=FILEUPLOAD_INTERVAL_SEC, fn=file_upload_cycle),
     ]

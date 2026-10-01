@@ -82,7 +82,63 @@ LOAD_PROFILE_INTERVAL_SEC: Final[int] = 900
 # period is monthly and every read is a full-buffer read (ADR 0009 — there is
 # no window, so no watermark and no catch-up to reason about); once a day is
 # the SPEC-mandated cadence, not a tuned value.
+#
+# D12, ADR 0018, issue #43: since the Billing Change Check landed, this is a
+# **backstop**, not the primary detection path — the check rides the Load
+# Profile cycle's own connection every ~15 minutes and triggers the
+# whole-buffer read the moment a period actually closes; this daily interval
+# only matters if the check itself is ever wrong for a device (an unreadable
+# buffer, an ordering assumption that turns out to be model-specific).
+# **Do not "simplify" this to 900** — a separate association at that cadence
+# is exactly the second-connection-per-tick cost ADR 0018 exists to avoid;
+# the whole point of riding the Load Profile connection is to pay that cost
+# once, not to make this interval redundant with it.
 BILLING_INTERVAL_SEC: Final[int] = 86400
+
+# How stale a device's latest **closed** Bill Date may be before the
+# All-Meters View reports it as `Behind` (issue 01, spec "Status").
+#
+# **The assumption this number encodes: no customer runs a billing cycle
+# longer than a month.** 35 days is one month plus the slack a 31-day month
+# and a late read need; a quarterly cycle would report every healthy meter as
+# Behind, and this constant is the one place that breaks.
+#
+# Deliberately NOT derived from the per-device `bill_day_*` configuration that
+# already exists on the device row. That path is more precise, but it depends
+# on the configuration being correct — and when the configuration is wrong it
+# would *hide* the problem, while wrong configuration is itself a cause worth
+# seeing.
+BILLING_BEHIND_DAYS: Final[int] = 35
+
+# ─── Battery (SPEC §3.7, M7-2, issue #29) ──────────────────────────────────────
+# How often the Scheduler runs the battery cycle over every device. D1: the
+# interval is one hour, not one day, because of `locks.py::try_acquire_background`
+# — a background tick that cannot have the Transport Endpoint is *skipped, never
+# queued* (ADR 0006), so a daily job that collides once with the load-profile
+# cycle or a Manual Read on a shared line loses the whole day with no second
+# attempt. Hourly, combined with the day-guard in `battery_cycle()` (a device
+# already read today is skipped), gives 24 chances at exactly the same number
+# of meter reads as a daily job, with no retry logic and no scheduler state.
+# Do not "simplify" this back to daily — it would quietly delete the retry.
+BATTERY_INTERVAL_SEC: Final[int] = 3600
+JOB_BATTERY: Final[str] = "battery"
+
+# ─── CSV export (SPEC §3.5/§3.7, M7 slice 3, issue #30, D-10) ─────────────────
+# The Load Profile CSV auto-export job. Same cadence as `load_profile` on
+# purpose (D-10): registered immediately behind it in `default_jobs()`, and
+# the scheduler runs jobs in registry order within one pass, so this always
+# runs right after that cycle without a second, independent interval to keep
+# in sync.
+CSV_EXPORT_INTERVAL_SEC: Final[int] = LOAD_PROFILE_INTERVAL_SEC
+JOB_CSV_EXPORT: Final[str] = "csv_export"
+
+# ─── Energy Summary recompute (ADR 0022, M14, ticket 01) ──────────────────────
+# The Energy Summary recompute job. Same cadence as `load_profile` and
+# registered **immediately** behind it (ADR 0022) — same reasoning
+# CSV_EXPORT_INTERVAL_SEC gives above: this always runs against this pass's
+# freshest rows, with no second interval to keep in sync by hand.
+ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC: Final[int] = LOAD_PROFILE_INTERVAL_SEC
+JOB_ENERGY_SUMMARY_RECOMPUTE: Final[str] = "energy_summary_recompute"
 
 # ─── Scheduler (SPEC §4, M5a-2) ───────────────────────────────────────────────
 # How long `Scheduler.stop()` waits for the one job thread to finish the job it
@@ -128,6 +184,181 @@ BACKUP_KEEP_COUNT: Final[int] = 7
 # jobs" above: neither ever appears in a Read now response.
 JOB_RETENTION: Final[str] = "retention"
 JOB_BACKUP: Final[str] = "backup"
+
+# ─── Load Profile CSV trim (ADR 0023, M14, ticket 05) ─────────────────────────
+# The daily job that rewrites each device's Load Profile CSV down to the
+# 90-day window (RETENTION_DAYS) — the fifteen-minute `csv_export` job only
+# ever appends, so this is what keeps the file from carrying more than
+# RETENTION_DAYS + 1 days between trims (ADR 0023's own "may hold up to 91
+# days" consequence). Same cadence as `retention`, aliased rather than a
+# second constant — mirrors ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC's own
+# aliasing of LOAD_PROFILE_INTERVAL_SEC above: retuning retention's cadence
+# must retune this trim's cadence with it, not drift from it by hand.
+LP_CSV_TRIM_INTERVAL_SEC: Final[int] = RETENTION_INTERVAL_SEC
+JOB_LP_CSV_TRIM: Final[str] = "lp_csv_trim"
+
+# ─── Database Destination (SPEC §3.10, ADR 0016/0020/0021, M8-adjacent, #46) ──
+# The sync that writes `load_profile_readings` and `billing_readings` into the
+# customer's own MariaDB/MySQL — a Data-out Destination (CONTEXT.md), never our
+# store.
+#
+# Its own interval, deliberately NOT aliased to LOAD_PROFILE_INTERVAL_SEC even
+# though both are 900 today. CSV_EXPORT_INTERVAL_SEC above *does* alias it, and
+# the reason is specific: that job is registered immediately behind the
+# load-profile cycle and exists to run in the same pass, so one constant is one
+# policy. This job is registered last and has no such relationship — it is a
+# network write to a machine we do not own, on a cadence the owner picked for
+# freshness. Sharing the constant would mean retuning the meter read silently
+# retunes the customer's database, which is exactly what constants.py:126-129
+# already refuses for RETENTION_DAYS / LOAD_PROFILE_BACKFILL_DAYS.
+DBDEST_SYNC_INTERVAL_SEC: Final[int] = 900
+# The wall-clock ceiling on one cycle, the shape LOAD_PROFILE_READ_BUDGET_SEC
+# established. **Mandatory, not advisory** (SPEC §3.10): the scheduler runs
+# every job sequentially on one thread, so a sync that hangs on an unreachable
+# or locked customer database hangs the meter reads behind it. A cycle that
+# runs out of budget stops cleanly and resumes on the next tick — which works
+# only because the load-profile watermark lives in the destination rather than
+# in a job record (ADR 0008), so a partial cycle is not a lost cycle.
+DBDEST_SYNC_BUDGET_SEC: Final[float] = 60.0
+# Per-connection timeouts, handed to PyMySQL. A Windows host that is simply not
+# answering burns ~21 s on TCP retries alone, which is why the connect timeout
+# is explicit rather than inherited from the OS.
+DBDEST_CONNECT_TIMEOUT_SEC: Final[int] = 10
+DBDEST_READ_TIMEOUT_SEC: Final[int] = 30
+# Shorter than the two above because a *person* is waiting on the Test
+# connection button, and a button that appears dead for twenty seconds gets
+# pressed again. The sync job's own budget covers the background path.
+DBDEST_TEST_CONNECT_TIMEOUT_SEC: Final[int] = 5
+# How far the destination's own MAX(read_at) is rewound before we send. The
+# safety margin ADR 0021 names: the watermark crosses a timezone boundary on
+# every cycle, and re-sending an hour of rows that collapse onto themselves
+# through ON DUPLICATE KEY UPDATE is a bounded waste, where an off-by-offset
+# with no margin is a silent gap. Measured on the design probe (2026-08-24):
+# one hour cost 28 re-sent rows and 0.4 s on the second cycle.
+DBDEST_WATERMARK_REWIND_SEC: Final[int] = 3600
+# Rows per source query, per executemany batch, and per purge `DELETE … LIMIT`.
+# Matches RETENTION_DELETE_BATCH_SIZE's value for the same reason it was chosen
+# there — a batch small enough that no single statement holds a lock long, big
+# enough that the round trips disappear — but is its own constant: that one
+# governs SQLite on our disk, this one governs a network round trip to someone
+# else's server.
+DBDEST_ROW_CHUNK: Final[int] = 5000
+# The session sql_mode we set ourselves at connect, never inherited (SPEC
+# §3.10, decision 7b). The reference server runs
+# `NO_ZERO_IN_DATE,NO_ZERO_DATE,NO_ENGINE_SUBSTITUTION` with **no**
+# `STRICT_TRANS_TABLES` (measured on MariaDB 10.4.32, 2026-08-24), which makes
+# an over-long or out-of-range value truncate or clamp silently. Same argument
+# ADR 0021 makes for DATETIME over TIMESTAMP: correctness must not live in the
+# customer's `my.ini`. Nothing else belongs in here — ONLY_FULL_GROUP_BY in
+# particular would break our own GROUP BY watermark query.
+DBDEST_SESSION_SQL_MODE: Final[str] = "STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,NO_ENGINE_SUBSTITUTION"
+# The scheduler-registry name. Deliberately **not** the same literal as the
+# `database_destination` feature key below: one names a job in a log line, the
+# other names an entitlement in a licence, and a grep that confuses them would
+# be reading the wrong thing.
+JOB_DBDEST_SYNC: Final[str] = "dbdest_sync"
+
+# ─── Central Push (ADR 0024, SPEC §3.8, M14 ticket 08) ────────────────────────
+# The push to the team's own server — billing, load profile, the Energy
+# Summary and the meter roster, JSON every fifteen minutes. Its own interval,
+# deliberately NOT aliased to LOAD_PROFILE_INTERVAL_SEC, for the same reason
+# DBDEST_SYNC_INTERVAL_SEC above is not: a network write to a machine we do
+# not own, on a cadence the owner picked for freshness, registered last —
+# one job later than the Database Destination sync, because it is the
+# SECOND job that talks to a machine we do not own (ADR 0024: "last in the
+# scheduler queue").
+CENTRAL_PUSH_INTERVAL_SEC: Final[int] = 900
+# The wall-clock ceiling on one cycle, the same shape DBDEST_SYNC_BUDGET_SEC
+# established: the scheduler runs every job sequentially on one thread, so a
+# push that hangs on an unreachable or slow server hangs nothing behind it —
+# there is nothing behind it, since this job is last — but must still not run
+# forever. A cycle that runs out of budget stops cleanly; the next cycle's
+# holdings answer is the resume point (ADR 0024: "no sync_state").
+CENTRAL_PUSH_BUDGET_SEC: Final[float] = 60.0
+# Explicit connect and read timeouts (ADR 0024: "connect/read timeout"),
+# mirroring DBDEST_CONNECT_TIMEOUT_SEC / DBDEST_READ_TIMEOUT_SEC — a
+# receiving server that stalls after accepting the connection must not hang
+# the scheduler thread past this many seconds.
+CENTRAL_PUSH_CONNECT_TIMEOUT_SEC: Final[int] = 10
+CENTRAL_PUSH_READ_TIMEOUT_SEC: Final[int] = 30
+# Items per `POST /v1/push` request (ADR 0024/Contract v1: "capped per
+# request by a constant"). Matches DBDEST_ROW_CHUNK's value for the same
+# reason it was chosen there — small enough that no single request risks the
+# read timeout, big enough that the round trips disappear.
+CENTRAL_PUSH_ITEM_CAP: Final[int] = 5000
+# How far the server's own newest load-profile `read_at` (per Meter Serial
+# and logger) is rewound before we resume sending (ADR 0024: "a small safety
+# margin"). Deliberately smaller than DBDEST_WATERMARK_REWIND_SEC's 3600 s —
+# that value came from a measured timezone-conversion hazard (ADR 0021) this
+# module does not have; the wire carries UTC with an explicit offset, not a
+# naive local `DATETIME`, so there is no boundary to cross. Sixty seconds
+# absorbs ordinary clock skew between this machine and the server, and a
+# re-sent row collapses onto itself through the server's own upsert.
+CENTRAL_PUSH_LOAD_PROFILE_REWIND_SEC: Final[int] = 60
+JOB_CENTRAL_PUSH: Final[str] = "central_push"
+
+# ─── File Upload Destination (SPEC §3.8, ADR 0025, ticket 02) ─────────────────
+# The third Data-out Destination — copies export files and Billing capture
+# documents to a server over SFTP/FTPS/HTTPS (menu label **FTP**). Its own
+# interval and budget, deliberately NOT aliased to LOAD_PROFILE_INTERVAL_SEC /
+# DBDEST_SYNC_BUDGET_SEC / CENTRAL_PUSH_BUDGET_SEC even though the values match
+# today — the same argument DBDEST_SYNC_INTERVAL_SEC and
+# CENTRAL_PUSH_LOAD_PROFILE_REWIND_SEC already make: retuning one network
+# destination must not silently retune another. Registered LAST, one job
+# behind central_push (ADR 0025 decision 5) — it is the THIRD job that talks
+# to a machine we do not own, so putting it earlier would let it delay a
+# meter read or either of the other two Destinations within the same pass.
+FILEUPLOAD_INTERVAL_SEC: Final[int] = 900
+# The wall-clock ceiling on one cycle, the shape DBDEST_SYNC_BUDGET_SEC /
+# CENTRAL_PUSH_BUDGET_SEC establish. Checked **before every file**, never only
+# between the export and capture groups (the exact lesson M14 ticket 08's own
+# review caught for CENTRAL_PUSH_ITEM_CAP's chunking) — a slow or hanging
+# server never holds the scheduler thread past this many seconds.
+FILEUPLOAD_BUDGET_SEC: Final[float] = 60.0
+JOB_FILE_UPLOAD: Final[str] = "file_upload"
+
+# How long one **Capture Sweep** slice may run before it re-queues itself on
+# the one-shot lane (capture-sweep ticket 04, grill 2026-09-23 Q5): the
+# capture that crosses this line completes (a PNG can take up to
+# CAPTURE_BUDGET_SECONDS), then the regular jobs get the thread. A constant,
+# not a setting — the owner's one number.
+CAPTURE_SWEEP_SLICE_SEC: Final[float] = 60.0
+# HTTPS transport timeouts (ticket 03) — the same connect/read split
+# CENTRAL_PUSH_CONNECT_TIMEOUT_SEC/CENTRAL_PUSH_READ_TIMEOUT_SEC establish,
+# deliberately its own constants rather than an alias: retuning the push's
+# timeouts must not silently retune this Destination's, the same argument
+# already made for FILEUPLOAD_INTERVAL_SEC above.
+FILEUPLOAD_HTTPS_CONNECT_TIMEOUT_SEC: Final[int] = 10
+FILEUPLOAD_HTTPS_READ_TIMEOUT_SEC: Final[int] = 30
+# Test connection's own short connect timeout — DBDEST_TEST_CONNECT_TIMEOUT_SEC's
+# own shape: a Test button must fail fast rather than hold the request for
+# the cycle's own long timeout.
+FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC: Final[int] = 5
+# SFTP transport timeouts (ticket 04) — the same connect/read split as the
+# HTTPS constants above, deliberately its own pair rather than an alias for
+# the same "retuning one Destination must not silently retune another"
+# reason: *connect_timeout* bounds the TCP connect and SSH2 banner/kex alone
+# (docs/lib-notes/paramiko-sftp.md §5), then the socket is loosened to
+# *read_timeout* for authentication and file transfer, so a large capture
+# document over a slow link is not mistaken for a stalled connection.
+FILEUPLOAD_SFTP_CONNECT_TIMEOUT_SEC: Final[int] = 10
+FILEUPLOAD_SFTP_READ_TIMEOUT_SEC: Final[int] = 30
+# Test connection's own short connect timeout — DBDEST_TEST_CONNECT_TIMEOUT_SEC's
+# own shape, reused for both the connect and (short) read timeout there since
+# a Test button never transfers a real file.
+FILEUPLOAD_SFTP_TEST_CONNECT_TIMEOUT_SEC: Final[int] = 5
+# FTPS transport timeouts (ticket 05) — the same connect/read split as the
+# SFTP/HTTPS constants above, deliberately its own pair for the same
+# "retuning one Destination must not silently retune another" reason:
+# *connect_timeout* bounds the TCP connect and the explicit `AUTH TLS`
+# handshake alone (docs/lib-notes/pyftpdlib-tls.md §5), then the socket is
+# loosened to *read_timeout* for login, listing and file transfer.
+FILEUPLOAD_FTPS_CONNECT_TIMEOUT_SEC: Final[int] = 10
+FILEUPLOAD_FTPS_READ_TIMEOUT_SEC: Final[int] = 30
+# Test connection's own short connect timeout — the SFTP/HTTPS siblings' own
+# shape, reused for both the connect and (short) read timeout there since a
+# Test button never transfers a real file.
+FILEUPLOAD_FTPS_TEST_CONNECT_TIMEOUT_SEC: Final[int] = 5
 
 # ─── Source (CONTEXT.md — a property of the reading, never a branch) ──────────
 SOURCE_DLMS: Final[str] = "dlms"
@@ -192,6 +423,12 @@ LOG_FILE_BACKUP_COUNT: Final[int] = 5
 # ─── API error codes ──────────────────────────────────────────────────────────
 ERROR_LICENSE_INVALID: Final[str] = "LICENSE_INVALID"
 ERROR_FEATURE_DISABLED: Final[str] = "FEATURE_DISABLED"
+#: Saving a Central Push Token that fails `verify_push_token` or names another
+#: machine (ADR 0024, ticket 07). `reason` on the envelope carries one of
+#: `push_token.MALFORMED` / `INVALID_SIGNATURE` / `WRONG_PRODUCT` /
+#: `UNSUPPORTED_VERSION` / `LICENCE_CODE_NOT_PUSH_TOKEN`, or this endpoint's
+#: own `"WRONG_MACHINE"`.
+ERROR_PUSH_TOKEN_INVALID: Final[str] = "PUSH_TOKEN_INVALID"
 
 # ─── Energy Summary (SPEC/CONTEXT.md, ADR 0012, M7-1 issue #28) ───────────────
 # The Time-of-Use peak window, pre-shifted to UTC for ICT (local 09:00-22:00,
@@ -205,10 +442,33 @@ TOU_PEAK_START_UTC: Final[int] = 2
 TOU_PEAK_END_UTC: Final[int] = 15
 
 # ─── Feature entitlement (SPEC §3.9, M6b issue #22) ───────────────────────────
-# Enabled = `.env FEATURES ∩ license features`. Eight sellable keys — the same
-# set v1 sold — plus one ops-only key that `.env` alone controls and the
-# license never governs. `records` (not `instantaneous`) is the key that gates
-# the Records page — owner decision 2026-08-09, SPEC §3.9.
+# Enabled = `.env FEATURES ∩ license features`. Eleven sellable keys (M7 slice
+# 4, issue #35, added `billing_image_export` — D1; issue #46 added
+# `database_destination`, SPEC §3.10; issue 013 added `file_upload_destination`)
+# plus one ops-only key that `.env` alone controls and the license never
+# governs. `records` (not `instantaneous`) is the key that gates the Records
+# page — owner decision 2026-08-09, SPEC §3.9.
+# **Corrected 2026-09-09 (full-version licence, issue 01).** This comment used
+# to say "no licence has been issued yet" and reasoned from it that the key set
+# was still free to change. That is no longer true, and the record it rested on
+# was wrong even then: `docs/issues/015` describes a signing "on this machine"
+# that is in fact a demo box at a customer site. Two Activation Codes are in the
+# field, one signed with an explicit feature list.
+#
+# The mechanism that made the old reasoning matter is unchanged and is what to
+# reason from now — `licensing/features.py`'s ceiling: a licence signed with
+# `features: null` grandfathers keys added later, one signed with an explicit
+# list never does, silently and with no warning anywhere.
+#
+# **So every new key must be shaped so that its ABSENCE preserves today's
+# behaviour**, because that is the state every already-issued explicit-list
+# licence is in and nobody gets told. A key that grants something is safe; a key
+# that *demands* something is not, and would silently stop being demanded on
+# every machine already out there. (The Meter Activation Requirement, issue 01,
+# is deliberately **not** a feature key for a related reason: a `features: null`
+# licence would have picked it up automatically. It is a constraint on the
+# Activation Code payload, beside `max_meters` — see ADR 0019.)
+# Not every sellable key is for sale — see `RESERVED_FEATURE_KEYS` below.
 SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "billing",
@@ -219,9 +479,33 @@ SELLABLE_FEATURE_KEYS: Final[frozenset[str]] = frozenset(
         "battery",
         "auto_capture",
         "billing_excel_export",
+        "billing_image_export",
+        "database_destination",
+        "file_upload_destination",
     }
 )
 FEATURE_KEYS: Final[frozenset[str]] = SELLABLE_FEATURE_KEYS | frozenset({"app_log"})
+
+#: Sellable keys that are **reserved, not for sale**. Signable, so a licence
+#: cut today already carries them — but nothing implements them yet. Do not
+#: quote one to a customer and do not put one on an invoice.
+#:
+#: Empty since ticket 01 of the File Upload Destination
+#: (`.scratch/file-upload/issues/01-…`, ADR 0025): `file_upload_destination`
+#: was the one member of this set (issue 013) and it left it the moment the
+#: page grew a real configuration surface — settings rows, endpoints, the
+#: nav entry gated `kind: "feature"` in `web/src/features.ts` — even though
+#: the upload cycle itself (ticket 02) has not landed yet. The key is now
+#: sold exactly like `database_destination`: it gates something real, and a
+#: licence granting it is not paying for nothing.
+#:
+#: Read by ``tools/arichds_vendor.py``, which **imports** it rather than
+#: restating it (issue 010's rule) and warns — never refuses — when
+#: ``sign --features`` names a reserved key. The seller is the only person
+#: who can put a key on an invoice, so the warning has to reach them where
+#: they type it rather than only here, in a file they never open. Left as a
+#: mechanism rather than deleted: the next reserved key uses it unchanged.
+RESERVED_FEATURE_KEYS: Final[frozenset[str]] = frozenset()
 
 # ─── Capture write hardening (ADR 0010, M6b issue #22; v1 constants.py:13-21) ─
 # Windows lacks O_NOFOLLOW (the symlink-open guard) — it degrades to 0 there.

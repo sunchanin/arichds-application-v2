@@ -73,6 +73,21 @@ class IntervalReading:
             since M5a-1 (migration 0006) but stayed off this dataclass until
             M4c, issue #24 — a field nothing sets is speculative, and the
             three CEWE drivers are the first to produce them (F7).
+        phase_angle_a/phase_angle_b/phase_angle_c: Average phase angle per
+            phase (degrees), M13 issue 06.
+        volt_l1_l2/volt_l2_l3/volt_l3_l1: Line-to-line voltage (V). On a
+            Prometer 100 these are captured by **Logger 2**, not Logger 1.
+        import_active_kw/export_active_kw: Average active power over the
+            interval — **kW**, divided down from the meter's raw W the same
+            way the energy columns are divided down from Wh.
+        import_reactive_kvar/export_reactive_kvar: Average reactive power
+            over the interval — **kvar**, same division.
+        interval_status_flag: The meter's own Interval Status word for this
+            row, stored as **the raw integer** and decoded at render time
+            (CONTEXT.md — Interval Status). Named for the glossary term
+            rather than the customer's file header, which
+            :class:`BillingReading.record_status` already owns with a
+            different meaning.
     """
 
     read_at: datetime
@@ -94,6 +109,20 @@ class IntervalReading:
     export_active_kwh: float | None = None
     export_reactive_kvarh: float | None = None
     avg_geo_pf: float | None = None
+    # ── M13, issue 06 — the eleven the customer asked for. Every one already
+    # arrived in the buffer the product reads each cycle and was dropped for
+    # want of a field; none of them costs a new read.
+    phase_angle_a: float | None = None
+    phase_angle_b: float | None = None
+    phase_angle_c: float | None = None
+    volt_l1_l2: float | None = None
+    volt_l2_l3: float | None = None
+    volt_l3_l1: float | None = None
+    import_active_kw: float | None = None
+    import_reactive_kvar: float | None = None
+    export_active_kw: float | None = None
+    export_reactive_kvar: float | None = None
+    interval_status_flag: int | None = None
 
     def as_columns(self) -> dict[str, Any]:
         """Return the **measurement** fields as ``load_profile_readings`` column values.
@@ -115,6 +144,17 @@ class IntervalReading:
             "export_active_kwh": self.export_active_kwh,
             "export_reactive_kvarh": self.export_reactive_kvarh,
             "avg_geo_pf": self.avg_geo_pf,
+            "phase_angle_a": self.phase_angle_a,
+            "phase_angle_b": self.phase_angle_b,
+            "phase_angle_c": self.phase_angle_c,
+            "volt_l1_l2": self.volt_l1_l2,
+            "volt_l2_l3": self.volt_l2_l3,
+            "volt_l3_l1": self.volt_l3_l1,
+            "import_active_kw": self.import_active_kw,
+            "import_reactive_kvar": self.import_reactive_kvar,
+            "export_active_kw": self.export_active_kw,
+            "export_reactive_kvar": self.export_reactive_kvar,
+            "interval_status_flag": self.interval_status_flag,
         }
 
 
@@ -470,6 +510,33 @@ class MeterDriver(ABC):
     #: first slice with a model that does not need one.
     BILLING_COLUMN_SPAN: int | None = None
 
+    #: Whether this driver's billing ProfileGeneric returns its **newest**
+    #: entry at index 1 (``True``, the default) or its **oldest** entry there
+    #: (``False``) — entry ordering is a property of the *profile*, not the
+    #: model (gurux-dlms skill, "Entry order is a property of the profile").
+    #: Every billing implementation shipped today reads newest-first: the
+    #: three CEWE models and SMART TCC (`_dlms_profile.py`, F4/F6) and the
+    #: SMW110W4 (`smw110.py`, ``is_open = position == 0``) — the *opposite*
+    #: of that same SMW110W4's own **load profile**, which is oldest-first
+    #: (`docs/meter-notes/smw110w4-scan.md:74`). The Billing Change Check
+    #: (issue #43, ADR 0018) reads its ``readRowsByEntry`` window off this
+    #: declaration rather than assuming index 1 — a driver that gets this
+    #: backwards would silently always read the oldest end of the buffer,
+    #: which is what makes the declaration itself testable rather than a
+    #: comment nobody can falsify.
+    BILLING_NEWEST_ENTRY_FIRST: bool = True
+
+    #: The framings (``"wrapper"`` / ``"hdlc"``) an operator may choose for this
+    #: model on a net transport, **default first** — or empty when the model has
+    #: only ever been measured on the one its driver hardcodes, in which case the
+    #: form offers nothing and the factory refuses a framing outright. A flag that
+    #: turns on from a meter, never from a datasheet (ADR 0011's rule): the
+    #: Prometer 100 earned its second entry at site TC, 2026-09-20
+    #: (``docs/issues/025``), where a unit behind a serial-to-TCP converter
+    #: answered HDLC only and had to be added as a Premier 550 to be reached at
+    #: all — which read it with the wrong column maps.
+    SUPPORTED_FRAMINGS: tuple[str, ...] = ()
+
     @property
     @abstractmethod
     def model_name(self) -> str:
@@ -656,6 +723,38 @@ class MeterDriver(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} has no billing profile — check supports_billing() first")
 
+    def billing_newest_closed_bill_date(self) -> datetime | None:
+        """The Billing Change Check's per-tick signal (ADR 0018, corrected by
+        issue #43's D1/D2) — the newest **closed** period's ``bill_date``, or
+        ``None`` when this driver cannot answer.
+
+        Callable only when :meth:`supports_billing` returns ``True``, and only
+        on the Load Profile cycle's own connection (ADR 0018 — this rides the
+        existing association; it is never a second one). Assumes
+        :meth:`connect` succeeded.
+
+        **Deliberately not the newest entry's ``bill_date``.** The newest
+        entry is the Open Period on every model this product reads today —
+        its Bill Date is the meter's live clock and advances on every single
+        read (CONTEXT.md — Open Period) — so a check keyed on it would fire
+        the whole-buffer read on every tick, which is exactly the cost this
+        check exists to avoid.
+
+        Non-abstract and returning ``None`` rather than raising — the same
+        "answer or say you cannot" shape as
+        :meth:`load_profile_oldest_reading`, so a driver with no scanned
+        billing profile yet degrades to "never trigger" (the daily
+        :data:`~arichds.constants.BILLING_INTERVAL_SEC` backstop stands)
+        rather than breaking the Load Profile walk it is called from.
+
+        Returns:
+            The newest closed period's ``bill_date``, timezone-aware UTC, or
+            ``None`` when this driver cannot establish it — an empty buffer,
+            an unreadable capture list, or a driver that has not implemented
+            this yet.
+        """
+        return None
+
     def supports_energy_registers(self) -> bool:
         """Whether this driver can read the standalone Energy Registers
         (M7-1, issue #28; ADR 0011 — the driver is the authority, the
@@ -730,6 +829,45 @@ class MeterDriver(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} has no Special Days Table — check supports_special_days() first"
         )
+
+    def supports_battery(self) -> bool:
+        """Whether this driver can read a battery status (M7-2, issue #29;
+        ADR 0011 — the driver is the authority, the catalog's
+        ``supports_battery`` flag only mirrors what a real driver
+        implements).
+
+        Non-abstract and ``False`` by default, the same pairing as
+        :meth:`supports_billing`. A model that can read the CEWE
+        battery-status register overrides this to ``True`` **and**
+        implements :meth:`read_battery_status`.
+
+        Returns:
+            False, unless a concrete driver says otherwise.
+        """
+        return False
+
+    def read_battery_status(self) -> str | None:
+        """Read the meter's battery status, verbatim and uninterpreted (M7-2,
+        issue #29).
+
+        Callable only when :meth:`supports_battery` returns ``True``.
+        Assumes :meth:`connect` succeeded.
+
+        Non-abstract and raising, rather than absent, so the caller never has
+        to ask ``hasattr`` — the same pairing and the same reason as
+        :meth:`read_billing`.
+
+        Returns:
+            The raw value as a string, or ``None`` when the meter answered
+            with nothing. **Never scaled, never thresholded, never
+            colour-classified** — the wire type is unconfirmed until a
+            real-meter read (D8), so the value is stored exactly as read.
+
+        Raises:
+            NotImplementedError: Always, on a driver that has no battery
+                status register.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no battery status — check supports_battery() first")
 
 
 class MeterConnectionError(RuntimeError):

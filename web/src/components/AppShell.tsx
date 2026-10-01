@@ -1,12 +1,18 @@
 import {
+  ApiOutlined,
   AreaChartOutlined,
   CalendarOutlined,
+  CloudServerOutlined,
+  CloudUploadOutlined,
   DatabaseOutlined,
+  ExportOutlined,
+  FileSearchOutlined,
   FileTextOutlined,
   KeyOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  PoweroffOutlined,
   SettingOutlined,
   TableOutlined,
   TeamOutlined,
@@ -17,10 +23,17 @@ import { Button, Layout, Menu, Space, Tag, theme, Typography } from "antd";
 import type { ItemType, MenuItemType } from "antd/es/menu/interface";
 import { type ReactNode, useState } from "react";
 
+import { type Page, isPageAdvertised } from "../features";
 import { HEADER_HEIGHT } from "../theme";
 import { ChangePasswordModal } from "./ChangePasswordModal";
 
 const { Header, Sider, Content } = Layout;
+
+/** One menu entry, keyed by the page it opens so the mapping can be applied to it. */
+type NavEntry = { key: Page; icon: ReactNode; label: string };
+
+/** A labelled group of entries — the only nesting this menu has. */
+type NavGroup = { type: "group"; label: string; children: NavEntry[] };
 
 /**
  * The app shell: slim header plus the sidebar the finished product will have.
@@ -58,14 +71,87 @@ const { Header, Sider, Content } = Layout;
  * for every role, same reason as the rest of this group: every one of them
  * reads what is already on disk or reads a meter through the same Manual
  * Read path Devices already uses; none is admin-only to *view* (only
- * Holiday mutations and both imports are, decision 19). Battery / Export
- * Format / App Log stay out of the menu — they belong to #29/#30/#31.
+ * Holiday mutations and both imports are, decision 19).
+ *
+ * M7-2 lights up **Battery** — the read-only view of the stored Battery
+ * Readings an hourly background job writes, for every role, same reason as
+ * the rest of this group (SPEC §3.7). It carries no Read-now control: the
+ * job is background-only (D5).
+ *
+ * M7 slice 3 (issue #30) lights up **Export Format** — the page that owns
+ * the Load Profile CSV's date/time and filename settings, for every role
+ * too: reading the current format is not admin-only, only saving it is
+ * (the same split Settings.tsx's display-unit control already uses). The
+ * auto-save switch and output folder live on the Load Profile page itself,
+ * not here (D-16).
+ *
+ * M7 slice 4 (issue #31) lights up **App Log**, the last slice of M7 — a
+ * read-only tail viewer for the rotating application log. **Admin-only**,
+ * like User Management: the log's content is machine-internal (usernames,
+ * Transport Endpoints, file paths, tracebacks), unlike the meter data every
+ * other page in this group shows.
+ *
+ * **Issue 012 reverses this shell's own rule about what it may know.** It used
+ * to say: the API answers `FEATURE_DISABLED` and the page shows that inline
+ * rather than hiding the menu entry, since whether a feature is on is not this
+ * shell's business to know in advance. It now is — `GET /api/license/status`
+ * carries `enabled_features`, the resolved `.env FEATURES ∩ licence` set, and
+ * this shell advertises only what that set allows. The owner's reason: a
+ * customer who sees six pages that refuse them reads the product as broken or
+ * as nagging them to buy; a customer who sees only what they bought reads it
+ * as theirs. The mapping is `features.ts`'s `PAGE_ENTITLEMENT`, exhaustive
+ * over `Page` so a new page with no entry fails the build. Three consequences
+ * worth stating, because each was decided rather than fallen into:
+ *
+ * - **App Log takes the same rule as everything else** (D6) — no ops-only
+ *   exception to remember. An empty/unset `.env FEATURES` expands to every
+ *   key, so its entry is present on every default install and disappears only
+ *   where an operator deliberately excluded it, on a machine where the page
+ *   403s anyway. `AppLog.tsx`'s inline `Result` stays as the backstop.
+ * - **File Upload is never advertised** (D7) until M8 gives it a transport
+ *   (SPEC §3.8): it is a presentation-only shell, so there is nothing a
+ *   customer can do with it. It *does* have a feature key since issue 013 —
+ *   `file_upload_destination`, **reserved** ahead of the first licence rather
+ *   than sold — and the entry stays unadvertised anyway, including on a
+ *   licence that grants that key, because reserving a key is not shipping a
+ *   feature. The page component is untouched and still renders normally if
+ *   reached.
+ * - **Hiding is total** (D9): no "show what else ARICHDS can do" affordance,
+ *   which would re-introduce exactly the nagging this removes. Settings is
+ *   never hidden, so support can always say "open Settings → License" — the
+ *   card there lists what this machine has.
+ *
+ * Enforcement did **not** move. `require_feature` on the server is unchanged
+ * and is still what refuses an unlicensed page; this filter is cosmetic.
  *
  * A later CR (display-unit setting, kW/kWh vs W/Wh) lights up **Settings**
- * for every role too — the one control on it is disabled for a `user`
- * rather than the entry being absent, because reading the current setting
- * is not admin-only, only changing it is (mirrors the Billing page's own
- * `capture_dir` form).
+ * for every role too — its controls are disabled for a `user` rather than
+ * the entry being absent, because reading the current settings is not
+ * admin-only, only changing them is (mirrors the Billing page's own
+ * `capture_dir` form). Issue 011 adds a second card there, **License**,
+ * under the same split: every role reads what the machine is licensed to,
+ * only an admin can paste a replacement Activation Code.
+ *
+ * Issue #37 adds the **Data-out Destination** group — Database and FTP —
+ * after Settings. **Admin-only, for the same reason App Log is**: the fields
+ * are machine-internal credentials, not meter data, so the group and both
+ * entries are *absent* for a `user`, not disabled. **Database and FTP now
+ * match**: both are licence-gated `feature` entries (`database_destination`
+ * / `file_upload_destination`) with a real settings round-trip, though FTP's
+ * own upload cycle (ADR 0025 ticket 02) has not shipped yet — an unconfigured
+ * page sends nothing either way, the same opt-out the Central Push offers.
+ * The group header disappears only when a licence grants none of the three
+ * entries below (Central Push's `always` kind holds it up on its own even
+ * then, so in practice the header is never fully gone for an admin).
+ *
+ * Ticket 07 (ADR 0024) adds the group's third entry, **API** — the Central
+ * Push configuration, status and published contract. Admin-only like its two
+ * siblings, but unlike them it is `kind: "always"` in `features.ts`, not
+ * `"feature"`: the Central Push carries no licence key at all ("visible
+ * regardless of licence features" is the spec's own wording), so it stays in
+ * the menu even on a licence that omits `database_destination` — which also
+ * means the group header itself no longer disappears on such a licence, since
+ * this entry alone is now always there to hold it up for an admin.
  *
  * The header carries who is signed in, the way to change your own password
  * (every role — the modal is owned here, so no page has to pass a prop for it),
@@ -74,6 +160,7 @@ const { Header, Sider, Content } = Layout;
 export function AppShell({
   children,
   licensedTo,
+  enabledFeatures,
   username,
   role,
   activeKey,
@@ -82,6 +169,12 @@ export function AppShell({
 }: {
   children: ReactNode;
   licensedTo?: string | null;
+  /**
+   * `LicenseStatus.enabled_features` — a prop, never state, so replacing the
+   * licence re-renders the menu with no reload (ADR 0001: never cache
+   * licence-derived state). Nothing here may snapshot it.
+   */
+  enabledFeatures: readonly string[];
   username: string;
   role: "admin" | "user";
   activeKey: string;
@@ -98,7 +191,10 @@ export function AppShell({
   // strands the header text at whatever white looked right in M1.
   const { token } = theme.useToken();
 
-  const items: ItemType<MenuItemType>[] = [
+  // Role first, licence second — two independent questions, kept apart. The
+  // role conditionals below decide what this *account* may see; the filter
+  // underneath decides what this *machine* is licensed to (issue 012).
+  const entries: (NavEntry | NavGroup)[] = [
     { key: "devices", icon: <DatabaseOutlined />, label: "Devices" },
     { key: "load-profile", icon: <AreaChartOutlined />, label: "Load Profile" },
     { key: "records", icon: <TableOutlined />, label: "Records" },
@@ -107,11 +203,58 @@ export function AppShell({
     { key: "energy-summary", icon: <ThunderboltOutlined />, label: "Energy Summary" },
     { key: "holidays", icon: <CalendarOutlined />, label: "Holidays" },
     { key: "special-days", icon: <CalendarOutlined />, label: "Special Days" },
+    // M7-2 (issue #29) — after Special Days, SPEC §3.7's page order.
+    { key: "battery", icon: <PoweroffOutlined />, label: "Battery" },
+    // M7 slice 3 (issue #30) — after Battery, SPEC §3.7's page order.
+    { key: "export-format", icon: <ExportOutlined />, label: "Export Format" },
+    // M7 slice 4 (issue #31) — after Export Format, SPEC §3.7's page order.
+    // Admin-only, like User Management: the log's content is machine-internal
+    // (usernames, Transport Endpoints, file paths, tracebacks), unlike the
+    // meter data every other page in this group shows.
     ...(role === "admin"
-      ? [{ key: "users", icon: <TeamOutlined />, label: "User Management" }]
+      ? ([{ key: "app-log", icon: <FileSearchOutlined />, label: "App Log" }] satisfies NavEntry[])
+      : []),
+    ...(role === "admin"
+      ? ([{ key: "users", icon: <TeamOutlined />, label: "User Management" }] satisfies NavEntry[])
       : []),
     { key: "settings", icon: <SettingOutlined />, label: "Settings" },
+    // Issue #37 — admin-only, like App Log/User Management above: these two
+    // pages carry no transport yet (SPEC §3.8 is a later milestone), and
+    // their fields are machine-internal credentials, not meter data.
+    ...(role === "admin"
+      ? ([
+          {
+            type: "group",
+            label: "Data-out Destination",
+            children: [
+              { key: "database-destination", icon: <CloudServerOutlined />, label: "Database" },
+              // The customer's own word for this Destination (ADR 0025
+              // decision 1) — CONTEXT.md's glossary term stays *File Upload
+              // Destination*; the menu and the glossary disagree on purpose.
+              { key: "file-upload-destination", icon: <CloudUploadOutlined />, label: "FTP" },
+              { key: "central-push", icon: <ApiOutlined />, label: "API" },
+            ],
+          },
+        ] satisfies NavGroup[])
+      : []),
   ];
+
+  // One pass over the whole tree rather than a special case for the Data-out
+  // group: a group is kept only when something is left under it, so any future
+  // group inherits the rule instead of re-deciding it. A label with nothing
+  // beneath it is worse than either showing or hiding the pages (issue 012).
+  const items: ItemType<MenuItemType>[] = entries
+    .map((entry) =>
+      "children" in entry
+        ? {
+            ...entry,
+            children: entry.children.filter((child) => isPageAdvertised(child.key, enabledFeatures)),
+          }
+        : entry,
+    )
+    .filter((entry) =>
+      "children" in entry ? entry.children.length > 0 : isPageAdvertised(entry.key, enabledFeatures),
+    );
 
   return (
     <Layout style={{ minHeight: "100vh" }}>

@@ -1,6 +1,6 @@
 # ARICHDS Application
 
-Windows-installed meter-monitoring application: reads electricity meters (DLMS/COSEM + Modbus),
+Windows-installed meter-monitoring application: reads electricity meters over DLMS/COSEM (Modbus meters are read by a separate program, not this one),
 stores readings locally, serves a local web UI, and pushes data to the team's central server.
 Single context — one program, one database.
 
@@ -15,9 +15,35 @@ _Avoid_: fingerprint (in UI text), hardware ID
 
 **Activation Code**:
 A one-line base64 string containing the signed license, issued by the vendor (CLI now, portal
-later). Pasting it into the first-run page activates the machine — effective immediately, no
-service restart.
+later). Pasting it activates the machine — effective immediately, no service restart. There are
+**two surfaces that take one**: the first-run / Limited Mode Activation page (the gate, shown
+only while the machine is not active) and the **License card on Settings**, which is how a
+license that still works is renewed or replaced without deleting the license file by hand.
 _Avoid_: license key, serial number
+
+**Meter Activation Code**:
+A one-line signed string the vendor issues for **one meter on one machine** — bound to both the
+Meter Serial and the Machine ID — which an operator must supply to add that meter **when the
+machine's Meter Activation Requirement says so**. Separate from the Activation Code, which
+licenses the machine; and separate again from the machine license's meter quota, which bounds
+how many meters may exist regardless.
+_Avoid_: meter licence, device key, per-meter Activation Code
+
+**Meter Activation Requirement**:
+Whether this machine demands a **Meter Activation Code** for each meter added. It is a property
+of the machine's own **Activation Code**, sitting beside the meter quota and the model list —
+**a constraint on scope, never a feature**: `features` names what the product may do, this names
+what the operator must supply. **Not stated means not required**, matching every other constraint
+in a signed license, so the machine a customer bought "full" needs no per-meter code and one sold
+against a named feature list still does. It is decided once, when a meter is added
+(ADR 0019) — turning it off later never disturbs meters already present, and turning it on later
+never reaches back for a code the operator was not asked for.
+It is spelled twice on purpose, and the two are not interchangeable: the **licence** carries
+`require_meter_activation`, which is tri-state and where *unstated* is a real value; the **API
+and the browser** carry `meter_activation_required`, which is a plain boolean the server has
+already resolved. Reading the first where you mean the second is how "unstated means not
+required" ends up written twice in two languages.
+_Avoid_: meter activation feature, full version, licence mode, activation lock
 
 **Limited Mode**:
 The state when no valid license is present: API returns 403 `LICENSE_INVALID` (health + SPA
@@ -32,6 +58,17 @@ subscription — sites survive offline up to the lease length.
 **Meter Key**:
 A vendor-issued key for one additional device slot beyond `max_meters`, serial-bound at redeem
 time. Slots are not returned when a device is deleted.
+
+**Licensed Model**:
+A catalogued meter model key (`prometer100`, `st3cl`, …) a machine's licence permits *adding*
+(issue 015) — not a synonym for `model`, which is the meter's own identity; this names the
+entitlement over it. `null` means every catalogued model (every licence issued before this
+landed carries no `models` key at all); `[]` means none. The lock governs Create and Update
+only — a device added before the licence narrows keeps being read, exactly as `max_meters` and
+the Meter Activation Code (ADR 0019) both grandfather what predates them.
+_Avoid_: model (that's the meter's identity, not the entitlement over it), licensed brand
+(the payload carries model keys; brand-level selling is a vendor-CLI convenience that expands
+to model keys before signing, never a payload field)
 
 **Setup**:
 The one-time first-run step that creates the bootstrap admin account — open only while zero
@@ -55,7 +92,7 @@ _Avoid_: session cookie, API key
 
 **Interval Reading**:
 One row of time-series meter data in COSEM shape — always UTC, always kWh — regardless of
-whether the source was DLMS or Modbus. The normalization happens at write time, in the driver.
+its **Source**. The normalization happens at write time, in the driver.
 The rows live in the `load_profile_readings` table, mapped by the `LoadProfileReading` class:
 the term names the row and its contract, the table names what is in it — every interval the
 meter itself recorded, since ADR 0007 stopped anything else being written there. A row is
@@ -68,7 +105,8 @@ are untouched.
 _Avoid_: load profile row (that's the feature, not the row), sample, logger reading
 
 **Source**:
-Which acquisition path produced a reading: `dlms` or `modbus`. A property of the reading,
+Which acquisition path produced a reading. Always `dlms` today: the Modbus path was dropped
+(ADR 0026) and `modbus` is a reserved value that nothing writes. A property of the reading,
 never a branch in read-path code.
 
 **Meter Serial**:
@@ -96,6 +134,52 @@ capture period and is counted against the most common one). The counts are
 computed live from `load_profile_readings` on every request.
 _Avoid_: records_96, completeness table, instantaneous records
 
+**Interval Status**:
+The meter's own verdict on one Interval Reading — a status word it captures beside the
+values, setting bits when that interval was disturbed, incomplete, or lost power. It is
+**not Records**: Records answers whether a *day* is complete by counting rows we hold,
+this answers whether *one row* is trustworthy, and the answer comes from the meter
+rather than from arithmetic.
+
+The OBIS differs by family and only one of them is decoded. CEWE captures
+`1.0.96.5.4.255`, a 13-bit word rendered as words (`OK`, `ALL_INVALID`, `DISTURBED`,
+`POWER_LOSS`). SMART TCC captures `0.0.96.10.1.255` — a different object whose bit
+meanings nobody has verified on hardware, so it stays **blank rather than decoded**,
+which is the call v1 made and recorded.
+
+**Stored as the raw integer, decoded at render time** (`load_profile_readings
+.interval_status_flag`, migration 0016). Storing decoded text would make every
+historical row permanently un-decodable on the day the SMART TCC word is finally
+verified. One decoder serves both renderers — `arichds/interval_status.py` — so the
+CSV and the Load Profile page cannot word the same bitmap differently.
+
+**Two set bits join with a pipe, `ALL_INVALID|DISTURBED`, not a comma.** v1 joined
+with a comma, but v1's rendering never reached a CSV — it existed only on v1's screen
+— so no Output Parity is broken. A comma inside a cell survives only if every
+downstream consumer honours CSV quoting, which cannot be tested from here.
+
+**A bit outside the three known ones is appended as a hex remainder** (`DISTURBED|0x0400`)
+rather than dropped. This is the one place v2 renders a status word differently from
+v1, which kept only the words it recognised whenever it recognised at least one, and
+fell back to `STATUS_0x….` only when it recognised none. So v1 could silently discard
+a bit the meter had set — the same shape of silent loss that left `avg_geo_pf` empty
+for 87,000 rows — and nothing depends on that behaviour, because this column has never
+been written to a file before. Recorded here because it was an implementer's judgement
+that no requirement asked for (`/scrutinize`, 2026-09-11); it is a decision now, not an
+accident. Bit 0 is the only bit anything branches on — see below.
+
+**A row with bit 0 (`ALL_INVALID`) set is excluded from the Energy Summary, the Load
+Profile page and the Load Profile CSV** — v1's `INV-LP-06`, and an Output Parity
+obligation for all three. A NULL word means the model records none (the SMW110W4, the
+Saral 305) and those rows stay: *the meter said nothing* is not *the meter said this is
+rubbish*. **Records deliberately still counts them**, matching v1, because Records asks
+whether a row arrived and this asks whether one row is trustworthy.
+
+The customer's export file names this column `Record Status` and **that header stays**,
+because the file is a contract they wrote. The name splits at the same boundary display
+units do (ADR 0013): the file keeps their word, the product uses this one.
+_Avoid_: Record Status (the CSV header only), status flag, Records
+
 **Billing Reading**:
 One row of `billing_readings` — the register snapshot the meter itself froze when it closed a
 billing period. Like an Interval Reading it is UTC, kWh, and COSEM-named flat columns
@@ -121,11 +205,26 @@ like every other billing group.
 _Avoid_: total demand, accumulated demand, sum of demand
 
 **Bill Date**:
-The timestamp the **meter** stamped on a billing period, and the natural key of a closed one:
-`(device, bill_date)` is unique, so reading the same buffer twice stores nothing new. It comes
-from the meter's clock, never the server's — a period read a day late still belongs to the day
-the meter cut it.
+The timestamp the **meter** stamped on a billing period, and — with the Billing Sequence — the
+natural key of a closed one: `(device, bill_date, sequence)` is unique, so reading the same
+buffer twice stores nothing new. It comes from the meter's clock, never the server's — a period
+read a day late still belongs to the day the meter cut it. **A bill date is not unique on its
+own** (ADR 0029): a meter can stamp two periods on one second, and does.
 _Avoid_: read time (that's `read_at`), cut date, period date
+
+**Billing Sequence**:
+Which of the closed periods sharing one Bill Date a row is — `0` for the newest as the meter
+lists them, `1` for the next, so a bill date with one period is always `0`. It exists because
+a CEWE meter writes commissioning resets in pairs stamped on the same second (site TC: six
+pairs, *Invocation of Scaling tariff*, one of them the same register before and after a ×100
+scaling), and the customer measures ARICHDS against the vendor tool that shows every one. It is
+counted within the group from its newest member, so the meter dropping its oldest entry can
+remove a `1` and never a `0`. A pair identical in every column is still two rows. Everywhere a
+person reads periods they run oldest first — the exact reverse of the meter's listing, so within a
+pair `1` comes before `0`. The Billing page shows no column
+for it; the export file, the Database Destination and the Central Push carry it, because a
+machine reading them must tell the pair apart.
+_Avoid_: entry index (that shifts every cut), duplicate, sub-period
 
 **Open Period**:
 The billing period a meter is still accumulating into — at most one per device, held in a
@@ -134,22 +233,57 @@ because its Bill Date is the meter's live clock and advances on every read: keye
 would write one junk row per read, which is exactly what it did in v1 until ADR 0018. It is
 provisional by definition, and it is the one place billing shows a number that is not yet a
 bill.
+**Not every meter family has one** (issue 016): SMART TCC's billing profile was measured to hold
+closed cuts only, so its driver declares `BILLING_PROFILE_HAS_OPEN_PERIOD = False` and its Current
+tab is legitimately empty. "At most one per device" means nought or one, not always one.
 _Avoid_: current billing, running row, latest reading (that's whichever period is newest)
+
+**Billing Change Check**:
+A cheap read inside the **Load Profile** cycle's own connection (ADR 0018, issue #43) that
+decides whether the whole-buffer billing read should run this tick — the fifteen-minute
+detection a customer needs without a second association per device per cycle. It reads the
+newest **two** billing entries and classifies them exactly as a full billing read would, then
+compares the newest one that classifies **closed** against the newest closed period already
+stored for that device. It is never the newest entry's Bill Date — that is the Open Period,
+whose Bill Date advances on every single read, which would make the check fire on every tick
+if it were the signal. `BILLING_INTERVAL_SEC` stays the daily backstop for when this check
+itself cannot answer.
+_Avoid_: billing poll, bill_date check, watermark (billing has no watermark, ADR 0009)
+
+**All-Meters View**:
+The Billing page's third tab, beside History and Current — one row per device holding
+that device's **latest closed** period, with no date filter. It answers one question,
+*did every meter cut its bill and which one needs attention*, which is why it is a narrow
+table rather than the forty columns History shows for one meter across time.
+
+It is a view over **devices**, not over Billing Readings: a meter that has never produced
+a bill at all is exactly the case this tab exists to surface, and reading from
+`billing_readings` would hide it. The **Open Period** is excluded for the same reason it
+is excluded from the Billing Change Check — its Bill Date advances on every read, so
+including it would make every meter look freshly cut.
+_Avoid_: Bill total (the customer's word — it reads as a sum of money), overview tab, fleet view
 
 **Energy Summary**:
 Interval Readings added up into **Time-of-Use buckets** — Peak, Off-Peak and Holiday — per
-device and local calendar day. It is **derived, never stored and never read from a meter**:
-the numbers are aggregated out of `load_profile_readings` on every request, exactly as the
-Records page counts its cells live. Peak is a local clock window on days that are not Holiday;
-Holiday is one bucket that swallows weekends and both kinds of Holiday alike, so a Saturday
-inside the peak window is Holiday energy, not Peak energy (ADR 0016). Only **active** energy is
-counted, import and export; the reactive columns exist on the row and are deliberately ignored.
-Because nothing is stored, **an Energy Summary is not reproducible over time**: adding a Holiday
-today changes what last January reports tomorrow. That is a property of the design, not a
-fault — the Holiday table is the one knob that moves it, and it moves it toward the truth. The
-peak window is a constant for the same reason: a second retroactive knob would move the
-numbers with nothing in the world to justify the move.
+device and local calendar day, **stored as one row per meter per day and recomputed over the
+whole 90-day window every cycle** (ADR 0022). Peak is a local clock window on days that are not
+Holiday; Holiday is one bucket that swallows weekends and both kinds of Holiday alike, so a
+Saturday inside the peak window is Holiday energy, not Peak energy (**v1's** ADR 0016 — v2's own
+0016 is an unrelated decision). Only **active** energy is counted, import and export.
+Because every cycle recomputes, **a Holiday change and a late Interval Reading both reach every
+stored day within one cycle**, and the page, the **Energy Export File** and the **Central Push**
+read the same rows, so they cannot disagree. It lives as long as the readings it comes from: 90
+days. Rows the meter flagged `ALL_INVALID` are excluded — an **Output Parity** obligation (see
+*Interval Status*). The peak window is a constant, so the Holiday table stays the only thing that
+moves a past day's numbers.
 _Avoid_: TOU report, energy report, meter energy (that's Energy Registers)
+
+**Holiday Change**:
+One recorded addition, edit or deletion of a Holiday — who, when, and which day — through any of
+the five ways a Holiday moves: add, edit, delete, CSV import, Import from meter. Kept 90 days, as
+long as the Energy Summary rows it explains, because it answers "why did this day's numbers
+change".
+_Avoid_: user log, audit log (it records one kind of change)
 
 **Energy Registers**:
 A meter's **cumulative** energy counters (COSEM `D=8` — import/export, active/reactive) read
@@ -159,6 +293,30 @@ it: one is arithmetic over rows we already hold, the other is a fresh associatio
 Cumulative counters are not instantaneous values, which is why displaying them does not
 reopen ADR 0007 — a running total since the meter was commissioned says nothing about *now*.
 _Avoid_: energy summary (that's the buckets), live energy, instantaneous energy
+
+**Battery Reading**:
+One row of `battery_readings` — the raw charge/status value a CEWE meter reports at
+`0.0.96.6.1.255`, **stored verbatim and never interpreted**: no scaling, no threshold, no
+colour classification. Written by an hourly background job that skips a device already read
+today (UTC calendar day); a failed read stores no row at all — that is what makes the hourly
+cadence a retry rather than a duplicate. It is a trend, not an instantaneous value, so
+displaying it does not reopen ADR 0007 the way a live measurement would. `supports_battery`
+is `True` for exactly the three CEWE models — the drivers that implement the read — never a
+per-brand guess.
+_Avoid_: remaining time, battery percentage, battery health (nothing in this build computes
+any of them — the register is a display code, not a duration)
+
+**App Log** (M7-4, issue #31):
+The **rotating application log file** (`%ProgramData%\ARICHDS\logs\arichds.log`) the process
+itself writes — read-only, tail-only, never written to or deleted by the product. Every line
+already passed `CredentialRedactionFilter` at write time (M1), so the App Log page shows it as
+read: there is no second redaction pass on read. A line that is not a parseable header (e.g. a
+traceback line) is joined onto the previous entry's message rather than becoming its own
+level-less entry, so filtering to a minimum level does not hide the traceback body a matching
+ERROR produced.
+_Avoid_: Device Event, audit log (`device_events` is a different thing with different
+retention — a status transition or an operator action, not a line of process output; the two
+are easy to conflate and must not be)
 
 **Holiday**:
 A day the Energy Summary counts into the Holiday bucket. Three things make a day one and they
@@ -201,17 +359,133 @@ the disk failing. The destination is fixed, not a setting.
 _Avoid_: snapshot, dump, export (that's the CSV feature), replica
 
 **Capture**:
-A PDF (and, when sold, an xlsx) document for one closed Billing Reading, written to a folder an
-admin chooses (`capture_dir`, ADR 0010) — never a fixed path, because the folder **is** the
-handoff mechanism: the operator hands the file to a customer through whatever their own
-workflow already reaches (a network share, a synced folder, their mail client's watched
-directory). Its path is derived from convention every time —
-`<capture_dir>/<meter_serial>/<bill_date>.pdf` — and never stored in the database, so changing
-`capture_dir` orphans every existing capture by design: old files stay exactly where they are
-and simply stop being reachable from the Billing page. Created eagerly, synchronously, the
-moment a closed period is inserted; a missing one is rendered again on download rather than
-tracked as a failure. The Open Period never has one.
+A document written for a closed Billing Reading to a folder an admin chooses (`capture_dir`,
+ADR 0010) — never a fixed path, because the folder **is** the handoff mechanism: the operator
+hands the file to a customer through whatever their own workflow already reaches (a network
+share, a synced folder, their mail client's watched directory). Its path is derived from
+convention every time — `<capture_dir>/<meter_serial>/<bill_date>.<ext>` — and never stored in
+the database, so changing `capture_dir` orphans every existing capture by design: old files stay
+exactly where they are and simply stop being reachable from the Billing page — a **Capture Sweep**
+is how the new folder gets them back. Created eagerly,
+synchronously, the moment a closed period is inserted; a missing one is rendered again on
+download rather than tracked as a failure. The Open Period never has one. The Billing page's
+**Captured** column is the moment a document for that period was last written — the automatic
+capture of a new closed period, a hand-pressed Capture image, or a Capture Sweep (which also
+reads the write time off a document it finds already present) — stamped on the period only
+once the file exists, and blank until then; it is never the bill's own read time, and never
+inferred from the folder being configured (ui-audit ticket 03).
+
+Since ADR 0029 the stem carries `_2` (`_3`, …) for the older members of a same-second pair
+(Billing Sequence 1, 2, …) and nothing for a period alone on its bill date — so a file already
+handed over never changes its name, and both members of a pair get their own documents.
+Three formats share that one filename stem, and **they do not cover the same span** (ADR 0015):
+`.pdf` and `.xlsx` hold **that one period**, while `.png` holds **the ten most recent closed
+periods** rendered as the Billing History table. Sending the `.png` believing it carries a
+single month sends nine more. Nothing in the folder warns of this; saying so is the guard. The
+`.png` **is** a screenshot — a headless capture of the running Billing page (or, in the Classic
+**Capture Style**, of a page drawn only for it) taken over the Chrome
+DevTools Protocol against the already-installed Microsoft Edge, nobody signed in on screen
+(ADR 0017, reverses ADR 0014, issue #38); `.pdf`/`.xlsx` stay drawn, not screenshotted. Edge is
+launched under a `NT AUTHORITY\LOCAL SERVICE` scheduled task while the ARICHDS service itself
+stays `LocalSystem` (issue #40) — not an implementation detail: it is what keeps an
+operator-chosen `capture_dir` under `C:\Users\…` writable, since only the service (not Edge)
+ever writes the capture file, and a service pinned to a low-privilege account cannot write
+outside `%ProgramData%\ARICHDS` (the mistake issue #38 first shipped, and #40 corrects).
 _Avoid_: report, export (that's a different feature), snapshot
+
+**Capture Style**:
+What a Capture's `.png` looks like — a machine-wide choice an admin makes beside the capture
+folder, with two values. **Standard** is the Billing History table as our own Billing page shows
+it. **Classic** reproduces the window of the program a customer ran before ARICHDS (**ARICHDS
+Meter**, a desktop program, not v1): its toolbar, its Save Path / Data Billing / Auto Read Schedule panels
+and its Data Table, at that window's fixed size, so the image can go on standing where that
+program's image stood. Classic is a picture of a window that does not exist — nobody can open
+it as a page — and it is judged by laying it over an image the old program wrote: positions,
+sizes, colours and text must agree, glyph edges may not. It changes the `.png` only; `.pdf`,
+`.xlsx`, the filename convention and the ten-period span (oldest first in Classic, as that
+program listed them) are untouched. Its numbers are always kWh and kW, because its headings say
+so. **Every value in it is true or is inert**: the folder, the site (its Group box shows the Site
+Name, 2026-09-22), the device and the rows are real; Statistics Summary counts the devices of the
+same site at the moment of writing —
+*Devices with Issues* are the ones the Poller cannot currently reach, never the ones whose bill
+has not arrived yet, because a Capture is written meter by meter and the first of a group would
+otherwise accuse the rest; the Auto Read Schedule panel is fixed text, since it claims nothing
+about a bill. Switching style rewrites nothing already on disk — it governs the next write.
+_Avoid_: legacy style (v1 and the customer's `logger` table are both already "legacy"), theme, skin
+
+**Export Format**:
+The machine-wide settings that govern the **export files** (M7 slice 3, issue #30; extended at
+M13, issue 01) — the timestamp token format, one filename template per file, the auto-save
+switch, and the output folder. **Machine-wide, not per-meter**: one customer's site runs meters
+set up identically, so a per-device value would solve a problem nobody has hit (grill M7,
+2026-08-11). The timestamp formats and the filename templates live on their own ExportFormat
+page; the auto-save switch and the output folder sit on the Load Profile page instead, next to
+"Save CSV now" and the table they export.
+
+**One folder, one switch, one cadence, one date format — several files.** Since M13 the same
+job writes a **Load Profile CSV**, a **Billing Export File** and an **Energy Export File** per
+meter,
+and each has its own filename template only because they share a folder and one template would
+have them overwrite each other. A second output folder or a second auto-save switch would be a
+value somebody has to keep in step with the first by hand.
+
+**The files they govern are always kWh/kvarh — they never follow the Display unit setting**
+(ADR 0013). A file is a contract an operator's downstream tooling reads; the Display unit
+setting is a view, re-rendered on every request, and a file must not change meaning because a
+switch was flipped.
+
+**An export file mirrors our window and carries exactly one head** (ADR 0023): the Load
+Profile CSV and the Energy Export File hold 90 days, the Billing Export File holds every closed
+period, and a changed head is written over the whole window rather than closing the file.
+Nothing accumulates in the folder — the customer's reason for a window at all is disk space.
+_Avoid_: divide by 1000 (v1's setting; not ported — write-time normalization already made it
+vacuous), per-meter format (rejected — see above), a second output folder (rejected — see
+above)
+
+**Billing Folder**:
+The one folder an admin sets on the Billing page (grill 2026-09-23, decision ก). It holds, under one
+subfolder per Meter Serial, a meter's Captures **and** its Billing Export File — the customer keeps a
+meter's billing documents together. Empty means both are off: no Capture is written and no Billing
+Export File either — a file is **never** written into another file's folder (the same rule the
+Load Profile CSV's *Output folder* and the *Energy file folder* follow, each for its own file).
+_Avoid_: capture folder (it is not only for captures any more), output dir, export folder
+
+**Capture Sweep**:
+Writing the Capture for every closed Billing Reading that has no document in the current Billing
+Folder — every period the store holds, newest first, every format the licence allows, and never
+over a file that exists (a file present is done, whatever wrote it; delete it to re-issue). The
+folder itself is the only record of what is done: nothing persists which periods were swept. It
+runs only when someone presses **Save all**; the automatic capture of a new closed period is not a
+sweep. A swept document carries the values of the moment it is written (a Classic image's
+Statistics Summary, a PDF's print time), exactly as a download-time render does.
+_Avoid_: backfill (dissolved, ADR 0009), regenerate (v1's per-period tool), re-capture
+
+**Save all**:
+The Billing page's admin action replacing *Save billing file now*: rewrites every device's Billing
+Export File and runs a Capture Sweep over every device, in short slices between the scheduler's
+regular jobs so a meter read is never delayed; answers at once and reports progress on the page
+(kept in memory only, gone on restart). Pressed while running, it says so and queues nothing.
+_Avoid_: save billing file now, sync, regenerate all
+
+**Billing Export File**:
+One row per **closed** billing period per meter — `<meter>-billing.csv`, 24 columns in the
+customer's order — holding **every** closed period and rewritten whole every cycle, because
+billing is never purged from our store (ADR 0023). The Open Period is never exported: its
+`bill_date` advances on every read (see *Open Period*). `Record No` counts closed periods for
+that meter oldest-first, **not** lines in the file. Its `Record Status` column
+reads `closed` on every row and is **not the same column** as `Record Status` in the Load
+Profile CSV, which is an *Interval Status* word. It lives in the **Billing Folder**, inside the
+meter's own subfolder beside its Captures (grill 2026-09-23); no Billing Folder, no file.
+_Avoid_: billing CSV, billing file, bill export (one name, so a grep finds every mention)
+
+**Energy Export File**:
+One row per device and local calendar day for the last 90 days — `<meter>-energy.csv`, the
+`Date` plus the eight Time-of-Use columns the page shows — **rewritten whole every cycle from the
+stored Energy Summary** (ADR 0023), so it is never more than one cycle behind the page. **Save to
+file** writes a chosen range to its own file. It carries **no total row**; the total belongs on
+the page. Written only into its own *Energy file folder* (Energy Summary page); empty means no
+file — never another file's folder (grill 2026-09-23).
+_Avoid_: energy CSV, TOU file, summary export
 
 **Output Parity**:
 The acceptance rule for domain modules: numbers shown by v2 must equal v1's output at v1's
@@ -230,6 +504,15 @@ serial. Concurrency locks key on the endpoint, not the device: devices sharing a
 queue behind one lock.
 _Avoid_: connection (ambiguous), socket
 
+**Framing**:
+How DLMS is carried over a TCP **Transport Endpoint** — WRAPPER (the meter's own network port)
+or HDLC (a transparent serial-to-TCP converter in front of it). A property of the install, like
+the endpoint itself, never of the model: the same Prometer 100 is reached either way depending
+on what sits between it and the network. Chosen per device, only for a model whose driver
+declares more than one; it is not part of the endpoint and never changes which lock a device
+queues behind.
+_Avoid_: protocol (DLMS is the protocol either way), interface, mode
+
 **Poller**:
 The background thread pool that reads every meter on a fixed cadence (60 s, not configurable)
 to prove it still answers. One worker per device, one lock per Transport Endpoint. Its tick
@@ -239,13 +522,24 @@ check.
 
 **Scheduler**:
 The single background thread that runs every periodic job from a registry of
-`(name, interval, fn)` — one thread for all of them, not one per job. Jobs run sequentially in
+`(name, interval, fn)`, **plus one-shot lane** (`Scheduler.run_soon`, issue #44) for a callable
+queued to run once, as soon as the thread gets to it, never re-registered — one thread for all
+of it, not one per job and not a second thread for one-shots either. Jobs run sequentially in
 registry order, each on its own interval, and a job that throws costs only its own cycle: it is
-logged and runs again at its next interval. It stops in Limited Mode and starts on activation,
-without a restart. **Not all of its jobs read meters**: it runs the load-profile cycle (every
-enabled device that is not Offline) alongside Retention and the Daily Backup, which touch no
-meter at all. Every meter read it does make is background work — a device whose Transport
-Endpoint is busy is skipped and read next cycle, never queued ahead of a person.
+logged and runs again at its next interval; a one-shot that throws costs only itself the same
+way. It stops in Limited Mode and starts on activation, without a restart. **Not all of its jobs
+read meters**: it runs the load-profile cycle (every enabled device that is not Offline)
+alongside Retention and the Daily Backup, which touch no meter at all. **Almost every meter read
+it does make is background work** — a device whose Transport Endpoint is busy is skipped and
+read next cycle, never queued ahead of a person — **with one deliberate exception**: the
+one-shot lane's own queued callable, the first load-profile read after Create, takes the
+**Manual** path (`background=False`) instead, because `poller.restart()` has just made the
+Transport Endpoint predictably busy with that same device's first Poller tick, and a background
+acquisition there would silently skip forever (see Manual Read, below). The price of that
+exception is written down here because it is otherwise easy to miss: that one-shot runs on this
+same single job thread, so it can hold it for up to `MANUAL_READ_LOCK_TIMEOUT_SEC` +
+`LOAD_PROFILE_READ_BUDGET_SEC` (120 s + 60 s) waiting for and then walking one device, delaying
+every other registry job behind it in that pass — including Backup and Retention.
 _Avoid_: cron, worker, background service, a per-module scheduler (v1 had seven)
 
 **Probe**:
@@ -262,9 +556,16 @@ Reading, and it never reports a measured value. M5 and M6 name their jobs (`load
 _Avoid_: ping, health check
 
 **Manual Read**:
-A read a person asked for — Read now, Test connection, or the probe behind Create/Update.
-Manual Reads take the Transport Endpoint lock ahead of the Poller: a skipped background tick
-costs one minute of data, a person waiting on a button costs trust.
+A read a person asked for — Read now (the Devices page's three-job version, and the
+page-scoped Load Profile / Billing buttons, issue #44), Test connection, or the probe behind
+Create/Update. Manual Reads take the Transport Endpoint lock ahead of the Poller: a skipped
+background tick costs one minute of data, a person waiting on a button costs trust.
+Extended by issue #44 to one more case with no button at all: the first load-profile read
+queued right after Create, on the Scheduler's one-shot lane. Nobody presses anything for it,
+but it takes the Manual path (`background=False`) deliberately — `poller.restart()` a few
+lines up means the new device's first Poller tick runs immediately, so the Transport Endpoint
+is predictably held the moment it runs, and only the Manual path waits for it rather than
+skipping silently (ADR 0006's priority rule is otherwise untouched).
 _Avoid_: on-demand read, forced read
 
 **Pause**:
@@ -272,3 +573,64 @@ Stopping every background read of one device while leaving it fully visible — 
 column, persisted so it survives a service restart. Manual Reads still work on a paused
 device. Resume puts it back to Unknown until the next tick proves otherwise.
 _Avoid_: disconnect, disable, deactivate
+
+### Data-out
+
+**Data-out Destination**:
+Somewhere finished data is sent **outward** from the site — the team's central server, a
+customer's own MySQL, an upload target, or a folder a third-party tool replicates. One site may
+use several, and a site that refuses cloud upload for confidentiality has not opted out of the
+architecture: it has chosen a different Destination. A Destination **never becomes the store**
+— ARICHDS reads meters into its own SQLite whether or not any Destination is reachable, and an
+unreachable one costs a retry, never a reading (ADR 0016).
+_Avoid_: endpoint (that's the **Transport Endpoint** — the meter side, and the lock keys on it),
+sync target, backend, database connection
+
+**Central Push**:
+The **Data-out Destination** that sends Billing, Load Profile, the Energy Summary and the meter
+roster with its status to the team's own server every cycle. It keeps no record of what it sent:
+each cycle begins by asking the server what it already holds (ADR 0024). The contract is ours,
+published on the **API** page, and a site with no server URL configured sends nothing.
+_Avoid_: sync, upload, API (that is the menu's name, not the mechanism), webhook
+
+**Push Token**:
+The secret a machine presents to the team's server — signed by the vendor with the same key as
+an Activation Code, carrying the Machine ID, and built so it can never be accepted as one.
+_Avoid_: machine token (the portal's word, for M9), API key, Activation Code
+
+**Database Destination**:
+The customer's own SQL database, written to as one kind of **Data-out Destination**. We create
+the tables in it, we own their shape, and we are the only writer — it holds finished readings
+keyed on **Meter Serial**, never our `devices.id` (a SQLite rowid, reused after a delete). Its
+load profile is **one merged row per interval** — the row the Load Profile page and the Load
+Profile CSV show — not the store's row per Logger (ADR 0027).
+Distinct from the team's central server, which is a different Destination with a different
+transport (SPEC §3.8). ADR 0016 is why it is a Destination at all and not the store.
+_Avoid_: our database, the MySQL backend, the remote DB, external database
+
+**File Upload Destination**:
+The **Data-out Destination** that copies the machine's **files** — the three export files and
+the Billing capture documents — to a server the operator names, over one of three protocols the
+operator picks (SFTP, FTPS or HTTPS to the team's server). It carries the same rows the
+**Central Push** carries, but as the documents a human signs off on rather than as JSON, and it
+is the only Destination that carries the capture documents at all. The menu calls it **FTP**
+because that is the customer's word for it; the menu name is not the protocol.
+_Avoid_: FTP as the mechanism (plain FTP is never offered — ADR 0016), file sync, backup,
+Syncthing (a third-party replicated folder is a different Destination with no code of ours)
+
+**Upload Manifest**:
+The list of files a **File Upload Destination** already holds, with each file's digest, kept
+**on the server** and read back at the start of every cycle so the machine sends only what is
+new or changed. It is the file-side twin of the holdings the **Central Push** asks for: the
+server remembers, the machine does not (ADR 0008/0024). A missing manifest means "send
+everything".
+_Avoid_: watermark, sync state, index, cache
+
+**Mirror Window**:
+How much history a **Data-out Destination** is kept at — exactly what our own store holds, and
+no more. Our sync both writes new rows and deletes rows past retention in the customer's
+database, so the Destination is a mirror of the last 90 days rather than an archive that
+outlives them (ADR 0020). A Destination that has fallen behind is caught up on the next cycle;
+one that has fallen behind by more than the window loses nothing, because those rows are no
+longer ours to send.
+_Avoid_: archive, backup, retention (that's our own store's policy — `RETENTION_DAYS`), history

@@ -1,7 +1,7 @@
-import { App, Card, DatePicker, Empty, Flex, Select, Space, Table, Typography } from "antd";
+import { App, Button, Card, DatePicker, Empty, Flex, Form, Input, Select, Space, Switch, Table, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiRequestError,
@@ -9,6 +9,7 @@ import {
   isLicenseLapsed,
   type CatalogEntry,
   type Device,
+  type ExportFormatSettings,
   type LoadProfilePage,
   type LoadProfileRow,
 } from "../api";
@@ -47,31 +48,51 @@ const num =
   (value: number | null): string =>
     value == null ? NOTHING : value.toFixed(digits);
 
-/** Energy columns carry v1's nine decimals; everything else carries three. */
-const ENERGY_DIGITS = 9;
+/** Energy columns carry v1's nine decimals (declared per column in the tuples
+ * below); everything else carries three. */
 const MEASUREMENT_DIGITS = 3;
 
-/** The four energy columns' identity, independent of scale — display-unit
+/** The scale-aware columns' identity, independent of scale — display-unit
  * conversion applies to these and nothing else on this page: voltage,
- * current, power factor and frequency are untouched in both value and
- * label. */
-const ENERGY_COLUMNS: { titlePrefix: string; titleSuffix: string; dataIndex: keyof LoadProfileRow; unit: UnitKind; width: number }[] = [
-  { titlePrefix: "Import", titleSuffix: "Active", dataIndex: "import_active_kwh", unit: "energy", width: 180 },
-  { titlePrefix: "Import", titleSuffix: "Reactive", dataIndex: "import_reactive_kvarh", unit: "reactiveEnergy", width: 190 },
-  { titlePrefix: "Export", titleSuffix: "Active", dataIndex: "export_active_kwh", unit: "energy", width: 180 },
-  { titlePrefix: "Export", titleSuffix: "Reactive", dataIndex: "export_reactive_kvarh", unit: "reactiveEnergy", width: 190 },
+ * current, power factor, frequency and phase angle are untouched in both
+ * value and label.
+ *
+ * The four **power** columns (M13, issue 07) join the four energy ones here.
+ * They are the first columns ADR 0013's boundary runs through in both
+ * directions on one quantity: the setting reaches them on this screen and
+ * never reaches the Load Profile CSV, which carries kW and kvar whatever the
+ * setting says, because a file that appends for months under a header written
+ * once cannot follow a view preference. */
+const SCALED_COLUMNS: { titlePrefix: string; titleSuffix: string; dataIndex: keyof LoadProfileRow; unit: UnitKind; width: number; digits: number }[] = [
+  { titlePrefix: "Import", titleSuffix: "Active", dataIndex: "import_active_kwh", unit: "energy", width: 180, digits: 9 },
+  { titlePrefix: "Import", titleSuffix: "Reactive", dataIndex: "import_reactive_kvarh", unit: "reactiveEnergy", width: 190, digits: 9 },
+  { titlePrefix: "Export", titleSuffix: "Active", dataIndex: "export_active_kwh", unit: "energy", width: 180, digits: 9 },
+  { titlePrefix: "Export", titleSuffix: "Reactive", dataIndex: "export_reactive_kvarh", unit: "reactiveEnergy", width: 190, digits: 9 },
+];
+
+/** The four average-power columns, rendered after the phase angles in the same
+ * order the CSV carries them. Split from the tuple above only because they sit
+ * elsewhere in the column order and carry three decimals rather than nine. */
+const SCALED_POWER_COLUMNS: typeof SCALED_COLUMNS = [
+  { titlePrefix: "Import", titleSuffix: "Active", dataIndex: "import_active_kw", unit: "power", width: 170, digits: 3 },
+  { titlePrefix: "Import", titleSuffix: "Reactive", dataIndex: "import_reactive_kvar", unit: "reactivePower", width: 180, digits: 3 },
+  { titlePrefix: "Export", titleSuffix: "Active", dataIndex: "export_active_kw", unit: "power", width: 170, digits: 3 },
+  { titlePrefix: "Export", titleSuffix: "Reactive", dataIndex: "export_reactive_kvar", unit: "reactivePower", width: 180, digits: 3 },
 ];
 
 /** The identity/measurement columns plus every scale-aware energy column,
  * built fresh per `scale`, in the page's original column order. */
 function buildColumns(scale: DisplayUnitScale): ColumnsType<LoadProfileRow> {
-  const energyColumns: ColumnsType<LoadProfileRow> = ENERGY_COLUMNS.map((column) => ({
-    title: `${column.titlePrefix} ${unitLabel(column.unit, scale)} ${column.titleSuffix}`,
-    dataIndex: column.dataIndex,
-    key: column.dataIndex,
-    width: column.width,
-    render: (value: number | null) => num(ENERGY_DIGITS)(scaleValue(value, scale) ?? null),
-  }));
+  const scaled = (columns: typeof SCALED_COLUMNS): ColumnsType<LoadProfileRow> =>
+    columns.map((column) => ({
+      title: `${column.titlePrefix} ${unitLabel(column.unit, scale)} ${column.titleSuffix}`,
+      dataIndex: column.dataIndex,
+      key: column.dataIndex,
+      width: column.width,
+      render: (value: number | null) => num(column.digits)(scaleValue(value, scale) ?? null),
+    }));
+  const energyColumns = scaled(SCALED_COLUMNS);
+  const powerColumns = scaled(SCALED_POWER_COLUMNS);
 
   return [
     {
@@ -117,19 +138,207 @@ function buildColumns(scale: DisplayUnitScale): ColumnsType<LoadProfileRow> {
       width: 130,
       render: num(MEASUREMENT_DIGITS),
     },
+    // ── M13, issue 07 — the eleven, in the same order the CSV carries them,
+    // so a number that looks wrong in the file can be found on the screen
+    // without counting columns across two layouts.
+    {
+      title: "Avg Phase Angle Ph-A",
+      dataIndex: "phase_angle_a",
+      key: "phase_angle_a",
+      width: 180,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    {
+      title: "Avg Phase Angle Ph-B",
+      dataIndex: "phase_angle_b",
+      key: "phase_angle_b",
+      width: 180,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    {
+      title: "Avg Phase Angle Ph-C",
+      dataIndex: "phase_angle_c",
+      key: "phase_angle_c",
+      width: 180,
+      render: num(MEASUREMENT_DIGITS),
+    },
     { title: "Frequency (Hz)", dataIndex: "freq", key: "freq", width: 130, render: num(MEASUREMENT_DIGITS) },
+    {
+      // The decoded wording arrives from the server (`interval_status`), not
+      // from a decoder in this file — see `api.ts`'s note on the field. An
+      // empty string means the model records no status word, and renders as
+      // the same em dash every other absent value gets.
+      title: "Record Status",
+      dataIndex: "interval_status",
+      key: "interval_status",
+      width: 200,
+      render: (value: string) => (value === "" ? NOTHING : value),
+    },
+    ...powerColumns,
+    {
+      title: "Voltage L1-L2 (V)",
+      dataIndex: "volt_l1_l2",
+      key: "volt_l1_l2",
+      width: 160,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    {
+      title: "Voltage L2-L3 (V)",
+      dataIndex: "volt_l2_l3",
+      key: "volt_l2_l3",
+      width: 160,
+      render: num(MEASUREMENT_DIGITS),
+    },
+    {
+      title: "Voltage L3-L1 (V)",
+      dataIndex: "volt_l3_l1",
+      key: "volt_l3_l1",
+      width: 160,
+      render: num(MEASUREMENT_DIGITS),
+    },
   ];
+}
+
+interface ExportSettingsFormValues {
+  export_auto_save_enabled: boolean;
+  export_output_dir: string;
+}
+
+/**
+ * The CSV auto-export controls (M7 slice 3, issue #30, D-16) — the
+ * auto-save switch, the output folder, and "Save CSV now" for whichever
+ * device is currently selected above.
+ *
+ * **Two admin-only fields plus one any-role action, one card.** The switch
+ * and the folder both save through the same `PUT /api/settings/export-format`
+ * the ExportFormat page uses (D-17: one full replace of all four settings),
+ * so this card's save carries `export_date_format`/`export_csv_filename_tmpl`
+ * through unchanged from the last fetch — the same pattern ExportFormat.tsx
+ * uses in the other direction. "Save CSV now" is a separate action, open to
+ * every role (D-17) and deliberately not gated on the switch (D-11): an
+ * operator pressing the button has already expressed intent.
+ */
+function ExportControlsCard({
+  role,
+  deviceId,
+  surface,
+}: {
+  role: "admin" | "user";
+  deviceId: number | undefined;
+  surface: (err: unknown, fallback: string) => void;
+}) {
+  const { message } = App.useApp();
+  const [form] = Form.useForm<ExportSettingsFormValues>();
+  const [settings, setSettings] = useState<ExportFormatSettings | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    api
+      .exportFormatSettings()
+      .then((data) => {
+        setSettings(data);
+        form.setFieldsValue({
+          export_auto_save_enabled: data.export_auto_save_enabled,
+          export_output_dir: data.export_output_dir,
+        });
+      })
+      .catch((err: unknown) => surface(err, "Could not load the CSV export settings."));
+    // Loaded once on mount — the form owns edits from then on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onFinish = (values: ExportSettingsFormValues) => {
+    if (!settings) return;
+    setSaving(true);
+    api
+      .updateExportFormatSettings({ ...settings, ...values })
+      .then((data) => {
+        setSettings(data);
+        form.setFieldsValue({
+          export_auto_save_enabled: data.export_auto_save_enabled,
+          export_output_dir: data.export_output_dir,
+        });
+        message.success("CSV export settings saved.");
+      })
+      .catch((err: unknown) => surface(err, "Could not save the CSV export settings."))
+      .finally(() => setSaving(false));
+  };
+
+  const saveCsvNow = () => {
+    if (deviceId === undefined) return;
+    setExporting(true);
+    api
+      .exportLoadProfileNow(deviceId)
+      .then((result) => {
+        if (result.rows_written === 0) {
+          message.info("No new rows to export.");
+        } else {
+          message.success(`Exported ${result.rows_written} row(s) to ${result.path ?? "the CSV file"}.`);
+        }
+      })
+      .catch((err: unknown) => surface(err, "Could not export the CSV now."))
+      .finally(() => setExporting(false));
+  };
+
+  return (
+    <Card size="small" title="CSV export">
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={onFinish}
+        disabled={role !== "admin" || settings === null || saving}
+      >
+        <Flex gap="middle" wrap align="flex-end">
+          <Form.Item name="export_auto_save_enabled" label="Auto-save" valuePropName="checked" style={{ marginBottom: 0 }}>
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            name="export_output_dir"
+            label="Output folder"
+            style={{ marginBottom: 0, minWidth: 320, flex: 1 }}
+            extra="Where the Load Profile CSV files are written — only those; the billing file and the Energy file have their own folders on the Billing and Energy Summary pages. Required while Auto-save is on — turn Auto-save off first if you want to clear it."
+          >
+            <Input placeholder="e.g. C:\LoadProfileExports" allowClear />
+          </Form.Item>
+          <Form.Item style={{ marginBottom: 0 }}>
+            <Button type="primary" htmlType="submit" loading={saving}>
+              Save
+            </Button>
+          </Form.Item>
+        </Flex>
+      </Form>
+      <Button
+        style={{ marginTop: 12 }}
+        onClick={saveCsvNow}
+        loading={exporting}
+        disabled={deviceId === undefined}
+      >
+        Save CSV now
+      </Button>
+    </Card>
+  );
 }
 
 /**
  * Load Profile (M5b-1) — read a device's stored Interval Readings over a date
  * range.
  *
- * **Read-only, and it never talks to a meter.** Every row shown here was
- * recorded by the meter itself and stored by Read now (#15) or the Scheduler's
- * load-profile job (#16). The page has no Read now button of its own in this
- * slice — that capability already lives on the Devices page, and duplicating it
- * here was not part of what this slice was asked to ship (SPEC §3.5).
+ * Every row shown here was recorded by the meter itself and stored by Read
+ * now (either the Devices page's three-job version or this page's own
+ * button below), or the Scheduler's load-profile job (#16).
+ *
+ * **This page's own Read now button (issue #44) reverses this docstring's
+ * former claim that it has none.** The original reasoning — "that capability
+ * already lives on the Devices page, and duplicating it here was not part of
+ * what this slice was asked to ship" — was reconsidered: a new device's
+ * first load-profile read is now also queued automatically at Create
+ * (issue #44's other half, `app/src/arichds/api/devices.py`'s
+ * `_read_initial_load_profile`), and an operator watching this page for an
+ * existing device should not have to leave it for the Devices page's
+ * unrelated three-job version. This page's button loops — pressing again
+ * for as long as `history_remains` says another call would make progress —
+ * and reads only the load profile, never billing.
  *
  * **One list call paints the four filters.** Site group, brand, model and device
  * all narrow the array from a single `GET /api/devices` — the pattern the
@@ -146,7 +355,7 @@ function buildColumns(scale: DisplayUnitScale): ColumnsType<LoadProfileRow> {
  * days, the API speaks in UTC, and the exclusive upper bound is "the start of
  * the day after the one you picked".
  */
-export function LoadProfile() {
+export function LoadProfile({ role }: { role: "admin" | "user" }) {
   const { message } = App.useApp();
   const scale = useDisplayUnitScale();
 
@@ -224,9 +433,13 @@ export function LoadProfile() {
   const brandOptions = useMemo(
     () => [
       { value: ALL, label: "All brands" },
-      ...unique(bySite.map((device) => device.brand)).map((value) => ({ value, label: value })),
+      ...unique(bySite.map((device) => device.brand)).map((value) => ({
+        value,
+        // The stored brand is the catalog key; the catalog says how to print it.
+        label: catalog.find((entry) => entry.brand === value)?.brand_label ?? value,
+      })),
     ],
-    [bySite],
+    [bySite, catalog],
   );
 
   const modelOptions = useMemo(() => {
@@ -253,9 +466,82 @@ export function LoadProfile() {
     [byModel],
   );
 
+  // Read now (issue #44, D11/D12) — loops `while (result.history_remains)`,
+  // showing the running total beside the button, until the walk is done, a
+  // press fails, the component unmounts, or the selected device changes.
+  // `readGeneration` is what "stops" means in practice: incrementing it
+  // makes every in-flight loop's next check see a mismatch and give up
+  // without touching state for a device the operator has already left.
+  const [reading, setReading] = useState(false);
+  const [progress, setProgress] = useState<{ stored: number; through: string | null } | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const readGenerationRef = useRef(0);
+
+  // True unmount only — a device change is cancelled from inside the four
+  // handlers below, which can safely call setState (they run in response to
+  // a user event, not a cleanup), unlike this effect's cleanup.
+  useEffect(() => {
+    return () => {
+      readGenerationRef.current += 1;
+    };
+  }, []);
+
+  const cancelReadLoop = useCallback(() => {
+    readGenerationRef.current += 1;
+    setReading(false);
+    setProgress(null);
+  }, []);
+
+  const onReadNow = useCallback(() => {
+    if (deviceId === undefined) return;
+    const generation = readGenerationRef.current;
+    const targetDeviceId = deviceId;
+    let total = 0;
+    let through: string | null = null;
+
+    setReading(true);
+    setProgress({ stored: 0, through: null });
+
+    const step = (): void => {
+      void api
+        .readLoadProfileNow(targetDeviceId)
+        .then((result) => {
+          if (readGenerationRef.current !== generation) return; // unmounted or device changed
+          if (result.error) {
+            message.error(result.error);
+            setReading(false);
+            setProgress(null);
+            setRefreshTick((tick) => tick + 1);
+            return;
+          }
+          total += result.stored;
+          if (result.through) through = result.through;
+          setProgress({ stored: total, through });
+          if (result.history_remains) {
+            step();
+            return;
+          }
+          const throughText = through ? ` up to ${dayjs(through).format("YYYY-MM-DD HH:mm")}` : "";
+          message.success(`Stored ${total} Interval Reading${total === 1 ? "" : "s"}${throughText}.`);
+          setReading(false);
+          setProgress(null);
+          setRefreshTick((tick) => tick + 1);
+        })
+        .catch((err: unknown) => {
+          if (readGenerationRef.current !== generation) return;
+          surface(err, "Could not read the load profile.");
+          setReading(false);
+          setProgress(null);
+          setRefreshTick((tick) => tick + 1);
+        });
+    };
+    step();
+  }, [deviceId, message, surface]);
+
   // Changing a broader filter drops the narrower ones — including the selected
   // device, which is how a device that falls out of the narrowed set is cleared.
   const onSiteChange = (value: string) => {
+    cancelReadLoop();
     setSite(value);
     setBrand(ALL);
     setModel(ALL);
@@ -264,6 +550,7 @@ export function LoadProfile() {
   };
 
   const onBrandChange = (value: string) => {
+    cancelReadLoop();
     setBrand(value);
     setModel(ALL);
     setDeviceId(undefined);
@@ -271,12 +558,14 @@ export function LoadProfile() {
   };
 
   const onModelChange = (value: string) => {
+    cancelReadLoop();
     setModel(value);
     setDeviceId(undefined);
     setPage(1);
   };
 
   const onDeviceChange = (value: number) => {
+    cancelReadLoop();
     setDeviceId(value);
     setPage(1);
   };
@@ -332,7 +621,10 @@ export function LoadProfile() {
     return () => {
       current = false;
     };
-  }, [deviceId, startIso, endIso, page, pageSize, surface]);
+    // `refreshTick` (issue #44) is the one addition: it forces this effect to
+    // re-run once the Read now loop finishes, without changing `scope`, so
+    // the same page reloads rather than the view resetting.
+  }, [deviceId, startIso, endIso, page, pageSize, surface, refreshTick]);
 
   const columns = useMemo(() => buildColumns(scale), [scale]);
   /** The total of every column width, so the horizontal scroll has something to scroll to. */
@@ -343,6 +635,7 @@ export function LoadProfile() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <ExportControlsCard role={role} deviceId={deviceId} surface={surface} />
       <Card size="small">
         <Flex gap="small" wrap align="center">
           <Select
@@ -385,6 +678,19 @@ export function LoadProfile() {
             // would hide them. This page is M5b's and ships no new UI here.
             disabledDate={(current) => current.isAfter(dayjs().endOf("day"))}
           />
+          <Button type="primary" onClick={onReadNow} loading={reading} disabled={deviceId === undefined}>
+            Read now
+          </Button>
+          {/* Running total while the loop is in flight (D12, issue #44) — a
+              90-day backfill stores rows outside the table's default "today"
+              range, so without this the operator sees an unchanged table and
+              concludes nothing happened. */}
+          {progress ? (
+            <Text type="secondary">
+              Stored {progress.stored} so far
+              {progress.through ? ` — up to ${dayjs(progress.through).format("YYYY-MM-DD HH:mm")}` : ""}
+            </Text>
+          ) : null}
         </Flex>
       </Card>
 

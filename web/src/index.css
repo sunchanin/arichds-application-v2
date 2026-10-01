@@ -11,3 +11,13 @@ body {
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
+
+/* The Billing History row holding the newest closed period (ui-audit ticket
+   09). The one colour literal in this file on purpose: it is v1's exact
+   `#f3e8ff`, kept so the customer's v1 screenshot and our capture PNG (ADR
+   0017 — a screenshot of this very page) match to the pixel. Body cells only;
+   AntD's own hover colour still wins while the pointer is on the row. */
+.ant-table-tbody > tr.latest-bill-row > td {
+  background-color: #f3e8ff;
+}
+

@@ -2,9 +2,14 @@
 Energy Registers (Meter Registers tab), and its Read now trigger (M7-1,
 issue #28; CONTEXT.md — Energy Summary / Energy Registers).
 
-**The Summary Report is derived, never stored** (ADR 0012): the Peak /
-Off-Peak / Holiday buckets are aggregated out of ``load_profile_readings`` on
-every request, the way ``api/records.py`` counts its cells live. Ported from
+**The Summary Report is stored, and recomputed over the whole retention
+window every scheduler cycle** (ADR 0022, supersedes ADR 0012; M14, ticket
+01): ``GET /api/energy/summary`` below reads ``energy_summary_days`` through
+:func:`arichds.db.energy_summary_store.stored_energy_summary_rows`, never
+re-aggregating ``load_profile_readings`` on the request. The response shape
+and the 31-day bound are unchanged. The Peak / Off-Peak / Holiday
+classification itself is untouched — it still lives in
+:mod:`arichds.db.energy_query`, which the recompute job calls — ported from
 v1 ``cewe-worker/src/load_profile/repository.py`` (``_IS_HOLIDAY_PREDICATE``,
 ``_ENERGY_SUMMARY_SQL``), translated MySQL -> SQLite:
 
@@ -37,25 +42,34 @@ Summary Report but the license key.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, field_validator
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from arichds.acquisition.energy_registers import read_and_store_energy_registers
-from arichds.api.deps import SessionDep, get_current_user, require_feature
+from arichds.api.deps import AdminDep, SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
+from arichds.capture.paths import validate_directory_setting
+from arichds.config import get_settings
 from arichds.constants import (
     MANUAL_READ_LOCK_TIMEOUT_SEC,
-    METER_LOCAL_UTC_OFFSET_HOURS,
-    TOU_PEAK_END_UTC,
-    TOU_PEAK_START_UTC,
 )
+from arichds.db.app_settings import (
+    EXPORT_ENERGY_OUTPUT_DIR_DEFAULT,
+    EXPORT_ENERGY_OUTPUT_DIR_KEY,
+    energy_export_dir,
+    get_setting,
+    set_setting,
+)
+from arichds.db.energy_query import EnergySummaryReport
+from arichds.db.energy_summary_store import stored_energy_summary_rows
 from arichds.db.models import Device, EnergyRegisterReading
 from arichds.db.session import session_scope
+from arichds.export.energy_csv import export_energy_range
 
 router = APIRouter(
     prefix="/api/energy",
@@ -66,155 +80,6 @@ router = APIRouter(
 #: The most local days one Summary Report request may span, inclusive of both
 #: ends — same bound and same reasoning as ``api/records.py`` (decision 22).
 MAX_DAYS = 31
-
-#: Logger 1 carries the energy columns on every model (decision 6, `base.py`
-#: D2 module docstring) — the only correct answer, so there is no logger
-#: selector on the endpoint.
-_LOGGER_ID = 1
-
-#: SQLite date-modifier form of :data:`~arichds.constants.METER_LOCAL_UTC_OFFSET_HOURS`.
-_TZ_SHIFT = f"{METER_LOCAL_UTC_OFFSET_HOURS:+d} hours"
-
-#: A day is a Holiday when it is a Saturday/Sunday in ICT, or matches an
-#: ``annual`` row on month+day, or matches a ``public`` row on the exact
-#: date (CONTEXT.md — Holiday). ``strftime('%w', ...)`` is SQLite's
-#: day-of-week, **0 = Sunday** (the MySQL ``DAYOFWEEK`` v1 used is 1 = Sunday
-#: — the translation trap this predicate exists to get right).
-_IS_HOLIDAY_PREDICATE = """(
-            strftime('%w', date(lr.read_at, :tz_shift)) IN ('0', '6')
-            OR EXISTS (
-                SELECT 1 FROM holidays h
-                WHERE h.kind = 'public' AND h.date = date(lr.read_at, :tz_shift)
-            )
-            OR EXISTS (
-                SELECT 1 FROM holidays h
-                WHERE h.kind = 'annual'
-                  AND h.month = CAST(strftime('%m', date(lr.read_at, :tz_shift)) AS INTEGER)
-                  AND h.day = CAST(strftime('%d', date(lr.read_at, :tz_shift)) AS INTEGER)
-            )
-        )"""
-
-#: Every interval on a Holiday date is Holiday energy, including intervals
-#: inside the peak window (CONTEXT.md — Energy Summary: "Holiday is one
-#: bucket that swallows weekends and both kinds of Holiday alike"). The peak
-#: hour test is **UTC, unshifted** on both sides — see the module docstring.
-_ENERGY_SUMMARY_SQL = text(
-    """
-    SELECT
-        date(lr.read_at, :tz_shift) AS record_date,
-
-        SUM(CASE
-            WHEN {is_holiday}                                          THEN 0
-            WHEN CAST(strftime('%H', lr.read_at) AS INTEGER) >= :peak_start
-             AND CAST(strftime('%H', lr.read_at) AS INTEGER) <  :peak_end THEN lr.import_active_kwh
-            ELSE 0
-        END)                    AS peak_import_kwh,
-
-        SUM(CASE
-            WHEN {is_holiday}                                          THEN 0
-            WHEN CAST(strftime('%H', lr.read_at) AS INTEGER) <  :peak_start
-              OR CAST(strftime('%H', lr.read_at) AS INTEGER) >= :peak_end THEN lr.import_active_kwh
-            ELSE 0
-        END)                    AS offpeak_import_kwh,
-
-        SUM(CASE WHEN {is_holiday} THEN lr.import_active_kwh ELSE 0 END) AS holiday_import_kwh,
-        SUM(lr.import_active_kwh)                                        AS total_import_kwh,
-
-        SUM(CASE
-            WHEN {is_holiday}                                          THEN 0
-            WHEN CAST(strftime('%H', lr.read_at) AS INTEGER) >= :peak_start
-             AND CAST(strftime('%H', lr.read_at) AS INTEGER) <  :peak_end THEN lr.export_active_kwh
-            ELSE 0
-        END)                    AS peak_export_kwh,
-
-        SUM(CASE
-            WHEN {is_holiday}                                          THEN 0
-            WHEN CAST(strftime('%H', lr.read_at) AS INTEGER) <  :peak_start
-              OR CAST(strftime('%H', lr.read_at) AS INTEGER) >= :peak_end THEN lr.export_active_kwh
-            ELSE 0
-        END)                    AS offpeak_export_kwh,
-
-        SUM(CASE WHEN {is_holiday} THEN lr.export_active_kwh ELSE 0 END) AS holiday_export_kwh,
-        SUM(lr.export_active_kwh)                                        AS total_export_kwh
-
-    FROM load_profile_readings lr
-    WHERE lr.device_id = :device_id
-      AND lr.logger_id = :logger_id
-      AND lr.read_at  >= :start_dt
-      AND lr.read_at  <  :end_dt
-    GROUP BY date(lr.read_at, :tz_shift)
-    ORDER BY record_date
-    """.replace("{is_holiday}", _IS_HOLIDAY_PREDICATE)
-)
-
-
-class EnergySummaryDay(BaseModel):
-    """One local calendar day's Time-of-Use buckets, import and export
-    (CONTEXT.md — Energy Summary). Only active energy — the reactive columns
-    are deliberately never aggregated (decision 8)."""
-
-    date: date
-    peak_import_kwh: float
-    offpeak_import_kwh: float
-    holiday_import_kwh: float
-    total_import_kwh: float
-    peak_export_kwh: float
-    offpeak_export_kwh: float
-    holiday_export_kwh: float
-    total_export_kwh: float
-
-
-class EnergySummaryReport(BaseModel):
-    """The Summary Report tab's whole answer — one row per local day that has
-    at least one stored Interval Reading in range. A day with none is simply
-    absent, mirroring v1's own ``GROUP BY`` (there is no capture period to
-    judge completeness against here, unlike ``api/records.py``)."""
-
-    days: list[EnergySummaryDay]
-
-
-def _local_midnight_utc(day: date) -> datetime:
-    """The UTC instant at which *day* begins in the meter's fixed local zone."""
-    return datetime.combine(day, time.min, UTC) - timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)
-
-
-def energy_summary_rows(session: Session, device_id: int, start_date: date, end_date: date) -> list[EnergySummaryDay]:
-    """Run the TOU aggregation over ``[start_date, end_date]`` (both local,
-    inclusive) for *device_id*'s Logger 1.
-
-    A thin wrapper around :data:`_ENERGY_SUMMARY_SQL` — the SQL does the
-    whole classification; this only binds the range and shapes the response.
-    """
-    start_dt = _local_midnight_utc(start_date)
-    end_dt = _local_midnight_utc(end_date + timedelta(days=1))
-
-    rows = session.execute(
-        _ENERGY_SUMMARY_SQL,
-        {
-            "device_id": device_id,
-            "logger_id": _LOGGER_ID,
-            "start_dt": start_dt,
-            "end_dt": end_dt,
-            "peak_start": TOU_PEAK_START_UTC,
-            "peak_end": TOU_PEAK_END_UTC,
-            "tz_shift": _TZ_SHIFT,
-        },
-    ).all()
-
-    return [
-        EnergySummaryDay(
-            date=date.fromisoformat(row.record_date),
-            peak_import_kwh=row.peak_import_kwh or 0.0,
-            offpeak_import_kwh=row.offpeak_import_kwh or 0.0,
-            holiday_import_kwh=row.holiday_import_kwh or 0.0,
-            total_import_kwh=row.total_import_kwh or 0.0,
-            peak_export_kwh=row.peak_export_kwh or 0.0,
-            offpeak_export_kwh=row.offpeak_export_kwh or 0.0,
-            holiday_export_kwh=row.holiday_export_kwh or 0.0,
-            total_export_kwh=row.total_export_kwh or 0.0,
-        )
-        for row in rows
-    ]
 
 
 def _require_device_exists(session: Session, device_id: int) -> None:
@@ -234,7 +99,11 @@ def read_energy_summary(
 ) -> ApiResponse[EnergySummaryReport]:
     """Return the Time-of-Use daily totals for one device over a bounded
     range of local dates. Any authenticated role — reading a device's data is
-    not admin-only (matches ``api/records.py``/``api/billing.py``)."""
+    not admin-only (matches ``api/records.py``/``api/billing.py``).
+
+    **Stored, not live** (ADR 0022): this reads ``energy_summary_days``, the
+    recompute job's own table — never ``load_profile_readings`` directly.
+    """
     _require_device_exists(session, device_id)
 
     if end_date < start_date:
@@ -249,7 +118,75 @@ def read_energy_summary(
             detail=f"The range spans {span} days; at most {MAX_DAYS} may be asked for at once.",
         )
 
-    return ApiResponse.ok(EnergySummaryReport(days=energy_summary_rows(session, device_id, start_date, end_date)))
+    return ApiResponse.ok(
+        EnergySummaryReport(days=stored_energy_summary_rows(session, device_id, start_date, end_date))
+    )
+
+
+class EnergyExportOut(BaseModel):
+    """What the Energy Summary save button did (M13, issue 02).
+
+    Attributes:
+        rows_written: How many local days were written. Zero means the range
+            holds no stored Interval Readings at all — a normal answer, not an
+            error.
+        path: The file written, or ``None`` when nothing was.
+    """
+
+    rows_written: int
+    path: str | None
+
+
+@router.post("/export")
+def export_energy_summary(
+    session: SessionDep,
+    device_id: Annotated[int, Query(ge=1)],
+    start_date: Annotated[date, Query(description="First local calendar day, inclusive")],
+    end_date: Annotated[date, Query(description="Last local calendar day, inclusive")],
+) -> ApiResponse[EnergyExportOut]:
+    """Write the Time-of-Use split for one device and range to its own file.
+
+    Any authenticated role, matching the Summary Report this saves.
+
+    **This is the corrective for a stale daily file**, and the only one. The
+    daily file records what was true the night it was written; a Holiday
+    entered later, or Interval Readings that arrived through a backfill, change
+    what the same days should say. Pressing this produces a file that agrees
+    with the screen right now.
+
+    The same range bound the Summary Report carries applies here, for the same
+    reason — and so that a press can never turn into an unbounded scan.
+
+    **``export_output_dir`` is required**: a person pressing a button must be
+    told the destination was never set, not handed a silent zero.
+    """
+    _require_device_exists(session, device_id)
+
+    if end_date < start_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="`end_date` must not be earlier than `start_date` — the range is inclusive of both ends.",
+        )
+    span = (end_date - start_date).days + 1
+    if span > MAX_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"The range spans {span} days; at most {MAX_DAYS} may be asked for at once.",
+        )
+
+    if not energy_export_dir(session):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "Energy file folder is empty — set it on this page (export_energy_output_dir). "
+                "The Energy file is written only there, never to another file's folder."
+            ),
+        )
+
+    result = export_energy_range(device_id, start_date, end_date)
+    return ApiResponse.ok(
+        EnergyExportOut(rows_written=result.rows_written, path=str(result.path) if result.path else None)
+    )
 
 
 # ─── Energy Registers (Meter Registers tab) ────────────────────────────────
@@ -321,6 +258,61 @@ _IDENTITY_COLUMNS = frozenset({"id", "device_id", "read_at", "source", "meter_se
 _MEASUREMENT_COLUMN_NAMES: tuple[str, ...] = tuple(
     column.name for column in EnergyRegisterReading.__table__.columns if column.name not in _IDENTITY_COLUMNS
 )
+
+
+class EnergySettingsOut(BaseModel):
+    """The Energy Summary page's one setting (spec 2026-09-23).
+
+    Attributes:
+        export_energy_output_dir: The Energy file's own folder — ``""`` means
+            the Load Profile page's Output folder is used, exactly as before
+            the key existed.
+    """
+
+    export_energy_output_dir: str
+
+
+class EnergySettingsIn(BaseModel):
+    """The body ``PUT /api/energy/settings`` takes — ``""`` clears the folder."""
+
+    export_energy_output_dir: str
+
+
+def _energy_settings_out(session: Session) -> EnergySettingsOut:
+    return EnergySettingsOut(
+        export_energy_output_dir=get_setting(session, EXPORT_ENERGY_OUTPUT_DIR_KEY, EXPORT_ENERGY_OUTPUT_DIR_DEFAULT)
+    )
+
+
+@router.get("/settings")
+def get_energy_settings(session: SessionDep) -> ApiResponse[EnergySettingsOut]:
+    """The Energy file's folder — any authenticated caller, the router's own
+    ``energy_summary`` gate (the page that shows it carries the same gate)."""
+    return ApiResponse.ok(_energy_settings_out(session))
+
+
+@router.put("/settings")
+def put_energy_settings(
+    body: EnergySettingsIn, session: SessionDep, _admin: AdminDep
+) -> ApiResponse[EnergySettingsOut]:
+    """Save the Energy file's folder — admin-only, validated the way every
+    other folder setting is (the capture allowlist, ADR 0010); ``""`` is
+    accepted and means \"use the Load Profile page's Output folder\"."""
+    value = ""
+    if body.export_energy_output_dir.strip():
+        try:
+            value = str(
+                validate_directory_setting(
+                    body.export_energy_output_dir,
+                    get_settings().capture_allowlist_roots(),
+                    setting_name="export_energy_output_dir",
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    set_setting(session, EXPORT_ENERGY_OUTPUT_DIR_KEY, value)
+    session.commit()
+    return ApiResponse.ok(_energy_settings_out(session))
 
 
 def _to_register_row_out(row: EnergyRegisterReading) -> EnergyRegisterRowOut:

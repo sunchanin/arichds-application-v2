@@ -45,12 +45,19 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from datetime import datetime, timedelta
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from gurux_dlms.enums import Unit
-from gurux_dlms.objects import GXDLMSExtendedRegister, GXDLMSProfileGeneric, GXDLMSRegister
+from gurux_dlms.objects import (
+    GXDLMSDemandRegister,
+    GXDLMSExtendedRegister,
+    GXDLMSProfileGeneric,
+    GXDLMSRegister,
+)
 
 from arichds.acquisition.drivers._dlms import DlmsDriver
 from arichds.acquisition.drivers._profile import (
@@ -184,6 +191,71 @@ CEWE_DEMAND_TIME_COLUMNS: dict[tuple[str, int], str] = {
 }
 
 
+#: Which attribute carries ``scaler_unit`` on each COSEM class we read one
+#: from. Register (class 3) and Extended Register (class 4) both put it at
+#: attribute 3; a **Demand Register (class 5) puts it at attribute 4**, and
+#: reading attribute 3 there returns `last_average_value` — a number, not a
+#: scaler, which is exactly the kind of wrong answer that would be believed.
+#: A class absent from this table cannot have a scaler read from it at all.
+_SCALER_ATTRIBUTE: dict[type, int] = {
+    GXDLMSRegister: 3,
+    GXDLMSExtendedRegister: 3,
+    GXDLMSDemandRegister: 4,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class LpColumn:
+    """One load-profile capture column a driver stores (M13, issue 04).
+
+    Replaces the positional 3-tuple this map used to hold. The move was forced
+    by three things a tuple could not say, each measured on a real meter:
+
+    * a column's capture object is not always a **Register** — the average
+      power columns are a Demand Register, whose scaler sits at a different
+      attribute;
+    * a column may have **no scaler at all** — a status bitmap is a class-1
+      Data object, and asking it for one produces nothing but a denied read;
+    * a column's scaler sibling may be a **different class than the column
+      itself** — on a Prometer 100 the import power columns answer as a plain
+      Register and the export ones only as an Extended Register.
+
+    Attributes:
+        field: The :class:`~arichds.acquisition.drivers.base.IntervalReading`
+            attribute this column fills.
+        unit: The Unit the resolved scaler must report. A multiplier read
+            under any other unit is refused, which is what makes a stored
+            value trustworthy — see :func:`_read_scaler_unit`.
+        capture_class: How to read the capture object's **own address** for a
+            scaler. Defaults to Register, which every column declared before
+            this existed was read as.
+        scaler_siblings: Ordered fallbacks, each an ``(OBIS, class)`` pair,
+            tried when the own address denies ``scaler_unit`` — which on CEWE
+            meters is every measurement column, every time (measured
+            2026-08-09 and again 2026-09-09).
+        passthrough: True for a cell that is **not a scaled number** — a
+            status word, say. Skips multiplier resolution and the numeric
+            guard entirely, the same way a Demand Time cell already does on
+            the billing path. A passthrough column with a unit or siblings is
+            a contradiction, and :meth:`__post_init__` refuses it.
+    """
+
+    field: str
+    unit: Unit
+    capture_class: type = GXDLMSRegister
+    scaler_siblings: tuple[tuple[str, type], ...] = ()
+    passthrough: bool = False
+
+    def __post_init__(self) -> None:
+        if self.passthrough and self.scaler_siblings:
+            raise ValueError(f"{self.field}: a passthrough column has no scaler, so it cannot have siblings")
+        for _obis, cosem_class in self.scaler_siblings:
+            if cosem_class not in _SCALER_ATTRIBUTE:
+                raise ValueError(f"{self.field}: no scaler attribute is known for {cosem_class.__name__}")
+        if not self.passthrough and self.capture_class not in _SCALER_ATTRIBUTE:
+            raise ValueError(f"{self.field}: no scaler attribute is known for {self.capture_class.__name__}")
+
+
 def _read_scaler_unit(
     reader: Any,
     client: Any,
@@ -192,7 +264,13 @@ def _read_scaler_unit(
     cosem_class: type,
     required_unit: Unit,
 ) -> float | None:
-    """Read *obis*'s own ``scaler_unit`` (attr 3), memoized per *cache*.
+    """Read *obis*'s own ``scaler_unit``, memoized per *cache*.
+
+    **Which attribute that is depends on the class** (:data:`_SCALER_ATTRIBUTE`)
+    — 3 on a Register or Extended Register, 4 on a Demand Register. Before
+    M13 every caller passed a Register or an Extended Register, so this read
+    attribute 3 unconditionally; the table makes the same reads happen and
+    lets a class-5 column be read correctly rather than plausibly.
 
     Shared with the billing sibling-fallback below and with a load-profile
     column's own-address attempt (D6) — the read-and-check shape is identical
@@ -214,7 +292,7 @@ def _read_scaler_unit(
     obj = cosem_class(obis)
     client.objects.append(obj)
     try:
-        reader.read(obj, 3)
+        reader.read(obj, _SCALER_ATTRIBUTE[cosem_class])
     except Exception:  # noqa: BLE001 — an unreadable object degrades to None below, never guessed.
         multiplier = None
     else:
@@ -228,8 +306,7 @@ def resolve_scaler_candidates(
     reader: Any,
     client: Any,
     cache: dict[tuple[str, type, Unit], float | None],
-    candidates: list[str],
-    cosem_class: type,
+    candidates: Sequence[tuple[str, type]],
     required_unit: Unit,
     field: str,
     model_name: str,
@@ -241,9 +318,14 @@ def resolve_scaler_candidates(
     never guess" rule (D12) is enforced exactly once.
 
     Args:
-        candidates: OBIS codes to try, most-preferred first. Duplicates are
-            skipped so a column whose sibling happens to equal itself (the
-            ``E=0`` total column, say) does not read its own address twice.
+        candidates: ``(OBIS, COSEM class)`` pairs to try, most-preferred
+            first. **The class is per candidate, not per call** (M13, issue
+            04): on a Prometer 100 the import power columns resolve as a plain
+            Register and the export ones only as an Extended Register, so one
+            class for the whole chain cannot express what the meter does.
+            Duplicates are skipped so a column whose sibling happens to equal
+            itself (the ``E=0`` total column, say) does not read its own
+            address twice.
             Belt-and-braces on top of *cache*: ``_read_scaler_unit`` already
             memoizes by ``(obis, cosem_class, required_unit)``, so a repeated
             candidate would hit the cache and cost nothing measurable even
@@ -255,11 +337,11 @@ def resolve_scaler_candidates(
         The multiplier, or ``None`` if every candidate failed — a WARNING
         names *field* and the first (primary) candidate.
     """
-    tried: list[str] = []
-    for obis in candidates:
-        if obis in tried:
+    tried: list[tuple[str, type]] = []
+    for obis, cosem_class in candidates:
+        if (obis, cosem_class) in tried:
             continue
-        tried.append(obis)
+        tried.append((obis, cosem_class))
         multiplier = _read_scaler_unit(reader, client, cache, obis, cosem_class, required_unit)
         if multiplier is not None:
             return multiplier
@@ -267,7 +349,7 @@ def resolve_scaler_candidates(
     logger.warning(
         "%s: could not resolve a scaler for %s (%s) — %s stays unscaled (None) on every row",
         model_name,
-        candidates[0],
+        candidates[0][0],
         field,
         field,
     )
@@ -317,18 +399,22 @@ def resolve_billing_multiplier(
         that looks like data.
     """
     parts = capture_obis.split(".")
-    candidates = [capture_obis]
+    addresses = [capture_obis]
 
     e0_sibling = ".".join([*parts[:4], "0", parts[5]])
-    candidates.append(e0_sibling)
+    addresses.append(e0_sibling)
 
     if parts[3] == "2":  # Cumulative Demand — borrow a D=6 max-demand scaler for the same C.
         d6_same_tariff = ".".join([*parts[:3], "6", *parts[4:]])
-        candidates.append(d6_same_tariff)
+        addresses.append(d6_same_tariff)
         d6_total = ".".join([*parts[:3], "6", "0", parts[5]])
-        candidates.append(d6_total)
+        addresses.append(d6_total)
 
-    return resolve_scaler_candidates(reader, client, cache, candidates, cosem_class, required_unit, field, model_name)
+    # Every billing candidate is read as the one class the caller declared —
+    # unchanged from before candidates carried their own class (M13, issue 04);
+    # only the load-profile side needs a class per candidate.
+    candidates = [(obis, cosem_class) for obis in addresses]
+    return resolve_scaler_candidates(reader, client, cache, candidates, required_unit, field, model_name)
 
 
 def resolve_load_profile_multiplier(
@@ -336,29 +422,28 @@ def resolve_load_profile_multiplier(
     client: Any,
     cache: dict[tuple[str, type, Unit], float | None],
     capture_obis: str,
-    sibling_obis: str | None,
-    required_unit: Unit,
-    field: str,
+    column: LpColumn,
     model_name: str,
 ) -> float | None:
     """Resolve a load-profile column's multiplier: its own ``scaler_unit``
-    (attr 3, class 3 Register) first, then *sibling_obis* if that fails
-    (review finding 1) — the same denial pattern the SMW110W4 already has a
-    proven fix for (:meth:`~arichds.acquisition.drivers.smw110.Smw110Driver._resolve_multiplier`),
-    confirmed live on all three CEWE models by ``docs/meter-notes/cewe-billing-capture-objects.md``'s
-    2026-08-09 scan: every measurement column's own-address read was refused.
+    first, then each of *column*'s declared siblings in order (review finding
+    1) — the same denial pattern the SMW110W4 already has a proven fix for
+    (:meth:`~arichds.acquisition.drivers.smw110.Smw110Driver._resolve_multiplier`),
+    confirmed live on all three CEWE models by
+    ``docs/meter-notes/cewe-billing-capture-objects.md``'s 2026-08-09 scan and
+    again on 2026-09-09: **every** measurement column's own-address read was
+    refused, on all twelve addresses tried.
+
+    Each candidate carries its own COSEM class (M13, issue 04), because a
+    column and its working sibling are not always the same class.
 
     *cache* is threaded through from the caller so a chunked walk — which
     calls :meth:`DlmsProfileDriver.read_load_profile` once per 24 h chunk, up
     to 90 times for a full backfill — resolves each column's multiplier once
     per connection, not once per chunk (review finding 3).
     """
-    candidates = [capture_obis]
-    if sibling_obis is not None:
-        candidates.append(sibling_obis)
-    return resolve_scaler_candidates(
-        reader, client, cache, candidates, GXDLMSRegister, required_unit, field, model_name
-    )
+    candidates = [(capture_obis, column.capture_class), *column.scaler_siblings]
+    return resolve_scaler_candidates(reader, client, cache, candidates, column.unit, column.field, model_name)
 
 
 class DlmsProfileDriver(DlmsDriver):
@@ -367,8 +452,7 @@ class DlmsProfileDriver(DlmsDriver):
     #25, the SMART TCC family.
 
     Subclasses declare :attr:`LOAD_PROFILE_COLUMN_MAP` (``{logger_id:
-    {(obis, attr): (IntervalReading field, sibling OBIS to borrow scaler_unit
-    from or None, required Unit)}}``), the connection hooks
+    {(obis, attr): LpColumn}}``), the connection hooks
     (:meth:`~arichds.acquisition.drivers._dlms.DlmsDriver._protocol_args`,
     :meth:`~arichds.acquisition.drivers._dlms.DlmsDriver._read_timeout_ms`),
     and — since issue #25 (D5) — four billing declarations a subclass may
@@ -381,13 +465,14 @@ class DlmsProfileDriver(DlmsDriver):
     common to every model on this base.
     """
 
-    #: ``{logger_id: {(obis, attr): (field, sibling OBIS or None, required
-    #: Unit)}}``. Empty on the base — every concrete driver overrides it
-    #: (D15, issue #24). The sibling is what :func:`resolve_load_profile_multiplier`
-    #: falls back to when the column's own address denies ``scaler_unit``
-    #: (review finding 1) — ``None`` for a column with no known working
-    #: sibling.
-    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], tuple[str, str | None, Unit]]] = {}
+    #: ``{logger_id: {(obis, attr): LpColumn}}``. Empty on the base — every
+    #: concrete driver overrides it (D15, issue #24). Each
+    #: :class:`LpColumn` names the stored field, the Unit its scaler must
+    #: report, how to read the capture object's own address, and the ordered
+    #: siblings :func:`resolve_load_profile_multiplier` falls back to when
+    #: that address denies ``scaler_unit`` — which on CEWE meters is always
+    #: (review finding 1, re-measured 2026-09-09).
+    LOAD_PROFILE_COLUMN_MAP: dict[int, dict[tuple[str, int], LpColumn]] = {}
 
     #: D5 (issue #25) — the billing ProfileGeneric this driver reads. Defaults
     #: to CEWE's shared profile (F4); :class:`~arichds.acquisition.drivers.smart_tcc.SmartTccDriver`
@@ -413,6 +498,26 @@ class DlmsProfileDriver(DlmsDriver):
     #: (D5's distinction). Defaults to CEWE's own key; every other CEWE-family
     #: model that lacks the register overrides this to ``None``.
     RESET_REASON_KEY: tuple[str, int] | None = _RESET_REASON_KEY
+
+    #: Whether this family's billing profile can contain an Open Period at all
+    #: (issue 016). ``True`` everywhere except SMART TCC, whose Scheme 1 buffer
+    #: was measured to hold **closed cuts only**
+    #: (``docs/meter-notes/tcc-obis-scan.md:597,605``).
+    #:
+    #: It exists because :attr:`RESET_REASON_KEY` being ``None`` says only
+    #: "cannot ask the meter", and the positional fallback that answers instead
+    #: calls entry 1 open whatever it holds. On a profile with no open period
+    #: that is always wrong, and it cost a customer's August cut the Current
+    #: slot while their History stayed empty.
+    #:
+    #: Declared **here** rather than on
+    #: :class:`~arichds.acquisition.drivers.base.MeterDriver` on purpose:
+    #: :class:`~arichds.acquisition.drivers.smw110.Smw110Driver` extends
+    #: ``DlmsDriver``, not this class, and has its own positional logic — a
+    #: flag on the base would be one this class honours and that driver
+    #: silently ignores, which is the defect ``docs/issues/005`` exists to
+    #: complain about.
+    BILLING_PROFILE_HAS_OPEN_PERIOD: bool = True
 
     #: D5 (issue #25) — COSEM class of the ``D=2`` Cumulative Demand group.
     #: ``GXDLMSExtendedRegister`` on every CEWE model (the default); SMART TCC
@@ -504,14 +609,18 @@ class DlmsProfileDriver(DlmsDriver):
         # *self._lp_scaler_cache* is threaded through so a multi-chunk walk
         # (up to 90 calls for a full backfill) resolves each column once per
         # connection, not once per chunk (review finding 3).
+        # A passthrough column is not a scaled number, so it never asks the
+        # meter for a multiplier (M13, issue 04) — the same treatment a Demand
+        # Time cell already gets on the billing path.
         multipliers = {
             key: resolve_load_profile_multiplier(
-                self._reader, self._client, self._lp_scaler_cache, key[0], sibling_obis, unit, field, self.model_name
+                self._reader, self._client, self._lp_scaler_cache, key[0], column, self.model_name
             )
-            for key, (field, sibling_obis, unit) in column_map.items()
-            if key in positions
+            for key, column in column_map.items()
+            if key in positions and not column.passthrough
         }
-        row_column_map = {key: field for key, (field, _sibling_obis, _unit) in column_map.items()}
+        row_column_map = {key: column.field for key, column in column_map.items()}
+        passthrough_keys = frozenset(key for key, column in column_map.items() if column.passthrough)
 
         start_local = meter_local_to_utc_inverse(start_utc)
         end_local = meter_local_to_utc_inverse(end_utc)
@@ -540,26 +649,31 @@ class DlmsProfileDriver(DlmsDriver):
             if read_at < start_utc or read_at > end_utc:
                 continue
 
-            fields = build_fields(row, positions, row_column_map, multipliers, scale=self._normalize)
+            fields = build_fields(
+                row,
+                positions,
+                row_column_map,
+                multipliers,
+                scale=self._normalize,
+                passthrough_keys=passthrough_keys,
+            )
 
+            # Expanded rather than named one field at a time (M13, issue 06).
+            # The hand-written list was twelve names and would have become
+            # twenty-three, each an opportunity to write `export_active_kwh`
+            # where `export_active_kw` was meant — one character apart, both
+            # real columns, and a mistake nothing would report. `fields` is
+            # keyed by the driver map's own declared field names, and
+            # `test_load_profile_new_columns.py` asserts every declared name is
+            # a field this dataclass has, so an unknown key fails in the suite
+            # rather than at a meter.
             readings.append(
                 IntervalReading(
                     read_at=read_at,
                     source=self.source,
                     logger_id=logger_id,
                     interval_sec=capture_period_sec,
-                    volt_l1=fields.get("volt_l1"),
-                    volt_l2=fields.get("volt_l2"),
-                    volt_l3=fields.get("volt_l3"),
-                    current_l1=fields.get("current_l1"),
-                    current_l2=fields.get("current_l2"),
-                    current_l3=fields.get("current_l3"),
-                    freq=fields.get("freq"),
-                    import_active_kwh=fields.get("import_active_kwh"),
-                    import_reactive_kvarh=fields.get("import_reactive_kvarh"),
-                    export_active_kwh=fields.get("export_active_kwh"),
-                    export_reactive_kvarh=fields.get("export_reactive_kvarh"),
-                    avg_geo_pf=fields.get("avg_geo_pf"),
+                    **fields,
                 )
             )
         return readings
@@ -574,8 +688,34 @@ class DlmsProfileDriver(DlmsDriver):
         saves, and :func:`~arichds.acquisition.load_profile.read_and_store_load_profile`
         only asks during backfill.
 
-        Every failure path returns ``None`` — an unreadable buffer must leave
-        the walk exactly as it was rather than break a read that works today.
+        **When entry 1 is refused, the start is estimated instead** (site TC,
+        2026-09-20; ``docs/meter-notes/prometer100-load-profile-access.md``). A
+        **Prometer 100 refuses every entry-access read of its load profile**
+        (``Access Error : Other Reason``) while answering the profile's
+        attributes — measured on the site's unit *and* on the healthy lab unit,
+        so the exact path below has never worked on this model; nobody saw it
+        because the lab buffer is longer than the backfill window. The same model
+        answers a range holding no entries with ``Data Block Unavailable`` rather
+        than ``[]`` (a Premier 550 answers ``[]``). Together: a meter two days
+        into service got ``None`` here, the walk kept its full window, the first
+        chunk — 88 days before the oldest row — was refused, nothing was ever
+        stored, and every cycle re-walked the same refused chunk.
+
+        The estimate is ``entries_in_use x capture_period`` back from now, plus
+        one period — starting early is free (the meter answers a range that
+        *overlaps* its buffer, even one starting before it), starting late loses
+        the row. Measured against the lab unit's true oldest row, found by range:
+        **20 min early on Logger 1 (9585 entries x 900 s, ~100 days) and 10 min
+        early on Logger 2 (32789 x 300 s, ~114 days)**. It is late by the
+        downtime on a meter that stopped logging for a while — a Saral 305 in the
+        lab would be 485 days late — which is why it is a *fallback*: that Saral
+        answers entry 1, and so never reaches it.
+
+        Every other failure path returns ``None`` — an unreadable buffer must
+        leave the walk exactly as it was rather than break a read that works
+        today. Each one now names the exception it swallowed: the old line said
+        only "could not read", and the site had to be probed by hand to learn
+        what the log had already seen.
         """
         if self._reader is None or self._client is None:
             return None
@@ -586,22 +726,82 @@ class DlmsProfileDriver(DlmsDriver):
         self._client.objects.append(pg)
         try:
             self._reader.read(pg, 3)  # capture objects — needed to locate the Clock column
-            if int(self._reader.read(pg, 7)) <= 0:
-                return None  # empty buffer: nothing to clamp to, and nothing to read either
-            rows = self._reader.readRowsByEntry(pg, 1, 1) or []
-        except Exception:  # noqa: BLE001 — a refusal degrades to "unknown", never to a failed read.
+            entries_in_use = int(self._reader.read(pg, 7))
+        except Exception as exc:  # noqa: BLE001 — a refusal degrades to "unknown", never to a failed read.
             logger.info(
-                "%s: could not read logger %d's oldest entry — the walk keeps its full window",
+                "%s: could not read logger %d's profile attributes (%s: %s) — the walk keeps its full window",
                 self.model_name,
                 logger_id,
+                type(exc).__name__,
+                exc,
             )
             return None
+        if entries_in_use <= 0:
+            return None  # empty buffer: nothing to clamp to, and nothing to read either
+
+        try:
+            rows = self._reader.readRowsByEntry(pg, 1, 1) or []
+        except Exception as exc:  # noqa: BLE001 — same rule; but the attributes answered, so estimate.
+            return self._estimate_oldest_reading(pg, logger_id, entries_in_use, exc)
 
         clock_pos = positions_by_obis_attr(pg.captureObjects).get(("0.0.1.0.0.255", 2))
         if clock_pos is None or not rows or clock_pos >= len(rows[0]):
             return None
         local_dt = coerce_clock_cell(rows[0][clock_pos])
         return meter_local_to_utc(local_dt) if local_dt is not None else None
+
+    def _estimate_oldest_reading(
+        self, pg: GXDLMSProfileGeneric, logger_id: int, entries_in_use: int, refusal: Exception
+    ) -> datetime | None:
+        """``now - (entries_in_use + 1) x capture_period`` — the fallback
+        :meth:`load_profile_oldest_reading` documents, for a meter that answers
+        its profile's attributes and refuses entry access.
+
+        ``None`` when the capture period is unreadable, not a number, or not
+        positive: a profile that is not logging has no span, and a period of
+        ``0`` would "estimate" the start at *now* and narrow the walk to nothing.
+        The caller (``load_profile._backfill_start``) still bounds whatever this
+        returns to the backfill window, so a full ring longer than that window
+        keeps the full window.
+        """
+        try:
+            capture_period_sec = int(self._reader.read(pg, 4))
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "%s: logger %d refused its oldest entry (%s: %s) and its capture period (%s: %s)"
+                " — the walk keeps its full window",
+                self.model_name,
+                logger_id,
+                type(refusal).__name__,
+                refusal,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+        if capture_period_sec <= 0:
+            logger.info(
+                "%s: logger %d refused its oldest entry (%s: %s) and reports a capture period of %d s"
+                " — nothing to estimate from, the walk keeps its full window",
+                self.model_name,
+                logger_id,
+                type(refusal).__name__,
+                refusal,
+                capture_period_sec,
+            )
+            return None
+
+        estimate = datetime.now(UTC) - timedelta(seconds=(entries_in_use + 1) * capture_period_sec)
+        logger.info(
+            "%s: logger %d refused its oldest entry (%s: %s) — start estimated at %s from %d entries x %d s",
+            self.model_name,
+            logger_id,
+            type(refusal).__name__,
+            refusal,
+            estimate.isoformat(),
+            entries_in_use,
+            capture_period_sec,
+        )
+        return estimate
 
     # ── Billing ───────────────────────────────────────────────────────────────
 
@@ -752,6 +952,82 @@ class DlmsProfileDriver(DlmsDriver):
             )
         return readings
 
+    def billing_newest_closed_bill_date(self) -> datetime | None:
+        """Read the newest **closed** billing period's ``bill_date`` — the
+        Billing Change Check's per-tick signal (ADR 0018, D1/D2/D11/D13,
+        issue #43).
+
+        Reads two entries, not one, because entry 1 (or its equivalent for an
+        oldest-first profile — :attr:`BILLING_NEWEST_ENTRY_FIRST`) is the
+        Open Period on this base's own read shape (F4/F6). Classification
+        goes through :meth:`_classify_open` — the same classifier
+        :meth:`read_billing` uses — never a fresh guess, so this answers
+        exactly what a full read would have called "the newest closed row"
+        had it stopped after two entries.
+
+        Costs three DLMS round trips: attr 3 (``captureObjects``), attr 7
+        (``entriesInUse``), and one ``readRowsByEntry`` for two rows — no
+        span, unlike :class:`~arichds.acquisition.drivers.smw110.Smw110Driver`.
+
+        Every failure path returns ``None``, following
+        :meth:`load_profile_oldest_reading`'s discipline: an unreadable
+        buffer must leave the Load Profile walk this rides on exactly as it
+        was, never break it (D9).
+        """
+        if self._reader is None or self._client is None:
+            return None
+        try:
+            pg = GXDLMSProfileGeneric(self.BILLING_PROFILE_OBIS)
+            self._client.objects.append(pg)
+
+            self._reader.read(pg, 3)  # populates pg.captureObjects — live, never cached (D7)
+            # entriesInUse tells us the buffer is non-empty and, for an
+            # oldest-first profile, where the newest end of the ring is — it
+            # is NEVER this method's change signal (D13): it saturates once a
+            # ring is full (docs/meter-notes/smw110w4-scan.md:71), which a
+            # billing ring reaches after roughly a year on this fleet, while
+            # the newest closed bill_date keeps moving underneath it.
+            entries_in_use = int(self._reader.read(pg, 7))
+            if entries_in_use <= 0:
+                return None
+
+            positions = positions_by_obis_attr(pg.captureObjects)
+            expected_cell_count = len(pg.captureObjects)
+
+            bill_date_key = next((key for key in self.BILL_DATE_CANDIDATES if key in positions), None)
+            if bill_date_key is None:
+                return None
+
+            declared_reset_reason_key = self.RESET_REASON_KEY
+            if declared_reset_reason_key is not None and declared_reset_reason_key in positions:
+                reset_reason_key = declared_reset_reason_key
+            else:
+                reset_reason_key = None
+
+            count = min(2, entries_in_use)
+            index = 1 if self.BILLING_NEWEST_ENTRY_FIRST else max(1, entries_in_use - 1)
+
+            rows = self._reader.readRowsByEntry(pg, index, count) or []
+            if not self.BILLING_NEWEST_ENTRY_FIRST:
+                rows = list(reversed(rows))  # newest first either way (D11)
+
+            open_assigned = False
+            for position, row in enumerate(rows):
+                if len(row) != expected_cell_count:
+                    continue
+                local_dt = coerce_clock_cell(row[positions[bill_date_key]])
+                if local_dt is None:
+                    continue
+                is_open, open_assigned = self._classify_open(row, positions, reset_reason_key, position, open_assigned)
+                if not is_open:
+                    return meter_local_to_utc(local_dt)
+            return None
+        except Exception:  # noqa: BLE001 — an optional signal must never break the walk it rides on (D9).
+            logger.info(
+                "%s: could not read the newest closed billing period — the daily backstop stands", self.model_name
+            )
+            return None
+
     def _classify_open(
         self,
         row: list[Any],
@@ -774,6 +1050,14 @@ class DlmsProfileDriver(DlmsDriver):
             ``True`` per call (D9): a later row that would also classify open
             is kept closed and WARNs instead.
         """
+        # Checked before the reset-reason branch, not inside the positional
+        # fallback (issue 016): the claim is that this family's profile holds
+        # no open period at all, which is stronger than "we cannot ask the
+        # meter which row it is". Asking would be meaningless, and the
+        # fallback's answer is wrong by construction.
+        if not self.BILLING_PROFILE_HAS_OPEN_PERIOD:
+            return False, already_assigned
+
         if reset_reason_key is not None:
             raw = row[positions[reset_reason_key]]
             if raw is None or not isinstance(raw, (int, float, Decimal)):

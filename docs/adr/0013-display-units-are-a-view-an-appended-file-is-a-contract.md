@@ -1,9 +1,12 @@
 # Display units are a view setting; an appended file is a contract
 
-Status: accepted (2026-08-11). The machine-wide kW/W setting **is implemented** (Billing, Load
+Status: accepted (2026-08-11). **The M13 amendment below is superseded by ADR 0023** (2026-09-14):
+export files now mirror our 90-day window and are rewritten, so Closed Editions no longer exist.
+The core rule — display units never reach a file — stands. The machine-wide kW/W setting **is implemented** (Billing, Load
 Profile, Records, and the two capture renderers — commit `bbdd6b7`); the boundary this ADR
-draws is applied to the Load Profile CSV at M7, and one shipped gap is recorded below as
-outstanding.
+draws **landed on the Load Profile CSV with issue #30 (M7 slice 3)** — `arichds.export` never
+imports the render-time scale machinery, enforced by a source-level guard in the test suite —
+and one shipped gap is recorded below as outstanding.
 
 Reverses a v1 feature: `format_settings.divide_by_1000`, which v1 shipped **on by default**, is
 not ported. A customer who knows that switch will ask where it went.
@@ -68,6 +71,49 @@ Apply this rule to every new destination. M8's push payload is the next one — 
 a server across time, so it is base-unit-fixed by the same test, and the unit belongs in the
 contract rather than in a setting the site can change.
 
+## Amendment (M13, issue 01) — what happens when the contract itself changes
+
+> **Superseded by ADR 0023 (2026-09-14).** The customer's limited disk space, already recorded in
+> ADR 0020, rules out a folder that accumulates dated editions. Kept below as the history of why
+> Closed Editions existed; do not implement from it.
+
+The rule above says an appended file has a fixed unit because its past is on disk and cannot
+be revised. That answered *may this artifact follow a setting?* It did not answer the question
+M13 forced: **what do we do when the header we are appending under has to change at all?**
+
+The Load Profile CSV grew from fourteen columns to twenty-five, and the customer's own column
+order puts three of the new ones *before* an existing one. Every operator already has files on
+disk with the old header at the top and months of rows below it.
+
+**The answer is that a contract does not change. It is replaced.**
+
+> When a file's head — its file header block **or** its column header row — no longer matches
+> what we would write today, the file is **closed** and a new one opens beside it. The closed
+> edition keeps its rows under a name with the date appended before the extension
+> (`<name>.2026-09-15.csv`). It is never rewritten, and it never receives another row.
+
+Three consequences worth stating, because each one is a thing a later reader might try to
+"fix":
+
+- **Dated files appearing in an export folder are correct**, not clutter and not a bug. Deleting
+  them deletes history the live file does not contain.
+- **Nothing rewrites an old file's header.** Rewriting would put rows under a header that did
+  not describe them when they were written — the exact failure this prevents — and would also
+  mean reading and rewriting a file that has grown for months.
+- **The block is part of the head, not decoration.** It carries the Customer, Site Name and
+  Meter Serial off the device row, all editable at any time. Comparing only the column row
+  would leave a file claiming a site name that was not in effect when its rows were written,
+  for as long as the columns happened not to change — possibly for ever.
+
+The alternative considered and rejected was appending the new columns at the end of the
+existing header and hoping consumers tolerate it. They would not, and worse, nothing would
+have told them: a fourteen-column header with twenty-five-column rows beneath it raises no
+error in Excel or in a parser — it silently puts every value under the wrong name.
+
+**Scope**: this governs every export file, which since M13 is three — the Load Profile CSV, the
+billing CSV and the Energy Summary file. All three go through one writer so the rule cannot
+hold in one place and not another.
+
 ## Outstanding: the capture folder is a half-case
 
 Captures sit on the wrong side of their own row above, and this ADR records it rather than
@@ -92,6 +138,13 @@ This is a shipped gap, not an M7 decision, and it is **not fixed by this ADR**. 
 own issue, and the plausible fixes are cheap: put the unit in the rendered document's header
 where a reader will see it, or in the filename. It is recorded here because this is where a
 future reader will come looking for why the rule has an exception.
+
+> **The issue it needs is `docs/issues/019`** (filed 2026-09-11), which also records why this
+> paragraph still reads as outstanding: GitHub **#32** was filed for exactly this gap and then
+> **closed without the fix**, inside a nine-issue bulk close on 2026-08-24. The code is
+> unchanged — `capture/service.py:58` builds the stem from `bill_date` alone and
+> `capture/pdf.py:70-76` renders a header with no unit — so a reader arriving here after
+> seeing #32 closed should trust this section, not the tracker.
 
 ## What was rejected
 

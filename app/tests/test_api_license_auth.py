@@ -10,6 +10,8 @@ Two rules meet here and are easy to confuse:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from fastapi.testclient import TestClient
 
 from arichds.constants import ERROR_LICENSE_INVALID
@@ -33,6 +35,24 @@ class TestLicenseRoles:
 
         assert response.status_code == 200
         assert response.json()["success"] is True
+
+    def test_a_user_cannot_replace_a_working_license(
+        self, user_client: TestClient, sign_activation_code: Callable[..., str]
+    ) -> None:
+        """Issue 011 puts a License card on Settings, visible to every role.
+
+        ``test_a_user_cannot_activate`` above already pins the 403. What this
+        adds is the other half the card rests on: the refused call must also
+        leave the machine's license exactly where it was. A code that is
+        perfectly **valid** is the sharp case — the only thing standing between
+        it and a silent re-license is the role check.
+        """
+        before = user_client.get("/api/license/status").json()["data"]
+
+        response = user_client.post("/api/license/activate", json={"code": sign_activation_code(max_meters=5)})
+
+        assert response.status_code == 403
+        assert user_client.get("/api/license/status").json()["data"] == before
 
     def test_the_machine_id_is_not_readable_without_a_token(self, anon_client: TestClient) -> None:
         """It identifies this computer; nobody on the site LAN gets it for free."""

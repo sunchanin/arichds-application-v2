@@ -25,38 +25,63 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from arichds.acquisition.billing import last_billing_change_check_at, read_and_store_billing
+from arichds.acquisition.catalog import BRAND_LABELS, brand_key
+from arichds.acquisition.status import DeviceStatus, display_status
 from arichds.api.deps import (
     AdminDep,
     FeatureDisabledError,
     LicenseServiceDep,
+    SchedulerDep,
     SessionDep,
     get_current_user,
     require_feature,
 )
 from arichds.api.envelope import ApiResponse
 from arichds.capture.paths import validate_capture_dir_setting
-from arichds.capture.service import capture_target_paths, write_pdf_capture, write_xlsx_capture
+from arichds.capture.screenshot import BrowserCaptureError
+from arichds.capture.service import (
+    capture_target_paths,
+    png_source_rows,
+    png_window_filters,
+    write_pdf_capture,
+    write_png_capture,
+    write_xlsx_capture,
+)
+from arichds.capture.sweep import SweepStatus, start_capture_sweep, sweep_status
 from arichds.config import get_settings
-from arichds.constants import O_BINARY, O_NOFOLLOW
+from arichds.constants import (
+    BILLING_BEHIND_DAYS,
+    LOAD_PROFILE_INTERVAL_SEC,
+    METER_LOCAL_UTC_OFFSET_HOURS,
+    O_BINARY,
+    O_NOFOLLOW,
+)
 from arichds.db.app_settings import (
     CAPTURE_DIR_DEFAULT,
     CAPTURE_DIR_KEY,
+    CAPTURE_STYLE_KEY,
     DISPLAY_UNIT_SCALE_DEFAULT,
     DISPLAY_UNIT_SCALE_KEY,
+    CaptureStyle,
+    billing_export_dir,
     get_setting,
+    read_capture_style,
     set_setting,
 )
-from arichds.db.models import BillingReading, Device
+from arichds.db.billing_query import latest_closed_per_device
+from arichds.db.models import BillingReading, Device, Setting
 from arichds.licensing.features import feature_enabled
 
 router = APIRouter(
@@ -113,6 +138,10 @@ class BillingRowOut(BaseModel):
     device_id: int
     device_name: str
     bill_date: datetime
+    #: The Billing Sequence (ADR 0029) — ``0`` unless this period shares its
+    #: bill date with another; the page shows no column for it, but the
+    #: "latest bill" tint needs it to break a same-second tie.
+    sequence: int
     read_at: datetime
     meter_serial: str | None
 
@@ -258,18 +287,51 @@ def list_billing_readings(
         Literal["closed", "open"], Query(alias="status", description="Which tab: closed periods or the Open Period")
     ],
     device_id: Annotated[int | None, Query(ge=1, description="Restrict to one device; omitted = every device")] = None,
+    meter_serial: Annotated[
+        str | None,
+        Query(
+            description="Restrict to one meter_serial (ADR 0005 — identity comes from the meter); omitted = every serial"
+        ),
+    ] = None,
     start: Annotated[datetime | None, Query(description="Inclusive lower bound on bill_date, UTC")] = None,
     end: Annotated[datetime | None, Query(description="**Exclusive** upper bound on bill_date, UTC")] = None,
     limit: Annotated[int, Query(ge=1, le=500, description="Page size")] = 100,
     offset: Annotated[int, Query(ge=0, description="Rows to skip")] = 0,
+    anchor_id: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            description=(
+                "A closed Billing Reading's id: list exactly its PNG window — its own device and "
+                "meter_serial, every closed period up to and including it, the newer member of its "
+                "same-second pair excluded (ADR 0029). What the capture driver seeds."
+            ),
+        ),
+    ] = None,
 ) -> ApiResponse[BillingPage]:
-    """Return one page of Billing Readings, newest ``bill_date`` first.
+    """Return one page of Billing Readings — page one is the **newest**
+    periods, and every page is read **oldest first** (ADR 0029): within a
+    same-second pair the older member (sequence 1) comes before the newer.
 
     Any authenticated role — reading a device's data is not admin-only
     (``devices.py``'s own rule, and Load Profile's).
 
     Unlike Load Profile, ``device_id`` and the range are optional: billing's
     row volume (~13/device/year) never justifies forcing one.
+
+    ``meter_serial`` (ADR 0017, issue #38, decision 7) makes this endpoint
+    agree unconditionally with :func:`~arichds.capture.service.png_source_rows`,
+    which has always filtered on it — without this param the two would
+    disagree the moment a device's meter is swapped (ADR 0005) and stay
+    disagreeing until enough new-serial periods accumulated on their own.
+
+    ``anchor_id`` (capture-sweep ticket 01) goes the rest of the way: the
+    page in capture mode passes the anchor the driver seeded, and this
+    endpoint applies :func:`~arichds.capture.service.png_window_filters` —
+    the *same* clauses ``png_source_rows`` selects by — so the older member
+    of a same-second pair (``_2.png``) can be listed without the newer one,
+    which ``end`` alone (a bill_date bound) could never exclude. 404 for an
+    id that is not a closed period.
     """
     if device_id is not None:
         _require_device_exists(session, device_id)
@@ -289,10 +351,19 @@ def list_billing_readings(
     filters = [status_filter]
     if device_id is not None:
         filters.append(BillingReading.device_id == device_id)
+    if meter_serial is not None:
+        filters.append(BillingReading.meter_serial == meter_serial)
     if lower is not None:
         filters.append(BillingReading.bill_date >= lower)
     if upper is not None:
         filters.append(BillingReading.bill_date < upper)
+    if anchor_id is not None:
+        anchor = session.get(BillingReading, anchor_id)
+        if anchor is None or anchor.record_status is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"No closed Billing Reading with id {anchor_id}."
+            )
+        filters.extend(png_window_filters(anchor))
     # Built once and used by both queries below, for the reason
     # api/load_profile.py:165-168 gives: `total` is only meaningful as the
     # unpaged count of *the same* filter.
@@ -302,15 +373,404 @@ def list_billing_readings(
         select(BillingReading, Device.name)
         .join(Device, BillingReading.device_id == Device.id)
         .where(*matching)
-        .order_by(BillingReading.bill_date.desc(), BillingReading.device_id.asc())
+        # Selection walks newest first — page one is the newest `limit`
+        # periods, and a capture's `end` + `limit` picks its window off the
+        # newest end (ADR 0015) — but the page is *read* oldest first (ADR
+        # 0029, owner Q6), so the selected block is reversed below: within a
+        # same-second pair the meter's newer member (sequence 0) comes last.
+        # `device_id` descending here so that the reversed page still lists
+        # devices ascending on a shared bill date (code review, 2026-09-22).
+        .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc(), BillingReading.device_id.desc())
         .limit(limit)
         .offset(offset)
     ).all()
     total = session.scalar(select(func.count()).select_from(BillingReading).where(*matching)) or 0
 
-    items = [_to_row_out(reading, device_name) for reading, device_name in rows]
+    items = [_to_row_out(reading, device_name) for reading, device_name in reversed(rows)]
 
     return ApiResponse.ok(BillingPage(items=items, total=total, limit=limit, offset=offset))
+
+
+class AllMetersStatus(StrEnum):
+    """What the All-Meters View says about one meter, resolved server-side.
+
+    The precedence, highest first, is
+    ``PAUSED`` › ``NOT_ANSWERING`` › (``NEVER_BILLED`` | ``BEHIND``) › ``OK``.
+    Cause outranks symptom: an unreachable meter is also a behind meter, and
+    the operator's action is to fix the connection, not to chase the bill.
+    ``NEVER_BILLED`` and ``BEHIND`` cannot co-occur — a meter with no Bill
+    Date has nothing to be behind against.
+
+    Resolved here, not in the browser: the threshold constant lives in the
+    backend, the attention counter needs the same rule, and the billing
+    export planned next cannot call frontend code. Computing it in the
+    browser would put one rule in two languages.
+    """
+
+    PAUSED = "paused"
+    NOT_ANSWERING = "not_answering"
+    NEVER_BILLED = "never_billed"
+    BEHIND = "behind"
+    OK = "ok"
+
+
+#: Sort weight per status — **not** the precedence above, which answers a
+#: different question (which chip a row gets when several apply).
+#:
+#: ``PAUSED`` sorts *last*, below ``OK``. It is not a problem: it is a
+#: deliberate operator state, and :data:`_ATTENTION_STATUSES` excludes it from
+#: the counter for that reason. Sorting it to the top would push the very rows
+#: the counter is pointing at below rows nobody needs to act on.
+_STATUS_SORT_RANK: dict[AllMetersStatus, int] = {
+    AllMetersStatus.NOT_ANSWERING: 0,
+    AllMetersStatus.NEVER_BILLED: 1,
+    AllMetersStatus.BEHIND: 2,
+    AllMetersStatus.OK: 3,
+    AllMetersStatus.PAUSED: 4,
+}
+
+#: The statuses the tab header's counter counts — every row that is neither
+#: ``OK`` nor ``PAUSED``, matching the counter v1 showed.
+_ATTENTION_STATUSES = frozenset({AllMetersStatus.NOT_ANSWERING, AllMetersStatus.NEVER_BILLED, AllMetersStatus.BEHIND})
+
+
+class AllMetersRowOut(BaseModel):
+    """One meter's latest closed period, as the All-Meters View renders it.
+
+    Deliberately narrow — seven fields, against ``BillingRowOut``'s sixty.
+    History is shaped for one meter across time; that shape is unreadable
+    across every meter at once, and clicking a row opens History anyway.
+
+    Attributes:
+        device_id: Which meter. Also what a row click filters History by.
+        device_name: The operator-facing label.
+        meter_serial: The device's own serial (ADR 0005), or None if it has
+            never been probed. Read off the **device**, not off the reading,
+            so a meter that has never billed still shows one.
+        bill_date: The latest **closed** period's Bill Date — UTC — or None
+            when this meter has never produced one.
+        captured_at: When the Capture for that period was written, or None.
+            Sourced from the reading's existing ``read_at``: a Capture is
+            written eagerly and synchronously at insert, so the read time is
+            the capture time to within milliseconds, and no new column or
+            migration is needed. **None whenever captures are switched off**
+            — no capture folder or no ``auto_capture`` entitlement — because
+            the read time would otherwise name a document nobody wrote.
+        import_active_kwh_total: The period's Import Active total, unscaled.
+        export_active_kwh_total: The period's Export Active total, unscaled.
+        status: The resolved chip.
+        status_value: The number the chip carries — consecutive failures for
+            ``NOT_ANSWERING``, whole days behind for ``BEHIND``, None for the
+            three statuses that have no number to show.
+    """
+
+    device_id: int
+    device_name: str
+    meter_serial: str | None
+    bill_date: datetime | None
+    captured_at: datetime | None
+    import_active_kwh_total: float | None
+    export_active_kwh_total: float | None
+    status: AllMetersStatus
+    status_value: int | None
+
+    @field_validator("bill_date", "captured_at")
+    @classmethod
+    def _ensure_utc_or_none(cls, value: datetime | None) -> datetime | None:
+        """Re-attach UTC, ``None``-safe — both fields are absent for a meter
+        that has never billed.
+
+        Delegates to the module's own :func:`_as_utc` rather than repeating
+        its one-line branch a third time in this file."""
+        return None if value is None else _as_utc(value)
+
+
+class AllMetersOut(BaseModel):
+    """The whole All-Meters View — every device, plus the tab header's count.
+
+    Attributes:
+        items: One row per device, worst status first, then device name.
+        needs_attention: How many rows are neither ``OK`` nor ``PAUSED``.
+        total_devices: Every device on the machine — ``len(items)``, because
+            the row set comes from ``devices``, not from readings.
+        devices_with_issues: Rows whose status is ``paused``,
+            ``not_answering``, ``never_billed`` or ``behind`` (ui-audit ticket
+            10 — v1's counter of the same name was hard-coded ``0``). Unlike
+            ``needs_attention`` it counts ``paused``: the customer's strip asks
+            "how many are not billing normally", and a paused meter is not.
+        complete: Rows whose status is ``ok``. ``devices_with_issues +
+            complete == total_devices`` always.
+        auto_interval_sec: How often the Billing Change Check runs — it rides
+            the Load Profile cycle (ADR 0018).
+        auto_last_cycle_at: When it last ran since the service started (UTC),
+            or None — nothing is persisted (ADR 0008).
+
+    **Not paged**, unlike :class:`BillingPage`. This view is bounded by the
+    device count (10–30 meters on a machine), not by reading volume, so
+    paging would add a control the operator has no reason to touch.
+    """
+
+    items: list[AllMetersRowOut]
+    needs_attention: int
+    total_devices: int
+    devices_with_issues: int
+    complete: int
+    auto_interval_sec: int
+    auto_last_cycle_at: datetime | None
+
+    @field_validator("auto_last_cycle_at")
+    @classmethod
+    def _ensure_utc_or_none(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else _as_utc(value)
+
+
+def _resolve_status(
+    device: Device, reading: BillingReading | None, now: datetime
+) -> tuple[AllMetersStatus, int | None]:
+    """Resolve one row's chip and the number it carries.
+
+    ``display_status`` is what makes ``PAUSED`` outrank everything: it is
+    computed from ``enabled``, never stored, so a paused device cannot be
+    reported as online by a caller that forgot to check
+    (``acquisition/status.py``).
+
+    ``OFFLINE`` is the only stored status that becomes ``NOT_ANSWERING``.
+    ``UNKNOWN`` means *nothing has read this device yet*, which is not the
+    claim "it did not answer" — a freshly added meter must not be reported as
+    a connection fault.
+    """
+    shown = display_status(device)
+    if shown is DeviceStatus.PAUSED:
+        return AllMetersStatus.PAUSED, None
+    if shown is DeviceStatus.OFFLINE:
+        return AllMetersStatus.NOT_ANSWERING, device.consecutive_failures
+    if reading is None:
+        return AllMetersStatus.NEVER_BILLED, None
+
+    # `_as_utc` because SQLite has no timezone type: a `DateTime(timezone=True)`
+    # column comes back naive, and this comparison happens *before* the response
+    # model's own validator would have re-attached it.
+    bill_date = _as_utc(reading.bill_date)
+    # Compared as a duration, not as `.days`: `.days` truncates toward zero,
+    # so a period 35 days and 1 hour old would come back as 35 and read as
+    # inside the threshold. The chip's own number still rounds down — "35
+    # days behind" is what an operator wants to read — but the *decision* is
+    # made at full precision.
+    age = now - bill_date
+    if age > timedelta(days=BILLING_BEHIND_DAYS):
+        return AllMetersStatus.BEHIND, age.days
+    return AllMetersStatus.OK, None
+
+
+@router.get("/all-meters")
+def list_all_meters(
+    session: SessionDep,
+) -> ApiResponse[AllMetersOut]:
+    """The All-Meters View — every meter's latest closed period, one row each.
+
+    Any authenticated role, gated by the router's existing ``billing``
+    entitlement — matching every other read surface in this product.
+
+    **A new endpoint rather than a mode on** :func:`list_billing_readings`:
+    that endpoint's ``status`` parameter already says which tab, and making it
+    also carry which *aggregation* would give one parameter two jobs. The two
+    also page differently — that list is paged by reading volume, this one is
+    bounded by device count.
+
+    The row set, the "latest closed" rule and the Open Period exclusion all
+    live in :func:`~arichds.db.billing_query.latest_closed_per_device`, which
+    the planned billing export calls directly.
+    """
+    now = datetime.now(UTC)
+
+    items: list[AllMetersRowOut] = []
+    for device, reading in session.execute(latest_closed_per_device()).all():
+        resolved, value = _resolve_status(device, reading, now)
+        items.append(
+            AllMetersRowOut(
+                device_id=device.id,
+                device_name=device.name,
+                meter_serial=device.meter_serial,
+                bill_date=reading.bill_date if reading is not None else None,
+                # The stored stamp and nothing else (ui-audit ticket 03): it is
+                # written when a Capture is actually written, so a period that
+                # was read but never captured stays blank however captures
+                # are configured.
+                captured_at=reading.captured_at if reading is not None else None,
+                import_active_kwh_total=reading.import_active_kwh_total if reading is not None else None,
+                export_active_kwh_total=reading.export_active_kwh_total if reading is not None else None,
+                status=resolved,
+                status_value=value,
+            )
+        )
+
+    items.sort(key=lambda row: (_STATUS_SORT_RANK[row.status], row.device_name))
+    needs_attention = sum(1 for row in items if row.status in _ATTENTION_STATUSES)
+    # The strip's counters come from the same rows the tab shows (ui-audit
+    # ticket 10) — one definition of "issue", so the two can never disagree.
+    complete = sum(1 for row in items if row.status == AllMetersStatus.OK)
+    return ApiResponse.ok(
+        AllMetersOut(
+            items=items,
+            needs_attention=needs_attention,
+            total_devices=len(items),
+            devices_with_issues=len(items) - complete,
+            complete=complete,
+            auto_interval_sec=LOAD_PROFILE_INTERVAL_SEC,
+            auto_last_cycle_at=last_billing_change_check_at(),
+        )
+    )
+
+
+class BillingReadOut(BaseModel):
+    """What ``POST /api/billing/read`` did (issue #44).
+
+    Shaped on ``api/energy.py``'s ``EnergyRegisterReadOut`` and
+    ``api/load_profile.py``'s ``LoadProfileReadOut``: a live-read failure is
+    a verdict carried on ``error``, never an HTTP error status.
+
+    Attributes:
+        stored: How many **closed** periods this call newly inserted —
+            mirrors ``BillingReadResult.stored``.
+        captured: How many **captures** this call wrote (issue 02) — mirrors
+            ``BillingReadResult.captured``. Carried separately from
+            :attr:`stored` because the two differ whenever captures are
+            switched off, and it comes from the read path rather than being
+            inferred in the browser from the capture-folder setting: that
+            setting is not loaded for non-admin roles, so an inferred count
+            would be wrong for exactly the people who read this message most.
+        open_updated: Whether the device's Open Period slot was inserted or
+            changed by this call.
+        error: An operator-facing sentence, or ``None`` on success.
+    """
+
+    stored: int
+    captured: int
+    open_updated: bool
+    error: str | None
+
+
+@router.post("/read")
+def trigger_billing_read(
+    device_id: Annotated[int, Query(ge=1)],
+    session: SessionDep,
+) -> ApiResponse[BillingReadOut]:
+    """Read the meter's whole billing buffer now, through the Manual Read
+    lock (issue #44, D7, ADR 0009) — button-triggered, mirroring
+    ``api/energy.py``'s ``trigger_energy_register_read``.
+
+    Any authenticated role — matches every other Read now surface in this
+    product and the rest of this router.
+
+    **No liveness probe, and this never touches device status** (D7) — same
+    reasoning as ``api/load_profile.py``'s own ``trigger_load_profile_read``:
+    Read now on the Devices page probes first because liveness is the one
+    job that writes device status (ADR 0004); a page-scoped read that probed
+    would buy a second DLMS association per press for a status column this
+    page does not show. Mirrors ``api/devices.py``'s own
+    ``_read_billing_job``, minus the liveness probe in front of it.
+
+    **Runs only this job** — never the load profile (D7).
+
+    Raises:
+        HTTPException: 404 for an unknown device, or one whose driver has no
+            billing profile at all (``supported=False``) — a structural fact
+            about the device, not a live-read failure. A live-read failure
+            (connection dropped, endpoint busy) is **not** an HTTPException —
+            it comes back on the payload's ``error`` field, same as Test
+            Connection.
+    """
+    _require_device_exists(session, device_id)
+
+    result = read_and_store_billing(device_id)
+    if not result.supported:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=result.error or "This device has no billing profile."
+        )
+    return ApiResponse.ok(
+        BillingReadOut(
+            stored=result.stored,
+            captured=result.captured,
+            open_updated=result.open_updated,
+            error=result.error,
+        )
+    )
+
+
+class CaptureSweepStatusOut(BaseModel):
+    """The Capture Sweep in flight, or the last one since start — what the
+    Billing page's progress line shows every role (capture-sweep ticket 04).
+    Mirrors :class:`arichds.capture.sweep.SweepStatus` field for field."""
+
+    running: bool
+    started_at: datetime
+    finished_at: datetime | None
+    billing_files_written: int
+    captures_written: int
+    captures_left: int
+    captures_failed: int
+
+
+class SaveAllOut(BaseModel):
+    """What ``POST /api/billing/save-all`` answers: the sweep was queued, and
+    the status as it stood the moment it was."""
+
+    started: bool
+    status: CaptureSweepStatusOut
+
+
+def _sweep_status_out(status: SweepStatus | None) -> CaptureSweepStatusOut | None:
+    if status is None:
+        return None
+    return CaptureSweepStatusOut(
+        running=status.running,
+        started_at=status.started_at,
+        finished_at=status.finished_at,
+        billing_files_written=status.billing_files_written,
+        captures_written=status.captures_written,
+        captures_left=status.captures_left,
+        captures_failed=status.captures_failed,
+    )
+
+
+@router.post("/save-all")
+def save_all(session: SessionDep, scheduler: SchedulerDep, _admin: AdminDep) -> ApiResponse[SaveAllOut]:
+    """**Save all** (capture-sweep ticket 04) — replaces *Save billing file now*:
+    rewrite every device's Billing Export File and run a **Capture Sweep**
+    (CONTEXT.md) over every device, in slices on the Scheduler's one-shot lane.
+    Admin only: it writes files for the whole machine and holds Edge for
+    minutes, the same class of act as setting the folder.
+
+    Answers at once. 422 while the Billing Folder is empty — the sweep has no
+    folder to fill and the billing file is written only there (ticket 02) —
+    and 409 while a sweep is already in flight (grill Q7): the page's button
+    is loading whenever the status says running, so a second press is a race,
+    not an intent. Progress is read from ``GET .../save-all/status``.
+    """
+    if not billing_export_dir(session):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "Billing folder is empty — set it on this page (capture_dir). "
+                "Save all writes the billing files and the captures only there."
+            ),
+        )
+    if start_capture_sweep(scheduler) == "already_running":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Save all is already running — wait for it to finish."
+        )
+    current = _sweep_status_out(sweep_status())
+    assert current is not None  # just started
+    return ApiResponse.ok(SaveAllOut(started=True, status=current))
+
+
+@router.get("/save-all/status")
+def save_all_status() -> ApiResponse[CaptureSweepStatusOut | None]:
+    """The Capture Sweep in flight or the last one since start — ``None``
+    before the first Save all since the service started (ADR 0008: nothing
+    persisted). Any authenticated role: a ``user`` sees the progress an admin
+    started, without the button."""
+    return ApiResponse.ok(_sweep_status_out(sweep_status()))
 
 
 #: Every ``billing_readings`` column that is not part of a row's identity —
@@ -319,7 +779,18 @@ def list_billing_readings(
 #: anyone hand-updating a sixty-line kwargs list (mirrors
 #: ``capture/_render_shared.py``'s own column-derived approach).
 _IDENTITY_COLUMNS = frozenset(
-    {"id", "device_id", "bill_date", "read_at", "record_status", "source", "meter_serial", "created_at", "updated_at"}
+    {
+        "id",
+        "device_id",
+        "bill_date",
+        "sequence",
+        "read_at",
+        "record_status",
+        "source",
+        "meter_serial",
+        "created_at",
+        "updated_at",
+    }
 )
 _MEASUREMENT_COLUMN_NAMES: tuple[str, ...] = tuple(
     column.name for column in BillingReading.__table__.columns if column.name not in _IDENTITY_COLUMNS
@@ -333,6 +804,7 @@ def _to_row_out(reading: BillingReading, device_name: str) -> BillingRowOut:
         device_id=reading.device_id,
         device_name=device_name,
         bill_date=reading.bill_date,
+        sequence=reading.sequence,
         read_at=reading.read_at,
         meter_serial=reading.meter_serial,
         **{name: getattr(reading, name) for name in _MEASUREMENT_COLUMN_NAMES},
@@ -343,22 +815,77 @@ class BillingSettingsOut(BaseModel):
     """The Billing settings, as the Billing page's admin form renders them.
 
     Attributes:
-        capture_dir: The current value — ``""`` means "not configured"
-            (decision 16, issue #22).
+        capture_dir: The Billing folder — the captures' folder (decision 16,
+            issue #22) and, since owner decision ก (2026-09-23), the billing
+            file's too, at its top level. ``""`` means "not configured":
+            capture off, the billing file back in the Load Profile CSV's folder.
         capture_count: How many **closed** billing rows exist right now — the
             rows a capture could exist for. Drives the frontend's "changing
             this orphans N existing captures" warning; the backend never
             blocks on it (decision 2d, ADR 0010).
+        capture_style: The Capture Style (ADR 0028) — what the next ``.png``
+            written on any path looks like; ``standard`` on an install that
+            never chose.
+        captures_missing: How many closed periods have no document in this
+            Billing Folder *yet* (capture-sweep ticket 05) — *Captured* empty,
+            or stamped before the folder was last saved, so a moved folder
+            shows the right number rather than zero. Counted in the database,
+            never by walking the folder: a hint that says "press Save all",
+            while the sweep itself is the authority on what is missing. Zero
+            while the folder is empty (nothing can be missing from no folder).
     """
 
     capture_dir: str
     capture_count: int
+    capture_style: CaptureStyle
+    captures_missing: int
 
 
 class BillingSettingsIn(BaseModel):
-    """The body ``PUT /api/billing/settings`` takes."""
+    """The body ``PUT /api/billing/settings`` takes.
+
+    ``capture_style`` omitted (or ``null``) keeps the stored style — the page
+    sends what it holds for both, and a caller that only ever knew
+    ``capture_dir`` still saves exactly what it did before ADR 0028.
+    """
 
     capture_dir: str
+    capture_style: CaptureStyle | None = None
+
+
+def _billing_settings_out(session: Session, capture_dir: str) -> BillingSettingsOut:
+    return BillingSettingsOut(
+        capture_dir=capture_dir,
+        capture_count=_closed_billing_count(session),
+        capture_style=read_capture_style(session),
+        captures_missing=_captures_missing_count(session, capture_dir),
+    )
+
+
+def _captures_missing_count(session: Session, capture_dir: str) -> int:
+    """Closed periods whose *Captured* stamp is empty or older than the moment
+    the Billing Folder was last saved — the ``settings`` row's own
+    ``updated_at`` (capture-sweep ticket 05). Zero while the folder is empty.
+    The row's timestamp is SQLite's ``CURRENT_TIMESTAMP`` — UTC, naive when
+    read back — so it is made aware before the comparison, in Python, rather
+    than trusting two differently-stored datetime columns to compare in SQL."""
+    if not capture_dir.strip():
+        return 0
+    row = session.get(Setting, CAPTURE_DIR_KEY)
+    if row is None or row.updated_at is None:
+        return 0
+    saved_at = _as_utc(row.updated_at)
+    return (
+        session.scalar(
+            select(func.count())
+            .select_from(BillingReading)
+            .where(
+                BillingReading.record_status.is_(None),
+                or_(BillingReading.captured_at.is_(None), BillingReading.captured_at < saved_at),
+            )
+        )
+        or 0
+    )
 
 
 def _closed_billing_count(session: Session) -> int:
@@ -380,7 +907,7 @@ def get_billing_settings(session: SessionDep) -> ApiResponse[BillingSettingsOut]
     the rest of this router (``list_billing_readings`` above).
     """
     capture_dir = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
-    return ApiResponse.ok(BillingSettingsOut(capture_dir=capture_dir, capture_count=_closed_billing_count(session)))
+    return ApiResponse.ok(_billing_settings_out(session, capture_dir))
 
 
 @router.put("/settings")
@@ -408,9 +935,231 @@ def put_billing_settings(
         value = ""
 
     set_setting(session, CAPTURE_DIR_KEY, value)
+    if body.capture_style is not None:
+        # Switching style rewrites nothing on disk (ADR 0028) — it governs
+        # the next write, so there is nothing to validate or warn about.
+        set_setting(session, CAPTURE_STYLE_KEY, body.capture_style)
     session.commit()
 
-    return ApiResponse.ok(BillingSettingsOut(capture_dir=value, capture_count=_closed_billing_count(session)))
+    return ApiResponse.ok(_billing_settings_out(session, value))
+
+
+# ── The Classic capture's view model (ADR 0028, capture-style ticket 01) ────
+
+#: Classic Data Table column ← stored ``billing_readings`` column, for the
+#: columns inside the 1280-pixel window (the rest are cut by the window edge
+#: and never fetched). **Confirmed 2026-09-22 from ARICHDS Meter's own
+#: ``billing.csv``** read against its own image of the same meter (WP081200):
+#: its columns 8–11 are Total kWh Total/Rate A/B/C with A + B + C = Total on
+#: every row, 12 and 13 Prev kW Demand Rate A and its time, 14 Rate B. Units
+#: are the stored kWh/kW — the headings say so, so the Display unit setting
+#: (ADR 0013) never reaches this image.
+_CLASSIC_NUMBER_COLUMNS: dict[str, str] = {
+    "total_kwh_total": "import_active_kwh_total",
+    "total_kwh_rate_a": "import_active_kwh_rate_a",
+    "total_kwh_rate_b": "import_active_kwh_rate_b",
+    "total_kwh_rate_c": "import_active_kwh_rate_c",
+    "prev_kw_demand_rate_a": "max_demand_import_active_kw_rate_a",
+    "prev_kw_demand_rate_b": "max_demand_import_active_kw_rate_b",
+}
+_CLASSIC_TIME_COLUMNS: dict[str, str] = {
+    "time_of_kw_demand_a": "max_demand_import_active_time_rate_a",
+}
+
+#: A demand time the meter never set — CEWE stamps its epoch, ``2000-01-01
+#: 00:00`` meter-local (TC's rows hold exactly this). Rendered as an empty
+#: cell, never as a date, because the picture must not claim a maximum the
+#: meter did not record.
+_METER_EPOCH_LOCAL = datetime(2000, 1, 1, 0, 0)
+_LOCAL_OFFSET = timedelta(hours=METER_LOCAL_UTC_OFFSET_HOURS)
+
+
+def _classic_number(value: float | None) -> str:
+    """Four decimals with trailing zeros dropped, as ARICHDS Meter printed
+    them — ``100.302``, ``319840.2819``, ``0``; ``None`` is an empty cell."""
+    if value is None:
+        return ""
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _classic_time(moment: datetime | None) -> str:
+    """Local ``M/D/YYYY HH:MM`` — no leading zeros on month or day, 24-hour
+    clock; ``None`` and the meter's epoch are both an empty cell."""
+    if moment is None:
+        return ""
+    local = (_as_utc(moment) + _LOCAL_OFFSET).replace(tzinfo=None)
+    if local == _METER_EPOCH_LOCAL:
+        return ""
+    return f"{local.month}/{local.day}/{local.year} {local:%H:%M}"
+
+
+class ClassicRowOut(BaseModel):
+    """One Data Table row, every cell already a string — the page is a
+    layout, not a formatter, so one formatting rule cannot drift between the
+    endpoint and the page."""
+
+    id: int
+    name: str
+    time: str
+    total_kwh_total: str
+    total_kwh_rate_a: str
+    total_kwh_rate_b: str
+    total_kwh_rate_c: str
+    prev_kw_demand_rate_a: str
+    time_of_kw_demand_a: str
+    prev_kw_demand_rate_b: str
+
+
+class ClassicStatisticsOut(BaseModel):
+    """The Statistics Summary panel — connectivity at the moment of writing,
+    never billing completeness (ADR 0028)."""
+
+    total: int
+    issues: int
+    complete: int
+
+
+class ClassicCaptureOut(BaseModel):
+    """Everything the Classic page draws (ADR 0028)."""
+
+    save_path: str
+    site_name: str
+    brand: str
+    meter_serial: str
+    statistics: ClassicStatisticsOut
+    rows: list[ClassicRowOut]
+
+
+def _capture_anchor(session: Session, device_id: int, reading_id: int | None) -> BillingReading:
+    """The closed period a capture image is anchored on — *reading_id* when
+    given (must be one of this device's closed periods), else the device's
+    newest closed period, of a same-second pair its newer member (ADR 0029).
+
+    Shared by the image download and the Classic view model so the two can
+    never anchor differently.
+
+    Raises:
+        HTTPException: 404 for a *reading_id* that is not one of this
+            device's closed periods, or a device with no closed period yet.
+    """
+    if reading_id is not None:
+        anchor = session.get(BillingReading, reading_id)
+        if anchor is None or anchor.device_id != device_id or anchor.record_status is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="No such closed billing period for this device."
+            )
+        return anchor
+    anchor = session.scalars(
+        select(BillingReading)
+        .where(BillingReading.device_id == device_id, BillingReading.record_status.is_(None))
+        .order_by(BillingReading.bill_date.desc(), BillingReading.sequence.asc())
+        .limit(1)
+    ).first()
+    if anchor is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="This device has no closed billing period yet."
+        )
+    return anchor
+
+
+def _require_capture_dir(session: Session) -> str:
+    """The ``capture_dir`` setting, or the 404 every capture surface answers
+    when it is unset — one precondition, one place, so the image download
+    and the Classic view model cannot drift on it (code review, 2026-09-22)."""
+    capture_dir_str = get_setting(session, CAPTURE_DIR_KEY, CAPTURE_DIR_DEFAULT)
+    if not capture_dir_str.strip():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="capture_dir is not configured — nothing to download."
+        )
+    return capture_dir_str
+
+
+def _classic_statistics(session: Session, device: Device) -> ClassicStatisticsOut:
+    """Counted over the devices sharing *device*'s Site Name — the value the
+    image's Group box shows (owner, 2026-09-22: ``site_name`` is required on
+    every device where ``group_name`` is optional, so the box is never blank)
+    — from the Poller's stored status alone (ADR 0004), read at request
+    time, nothing persisted (ADR 0008): a Paused device is not counted at
+    all, *Devices with Issues* are those held Offline, Unknown counts and
+    is not an issue, Complete = Total − Issues."""
+    same_site = Device.site_name == device.site_name
+    # The two columns `display_status` reads, not the whole row: `enabled`
+    # false is Paused (computed, never stored), `status` is the Poller's word.
+    members = session.execute(select(Device.enabled, Device.status).where(same_site)).all()
+    counted = [stored for enabled, stored in members if enabled]
+    issues = sum(1 for stored in counted if stored == DeviceStatus.OFFLINE.value)
+    return ClassicStatisticsOut(total=len(counted), issues=issues, complete=len(counted) - issues)
+
+
+@router.get("/capture-classic/{device_id}")
+def classic_capture_view(
+    session: SessionDep,
+    license_service: LicenseServiceDep,
+    device_id: int,
+    reading_id: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            description="The closed period the image is anchored on — omitted means the device's newest; the older member of a same-second pair is reachable only this way (ADR 0029)",
+        ),
+    ] = None,
+) -> ApiResponse[ClassicCaptureOut]:
+    """The Classic capture's view model (ADR 0028) — everything the Classic
+    page draws, already formatted; the page is a layout, not a formatter.
+
+    Rows are :func:`~arichds.capture.service.png_source_rows`' own window
+    for the anchor (same device, same serial, closed only, at most ten,
+    ADR 0015) **reversed** to ``bill_date ASC, sequence DESC`` — the order
+    the page lists them and the driver waits for — never a second copy of
+    the rule. The column mapping is :data:`_CLASSIC_NUMBER_COLUMNS` /
+    :data:`_CLASSIC_TIME_COLUMNS`, confirmed from ARICHDS Meter's own export.
+
+    Any authenticated caller (the capture token's user is what the page
+    holds), gated on ``billing_image_export`` on top of the router's own
+    ``billing`` gate — the image endpoint's own gates. Not on the API page's
+    published contract: it is the capture's own, like the image endpoint.
+
+    Raises:
+        HTTPException: 404 for an unknown device, a device with no closed
+            period, a *reading_id* that is not one of its closed periods, or
+            an unconfigured ``capture_dir``.
+    """
+    if not feature_enabled("billing_image_export", license_service=license_service, settings=get_settings()):
+        raise FeatureDisabledError("billing_image_export")
+
+    device = session.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Device {device_id} does not exist.")
+    anchor = _capture_anchor(session, device_id, reading_id)
+    capture_dir_str = _require_capture_dir(session)
+
+    brand = brand_key(device.brand)
+    brand_label = (BRAND_LABELS[brand] if brand is not None else device.brand).upper()
+    meter_serial = anchor.meter_serial or device.meter_serial or ""
+    name = f"{brand_label} ({meter_serial})"
+
+    rows = [
+        ClassicRowOut(
+            id=row.id,
+            name=name,
+            time=_classic_time(row.bill_date),
+            **{cell: _classic_number(getattr(row, column)) for cell, column in _CLASSIC_NUMBER_COLUMNS.items()},
+            **{cell: _classic_time(getattr(row, column)) for cell, column in _CLASSIC_TIME_COLUMNS.items()},
+        )
+        for row in reversed(png_source_rows(session, anchor))
+    ]
+
+    return ApiResponse.ok(
+        ClassicCaptureOut(
+            # As ARICHDS Meter showed it: `/` separators.
+            save_path=capture_dir_str.replace("\\", "/"),
+            site_name=device.site_name,
+            brand=brand_label,
+            meter_serial=meter_serial,
+            statistics=_classic_statistics(session, device),
+            rows=rows,
+        )
+    )
 
 
 #: Media type per download format — the only two the capture package renders.
@@ -451,6 +1200,107 @@ def _stream_file(path: Path) -> Iterator[bytes]:
             yield chunk
     finally:
         file_obj.close()
+
+
+@router.get("/captures/image")
+def download_billing_image(
+    session: SessionDep,
+    license_service: LicenseServiceDep,
+    device_id: Annotated[int, Query(ge=1, description="Which device's Billing History image to fetch")],
+    reading_id: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            description="A closed period of that device to anchor on instead of its newest — the only way to (re)produce the `_2` image of a same-second pair's older member (ADR 0029)",
+        ),
+    ] = None,
+) -> StreamingResponse:
+    """Download the Billing History image (up to ten most recent closed
+    periods) for one device — render-on-miss, device-keyed (D11, ADR
+    0015, issue #35; the renderer itself is a headless screenshot per
+    ADR 0017, issue #38).
+
+    **Device-keyed, not reading-keyed** — after Step 6 the frontend has no
+    per-row reading id left, and the button must not depend on which page of
+    the table the operator happens to be looking at. "The latest closed
+    period for this device" is a server-resolved fact; "the first row
+    currently on screen" is pagination state. ADR 0015 requires that an
+    automatic render and a hand-pressed one always produce the same picture.
+
+    Registered *before* ``/captures/{reading_id}`` below — Starlette matches
+    routes in declaration order and ``reading_id`` is a plain string path
+    segment (the ``int`` typing is enforced by FastAPI's parameter
+    validation, not route matching), so ``/captures/image`` would otherwise
+    be swallowed by that route and 422 on ``int("image")``.
+
+    Gated on ``billing_image_export`` on top of the router's own ``billing``
+    gate, exactly as :func:`download_billing_capture` gates per format.
+
+    ``reading_id`` (code review, 2026-09-22) names a closed period of the
+    same device to anchor on instead — every capture document has a
+    render-on-miss path (ADR 0010), and without it the ``_2`` image of a
+    same-second pair's older member would have had none.
+
+    Raises:
+        HTTPException: 404 for a device with no closed billing period yet,
+            a ``reading_id`` that is not one of this device's closed periods,
+            or an unconfigured ``capture_dir``. 422 for a ``meter_serial``
+            that fails path validation. 500 for a write failure.
+    """
+    if not feature_enabled("billing_image_export", license_service=license_service, settings=get_settings()):
+        raise FeatureDisabledError("billing_image_export")
+
+    anchor = _capture_anchor(session, device_id, reading_id)
+    capture_dir = Path(_require_capture_dir(session))
+    display_unit_scale = get_setting(session, DISPLAY_UNIT_SCALE_KEY, DISPLAY_UNIT_SCALE_DEFAULT)
+
+    device = session.get(Device, anchor.device_id)
+    device_name = device.name if device is not None else str(anchor.device_id)
+
+    try:
+        _pdf_target, _xlsx_target, png_target = capture_target_paths(
+            capture_dir, anchor.meter_serial or "", anchor.bill_date, sequence=anchor.sequence
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    wrote_now = not _is_regular_file(png_target)
+    if wrote_now:
+        try:
+            write_png_capture(anchor, device_name, png_target, capture_dir, display_unit_scale)
+        except FileExistsError:
+            pass  # a concurrent request just wrote it — fall through and serve it
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not write the capture: {exc}"
+            ) from exc
+        except BrowserCaptureError as exc:
+            # `BrowserCaptureError` (ADR 0017, issue #38) is a plain
+            # `Exception`, not an `OSError` — Edge missing, the launch/connect
+            # failing, or the page never matching the expected rows all land
+            # here rather than the clause above, which would not catch them.
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not write the capture: {exc}"
+            ) from exc
+
+    if not _is_regular_file(png_target):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The capture could not be created.")
+
+    if wrote_now:
+        # A hand-pressed Capture image is a capture of the anchor period
+        # (ADR 0015), so it stamps the same column the automatic path does
+        # (ui-audit ticket 03) — after the file is confirmed on disk, never
+        # before. A file that already existed leaves the earlier stamp alone.
+        anchor.captured_at = datetime.now(UTC)
+        session.commit()
+
+    headers = {"Content-Disposition": f'attachment; filename="{png_target.name}"'}
+    if anchor.captured_at is not None:
+        # The toast names the same instant the All-Meters row will show.
+        headers["X-Captured-At"] = _as_utc(anchor.captured_at).isoformat()
+    return StreamingResponse(_stream_file(png_target), media_type="image/png", headers=headers)
 
 
 @router.get("/captures/{reading_id}")
@@ -503,7 +1353,9 @@ def download_billing_capture(
     device_name = device.name if device is not None else str(row.device_id)
 
     try:
-        pdf_target, xlsx_target = capture_target_paths(capture_dir, row.meter_serial or "", row.bill_date)
+        pdf_target, xlsx_target, _png_target = capture_target_paths(
+            capture_dir, row.meter_serial or "", row.bill_date, sequence=row.sequence
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     target = pdf_target if document_format == "pdf" else xlsx_target

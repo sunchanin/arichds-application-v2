@@ -142,7 +142,8 @@ class TestSelfTargetingIsRefused:
     v1 only had the self-deactivation rule (INV-AUTHZ-02). v2 adds the other
     two because it ships to a customer machine with SQLite in ``%ProgramData%``
     and no recovery path — ``tools/arichds_vendor.py`` has only keygen/sign/
-    fingerprint, so SPEC §3.2's vendor-CLI escape hatch does not exist yet.
+    sign-meter/fingerprint, so SPEC §3.2's vendor-CLI escape hatch does not
+    exist yet.
     """
 
     def test_an_admin_cannot_delete_itself(self, admin_client: TestClient) -> None:

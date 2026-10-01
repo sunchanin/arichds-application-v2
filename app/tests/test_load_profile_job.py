@@ -23,16 +23,20 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fakes import FakeMeterState
+from fakes import FakeMeterDriver, FakeMeterState, FakeSmw110Driver
 from sqlalchemy import func, select
 
-from arichds.acquisition.drivers.base import IntervalReading
-from arichds.acquisition.load_profile import read_and_store_load_profile
+from arichds.acquisition.drivers.base import BillingReading, IntervalReading
+from arichds.acquisition.load_profile import LoadProfileReadResult, read_and_store_load_profile
 from arichds.acquisition.locks import EndpointLocks
 from arichds.config import Settings
 from arichds.constants import LOAD_PROFILE_BACKFILL_DAYS, LOAD_PROFILE_CHUNK_HOURS, SOURCE_DLMS
+from arichds.db.app_settings import CAPTURE_DIR_KEY, set_setting
+from arichds.db.models import BillingReading as BillingReadingRow
 from arichds.db.models import Device, DeviceEvent, LoadProfileReading
 from arichds.db.session import session_scope
+from arichds.licensing.current import set_current_license_service
+from arichds.licensing.service import LicenseState
 
 pytestmark = pytest.mark.usefixtures("fake_meter")
 
@@ -118,6 +122,17 @@ def stored_rows(device_id: int) -> list[LoadProfileReading]:
                 .where(LoadProfileReading.device_id == device_id)
                 .order_by(LoadProfileReading.read_at)
             )
+        )
+
+
+def stored_billing_closed_count(device_id: int) -> int:
+    with session_scope() as session:
+        return len(
+            session.scalars(
+                select(BillingReadingRow).where(
+                    BillingReadingRow.device_id == device_id, BillingReadingRow.record_status.is_(None)
+                )
+            ).all()
         )
 
 
@@ -358,6 +373,124 @@ class TestTheBudget:
         assert max_read_at(device_id) == NOW - timedelta(hours=20)
 
 
+class TestHistoryRemains:
+    """D9, issue #44 — `history_remains` is `budget_exhausted and advanced`,
+    where `advanced` means the watermark itself moved — **not**
+    `budget_exhausted and stored > 0`.
+
+    Review round 1 found the `stored > 0` version does not actually close the
+    hazard: the driver's window is inclusive on both bounds (module
+    docstring), so the boundary row is re-read and re-upserted on every call.
+    A meter whose entire remaining buffer is that one boundary row (a
+    recording gap starting at our watermark — powered down or relocated for
+    months while keeping its buffer) reports `stored=1` on every call
+    forever, with the watermark never moving. `stored > 0` cannot see that;
+    `advanced` — computed by comparing the per-logger watermark before the
+    call to after it — can.
+    """
+
+    @pytest.mark.parametrize(
+        ("budget_exhausted", "advanced", "expected"),
+        [
+            (True, True, True),
+            (True, False, False),
+            (False, True, False),
+            (False, False, False),
+        ],
+    )
+    def test_it_is_budget_exhausted_and_advanced(self, budget_exhausted: bool, advanced: bool, expected: bool) -> None:
+        result = LoadProfileReadResult(
+            supported=True,
+            stored=1,
+            through=None,
+            budget_exhausted=budget_exhausted,
+            error=None,
+            advanced=advanced,
+        )
+        assert result.history_remains is expected
+
+    def test_stored_plays_no_part_in_the_formula(self) -> None:
+        """The boundary-row hazard itself: a call can report a large
+        ``stored`` count (something was written — the boundary row, possibly
+        several times over several loggers) while ``advanced=False`` (every
+        watermark is exactly where it was before). ``stored`` must not leak
+        back into the answer through any path."""
+        result = LoadProfileReadResult(
+            supported=True, stored=5, through=None, budget_exhausted=True, error=None, advanced=False
+        )
+        assert result.history_remains is False
+
+
+class TestHistoryRemainsTerminatesOnABoundaryOnlyBuffer:
+    """The blocker, review round 1 — the reviewer's own reproduction.
+
+    A meter with a recording gap starting exactly at our watermark answers
+    every chunk request with only the boundary row (inclusive-both-bounds
+    filtering, ``FakeSmw110Driver.read_load_profile``'s own docstring mirrors
+    ``smw110.py``). Before the fix, four consecutive calls each reported
+    ``(stored=1, budget_exhausted=True, history_remains=True)`` with the
+    watermark never advancing — a Manual Read that would press itself forever,
+    each one outranking background work on that Transport Endpoint (ADR 0006).
+    """
+
+    def test_history_remains_is_false_when_only_the_boundary_row_comes_back(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        watermark = NOW - timedelta(hours=60)
+        store(device_id, synthesized_rows(watermark))
+        # The buffer holds exactly the boundary row and nothing newer.
+        fake_meter.load_profile_rows = synthesized_rows(watermark)
+
+        for attempt in range(4):
+            result = read_and_store_load_profile(device_id, now=NOW, budget_sec=0.0)
+            assert result.stored == 1, f"attempt {attempt}: the boundary row was not re-read"
+            assert result.budget_exhausted is True, f"attempt {attempt}: expected the budget to be exhausted"
+            assert result.history_remains is False, (
+                f"attempt {attempt}: history_remains stayed true on a call that re-stored the same boundary "
+                "row without the watermark moving — pressing again cannot make progress"
+            )
+
+        assert max_read_at(device_id) == watermark, "the watermark moved even though nothing new was ever stored"
+
+
+class TestHistoryRemainsAdvancesFromNoWatermark:
+    """Round 2 review — the never-read-logger branch of ``_advanced``.
+
+    ``_advanced``'s ``before.get(logger_id) is None`` clause is what lets a
+    logger with **no** watermark at all count as advanced the moment it
+    gains any row. Nothing had pinned it: the blocker's own reproduction
+    (``TestHistoryRemainsTerminatesOnABoundaryOnlyBuffer``, above) starts
+    from an *existing* watermark, so it only ever exercises the
+    ``mark_after > before[logger_id]`` half of the ``or``.
+
+    This is the branch the feature exists for — ``create_device`` queues
+    ``_read_initial_load_profile`` for a device with no watermark at all
+    (issue #44's own D1/D4/D5), and an operator's first press on the Load
+    Profile page for any device that has never been read hits the same
+    path. A device with no stored rows backfills from
+    ``NOW - LOAD_PROFILE_BACKFILL_DAYS`` (``_backfill_start``, since
+    ``FakeSmw110Driver.load_profile_oldest_reading`` answers ``None``, the
+    base-class "cannot say" default) — the first row seeded here sits inside
+    that floor's own first chunk, so budget exhaustion after chunk one still
+    genuinely advances the watermark from ``None``.
+    """
+
+    def test_a_first_ever_read_with_budget_left_over_reports_it_can_continue(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        floor = NOW - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
+        fake_meter.load_profile_rows = synthesized_rows(
+            floor + timedelta(hours=1), floor + timedelta(hours=2), NOW - timedelta(days=10)
+        )
+
+        result = read_and_store_load_profile(device_id, now=NOW, budget_sec=0.0)
+
+        assert result.stored == 2
+        assert result.budget_exhausted is True
+        assert result.advanced is True
+        assert result.history_remains is True
+
+
 class TestADriverWithoutALoadProfile:
     def test_it_reports_unsupported_and_touches_nothing(
         self, migrated_db: Settings, fake_meter: FakeMeterState
@@ -586,3 +719,159 @@ class TestAMeterWhoseBufferIsShallowerThanTheBackfillWindow:
 
         assert fake_meter.load_profile_windows[0][1] == NOW - timedelta(days=LOAD_PROFILE_BACKFILL_DAYS)
         assert result.stored == 0  # the full walk is budget-bound, exactly as before
+
+
+#: A closed period the Billing Change Check's own whole-buffer read (D6)
+#: stores. Deliberately carrying no open row — the store path does not need
+#: one to write a closed period.
+_CLOSED_BILLING_ROW = BillingReading(
+    bill_date=datetime(2026, 7, 31, 17, 0, 0, tzinfo=UTC),
+    source=SOURCE_DLMS,
+    is_open=False,
+    meter_serial="1232002893",
+    import_active_kwh_total=198685.030,
+)
+
+
+class TestBillingChangeCheckWiring:
+    """D5-D9, issue #43, ADR 0018 — the Billing Change Check rides the Load
+    Profile cycle's own connection, and when it fires, the whole-buffer
+    billing read runs strictly after the Transport Endpoint lock is
+    released."""
+
+    def test_a_background_read_with_a_differing_signal_stores_billing_rows(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """D5/D6, mutation row 7 — a REAL EndpointLocks. If the whole-buffer
+        read ran *inside* the Load Profile lock, `read_and_store_billing`'s
+        own `background=True` acquisition would see the endpoint already
+        held and silently return `skipped=True` — nothing would be stored.
+        Asserting "it was called" would not catch that; asserting rows
+        landed does."""
+        locks = EndpointLocks()
+        fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+        fake_meter.billing_rows = [_CLOSED_BILLING_ROW]
+
+        read_and_store_load_profile(device_id, locks=locks, background=True, now=NOW)
+
+        assert stored_billing_closed_count(device_id) == 1
+
+    def test_an_unchanged_signal_never_calls_the_whole_buffer_read(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        fake_meter.billing_newest_closed = None  # base-class "cannot say" — never triggers
+        fake_meter.billing_rows = [_CLOSED_BILLING_ROW]
+
+        read_and_store_load_profile(device_id, background=True, now=NOW)
+
+        assert fake_meter.billing_reads == 0
+        assert stored_billing_closed_count(device_id) == 0
+
+    def test_a_manual_read_never_runs_the_billing_read(self, device_id: int, fake_meter: FakeMeterState) -> None:
+        """D7, mutation row 9 — the check is gated on the background path. A
+        person pressing Read now must not silently grow a whole billing read
+        plus capture-file writes on a path they are waiting on."""
+        fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+        fake_meter.billing_rows = [_CLOSED_BILLING_ROW]
+
+        read_and_store_load_profile(device_id, now=NOW)  # background=False — Read now
+
+        assert fake_meter.billing_newest_closed_reads == 0
+        assert stored_billing_closed_count(device_id) == 0
+
+    def test_the_check_is_not_attempted_on_a_model_without_billing(
+        self, device_id: int, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A driver with a load profile but no billing profile must never
+        even be asked — mirrors the real catalog (a driver's
+        ``supports_billing()`` is what gates this, never a hardcoded model
+        list, CLAUDE.md's "no if/elif on model" invariant)."""
+
+        class _NoBillingDriver(FakeSmw110Driver):
+            def supports_billing(self) -> bool:
+                return False
+
+        monkeypatch.setattr(
+            "arichds.acquisition.drivers.factory._registry",
+            lambda: {"prometer100": FakeMeterDriver, "smw110": _NoBillingDriver},
+        )
+        fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+
+        read_and_store_load_profile(device_id, background=True, now=NOW)
+
+        assert fake_meter.billing_newest_closed_reads == 0
+
+    def test_the_check_is_not_attempted_when_the_endpoint_was_busy(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """A background tick that could not even take the endpoint (ADR 0006
+        — skipped, never queued) must never reach the check."""
+        locks = EndpointLocks()
+        assert locks.get(ENDPOINT).acquire_manual(timeout=0) is True
+        fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+
+        result = read_and_store_load_profile(device_id, locks=locks, background=True, now=NOW)
+
+        assert result.skipped is True
+        assert fake_meter.billing_newest_closed_reads == 0
+
+    def test_the_check_runs_after_the_walk_and_before_disconnect(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """D8, mutation row 10 — recorded call order, not just "it happened
+        somewhere during the visit"."""
+        fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+
+        read_and_store_load_profile(device_id, background=True, now=NOW)
+
+        order = fake_meter.call_order
+        assert order[0] == "connect"
+        assert order[-1] == "disconnect"
+        last_walk_index = max(i for i, event in enumerate(order) if event == "read_load_profile")
+        billing_check_index = order.index("billing_check")
+        assert billing_check_index > last_walk_index
+        assert billing_check_index < order.index("disconnect")
+
+    def test_a_raising_check_does_not_break_the_walks_own_result(
+        self, device_id: int, fake_meter: FakeMeterState
+    ) -> None:
+        """D9, mutation row 11 — an optional trigger must never break the
+        Load Profile walk it rides on."""
+        fake_meter.billing_newest_closed_error = RuntimeError("meter refused the billing profile")
+        fake_meter.load_profile_rows = [ANCHOR_ROW]
+
+        result = read_and_store_load_profile(device_id, background=True, now=NOW)
+
+        assert result.error is None
+        assert result.stored == 1
+        assert fake_meter.billing_newest_closed_reads == 1  # the check WAS attempted, and it failed safely
+
+    def test_the_whole_buffer_read_stores_rows_and_reaches_the_eager_capture_path(
+        self, device_id: int, fake_meter: FakeMeterState, tmp_path
+    ) -> None:
+        """D6, mutation row 8 — proves it is genuinely
+        ``read_and_store_billing`` that runs, not a bare
+        ``driver.read_billing()`` bolted onto the Load Profile connection: a
+        direct driver call would store nothing (no ``_store``/``_upsert_*``)
+        and reach no eager capture (``_capture_new_closed_periods`` lives
+        inside ``read_and_store_billing`` alone)."""
+
+        class _StubLicenseService:
+            def current_state(self) -> LicenseState:
+                return LicenseState(state="active", reason=None, features=["billing", "auto_capture"])
+
+        capture_dir = tmp_path / "captures"
+        capture_dir.mkdir()
+        with session_scope() as session:
+            set_setting(session, CAPTURE_DIR_KEY, str(capture_dir))
+        set_current_license_service(_StubLicenseService())
+        try:
+            fake_meter.billing_newest_closed = datetime(2026, 7, 31, 10, 0, tzinfo=UTC)
+            fake_meter.billing_rows = [_CLOSED_BILLING_ROW]
+
+            read_and_store_load_profile(device_id, background=True, now=NOW)
+        finally:
+            set_current_license_service(None)
+
+        assert stored_billing_closed_count(device_id) == 1
+        assert any(f.suffix == ".pdf" for f in capture_dir.rglob("*") if f.is_file())

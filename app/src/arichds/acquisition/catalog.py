@@ -13,8 +13,9 @@ Two v1 fields are deliberately **not** carried over:
   duplicated status field would drift from the registry silently, and the first
   symptom would be an operator picking a model that cannot connect.
 * ``protocol`` — SPEC §3.3 says there is no Source field in M3, and every
-  catalogued model is DLMS today. Modbus arrives after day 5 and will say so on
-  the reading, not here (CONTEXT.md — Source is a property of the reading).
+  catalogued model is DLMS, and Modbus is not coming — it stays in the owner's
+  separate Go program (ADR 0026). Source stays a property of the reading, not of
+  the model (CONTEXT.md — Source).
 
 This module is **data**. It imports nothing from
 :mod:`arichds.acquisition.drivers`: the catalog says what exists in the world,
@@ -66,6 +67,30 @@ class Brand(StrEnum):
     SMART_TCC = "smart_tcc"
 
 
+# What the UI prints for a brand key. The key is the stored value and the
+# comparison value everywhere (ui-audit ticket 01); the label is display only.
+BRAND_LABELS: Final[dict[Brand, str]] = {
+    Brand.CEWE: "CEWE",
+    Brand.MITSU: "Mitsubishi",
+    Brand.SMART_TCC: "SMART TCC",
+}
+
+
+def brand_key(value: str) -> Brand | None:
+    """The catalog brand *value* names, compared case-insensitively.
+
+    A brand is a catalog key (SPEC §3.3): Create and Update store the key,
+    never the operator's casing, so ``"CEWE"`` and ``"cewe"`` are the same
+    brand. Returns None when *value* matches no key even case-insensitively —
+    the "no driver in this build" case the device form already names.
+    """
+    lowered = value.strip().lower()
+    for brand in Brand:
+        if brand.value == lowered:
+            return brand
+    return None
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     """Immutable taxonomy entry for one meter model.
@@ -101,10 +126,12 @@ class ModelSpec:
 # Capability-flag rationale (ADR 0011 — the driver is the authority, this
 # catalog only mirrors what a real driver implements; `test_catalog.py`'s
 # correspondence test fails if the two ever drift):
-#   - supports_battery: True for Mitsu & TCC (battery register) AND for the three
-#     CEWE models, whose drivers read the CEWE Battery-status register
-#     0.0.96.6.1.255. Still an aspirational value pending issue #29's
-#     `read_battery_status()` capability method — out of scope for M7-1.
+#   - supports_battery: True for exactly the three CEWE models, whose drivers
+#     implement `read_battery_status()` against the CEWE battery-status
+#     register 0.0.96.6.1.255 (M7-2, issue #29). False for `smw110` and the
+#     five SMART TCC models — no driver in this build implements the read for
+#     them; the earlier all-nine value was aspirational (ADR 0011's own "What
+#     this costs") and issue #29 is what corrects it.
 #   - supports_energy_summary / supports_special_days: True for `smw110` and the
 #     five SMART TCC models — confirmed on real hardware (the 2026-08-11 ST-3CL
 #     probe: 20 of 20 standalone energy registers answered, and the Special Days
@@ -121,7 +148,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3c": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3C",
-        supports_battery=True,
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
@@ -129,7 +156,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3cl": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3CL",
-        supports_battery=True,
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
@@ -137,7 +164,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st33tl": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-33TL",
-        supports_battery=True,
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
@@ -145,7 +172,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3tl": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3TL",
-        supports_battery=True,
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
@@ -153,7 +180,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "st3dh": ModelSpec(
         brand=Brand.SMART_TCC,
         ui_label="SMART TCC ST-3DH",
-        supports_battery=True,
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,
         supports_special_days=True,
         fixed_password=None,
@@ -162,7 +189,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "smw110": ModelSpec(
         brand=Brand.MITSU,
         ui_label="Mitsubishi SMW110",
-        supports_battery=True,  # battery = voltage 0.0.96.6.3.255
+        supports_battery=False,  # no driver implements read_battery_status() (issue #29)
         supports_energy_summary=True,  # energy 1.0.{1,2,3,4}.8.x
         supports_special_days=True,  # 0.0.11.0.0.255
         fixed_password=MITSU_SMW110_FIXED_PASSWORD,
@@ -171,7 +198,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "prometer100": ModelSpec(
         brand=Brand.CEWE,
         ui_label="Prometer 100",
-        supports_battery=True,  # read_battery_status 0.0.96.6.1.255
+        supports_battery=False,  # 0.0.96.6.1.255 is "undefined object" on WP079074/WP080652 (2026-09-16, ui-audit 04)
         supports_energy_summary=False,
         supports_special_days=False,
         fixed_password=CEWE_FIXED_PASSWORD,
@@ -179,7 +206,7 @@ CATALOG: Final[dict[str, ModelSpec]] = {
     "saral305": ModelSpec(
         brand=Brand.CEWE,
         ui_label="Saral 305",
-        supports_battery=True,  # read_battery_status 0.0.96.6.1.255
+        supports_battery=False,  # the whole 0.0.96.6.x group is "undefined object" on SS21996979 (2026-09-16, ui-audit 04)
         supports_energy_summary=False,
         supports_special_days=False,
         fixed_password=CEWE_FIXED_PASSWORD,

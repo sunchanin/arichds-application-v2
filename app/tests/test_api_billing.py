@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import mint_meter_activation_code
 from fakes import FakeMeterState
 from fastapi.testclient import TestClient
 
@@ -36,27 +37,31 @@ BASE = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
 
 def add_device(client: TestClient, fake_meter: FakeMeterState, *, serial: str = "SN-1", **overrides: object) -> int:
     fake_meter.meter_serial = serial
-    response = client.post("/api/devices", json={**DEVICE, **overrides})
+    payload = {**DEVICE, **overrides}
+    payload.setdefault("meter_activation_code", mint_meter_activation_code(meter_serial=serial))
+    response = client.post("/api/devices", json=payload)
     assert response.status_code == 201, response.text
     return response.json()["data"]["id"]
 
 
-def seed_closed(device_id: int, bill_date: datetime, **columns: float) -> None:
+def seed_closed(device_id: int, bill_date: datetime, meter_serial: str | None = "1232002893", **columns: float) -> int:
+    """Store one closed period and return its row id."""
     from arichds.db.models import BillingReading
     from arichds.db.session import session_scope
 
     with session_scope() as session:
-        session.add(
-            BillingReading(
-                device_id=device_id,
-                bill_date=bill_date,
-                read_at=bill_date,
-                record_status=None,
-                source="dlms",
-                meter_serial="1232002893",
-                **columns,
-            )
+        row = BillingReading(
+            device_id=device_id,
+            bill_date=bill_date,
+            read_at=bill_date,
+            record_status=None,
+            source="dlms",
+            meter_serial=meter_serial,
+            **columns,
         )
+        session.add(row)
+        session.flush()
+        return row.id
 
 
 def seed_open(device_id: int, bill_date: datetime, **columns: float) -> None:
@@ -178,6 +183,50 @@ class TestRange:
         assert response.status_code == 422, response.text
 
 
+class TestMeterSerialFilter:
+    """Decision 7, issue #38 — an optional ``meter_serial`` filter, added so
+    this endpoint agrees with ``capture/service.py``'s
+    ``png_source_rows()`` (which already filters on ``meter_serial``)
+    unconditionally, rather than only for a device that has never had its
+    meter swapped (ADR 0005 — identity comes from the meter)."""
+
+    def test_meter_serial_restricts_to_that_serial_only(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE, meter_serial="OLD-SERIAL")
+        seed_closed(device_id, BASE + timedelta(days=30), meter_serial="NEW-SERIAL")
+
+        response = fetch(admin_client, "closed", device_id=device_id, meter_serial="NEW-SERIAL")
+
+        assert response.status_code == 200, response.text
+        items = response.json()["data"]["items"]
+        assert len(items) == 1
+        assert items[0]["meter_serial"] == "NEW-SERIAL"
+
+    def test_omitting_meter_serial_returns_every_serial(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE, meter_serial="OLD-SERIAL")
+        seed_closed(device_id, BASE + timedelta(days=30), meter_serial="NEW-SERIAL")
+
+        response = fetch(admin_client, "closed", device_id=device_id)
+
+        assert response.json()["data"]["total"] == 2
+
+    def test_an_unknown_meter_serial_is_a_200_with_an_empty_page_not_a_404(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE, meter_serial="OLD-SERIAL")
+
+        response = fetch(admin_client, "closed", device_id=device_id, meter_serial="NO-SUCH-SERIAL")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["items"] == []
+
+
 #: All sixty measurement column names (D19, M4c issue #24) — the API now
 #: returns every ``BillingReading`` measurement, not just the eight totals.
 _MEASUREMENT_PREFIXES_FLOAT = [
@@ -222,6 +271,7 @@ class TestRowShape:
             "device_id",
             "device_name",
             "bill_date",
+            "sequence",  # ADR 0029 — the tie-breaker for the "latest bill" tint, never a column on the page
             "read_at",
             "meter_serial",
         }
@@ -261,7 +311,10 @@ class TestRowShape:
 
 
 class TestOrdering:
-    def test_newest_bill_date_first(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+    """Oldest first, then by Billing Sequence (ADR 0029, owner Q6) — the order
+    the customer reads periods in, on the page and in every capture image."""
+
+    def test_oldest_bill_date_first(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
         device_id = add_device(admin_client, fake_meter)
         seed_closed(device_id, BASE)
         seed_closed(device_id, BASE + timedelta(days=30))
@@ -270,7 +323,157 @@ class TestOrdering:
         response = fetch(admin_client, "closed", device_id=device_id)
 
         dates = [row["bill_date"] for row in response.json()["data"]["items"]]
-        assert dates == sorted(dates, reverse=True)
+        assert dates == sorted(dates)
+
+    def test_a_same_second_pair_is_two_rows_with_sequence_zero_before_one(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        seed_closed(device_id, BASE, sequence=1, import_active_kwh_total=31.18)
+        seed_closed(device_id, BASE, sequence=0, import_active_kwh_total=3118.25)
+        seed_closed(device_id, BASE - timedelta(days=30))
+
+        items = fetch(admin_client, "closed", device_id=device_id).json()["data"]["items"]
+
+        # The exact reverse of the meter's own listing (History 1 = 3118.25
+        # newest, History 2 = 31.18 the same second): reading down, the older
+        # member of the pair comes first.
+        assert [
+            (datetime.fromisoformat(row["bill_date"]), row["sequence"], row["import_active_kwh_total"]) for row in items
+        ] == [
+            (BASE - timedelta(days=30), 0, None),
+            (BASE, 1, 31.18),
+            (BASE, 0, 3118.25),
+        ]
+
+    def test_page_one_is_the_newest_periods_read_oldest_first(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """Paging walks from the newest period backwards — page one is the
+        newest `limit` periods, the way a capture picks its ten-period window
+        (ADR 0015) — and each page is read oldest first."""
+        device_id = add_device(admin_client, fake_meter)
+        for days in (0, 30, 60, 90):
+            seed_closed(device_id, BASE - timedelta(days=days))
+
+        page_one = fetch(admin_client, "closed", device_id=device_id, limit=2).json()["data"]["items"]
+        page_two = fetch(admin_client, "closed", device_id=device_id, limit=2, offset=2).json()["data"]["items"]
+
+        assert [datetime.fromisoformat(row["bill_date"]) for row in page_one] == [BASE - timedelta(days=30), BASE]
+        assert [datetime.fromisoformat(row["bill_date"]) for row in page_two] == [
+            BASE - timedelta(days=90),
+            BASE - timedelta(days=60),
+        ]
+
+
+class TestAnchorWindow:
+    """capture-sweep ticket 01 — `anchor_id` makes the page list exactly the
+    PNG window for that period (`png_source_rows`' own rule, shared, never a
+    second copy): every closed period up to and including the anchor, the
+    newer member of the anchor's same-second pair excluded (ADR 0029). This
+    is what lets the Standard `_2.png` of a pair's older member render at all:
+    `endIso` alone cannot exclude a row stamped on the same second."""
+
+    def _seed_pair(self, admin_client: TestClient, fake_meter: FakeMeterState) -> tuple[int, int, int, int]:
+        device_id = add_device(admin_client, fake_meter)
+        older = seed_closed(device_id, BASE - timedelta(days=30))
+        pair_older = seed_closed(device_id, BASE, sequence=1, import_active_kwh_total=31.18)
+        pair_newer = seed_closed(device_id, BASE, sequence=0, import_active_kwh_total=3118.25)
+        return device_id, older, pair_older, pair_newer
+
+    def test_the_older_member_of_a_pair_lists_its_window_without_the_newer_member(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        _device_id, older, pair_older, pair_newer = self._seed_pair(admin_client, fake_meter)
+
+        response = fetch(admin_client, "closed", anchor_id=pair_older)
+
+        assert response.status_code == 200, response.text
+        assert [row["id"] for row in response.json()["data"]["items"]] == [older, pair_older]
+        assert pair_newer not in [row["id"] for row in response.json()["data"]["items"]]
+
+    def test_the_newer_member_lists_both_members_oldest_first(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        _device_id, older, pair_older, pair_newer = self._seed_pair(admin_client, fake_meter)
+
+        items = fetch(admin_client, "closed", anchor_id=pair_newer).json()["data"]["items"]
+
+        assert [row["id"] for row in items] == [older, pair_older, pair_newer]
+
+    def test_the_window_is_png_source_rows_reversed_for_either_member(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        """The page and the image must agree row for row — the drive waits for
+        exactly `png_source_rows` reversed."""
+        from arichds.capture.service import png_source_rows
+        from arichds.db.models import BillingReading
+        from arichds.db.session import session_scope
+
+        _device_id, _older, pair_older, pair_newer = self._seed_pair(admin_client, fake_meter)
+
+        for anchor_id in (pair_older, pair_newer):
+            with session_scope() as session:
+                anchor = session.get(BillingReading, anchor_id)
+                expected = [row.id for row in reversed(png_source_rows(session, anchor))]
+            items = fetch(admin_client, "closed", anchor_id=anchor_id).json()["data"]["items"]
+            assert [row["id"] for row in items] == expected
+
+    def test_the_anchor_scopes_the_device_and_the_serial_by_itself(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id, older, pair_older, _pair_newer = self._seed_pair(admin_client, fake_meter)
+        other_device = add_device(admin_client, fake_meter, serial="SN-2", name="Other")
+        seed_closed(other_device, BASE - timedelta(days=1), meter_serial="SN-2")
+        seed_closed(device_id, BASE - timedelta(days=2), meter_serial="OLD-SERIAL")
+
+        items = fetch(admin_client, "closed", anchor_id=pair_older).json()["data"]["items"]
+
+        assert [row["id"] for row in items] == [older, pair_older]
+
+    def test_an_unknown_anchor_is_404(self, admin_client: TestClient) -> None:
+        assert fetch(admin_client, "closed", anchor_id=999).status_code == 404
+
+    def test_an_open_period_is_not_an_anchor(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        from arichds.db.models import BillingReading
+        from arichds.db.session import session_scope
+
+        device_id = add_device(admin_client, fake_meter)
+        seed_open(device_id, BASE)
+        with session_scope() as session:
+            open_id = session.query(BillingReading).filter_by(record_status="open").one().id
+
+        assert fetch(admin_client, "closed", anchor_id=open_id).status_code == 404
+
+
+class TestSingleRowPageMatchesTheOnePeriodCaptureFallback:
+    """Code review round, problem 4 — `capture/service.py:write_png_capture`'s
+    detached/unmapped-row fallback seeds a one-row capture request
+    (`pageSize` now `len(rows) == 1`, decision from problem 1's fix). This
+    proves the composition that makes that fallback still succeed rather
+    than time out: `limit=1` bounded by `end=<anchor.bill_date + 1s>` for
+    the anchor's own `device_id`/`meter_serial` returns **exactly** the
+    anchor row, even with older closed periods for the same device/serial
+    on record — not some other row, and not more than one."""
+
+    def test_limit_one_with_the_anchors_own_end_bound_returns_only_the_anchor(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter, serial="SN-1")
+        anchor_bill_date = BASE
+        seed_closed(device_id, anchor_bill_date - timedelta(days=31))  # older — must NOT come back
+        seed_closed(device_id, anchor_bill_date - timedelta(days=62))  # older — must NOT come back
+        seed_closed(device_id, anchor_bill_date)  # the anchor itself
+
+        anchor_end = (anchor_bill_date + timedelta(seconds=1)).isoformat()
+        response = fetch(
+            admin_client, "closed", device_id=device_id, meter_serial="1232002893", end=anchor_end, limit=1
+        )
+
+        assert response.status_code == 200, response.text
+        items = response.json()["data"]["items"]
+        assert len(items) == 1
+        assert items[0]["bill_date"].startswith("2026-08-01")
 
 
 class TestAccess:
@@ -287,3 +490,170 @@ class TestAccess:
 
         assert response.status_code == 200, response.text
         assert response.json()["data"]["total"] == 1
+
+
+class TestReadNow:
+    """D7/D8, issue #44 — the Billing page's own Read now route. Mirrors
+    ``api/energy.py``'s ``trigger_energy_register_read`` and
+    ``test_api_load_profile.py``'s own ``TestReadNow``."""
+
+    def test_any_authenticated_role_gets_200(
+        self, user_client: TestClient, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+
+        response = user_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+
+    def test_an_unknown_device_is_404(self, admin_client: TestClient) -> None:
+        response = admin_client.post("/api/billing/read?device_id=999")
+
+        assert response.status_code == 404
+
+    def test_an_unsupported_model_is_404(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """``prometer100`` has no driver-level billing profile."""
+        device_id = add_device(admin_client, fake_meter, brand="cewe", model="prometer100")
+
+        response = admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 404
+
+    def test_a_meter_failure_is_a_200_with_the_verdict_on_the_payload(
+        self, admin_client: TestClient, fake_meter: FakeMeterState
+    ) -> None:
+        device_id = add_device(admin_client, fake_meter)
+        fake_meter.connect_error = ConnectionError("boom")
+
+        response = admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        body = response.json()["data"]
+        assert body["error"] is not None
+        assert body["stored"] == 0
+
+    def test_it_stores_and_reports_the_fields(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        from arichds.acquisition.drivers.base import BillingReading
+
+        device_id = add_device(admin_client, fake_meter)
+        fake_meter.billing_rows = [
+            BillingReading(
+                bill_date=BASE,
+                is_open=False,
+                source="dlms",
+                meter_serial="SN-1",
+                import_active_kwh_total=100.0,
+            ),
+            # A freshly-created device has no Open Period row yet, so this
+            # insert is what proves `open_updated` is the *real* field, not a
+            # hardcoded `False` that would happen to match a closed-only buffer.
+            BillingReading(
+                bill_date=BASE.replace(month=BASE.month + 1),
+                is_open=True,
+                source="dlms",
+                meter_serial="SN-1",
+                import_active_kwh_total=10.0,
+            ),
+        ]
+
+        response = admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        body = response.json()["data"]
+        assert body["stored"] == 1
+        assert body["error"] is None
+        assert body["open_updated"] is True
+
+    def test_it_never_reads_the_load_profile(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """D7 — this route runs only its own job."""
+        device_id = add_device(admin_client, fake_meter)
+
+        admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert fake_meter.load_profile_windows == []
+
+    def test_it_takes_the_manual_path(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """D4/D7, minor 4 review round 1 — never ``background=True``. A
+        background acquisition returns ``skipped=True, stored=0, error=None``
+        the moment the endpoint is busy, so the button would report "no new
+        data" without ever telling the operator the read never ran."""
+        from arichds.acquisition.billing import BillingReadResult
+
+        calls: list[dict[str, object]] = []
+
+        def spy(device_id: int, **kwargs: object) -> BillingReadResult:
+            calls.append(kwargs)
+            return BillingReadResult(supported=True, stored=0, open_updated=False, error=None)
+
+        monkeypatch.setattr("arichds.api.billing.read_and_store_billing", spy)
+        device_id = add_device(admin_client, fake_meter)
+
+        response = admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        assert len(calls) == 1
+        assert calls[0].get("background") is not True, "the route took the background path, not Manual"
+
+    def test_it_never_touches_device_status(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        """D7 — no liveness probe, so even a meter failure here leaves
+        ``devices.status``/``status_checked_at`` exactly as they were."""
+        from arichds.db.models import Device
+        from arichds.db.session import session_scope
+
+        device_id = add_device(admin_client, fake_meter)
+        with session_scope() as session:
+            device = session.get(Device, device_id)
+            assert device is not None
+            before = (device.status, device.status_checked_at, device.consecutive_failures)
+
+        fake_meter.connect_error = ConnectionError("boom")
+        admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        with session_scope() as session:
+            device = session.get(Device, device_id)
+            assert device is not None
+            after = (device.status, device.status_checked_at, device.consecutive_failures)
+        assert after == before
+
+
+class TestReadNowReportsCaptures:
+    """The manual read's confirmation carries the **captures written**
+    alongside the periods stored (issue 02).
+
+    The two are not the same number: with no capture folder configured
+    captures are switched off, so periods are stored and no documents are
+    produced at all — and the message read as though they were.
+    """
+
+    def test_the_response_carries_a_capture_count(self, admin_client: TestClient, fake_meter: FakeMeterState) -> None:
+        from arichds.acquisition.drivers.base import BillingReading
+
+        device_id = add_device(admin_client, fake_meter)
+        fake_meter.billing_rows = [
+            BillingReading(bill_date=BASE, source="dlms", is_open=False, meter_serial="1232002893")
+        ]
+
+        response = admin_client.post(f"/api/billing/read?device_id={device_id}")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["captured"] == 0, "no capture folder is configured in this fixture"
+
+    def test_the_count_is_carried_through_from_the_read_path(
+        self, admin_client: TestClient, fake_meter: FakeMeterState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The endpoint reports what the read path counted — it must not
+        re-derive the number from ``stored`` or from the capture setting,
+        which is not loaded for non-admin roles at all."""
+        from arichds.acquisition.billing import BillingReadResult
+
+        def spy(device_id: int, **kwargs: object) -> BillingReadResult:
+            return BillingReadResult(supported=True, stored=3, open_updated=False, error=None, captured=2)
+
+        monkeypatch.setattr("arichds.api.billing.read_and_store_billing", spy)
+        device_id = add_device(admin_client, fake_meter)
+
+        body = admin_client.post(f"/api/billing/read?device_id={device_id}").json()["data"]
+
+        assert (body["stored"], body["captured"]) == (3, 2)

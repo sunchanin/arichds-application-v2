@@ -54,6 +54,19 @@ ENERGY_COLUMNS_WH: Final[frozenset[str]] = frozenset(
     {"import_active_kwh", "export_active_kwh", "import_reactive_kvarh", "export_reactive_kvarh"}
 )
 
+#: Columns whose meter value is raw W/var and must be divided to kW/kvar
+#: before it reaches ``load_profile_readings`` (M13, issue 06). DLMS units 27
+#: (active power) and 29 (reactive power) are watts and vars, so the same
+#: thousand the energy columns divide out applies here — which is what the
+#: billing path already does for its own max-demand kW columns
+#: (``_dlms_profile.py``'s ``read_billing``, one shared divisor for every
+#: column). Kept apart from :data:`ENERGY_COLUMNS_WH` rather than merged into
+#: it: these are power, that set is named for energy, and a reader who
+#: conflated them would have no way to see which columns are which.
+POWER_COLUMNS_W: Final[frozenset[str]] = frozenset(
+    {"import_active_kw", "export_active_kw", "import_reactive_kvar", "export_reactive_kvar"}
+)
+
 #: Which ``logger_id`` a load-profile row gets, keyed by the ProfileGeneric OBIS
 #: it was read from (SPEC §3.5). Two entries, scanned off real meters on
 #: 2026-08-05 (``docs/meter-notes/load-profile-capture-objects.md``) — there is

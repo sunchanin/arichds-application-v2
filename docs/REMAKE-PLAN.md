@@ -1,8 +1,13 @@
 # ARICHDS Application v2 — แผนงาน Remake
 
 > ร่างที่ 2 — 2026-08-02 (แก้หลัง `/scrutinize` + ข้อมูลเพิ่มจากเจ้าของโปรเจค)
+> ปรับสถานะล่าสุด 2026-09-18 — ดู "สถานะปัจจุบัน" ท้าย §0 และงานที่เหลือใน §7.9
 > ต้นทาง: `C:\Users\HP\Documents\Work\cewe` (arichds-application v1)
-> ขั้นถัดไป: `/grill-with-docs`
+>
+> ⚠️ **เลข ADR ในเอกสารนี้อ้างสองชุด** — ตัวที่เขียนว่า **(v1)** อยู่ในรีโป `cewe` ซึ่งเก็บ ADR
+> ไว้ **สามที่** (`docs/adr/`, `cewe-worker/src/billing/docs/adr/`, `modbus-logger/docs/adr/`)
+> ส่วนที่ไม่มีวงเล็บคือ `docs/adr/` ของ v2 เอง · ตอนร่างเอกสารนี้ v2 ยังไม่มี ADR จึงไม่กำกวม
+> วันนี้ v2 มีถึง 0025 แล้ว และเลขชนกันเกือบทุกตัว — **0016 · 0018 · 0019 ชนกันตรง ๆ**
 
 ---
 
@@ -13,6 +18,37 @@
 1. **v1 ยังไม่เคยถูกใช้งานจริง — มีแค่ demo ให้ลูกค้าดู** → ไม่มีข้อมูล production, ไม่มี license ที่ออกไปแล้ว, ไม่ต้องเขียนสคริปต์ migrate, ไม่ต้อง maintain v1 คู่ขนาน, **เปลี่ยนชื่อเชิง cryptographic ได้ฟรี**
 2. **แต่ business logic ผ่านหน้างานลูกค้าและลูกค้ายืนยันแล้ว** → กฎทางธุรกิจของ v1 คือ ground truth ห้ามคิดใหม่ ("ยังไม่ใช้งานจริง" กับ "ยังไม่พิสูจน์" คนละเรื่องกัน)
 3. **มี API ของทีมเราเองบนเครื่องลูกค้า อ่าน database ของโปรแกรมโดยตรง เพื่อส่ง billing + load profile ไปแสดงบนเว็บไซต์** → นี่คือของที่ผูกกับ *ชื่อตาราง* ของเรา และเป็นตัวบล็อกการลีน database ตัวจริง (ดู §3.5)
+
+### สถานะปัจจุบัน (2026-09-18)
+
+| Milestone | สถานะ |
+|---|---|
+| M0–M3 | ✅ ลงครบ |
+| M4 Acquisition | ✅ เส้นทาง DLMS ครบ 9 รุ่นในโค้ด · CEWE ×3 อ่านมิเตอร์จริงแล้ว · **SMART TCC ×5 ยังไม่เคยอ่านเครื่องจริง** (`203.170.148.103` ไม่ตอบ) · **M4b Modbus ตัดออก 2026-09-18** — อยู่ในโปรแกรม Go แยกต่างหากของเจ้าของ (ADR 0026) · parity เทียบ v1 ระดับแถวยังไม่วัด |
+| M5–M7 | ✅ ลงครบ |
+| M8 Data-out | ✅ ครบสาม Destination — Database (#46) · Central Push (M14, §7.8) · File Upload / เมนู **FTP** (ADR 0025) · **ยังไม่เคยคุยกับ server จริงของทีม** |
+| M9 Online activation | 🔒 รอ portal v2 · ครึ่ง meter-key ทำแบบ offline แล้ว (ADR 0019) |
+| M10 Hardening & pilot | ยังไม่เริ่ม |
+| รอบ requirement 2026-09 (§7) | 19 ข้อ = เสร็จ 16 · ตัดออก 1 (C4) · **เหลือ E2 · E5** ซึ่งรอคำตัดสิน ไม่ได้รอโค้ด |
+
+**build ล่าสุด 0.7.2** (`c0a0849`, 2026-09-18) · เครื่อง dev รัน **0.7.0** · **ยังไม่ส่งมอบลูกค้า** —
+รายการงานที่เหลือทั้งหมดอยู่ที่ **§7.9**
+
+เรื่องที่เกิดขึ้นหลังร่างนี้และเปลี่ยนสิ่งที่เอกสารบรรยายไว้:
+
+- **capture ของ Billing กลายเป็น screenshot ของหน้าเว็บตัวเอง** ไม่ใช่เอกสารที่วาดขึ้น —
+  ADR 0014 สั่งให้วาดด้วย Pillow แล้ว **ADR 0017 กลับคำ** เพราะ premise ของ 0014
+  (*"ไม่มีหน้าจอให้ถ่ายตอนไม่มีคนดู"*) ผิดทั้งสี่ข้อ · ไฟล์ที่ได้เพิ่มเป็นสามนามสกุลใต้ชื่อเดียวกัน
+  โดย `.png` กินสิบรอบบิลส่วนอีกสองอันกินรอบเดียว (ADR 0015 — ดูเหมือนบั๊กแต่เป็นการตัดสินใจ)
+- **Data-out แตกเป็นสองชนิด** — ADR 0016 นิยาม *Data-out Destination* (FTP · MySQL ของลูกค้า ·
+  โฟลเดอร์ที่ถูก replicate เป็นรูปเดียวกัน) และบันทึกว่า **ฐานข้อมูลของลูกค้าเป็นปลายทาง ไม่ใช่ที่เก็บของเรา**
+  เพราะ MySQL แสดง partial unique index ที่ ADR 0009 พึ่งอยู่ไม่ได้ · ไซต์ที่ห้ามข้อมูลออก cloud
+  ใช้ Syncthing กับโฟลเดอร์ที่ operator ตั้งเอง โดย **ไม่มีโค้ดฝั่งเราเลย**
+- **licensing ลงลึกถึงระดับมิเตอร์** — ADR 0019 เพิ่ม *Meter Activation Code* ผูกกับ
+  Meter Serial + Machine ID ซึ่งเดิมวางไว้ที่ M9 หลัง portal พร้อม แต่ถูกดึงมาทำแบบ offline ก่อน
+- **รอบ requirement ใหม่ 2026-09 ("ARICHDS Version full")** — ลูกค้าส่ง workbook สองไฟล์ 19 ข้อ ⇒
+  M11–M14 + ui-audit + File Upload ทั้งหมดอยู่ใน **§7** ไม่ใช่ใน M-ladder ของ §4 · Energy Summary
+  กลายเป็นตารางที่คำนวณใหม่ทุกรอบ (ADR 0022 ย้อน 0012) และไฟล์ export mirror 90 วัน (ADR 0023)
 
 ---
 
@@ -68,7 +104,7 @@ flowchart TD
     M1["<b>M1 · Walking Skeleton</b> ⭐<br/>เครื่องเปล่า → ติดตั้ง 1 ขั้นตอน → offline activate<br/>→ มิเตอร์ CEWE 1 ตัว → เห็นค่าสดบนเว็บ<br/><i>exit: ติดตั้ง &lt; 10 นาที ไม่มีคำถามเรื่อง DB</i>"]
     M2["<b>M2 · Auth & Login</b><br/>JWT · หน้า Login + User Mgmt"]
     M3["<b>M3 · Device Manager</b><br/>CRUD + probe-first · events · สถานะจาก poller<br/>pause/resume · priority lock · หน้า Devices"]
-    M4["<b>M4 · Acquisition</b><br/>a: SMW110W4 รุ่นเดียว (≤ วันที่ 5)<br/>b: Modbus + billing cut (วันที่ 6–14)<br/>ปิดเรื่อง scaler ×10 ที่ M4a"]
+    M4["<b>M4 · Acquisition</b><br/>a: SMW110W4 รุ่นเดียว (≤ วันที่ 5)<br/>b: Modbus — ตัดออก (ADR 0026)<br/>ปิดเรื่อง scaler ×10 ที่ M4a"]
     M4C["<b>M4c · รุ่นที่เหลือ</b><br/>c1: CEWE ×3 (#24) — โค้ดลงแล้ว อ่านมิเตอร์จริงแล้ว<br/>c2: SMART TCC ×5 (#25) — โค้ดลงแล้ว ลิงก์ยังตาย<br/><i>exit: เทียบสด v1 vs v2 ที่ระดับแถว — ยังไม่ทำ</i>"]
     M5["<b>M5 · Load Profile</b><br/>a: job+สคีมา · b: หน้าจอ · c: งานบ้าน<br/><i>exit: replay + probe มิเตอร์จริง</i>"]
     M6["<b>M6 · Billing</b><br/>open period · backfill · capture<br/><i>exit: parity กับ v1</i>"]
@@ -100,7 +136,7 @@ flowchart LR
         subgraph METERS[" "]
             direction LR
             MD["มิเตอร์ DLMS/COSEM<br/>Prometer100 · Saral305<br/>Premier550 · SMART TCC"]
-            MM["มิเตอร์ Modbus<br/>SMW110 · Prometer100"]
+            MM["มิเตอร์ Modbus<br/><i>อ่านโดยโปรแกรม Go แยก (ADR 0026)</i>"]
         end
         subgraph APP["arichds-app.exe — 1 process"]
             direction TB
@@ -119,7 +155,6 @@ flowchart LR
     USR["👤 ผู้ใช้หน้างาน"]
 
     MD --> DRV
-    MM --> DRV
     DRV --> POLL --> DB
     JOBS --> DOM --> DB
     DB --> API --> USR
@@ -178,7 +213,7 @@ API ตัวกลางที่อ่านตารางเรา, หน�
 ## 2. หลักการออกแบบ v2
 
 1. **หนึ่ง process หนึ่ง binary หนึ่ง installer หนึ่ง license** — ไม่มี worker/logger คนละภาษาอีก
-2. **หนึ่ง database** — จบ cross-DB (ADR 0004) และ dual-DB auth/core
+2. **หนึ่ง database** — จบ cross-DB (ADR 0004 (v1)) และ dual-DB auth/core
 3. **Lean by default** — ตาราง / thread / abstraction ต้องบอกได้ว่า *ใครอ่าน* ถึงมีสิทธิ์อยู่
 4. **ข้อมูลออกทาง contract ไม่ใช่ทางตาราง** — ไม่มีใครนอกโปรแกรมแตะ schema ได้อีก
 5. **Portal-first activation** — online เป็นทางหลัก, offline เป็นทางหนีไฟถาวร
@@ -206,6 +241,9 @@ web/                React + AntD v6 (re-theme, D4) → static เสิร์ฟ
 ```
 
 ### 3.1 การรวม Modbus (pain point ข้อ 2)
+
+> ❌ **ถูกย้อนแล้ว 2026-09-18 (ADR 0026)** — เจ้าของเก็บ Modbus ไว้ในโปรแกรม Go ของตัวเองต่อไป
+> ไม่พอร์ตมา Python · หัวข้อนี้เก็บไว้เป็นบันทึกว่าเคยวางแผนอะไรและทำไม ไม่ใช่งานที่ต้องทำ
 
 DLMS ผูกกับ Gurux ซึ่งมีแต่ Python/.NET → ย้ายฝั่ง DLMS ไป Go ไม่ได้ ทิศทางเดียวที่คุ้มคือ
 **พอร์ต `modbus-logger` (Go, 4.4k บรรทัด) → Python ด้วย `pymodbus`** แล้ววางไว้หลัง `MeterDriver` ตัวเดียวกัน
@@ -262,7 +300,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 | สคริปต์ bootstrap ฐานข้อมูล | `bootstrap-mysql.ps1` + `.bat` |
 | แนบ MySQL portable ไปกับแพ็กเกจ | `installer/windows/vendor/` + ต้องรัน `trim-mysql-zip.ps1` ย่อ 85% ก่อนแพ็ก |
 | ตรวจ MySQL เดิม / พอร์ต 3306 ชน | logic install-or-reuse detection |
-| user 2 ตัว + grant คู่ `localhost`/`127.0.0.1` + SELECT ข้าม DB | ADR 0008 |
+| user 2 ตัว + grant คู่ `localhost`/`127.0.0.1` + SELECT ข้าม DB | ADR 0008 (v1) |
 | service ตัวที่สองให้ start/stop/monitor | NSSM MySQL service |
 | **หน้า Database Settings ทั้งหน้า** + `db_settings_service.py` + `/settings/database` + `/database/test` | ลูกค้าต้องกรอก host/port/user/pass |
 | คู่มือ migration + `migrate.bat` | `docs/install/migration.md` |
@@ -311,7 +349,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 - ตัดทิ้ง: `records_96`, `alarms`, `logger_exports`, `logger_confirmations`, `device_connection_log`, aggregate `_5m`/`_15m` (คำนวณตอน query ได้)
 - ชื่อ DB/ตาราง/env → `arichds` / `ARICHDS_*` ทั้งหมด **รวมถึงชื่อเชิง crypto** (fingerprint salt, signing version) เพราะยังไม่มี license ออกไป ถ้าไม่เปลี่ยนตอนนี้ = แบกชื่อ `CEWE` ไปตลอดชีวิตโปรเจค
 
-### 3.5 ⭐ Data-out — ปิดหนี้ ADR 0006
+### 3.5 ⭐ Data-out — ปิดหนี้ ADR 0006 (v1, billing)
 
 **สถานะปัจจุบัน**: ทีมเราเขียน API ไว้บนเครื่องลูกค้า อ่าน `billing` + `load profile` จากตารางตรง ๆ แล้วส่งขึ้น server เพื่อแสดงบนเว็บไซต์
 
@@ -336,7 +374,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 | ชนิด | พฤติกรรม | วิธี sync |
 |---|---|---|
 | `load_profile_readings` | append-only | watermark ตาม rowid/`read_at` ตรง ๆ |
-| `billing_readings` | **ไม่ append-only** — open period คือแถวเดียวที่ถูก upsert ซ้ำในที่เดิม (ADR 0018) และ backfill แทรกแถว `bill_date` *เก่ากว่า* watermark (ADR 0012) | track ด้วย `updated_at` หรือส่ง open slot ซ้ำทุกรอบ ให้ server upsert ด้วย key `(device, bill_date)` |
+| `billing_readings` | **ไม่ append-only** — open period คือแถวเดียวที่ถูก upsert ซ้ำในที่เดิม (ADR 0018 (v1)) และ backfill แทรกแถว `bill_date` *เก่ากว่า* watermark (ADR 0012 (v1)) | track ด้วย `updated_at` หรือส่ง open slot ซ้ำทุกรอบ ให้ server upsert ด้วย key `(device, bill_date)` |
 
 > ถ้าใช้ watermark เดียวกันหมด: เว็บไซต์จะไม่เห็นบิลงวดปัจจุบันขยับ และไม่เห็นประวัติที่ backfill — โดยที่ sync ไม่ error เลย
 
@@ -351,7 +389,7 @@ v1 ล็อกด้วย `device_id` ล้วน ๆ (`connection_manager.py
 
 v1 มีกลไกขายแยกฟีเจอร์อยู่แล้วและ **ใช้งานจริง**: `require_feature()` ที่ระดับ router (`billing/router.py:77`,
 `battery/router.py:31`) และระดับ endpoint (`billing/router.py:371` → `billing_excel_export`)
-ชุดที่เปิดใช้ = `.env FEATURES ∩ license features` (`features.py`, ADR 0011 amends 0001)
+ชุดที่เปิดใช้ = `.env FEATURES ∩ license features` (`features.py`, ADR 0011 (v1) amends 0001 (v1))
 
 นี่คือกลไกที่ทำให้ **ขายฟีเจอร์แยกกันได้** จึงต้องอยู่ใน v2 ตั้งแต่ต้น และต้องเป็นส่วนหนึ่งของ
 **สัญญา license ที่ M0 นิยามให้ portal v2 ทำตาม** — ไม่ใช่ของที่ค่อยแปะทีหลัง
@@ -399,7 +437,7 @@ v1 มีกลไกขายแยกฟีเจอร์อยู่แล�
 
 งานที่ต้องเสร็จในนี้ด้วย:
 - ~~mockup หน้า Devices เทียบไลบรารี~~ ✅ ตัดสินแล้ว: **AntD v6 re-theme** (D4)
-- **ยืนยัน mapping modbus → COSEM กับลูกค้า** (§6.1 ข้อ 2) — gate ของ M4b เท่านั้น ไม่ block 5 วันแรก
+- ~~**ยืนยัน mapping modbus → COSEM กับลูกค้า** (§6.1 ข้อ 2) — gate ของ M4b เท่านั้น~~ ไม่ต้องแล้ว (ADR 0026)
 
 **Exit**: SPEC ผ่าน · ตาราง v2 ล็อก · **normalization contract (§6.1) เขียนครบทั้งเวลา/หน่วย/ชื่อคอลัมน์** ·
 เลือกไลบรารี FE แล้ว · mapping ยืนยันแล้ว · สัญญา license ของ v2 นิยามเสร็จ **พร้อม feature set (§3.6)**
@@ -473,7 +511,7 @@ Read now / Test connection ได้คิวก่อน poller + เทสผ�
 
 **M4a (ภายในวันที่ 5) — SMW110W4 รุ่นเดียว ทั้ง DLMS serial และ TCP**:
 driver + serial transport (`ConnectionParams.serial()`) ·
-manual-priority gate (ADR 0020) · ปิดเรื่อง scaler (§5)
+manual-priority gate (ADR 0020 (v1)) · ปิดเรื่อง scaler (§5)
 **Exit**: อ่าน SMW110W4 จริงได้ทั้งสอง transport ลงตาราง `load_profile_readings`
 
 > ✅ **โค้ดของ M4a ลงครบแล้ว (2026-08-07)** — issue #9 (`ConnectionParams.serial()` ·
@@ -554,7 +592,8 @@ manual-priority gate (ADR 0020) · ปิดเรื่อง scaler (§5)
 > **ช่องกรอก `block_cipher_key` / `authentication_key` — ปิดแล้วว่าไม่ทำ** (SPEC §3.3) ·
 > v1 เก็บคีย์ TCC เป็น module constant และไดรเวอร์ *ignores* คีย์ที่ส่งมาต่อ device
 
-**M4b (วันที่ 6–14) — เส้นทาง Modbus** *(gate: mapping — เดินด้วย DERIVED ของ ADR 0005 ระหว่างรอลูกค้ายืนยัน)*:
+❌ **ตัดออก 2026-09-18 (ADR 0026)** — Modbus อยู่ในโปรแกรม Go แยกต่างหาก · ข้อความเดิม:
+**M4b (วันที่ 6–14) — เส้นทาง Modbus** *(gate: mapping — เดินด้วย DERIVED ของ ADR 0005 (v1) ระหว่างรอลูกค้ายืนยัน)*:
 SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register → COSEM ตอนเขียน** (§6.1) + modbus billing cut (ADR ใหม่)
 **Exit**: มิเตอร์ modbus ลงตารางเดียวกับ DLMS หน่วย/เวลา normalize ถูกต้อง
 
@@ -589,9 +628,10 @@ SMW110 / Prometer100 พอร์ตจาก Go **พร้อม map register 
 > คนละเลข) และ Premier 550 (คอลัมน์ชนกัน) จะเดินจริงที่ M4c
 
 ### M6 — Billing
-open-period upsert slot (ADR 0018) · **เส้นทางอ่านเส้นเดียว — "backfill" ถูกยุบเป็นแนวคิด (ADR 0009)** ·
+open-period upsert slot (ADR 0018 (v1)) · **เส้นทางอ่านเส้นเดียว — "backfill" ถูกยุบเป็นแนวคิด (ADR 0009)** ·
 capture PDF/xlsx · feature entitlement · หน้า Billing
-(modbus billing cut ย้ายไปอยู่ M4b — มันเกิดได้ต่อเมื่อเส้นทาง modbus เขียนข้อมูลแล้ว)
+(modbus billing cut ย้ายไปอยู่ M4b — มันเกิดได้ต่อเมื่อเส้นทาง modbus เขียนข้อมูลแล้ว) ·
+❌ M4b ตัดออกแล้ว (ADR 0026) ⇒ ไม่มี modbus billing cut ในโปรแกรมนี้
 
 > ✅ **โค้ดลงครบแล้ว (2026-08-09)** — **M6a = issue #21** (`c27ba96`: schema + span read 43 คอลัมน์ +
 > open slot + job รายวัน + Read now + Delete all data + API + หน้า Billing) · **M6b = issue #22**
@@ -618,23 +658,80 @@ capture PDF/xlsx · feature entitlement · หน้า Billing
 > **parity ของ billing ย้ายไปเป็น exit ของ M4c** พร้อม CEWE ทั้งสามรุ่น ซึ่งต่อได้จากเครื่องพัฒนา
 > — บรรทัด 462 พูดถึง M5/M6 คู่กันอยู่แล้ว แต่บรรทัดนี้ไม่เคยถูกแก้ตามตอน grill M5
 
+> 🔄 **capture โตขึ้นหลัง M6** — เพิ่มนามสกุลที่สาม `.png` และ **สามไฟล์ใช้ชื่อเดียวกันทั้งหมด
+> ทั้งที่ครอบคลุมช่วงเวลาต่างกัน** (pdf/xlsx = รอบเดียว · png = สิบรอบล่าสุด) ซึ่งเจ้าของเลือกเอง
+> — ADR 0015 · **อย่า "แก้ให้มันสอดคล้องกัน"** · และตัว renderer เปลี่ยนจากการวาดด้วย Pillow
+> (ADR 0014) ไปเป็น **screenshot ของหน้า Billing จริงผ่าน headless Edge** (ADR 0017 กลับคำ 0014)
+
 ### M7 — โมดูลเบาที่เหลือทั้งหมด
-Energy Summary (TOU buckets — ADR 0016) · Holidays · Special Days (`src/special_days/` — v1 มีโมดูลจริง อย่าลืมตามที่ ADR 0020 ระบุว่ายังไม่ gated) ·
+Energy Summary (TOU buckets — ADR 0016 (v1)) · Holidays · Special Days (`src/special_days/` — v1 มีโมดูลจริง อย่าลืมตามที่ ADR 0020 (v1) ระบุว่ายังไม่ gated) ·
 Battery · Export Format · App Log (log viewer + credential redaction ตาม §5)
 → หน้า FE 6 หน้าในก้อนเดียว: EnergySummary / Holidays / SpecialDays / Battery / ExportFormat / AppLog
 **Exit**: **output parity กับ v1** + เทสผ่าน — **นับหน้าครบ**: 14 หน้า v1 = 12 หน้ามีเจ้าของใน M2–M7
 (+`DatabaseSettings` ลบตาม §3.3, `ApiConfig` ถูกแทนด้วย M8)
+
+> ✅ **M7 เสร็จแล้ว 2026-08-11** — ลงเป็น **4 ใบ ไม่ใช่ 6** (`#28` Energy Summary ทั้งสองแท็บ + Holidays +
+> Special Days · `#29` Battery · `#30` Export Format + CSV auto-export · `#31` App Log) ·
+> `web/src/pages/` มี **12 หน้าที่เป็นของ v1 พอดี** ⇒ เกณฑ์ "นับหน้าครบ" สำเร็จ ·
+> ชุดเทสจาก **1,155 → 1,439 ผ่าน**
+>
+> **แก้เกณฑ์ exit หนึ่งข้อ**: *"output parity กับ v1"* **ใช้กับ App Log ไม่ได้** — หน้า `AppLog` ของ v1
+> เป็นหน้าเปล่า (`logs` ตั้งเป็น `[]` แล้วไม่มีอะไรมาเติม, ไม่มีโมดูลหลังบ้าน, ปุ่ม Refresh กับ Clear
+> เป็นฟังก์ชันเดียวกันคือล้างจอ) ⇒ ไม่มี output ให้เทียบ · เกณฑ์รับงานที่เขียนในใบ `#31` **คือด่านทั้งหมด
+> ที่หน้านั้นมี** · หน้าเปล่าหน้าที่สองของ v1 ถัดจาก Instantaneous (ADR 0007)
+>
+> **สองจุดที่ขอบเขตแคบกว่าที่วางไว้ พร้อมเหตุผลใน `SPEC.md`**: `battery_readings` ไม่มีคอลัมน์
+> `remaining_seconds` (ไม่มีไดรเวอร์ใดใน v2 ผลิตค่านั้นได้) · ไม่พอร์ต `output_csv` (ผู้อ่านตัวเดียวของมัน
+> คือนิพจน์ที่ต้องใช้คู่กับ `output_txt` ซึ่งไม่ได้พอร์ต) — ทั้งคู่เป็นความผิดแบบเดียวกับที่ ADR 0011
+> เพิ่งลบทิ้ง คือ **ของที่ประกาศไว้แล้วไม่มีอะไรมาเติม**
+>
+> **ยังค้าง**: อ่านจากมิเตอร์จริงสำหรับ Energy Registers · Special Days · Battery · CSV
+> (ไปป์ไลน์รันแบบไม่มีคนเฝ้า จึงห้ามเปิด socket ไปมิเตอร์ที่ไซต์ลูกค้า) · และคำถามค้างเรื่อง
+> `output_txt` ที่ต้องถามลูกค้าก่อนตัดถาวร
 
 ### M8 — Data-out (§3.5)
 push billing + LP ขึ้น server · watermark (interval) + `updated_at` (billing) + retry ·
 ปลด API ตัวกลางบนเครื่องลูกค้า
 **Exit**: เว็บไซต์ได้ข้อมูลจาก v2 โดยไม่มีใครแตะตาราง และตัวกลางถูกถอนออกจากเครื่องลูกค้าแล้ว
 
+> 🔄 **แก้รูปหลัง grill 2026-08-22 (ADR 0016)** — ปลายทางมีสามแบบและ **เป็นรูปเดียวกันหมด** คือ
+> *Data-out Destination*: FTP/SFTP · MySQL ของลูกค้าเอง · โฟลเดอร์ที่ถูก replicate ·
+> **ฐานข้อมูลของลูกค้าคือปลายทาง ไม่ใช่ที่เก็บของเรา** เพราะ MySQL ไม่มี partial unique index
+> ที่ ADR 0009 พึ่งอยู่ และการทำให้มันเป็นที่เก็บจะทำให้ downtime ของลูกค้ากลายเป็น downtime ของเรา
+>
+> ✅ **หน้าจอลงแล้ว (issue #37)** — Database + File Upload เป็น presentation-only ยังไม่มี transport
+> ✅ **Database Destination ต่อจริงแล้ว (issue #46, SPEC §3.10)** — `dataout/` + job `dbdest_sync`
+> รอบ 15 นาที เขียน `load_profile_readings` / `billing_readings` ลง MariaDB ของลูกค้า
+> (ADR 0020 mirror 90 วัน · ADR 0021 เวลาท้องถิ่น) ⇒ หน้า `DatabaseDestination.tsx` ใช้งานได้จริงแล้ว
+> ✅ **transport ที่เหลือลงครบแล้ว** — push ขึ้น server ของทีม (§3.8) ลงที่ **M14** (§7.8, ADR 0024,
+> 2026-09-14) และ File Upload ลงที่ **ADR 0025** (5 ticket, 2026-09-17; ปิดได้จากหน้าเว็บตั้งแต่
+> issue 022/023) · **สาม transport สามสัญญา อย่าเหมารวม** · push และ File Upload **ยังไม่เคยคุยกับ
+> server จริง** — ทีมปลายทางต้องมี `/v1/holdings` `/v1/push` `/v1/files/*` ก่อน
+> ⚠️ **Exit ข้างบนมี premise ผิด** — §7.8 พบว่า v1 ไม่มี "API ตัวกลาง" ที่ query ตารางให้ถอน
+> (ที่มีคือ FastAPI ของ v1 เองรับ `X-API-Key`)
+>
+> 🔀 **มีไซต์ที่ไม่เข้าเส้นทางนี้เลย** — ลูกค้าบางรายห้ามข้อมูลออก cloud ⇒ ใช้ **Syncthing**
+> mirror โฟลเดอร์ที่ operator ตั้งไว้ (`capture_dir`, export dir) ไปเครื่องปลายทาง
+> **โดยไม่มีโค้ดฝั่งเราเลย** · เปิดคำถามค้างไว้ข้อหนึ่ง: ข้อห้ามนั้นครอบถึง push ขึ้น server
+> ของทีมเราเองด้วยหรือไม่ — **ต้องถามก่อนเริ่ม M8 ไม่ใช่หลัง**
+> ✅ **ตอบแล้วที่ grill M14 (§7.8)** — push ใช้ได้ทุกไซต์ · ไซต์ที่ห้าม cloud แค่ไม่กรอก URL
+
 ### M9 — Online activation 🔒 *(gate: portal v2 พร้อม)*
 > milestone เดียวในแผนที่ถูกบล็อกด้วยรีโปอื่น — วางแยกไว้เพื่อไม่ให้ลาก M1–M8 ไปติดด้วย
 
 online activation flow · lease renew · meter key redeem · fallback กลับไป offline เมื่อ portal ล่ม
 **Exit**: ติดตั้งจบด้วย activation key เพียงตัวเดียว โดยไม่ต้องติดต่อ vendor
+
+> 🔄 **ครึ่งหนึ่งของ milestone นี้ถูกดึงมาทำก่อน (ADR 0019, ทำเสร็จ 2026-08-24 ด้วย issue #41/#42)**
+> — *meter key redeem* ไม่รอ portal อีกต่อไป: **Meter Activation Code** เป็นสตริงที่เราเซ็นแบบ
+> offline ผูกกับ **Meter Serial + Machine ID** ตรวจ**ครั้งเดียวตอนเพิ่มมิเตอร์**เท่านั้น — ไม่ตรวจซ้ำ
+> ตอน Update, เพราะ `_reject_changed_serial` (ADR 0005) ปฏิเสธการเปลี่ยน serial ที่ Update อยู่แล้ว
+> โดยไม่มีเงื่อนไขอยู่ก่อนแล้ว ซึ่งเข้มกว่าการตรวจซ้ำเสียอีก (ร่างแรกของ ADR นี้เข้าใจผิดว่าต้องตรวจซ้ำ
+> — แก้ไขแล้วในตัว ADR) · ของเดิมที่เพิ่มไปแล้วได้รับการยกเว้น และบังคับ**ควบคู่**
+> กับ `max_meters` ที่มีอยู่แล้วใน Activation Code ไม่ใช่แทนที่
+>
+> ⇒ สิ่งที่ portal เข้ามาเปลี่ยนคือ **ช่องทางส่งมอบ ไม่ใช่รูปแบบของ artifact** — ถ้า portal
+> ออก artifact คนละแบบ code ที่ออกไปแล้วทุกใบจะกลายเป็นงาน migrate
 
 ### M10 — Hardening & pilot
 limited mode ครบทุกเส้นทาง · ลงหน้างานลูกค้า 1 ราย
@@ -648,16 +745,17 @@ Business logic ของ v1 ผ่านหน้างานลูกค้า�
 
 - OBIS map / register map ทุกไดรเวอร์ (`src/drivers/*`, `internal/meter/*/registers.go`) + เอกสารสแกน OBIS ใน `docs/requirements/`
 - Gurux wrapper (`GX*.py`) — vendored ห้าม rename API
-- ADR 0018 open-period upsert slot · ADR 0020 manual-priority gate · ADR 0016 holiday/TOU
+- ADR 0018 (v1) open-period upsert slot · ADR 0020 (v1) manual-priority gate · ADR 0016 (v1) holiday/TOU
 
-> ⚠️ **ADR 0019 (modbus billing cut) ยกมาทั้งดุ้นไม่ได้** — มันอ่านจากตาราง modbus ที่ §6.1 ลบทิ้ง
+> ❌ **ไม่ต้องเขียน ADR ใหม่แล้ว** — ADR 0026 (2026-09-18) ตัด Modbus ออกจากโปรแกรมนี้ · ข้อความเดิม:
+> ⚠️ **ADR 0019 (v1) (modbus billing cut) ยกมาทั้งดุ้นไม่ได้** — มันอ่านจากตาราง modbus ที่ §6.1 ลบทิ้ง
 > v2 ต้องอ่านจาก `load_profile_readings` แทน (ช่วง 15 นาทีเพียงพอสำหรับจุดตัด 00:00) และหลัง normalize แล้ว
 > ประโยค *"NO ÷10000 scaling"* ในตัว ADR จะไม่จริงอีกต่อไป → **เขียน ADR ใหม่ ไม่ใช่ก๊อบ** เก็บเฉพาะ *กฎทางธุรกิจ*
 > (ระบบเป็นคนตัดบิลให้ modbus, snapshot ที่ 00:00 ของวันบิล, ตามทันย้อนหลังได้, idempotent ด้วย `(device_id, bill_date)`)
 - Ed25519 verify primitive + golden vectors (แต่ **ชื่อ** เปลี่ยนได้ เพราะยังไม่มี license ออกไป)
 - Credential redaction filter
 
-**ADR 0010 (scaler phantom ×10) — ปิดที่ M4 (acquisition) ไม่ใช่ open decision**
+**ADR 0010 (v1) (scaler phantom ×10) — ปิดที่ M4 (acquisition) ไม่ใช่ open decision**
 กติกาคือ **"ค่าที่แสดงออกต้องตรงกับ v1"** ไม่ใช่ "ต้องคัดลอกวิธีคำนวณของ v1"
 v2 เขียน scaler ให้ถูกต้องได้ ตราบใดที่ billing (÷10000) และ energy summary (÷1000) ยังออกตัวเลขเดิม
 → เอาค่าที่ลูกค้ายืนยันแล้วมาเขียนเป็น test case ล็อกไว้ก่อนแตะโค้ด
@@ -671,7 +769,7 @@ v2 เขียน scaler ให้ถูกต้องได้ ตราบ�
 
 | # | คำถาม | คำตอบ |
 |---|---|---|
-| D1 | รวม Modbus ยังไง | **พอร์ต Go → Python** (§3.1) |
+| D1 | รวม Modbus ยังไง | ~~พอร์ต Go → Python (§3.1)~~ **ไม่รวม — Modbus อยู่ในโปรแกรม Go แยกต่างหาก** (ADR 0026, 2026-09-18) |
 | D2 | Database engine | **SQLite** — ปลดล็อกได้เพราะ §3.5 ทำให้ไม่มีใครนอกโปรแกรมแตะ DB |
 | D5 | ข้อมูลลูกค้าเดิม | ไม่มี — v1 ยังไม่เคยใช้งานจริง |
 | D6 | maintain v1 คู่ขนาน | ไม่ต้อง |
@@ -689,6 +787,9 @@ v2 เขียน scaler ให้ถูกต้องได้ ตราบ�
 *(ปิดครบแล้ว — D11/D12 ปิดใน SPEC grilling 2026-08-03: ตัด X-API-Key ทิ้ง · ตัด divide_by_1000 ทิ้ง แสดง kWh เสมอ)*
 
 ### 6.1 D10 — `load_profile_readings` : ตารางเดียว หน้าตา COSEM แปลงตอนเขียน
+
+> ℹ️ **ครึ่ง Modbus ของหัวข้อนี้หมดความหมายแล้ว (ADR 0026, 2026-09-18)** — ตารางเดียวหน้าตา COSEM
+> แปลงตอนเขียนยังเป็นจริงสำหรับ DLMS · คอลัมน์ `source` ยังอยู่ แต่โค้ดเขียนค่าเดียวคือ `dlms`
 
 **โจทย์**: ข้อมูลช่วงเวลามาจาก 2 ทางที่หน้าตาไม่เหมือนกันเลย
 
@@ -739,7 +840,7 @@ flowchart LR
 ```
 
 **สิ่งที่หายไปทั้งหมด**: ตาราง 91 และ 55 คอลัมน์ · ตาราง aggregate `_5m`/`_15m` ทุกยี่ห้อ + โค้ดสร้าง aggregate ·
-`modbus_repository.py` ทั้งไฟล์ + การ branch `if source == 'modbus'` ตอนอ่าน · การอ่านข้ามฐานข้อมูล (ADR 0004) ·
+`modbus_repository.py` ทั้งไฟล์ + การ branch `if source == 'modbus'` ตอนอ่าน · การอ่านข้ามฐานข้อมูล (ADR 0004 (v1)) ·
 โค้ด Go ที่สร้าง schema เองตอนรัน
 
 **จำนวนแถวลดตาม** — D8 บอกว่า DLMS เป็นหลัก สมมติ 20 มิเตอร์ (18 DLMS + 2 Modbus):
@@ -776,7 +877,7 @@ flowchart LR
 **1. register ที่ไม่ได้ map 77 ตัวหายถาวร** — วันหน้าอยากได้กลับมาต้องเพิ่ม mapping แล้ว *รอเก็บใหม่* ย้อนหลังไม่ได้
 วันนี้ไม่มีใครดูมันและลูกค้ายืนยัน 15 นาทีแล้ว จึงคุ้ม แต่ต้องรู้ว่าแลกอะไรไป
 
-**2. ⚠️ mapping ยังไม่ได้ยืนยันกับลูกค้า** — ADR 0005 เขียนกำกับตัวเองว่า
+**2. ⚠️ mapping ยังไม่ได้ยืนยันกับลูกค้า** — ADR 0005 (v1) เขียนกำกับตัวเองว่า
 *"DERIVED — Confirm with the customer, especially the smw110 blanks"*
 - แปลงตอนอ่าน (v1): map ผิด → แก้โค้ด ข้อมูลเก่ากลับมาถูกทันที
 - แปลงตอนเขียน (v2): map ผิด → **ข้อมูลที่เก็บไปแล้วผิดถาวร**
@@ -791,3 +892,550 @@ flowchart LR
 
 วันนี้เพิ่มยี่ห้อ modbus ใหม่ = ตารางถูกสร้างเองตอน runtime · v2 schema ตายตัว = ต้องเขียน migration ทุกครั้ง
 เป็นการแลกที่ยอมรับได้ (เพิ่มยี่ห้อไม่ใช่เรื่องที่เกิดบ่อย) แต่ต้องรู้ตัว
+
+---
+
+## <a id="round-2026-09"></a>7. รอบ requirements ใหม่ — 2026-09 "ARICHDS Version full"
+
+> เพิ่ม 2026-09-09 · ลูกค้าส่งไฟล์มา 3 ไฟล์เมื่อ 8 ก.ย. ผ่าน `/ingest-requirements` ลงที่
+> `.scratch/` สามโฟลเดอร์ · **ตกลงครบ 19 ข้อ ไม่มีคำถามค้างกับลูกค้าแล้ว**
+>
+> **สถานะ 2026-09-09** — grill ครบสามเฟสแล้วทั้งหมดในวันเดียว · M11 Billing All-Meters
+> View (§7.3) **implement เสร็จ** `94632e5` · M12 Licensing E1 (กล่อง ✅ ใน §7.2)
+> **implement เสร็จ** `6a858c0` · M13 ไฟล์ export (§7.6) **grill + spec + ticket เสร็จ**
+> `f0967ab` ยังไม่ implement
+>
+> เลข milestone ในหัวข้อนี้เป็น **ข้อเสนอ** ยังไม่ได้ตกลง — เขียนไว้เพื่อให้อ้างถึงได้ใน ticket
+
+### 7.0 ที่มา — ไฟล์ 3 ไฟล์ 300 เซลล์
+
+| ไฟล์ | sha256 | เนื้อใน | brief |
+|---|---|---|---|
+| `โปรแกรมดึงข้อมูล ARICHDS Version full..xlsx` | `0b2790448908` | 13 ชีต · 14 รูป · 113 เซลล์ | `.scratch/arichds-full-version/` |
+| `แก้ไข capture และฟอร์ม billing+เมนู sum energy.xlsx` | `fab6b4563f65` | 5 ชีต · 11 รูป · 96 เซลล์ | `.scratch/capture-billing-energy/` |
+| `ตัวอย่างไฟล์.xlsx` | `1b2bc79d14ea` | 2 ชีต · 0 รูป · 91 เซลล์ | `.scratch/export-file-samples/` |
+
+**ถอดครบ 300 จาก 300 เซลล์** พร้อมเลขเซลล์กำกับทุกอัน (ตรวจด้วยสคริปต์ ไม่ใช่ตานับ) ·
+คำตอบทุกรอบต่อท้ายอยู่ในหัวข้อ `## Answers` ของแต่ละ brief
+
+> ⚠️ **`ตัวอย่างไฟล์.xlsx` พูดด้วยสี ไม่ใช่ตัวอักษร** — ทั้งไฟล์มีข้อความแค่ 2 เซลล์
+> ("เพิ่มดึงคือสีแดง") ที่เหลือคือ**สีฟอนต์ของหัวคอลัมน์** · ตัวแยกข้อมูลไม่อ่านสี จึงต้องดึงสี
+> ออกมาแยกแล้วบันทึกลง brief ต่างหาก · **ถ้าไม่มีสี ไฟล์นี้คือ 91 เซลล์ที่ไม่ได้บอกอะไรเลย**
+
+### 7.1 หลักฐาน — อ่านของจริง ไม่ได้อนุมาน
+
+รอบนี้ตั้งอยู่บนการอ่าน **มิเตอร์จริง 3 ตัว + ฐานข้อมูลจริง 2 เครื่อง** ไม่ใช่การอ่านเอกสาร
+
+**มิเตอร์** — `app/scripts/probe_capture_objects.py` อ่านแบบ read-only (association เดียว
+attribute 3 กับ 4 แล้วตัดสาย) เมื่อ 2026-09-08 · SMART TCC ต่อไม่ติดจึงใช้ `tcc-obis-scan.md:648`
+(สแกน 18 ก.ค.) แทน
+
+| ที่ลูกค้าขอเพิ่มในไฟล์ LP | Prometer 100 | Premier 550 | Saral 305 | SMART TCC 3CL |
+|---|---|---|---|---|
+| มุมเฟส ×3 | `1.0.81.27.4/15/26` | — | — | `1.0.81.7.40/51/62` |
+| Record Status | `1.0.96.5.4` | `1.0.96.5.4` | — | `0.0.96.10.1` |
+| แรงดัน L-L ×3 | `1.0.157/177/197.27` | — | — | — |
+| กำลังไฟ ×4 | `1.0.1/2/3/4.5.0` (Demand Register) | — | — | — |
+| **รวม** | **11 / 11** | **1 / 11** | **0 / 11** | **4 / 11** |
+
+**ข้อสรุปที่ตัวเลขนี้บังคับ: คำขอ 11 คอลัมน์เป็นฟีเจอร์ของ Prometer 100 โดยแท้** — และ
+11 คอลัมน์ที่ขอมาตรงกับชุดความสามารถของรุ่นนั้นพอดี ไม่ขาดไม่เกิน ซึ่งไม่น่าจะบังเอิญ
+
+**สองกับดักที่ตารางนี้เปิดออกมา**
+
+1. **v1 map มุมเฟสผิด และผิดเฉพาะ CEWE** — v1 ใช้ `1.0.81.**7**.…` ซึ่งเป็นของ SMART TCC
+   เป๊ะ แต่ Prometer 100 เก็บที่ `1.0.81.**27**.…` ⇒ v1 อ่านมาแล้วทิ้ง `avg_phase_angle_*`
+   เป็น NULL ตลอดบนรุ่นนั้น · **ถ้า v2 map ถูก v2 จะมีตัวเลขในช่องที่ v1 ว่าง — เป็น v2 ถูก
+   ไม่ใช่ v2 เพี้ยน แต่เทส Output Parity ที่เขียนโดยไม่รู้เรื่องนี้จะให้ v2 ที่ถูกต้องสอบตก**
+2. **Record Status ของ TCC เป็นคนละ object** (`0.0.96.10.1.255`) ที่ v1 **จงใจไม่ map**
+   (`cewe/…/load_profile_reader.py:343` — *"bitmap semantics unverified; do NOT map"*) ⇒
+   คำอนุมัติของลูกค้าเรื่อง "เขียนเป็นคำแทนจุด" ครอบเฉพาะ bitmap ของ CEWE
+
+**ฐานข้อมูล** — เครื่องลูกค้า (`Downloads/data`) มี **มิเตอร์ตัวเดียว เป็น SMART TCC 3CL**
+(`002607000049`) ไม่ใช่ CEWE เลย · เครื่องพัฒนา (`%ProgramData%\ARICHDS`) มี **Prometer 100
+สองตัว** (`WP079074`, `WP080652`) + Premier 550 + Saral 305 ออนไลน์ครบ
+
+> 💡 **ข้อมูลของคอลัมน์ L-L ไหลเข้ามาอยู่แล้ว และถูกทิ้งทุกวัน** — นับค่าที่ไม่ใช่ NULL ในแถวจริง:
+> Prometer 100 Logger 2 (300 วิ) มี **26,128 แถว ที่มีค่าแค่ 2 จาก 13 คอลัมน์** (`freq`,
+> `interval_sec`) · นี่คือ issue #24 D17 (*"the three line-to-line voltages are dropped
+> structurally, no field for them"*) วัดออกมาเป็นตัวเลข · **เพิ่มสามคอลัมน์ ไม่เพิ่มการอ่าน
+> ไม่เพิ่ม poll ไม่เพิ่มแถว** แค่ให้แถวที่จ่ายค่าไปแล้วมีอะไรใส่
+
+### 7.2 19 requirement → กองงาน
+
+| # | เรื่อง | ผลสรุป |
+|---|---|---|
+| A1·A2 | LP เพิ่ม 11 คอลัมน์ | ตกลง · **grill แล้ว → §7.6** · การแบ่งครึ่งตามตระกูลมิเตอร์ถูก**ยกเลิก**หลัง probe: ทั้ง 11 ค่าไหลเข้ามาอยู่แล้วและถูกทิ้ง จึงไม่มีครึ่งไหนแพงกว่าอีกครึ่ง |
+| A3 | billing CSV แบบต่อท้าย | ตกลง · **ของใหม่ทั้งก้อน — ทั้ง v1 และ v2 ไม่เคยมีไฟล์นี้** (v1 ออกเป็น PDF/xlsx รายรอบ) · **grill แล้ว → §7.6** |
+| A4 | ชื่อหัวคอลัมน์ | ใช้ของ v2 ที่แก้หน่วยแล้ว (`Import Reactive (kvarh)`) แล้ว**แจ้ง**ลูกค้า ไม่ใช่ถาม |
+| B1 | เห็นมิเตอร์ที่ดึงไม่สำเร็จ | ✅ **เสร็จแล้วโดยไม่มีใครนับ (ตรวจ 2026-09-11)** — M11 `94632e5` ทำ chip `not_answering` บน All-Meters View พร้อมตัวเลขจาก `device.consecutive_failures` ตรง ๆ (`api/billing.py:467` → `Billing.tsx:189-192` *"· 3 failed reads"*) ⇒ ปิดเป็นผลพลอยได้ของ B3/B4/C3 · ที่ยังไม่มีคือหน้า **Devices** ไม่แสดงเลขนี้ ซึ่งเป็นคนละคำถามกับที่ลูกค้าถาม |
+| B2 | ดึงซ้ำทุก 15 นาที | **ทำไปแล้ว** — ADR 0018 / issue #43 คือเคสนี้เป๊ะ |
+| B3·B4·C3 | Bill total · ตารางรวมทุกมิเตอร์ · ไฮไลต์ | **ยุบเหลือหน้าจอเดียว** — §7.3 |
+| B5 | แจ้งเตือนตอน capture เสร็จ | คอลัมน์ + toast ฝั่ง manual · **ไม่ทำ push เรียลไทม์** |
+| C1 | cap จากหลังบ้าน | **ทำไปแล้ว** — ADR 0017 |
+| C2 | cap ไล่ทีละตัวจนครบ | **ไม่ต้องทำอะไร** — เป็นการบรรยายพฤติกรรมเดิม |
+| C4 | เทียบบิลกับรูป cap | **ตัดออกจากขอบเขต** — ลูกค้าระบุเองว่าทำที่เว็บอีกระบบ |
+| D1 | บันทึก Energy Summary | **ไฟล์ ไม่ใช่ database** ⇒ ADR 0012 ไม่ถูกแตะ · **grill แล้ว → §7.6** · ได้**สองแบบ**: ไฟล์ต่อท้ายรายวัน + ปุ่มบันทึกช่วงที่ดูอยู่ (สอง brief เคยตอบขัดกัน) |
+| E1 | เวอร์ชัน full ไม่ต้องกรอก Meter Activation Code | ตกลง · **ไม่ใช่ "แก้ที่เดียว"** — ดูกล่องเตือนล่าง |
+| E2 | วางโครง 4 รุ่น (ST-3DH/1DH/3TL/33TL) | อนุมัติ · **ต้องมี ADR** เพราะ catalog ถูกล็อก |
+| E3 | Special Days → database | ✅ **เสร็จแล้ว (ตรวจ 2026-09-11)** — ทางนำเข้าคือสิ่งที่มีอยู่: `POST /api/holidays/import-from-meter` + ปุ่ม *Import from meter* (`Holidays.tsx:395`) ลงไปที่ `26346c1`/#28 · กรอกเองและนำเข้า CSV ก็มี · และ `energy_query.py:62` อ่านตาราง `holidays` **สดทุก request** ทั้ง `public` และ `annual` ⇒ เข้า Energy Summary จริงตาม ADR 0012 |
+| E4 | ปลายทาง API | **push ออก** ⇒ คือ M8 เดิม ไม่ใช่งานใหม่ |
+| E5 | 7 หน้าที่ส่งรูปมาแต่ไม่มีโน้ต | ยังไม่ต้องทำ |
+
+> ✅ **E1 — ทำเสร็จแล้ว 2026-09-09 (commit `6a858c0`) และผลลัพธ์ต่างจากที่กล่องนี้เคยสั่งไว้**
+>
+> กล่องเดิมสั่งให้ทำเป็น **feature key** ที่แปลว่า "เพิ่มมิเตอร์ได้โดยไม่ต้องมี code" โดยอ้างว่า
+> license ทั้งสองใบเซ็นแบบระบุชัด · **grill พบว่าข้ออ้างนั้นผิดสองชั้น**: ใบหนึ่ง (logger-4)
+> เปิดเต็ม ไม่ได้ระบุรายการ และทั้งสองใบเป็น **demo** ไม่ใช่ลูกค้าที่จ่ายเงิน — ส่วนบันทึกที่
+> `constants.py` กับ `docs/issues/015` เขียนว่า "ยังไม่เคยออก license" นั้นผิดมาตลอด
+> (แก้แล้วทั้งคู่)
+>
+> **สิ่งที่ทำจริง: ไม่ใช่ feature key เลย** — เป็นฟิลด์ `require_meter_activation` บน payload
+> ที่เซ็น นั่งข้าง `max_meters` และ `models` · **ไม่ระบุ = ไม่บังคับ** · เหตุผลที่ไม่ใช้ feature
+> key: ใบที่เซ็นด้วย `features: null` จะได้ key ใหม่มาเองอัตโนมัติ ⇒ กลไกนั้นจะเป็นคนตัดสินด่าน
+> แทนเรา · รายละเอียดทั้งหมดอยู่ที่ `.scratch/full-version-licence/spec.md` และ ADR 0019
+> (amendment ที่สอง)
+
+### 7.3 M11 — Billing: All-Meters View · ✅ ทำเสร็จแล้ว `94632e5`
+
+`/grill-with-docs` + `/domain-modeling` เสร็จ 2026-09-09 · 20 คำถาม 5 รอบ ·
+**โน้ตลูกค้า 6 ก้อน ยุบเหลืองานจริง 3 ชิ้น**
+
+**tab ที่ 3 ข้าง History / Current — หนึ่งแถวต่อมิเตอร์ รอบปิดล่าสุด ไม่กรองวันที่**
+
+- **ไม่รวม Open Period** — `bill_date` ของมันขยับทุกครั้งที่อ่าน (ADR 0018) ถ้ารวมเข้ามา
+  ทุกมิเตอร์จะดูเหมือนเพิ่งตัดบิลตลอดเวลา และกฎ "ตัวไหนตามหลัง" พังทั้งข้อ
+- **query เริ่มจาก `devices` แล้ว LEFT JOIN** — เครื่องที่ไม่เคยตัดบิลเลยคือเคสที่แย่ที่สุดที่
+  ลูกค้าถามถึง ถ้า INNER JOIN มันจะหายไปเงียบๆ และตารางจะโกหกด้วยการเว้นไว้
+- **คอลัมน์แคบ ไม่ใช่ 40** — Device · Meter Serial · Bill Date · Import Active Total ·
+  Export Active Total · Capture time · Status · คลิกแถวไปดูเต็มใน History · tab นี้ตอบคำถามเดียว
+  คือ "ตัดครบหรือยัง ตัวไหนผิดปกติ"
+- **chip เดียว ลำดับ** `หยุดชั่วคราว > ดึงไม่ได้ > (ยังไม่เคยตัดบิล | ตามหลัง) > ปกติ` ·
+  เอาสาเหตุขึ้นก่อนอาการ · `หยุดชั่วคราว` ไม่นับเข้าตัวนับ
+- **ตามหลัง = รอบล่าสุดเก่าเกิน 35 วัน** ค่าคงที่ใน `constants.py` · **จงใจไม่ใช้ `bill_day_*`
+  ที่มีอยู่บน `devices`** — ทางนั้นแม่นกว่าแต่พึ่ง config ที่ถ้าตั้งผิดจะ*ซ่อน*ปัญหาแทนที่จะโชว์
+  ทั้งที่ config ผิดก็เป็นสาเหตุที่เราอยากเห็น · **สมมติฐาน: ไม่มีลูกค้าใช้รอบยาวกว่าเดือน**
+- **เรียงแย่สุดก่อน แล้วชื่อ device · ตัวนับบนหัว tab** (ตรงกับ `Devices with Issues` ของ v1)
+- **ซ่อน filter Card ทั้งใบบน tab นี้** — device Select / RangePicker / ปุ่ม `Capture image`
+  ขัดกับ tab นี้ทั้งสามตัว · ซ่อนดีกว่า disable เพราะปุ่มเทาชวนให้ถาม
+
+**Backend**
+
+- `GET /api/billing/latest` เป็น endpoint แยก ไม่ใช่ `status=latest` บนของเดิม (param เดียว
+  ไม่ควรแบกทั้ง "tab ไหน" และ "รวมยอดแบบไหน")
+- **ของที่ใช้ร่วมกับ A3 คือฟังก์ชัน query ใน `db/` ไม่ใช่ endpoint** — exporter เรียกฟังก์ชัน
+  ตรงๆ ไม่ยิง HTTP หาตัวเอง · **ถ้าไม่เขียนข้อนี้ลง ticket A3 จะเขียน query ตัวเดียวกันใหม่**
+- **status คำนวณฝั่ง server** ส่งมาเป็นค่าสำเร็จ — กฎ 35 วันอยู่ใน `constants.py` อยู่แล้ว และ
+  exporter เรียก TypeScript ไม่ได้
+- **capture time = `billing_readings.read_at` ที่มีอยู่แล้ว** — ไม่มีที่ไหนเก็บเวลา capture
+  (`grep captured_at` ว่างเปล่า) แต่ CONTEXT.md บอกว่า capture ถูกสร้าง *"eagerly,
+  synchronously, the moment a closed period is inserted"* ⇒ `read_at` **คือ**เวลานั้น ·
+  **ไม่เพิ่มคอลัมน์ ไม่ต้อง migration** · โชว์คอลัมน์เสมอ ว่างได้ (ตารางที่เปลี่ยนจำนวนคอลัมน์
+  ตามค่า setting ทำให้รูปร่างไม่นิ่ง)
+- **`BillingReadOut` เพิ่ม `captured: int`** · toast ต่อยอดข้อความเดิมที่ `Billing.tsx:375` ·
+  ไม่ใช้ `stored` แทน เพราะถ้ายังไม่ตั้ง `capture_dir` จะได้ 0 ทั้งที่ `stored=3` — และการให้
+  frontend เดาจากค่า setting **พังกับ role ที่ไม่ใช่ admin** ซึ่งไม่เคยโหลด setting นั้น
+
+> ⚠️ **จุดที่เบนจากคำขอตรงๆ ของลูกค้า** — ลูกค้าเขียนว่า *"ให้มี ไฮไลน์ แบบนี้ในบิลล่าสุด"*
+> คือขอ**ไฮไลต์ทั้งแถว** · สิ่งที่จะได้คือ **chip ในคอลัมน์ Status** เพราะถ้าใช้สีทั้งแถวบอก
+> "ตามหลัง" แล้วยังต้องบอก "ดึงไม่ได้" อีก จะมีระบบสีสองชุดแย่งสายตากันบนตารางเดียว ·
+> **ถ้าลูกค้ายืนยันว่าอยากได้สีทั้งแถวจริงๆ ต้องกลับมาคุยข้อนี้**
+
+> 📖 **คำที่ต้องลง `CONTEXT.md`** — **All-Meters View** (ลูกค้าเรียก "Bill total" ซึ่งใน
+> ภาษาอังกฤษอ่านเหมือนผลรวมตัวเลข) และ **Interval Status** ซึ่งต้องเขียนกำกับว่าคนละเรื่องกับ
+> **Records** ที่มีอยู่แล้ว (Records = ตารางความครบถ้วนรายวัน · Interval Status = สถานะรายช่วง
+> 15 นาที) · **หัวคอลัมน์ในไฟล์ CSV ยังคงคำว่า `Record Status`** เพราะเป็น file contract ของ
+> ลูกค้า — แยกสองระดับแบบเดียวกับที่ ADR 0013 ทำ: ไฟล์คือสัญญา หน้าจอคือมุมมอง
+
+> **ไม่ต้องมี ADR สำหรับรอบนี้** — ประเมินแล้วทั้งเกณฑ์ 35 วันและการใช้ `read_at`
+> **กลับง่าย** (แก้ค่าคงที่ / เพิ่มคอลัมน์ทีหลัง) จึงตกข้อ "hard to reverse" · เหตุผลของทั้งสอง
+> อยู่ใน body ของ ticket ไม่ใช่ ADR · **E2 ต่างหากที่ต้องมี ADR** (ปลดล็อก catalog)
+
+### 7.4 ลำดับงานที่เหลือ
+
+สายงาน: `/grill-with-docs → /to-spec → /to-tickets → implement → /code-review`
+
+| ลำดับ | งาน | เหตุผลของลำดับ |
+|---|---|---|
+| 1 | ~~**M11 Billing All-Meters View**~~ | ✅ **เสร็จ** `94632e5` — §7.3 |
+| 2 | ~~**M12 Licensing (E1)**~~ | ✅ **เสร็จ** `6a858c0` — กล่อง ✅ ใน §7.2 |
+| 3 | ~~**M13 ไฟล์ export**~~ | ✅ **ปิดงานแล้ว** 2026-09-11 — §7.7 · 7 ticket + งานที่ `/scrutinize` เจอ · จดหมายลูกค้าเขียนแล้ว |
+| 4 | ~~**M14 E3 → E2**~~ → **M14 = E4 (M8 push ออก)** | **แถวนี้เขียนไว้ผิดตั้งแต่ต้น แก้ 2026-09-11**: E3 ไม่ใช่ "ตรงไปตรงมา" มัน **เสร็จไปแล้ว** ตั้งแต่ `26346c1` (ดู §7.2 E3) · ส่วน E2 ไม่ใช่งานเขียนโค้ด — catalog มี driver ครบทั้ง 9 รุ่นแล้ว ที่เหลือคือ **คำตัดสินสองข้อของเจ้าของ** (เพิ่ม `ST-1DH` เป็นรุ่นที่ 10 บน artefact ที่ล็อก ⇒ ต้องมี ADR · หรือ verify สามรุ่น TCC ที่ wire ไว้แล้วกับฮาร์ดแวร์ ⇒ ติดที่ไม่มีมิเตอร์ที่ตอบ) ⇒ **งานก้อนถัดไปที่ grill ได้จริงคือ E4** · ✅ **grill แล้ว 2026-09-14 → §7.8** |
+| 5 | **E2** (หลัง ADR) · **E5** (หลังลูกค้าตอบ) | E2 รอคำตัดสิน · E5 คือ 7 หน้าที่ลูกค้าส่งรูปมาแต่ไม่เขียนอะไร ⇒ ไม่มีอะไรให้ซักจนเขาพูด · ⏳ **ยังค้าง 2026-09-18** |
+| 6 | **build + ส่งมอบ** | ~~build ทีเดียวหลัง implement ครบ~~ build แล้วหลายรอบ 0.6.0 → **0.7.2** (2026-09-16 → 09-18) · **ส่งมอบยังไม่ทำ** — §7.9 |
+
+> ✅ **นับใหม่ 2026-09-11 — เหลือ 3 requirement บวกการส่งมอบ**
+>
+> 19 requirement = **เสร็จ 15** (A1 · A2 · A3 · A4 · B1 · B2 · B3 · B4 · B5 · C1 · C2 · C3 ·
+> D1 · E1 · E3) + **ตัดออก 1** (C4 — ลูกค้าทำที่เว็บอีกระบบ) + **เหลือ 3**: **E4**
+> (= M8 ก้อนใหญ่สุด) · **E2** (รอคำตัดสิน) · **E5** (รอลูกค้า) · แล้วจึง **ส่งมอบ**
+> ซึ่งไม่ใช่ requirement แต่เป็นเงื่อนไขปิดงาน
+>
+> **อัปเดต 2026-09-14 — E4 implement ครบแล้ว** 8 ticket (`9efb1f6` … `93bf70e`, §7.8) ⇒ เหลือ
+> **E2 · E5** แล้วจึงส่งมอบ · ยังไม่เคยคุยกับ server จริง: ทีมปลายทางต้องมี `GET /v1/holdings` และ
+> `POST /v1/push` ตามสัญญาที่หน้า API ก่อนรอบแรกจะส่งได้
+>
+> ✅ **ui-audit 2026-09-16 — สิบใบใน `.scratch/ui-audit/issues/` ลงครบบน `feature/light-modules`**
+> (`ec3126b` … `255c13b`, gate สุดท้าย 2285 passed): brand เป็น catalog key เสมอ (migration 0020) ·
+> Holiday Change แสดงเวลาท้องถิ่น · **Captured** = เวลาเขียนไฟล์จริง (`captured_at`, migration 0021,
+> ไม่เข้า Database Destination / push contract / เอกสาร capture) · battery: probe จริงพบ
+> `0.0.96.6.1.255` เป็น "undefined object" บน Prometer 100 ทั้งสองตัวและ Saral 305 → flag เหลือ
+> Premier 550 ตัวเดียว (`docs/meter-notes/cewe-battery-scan.md`, ADR 0011 แก้เพิ่ม) + WARNING วันละครั้ง
+> ต่อเครื่อง · avg_geo_pf: warning 960 บรรทัดมาจาก 0.5.0 ทั้งหมด 0.6.0 resolve ครบทั้งสองตัว — ไม่แก้โค้ด ·
+> service ทำงานใน `logs\` (Gurux `logFile.txt`) · หน้าเว็บบอกสิ่งที่รู้ 8 จุด · recompute log INFO ต่อรอบ ·
+> แถวบิลล่าสุดสี `#f3e8ff` บน History และในรูป cap · แถบ Total/Issues/Complete · Auto · Site Name/Code
+> ✅ **ติดตั้ง 0.6.1 แล้วยืนยันด้วยตาคืนเดียวกัน (2026-09-16)** — ผ่านทุกใบ · ปิดไม่ได้สองจุด: PNG capture
+> ใหม่ (ไฟล์เดิมของ WP079074 เขียนก่อนมี stamp) และประโยค empty-state ของ Battery (ไม่มีเครื่องไหนในฐานนี้แสดงได้)
+>
+> ⚠️ **แก้ 2026-09-16 — บรรทัดบนนับไม่ครบ** เจ้าของเป็นคนชี้เอง: **File Upload Destination
+> (FTPS/SFTP) ยังไม่ได้ทำเลย** §7.4 บรรทัดเดียวกับที่เขียนว่า "transport ที่เหลือยังไม่ได้ทำ"
+> ระบุไว้ตั้งแต่ต้นว่ามีสองตัวคือ push ขึ้น server ของทีม **และ File Upload** — M14 ปิดไปตัวเดียว
+> ที่เหลือคือ **E2 · E5 · File Upload** ไม่ใช่สองข้อ · สถานะจริง: `web/src/pages/FileUploadDestination.tsx`
+> 89 บรรทัด presentation-only ปักป้าย "Not connected yet" · `features.ts` ตั้ง `kind: "never"`
+> จึงไม่โผล่ใน nav · ฝั่ง backend **ไม่มีโค้ด FTP/FTPS/SFTP อยู่เลยแม้บรรทัดเดียว** ไม่มี endpoint
+> ไม่มีแถว `settings` ไม่มี job (`constants.py:429-433` เขียนรับไว้เอง)
+>
+> **ก่อนจะลงมือเขียน ต้องได้คำตอบข้อหนึ่งก่อน**: ไซต์ที่อยากได้ไฟล์ไปเครื่องอื่นถูกปิดด้วย
+> **Syncthing โดยไม่มีโค้ดฝั่งเราเลย** (§7.4 ย่อหน้า 🔀) ⇒ ยังไม่มีลูกค้าที่ยืนยันว่าต้องใช้ FTPS/SFTP
+> จริง ๆ ถ้าไม่มี ข้อนี้คือ **scope ที่ตัดได้** ไม่ใช่งานค้าง
+>
+> ✅ **File Upload — เริ่มแล้ว 2026-09-16 (คืนเดียวกัน)** เจ้าของตัดสินให้ทำ: grill 18 คำถาม →
+> `.scratch/file-upload/spec.md` + **ADR 0025** (สามโปรโตคอล SFTP/FTPS/HTTPS · server จำด้วย
+> Upload Manifest เครื่องไม่จำ · ไม่ลบ remote · เมนูชื่อ **FTP**) → `/to-tickets` 5 ใบ
+> (`.scratch/file-upload/issues/`) → `/run-batch 1-5` (หยุดหลังใบ 02 คืนนั้น รันต่อ 03–05 คืนถัดมา) ·
+> **✅ ครบทั้ง 5 ใบ 2026-09-17:** 01 หน้า FTP + settings + endpoint + licence key `file_upload_destination`
+> ขายได้ (`803684c`) · 02 cycle + Upload Manifest + transport seam + job ที่ 11 + Upload now (`9cb424f`) ·
+> 03 HTTPS + Files (optional) บนหน้า API (`4a39f52` prefactor opener, `c35c3f2`) · 04 SFTP + pin host key
+> (`9a29b9b`; paramiko 5.0.0 + PyNaCl = runtime dep ตัวเดียวที่เพิ่ม, onedir +1.07 MiB) · 05 FTPS explicit TLS
+> (`f011a8e`; pyftpdlib dev-only) — ทุกโปรโตคอลทดสอบกับ server in-process จริง · **ยังไม่เคยลองกับ
+> server จริงของทีม** · installer build แล้วตั้งแต่ 0.7.0 (§7.9) · ledger: `.claude/run-logs/issue-file-upload-0{1..5}.md` ·
+> lib-notes: `docs/lib-notes/{paramiko-sftp,pyftpdlib-tls}.md` · issue ที่ออกระหว่างทาง: `docs/issues/020`
+> (`logger.exception` เลี่ยง redaction), `021` (URL `http://` บนแท็บ HTTPS/Central Push) ·
+>
+> สองข้อที่ตารางเคยนับว่าเหลือแต่จริง ๆ ไม่เหลือคือ **B1 และ E3** — ทั้งคู่ปิดไปแล้วโดยไม่มีใคร
+> กลับมาขีด ซึ่งเป็นเหตุผลที่ backlog อ่านแล้วรู้สึกว่างานเหลือมากกว่าความจริง
+>
+> **ที่ค้างอยู่กับลูกค้า ไม่ใช่กับเรา**: A4 ตกลงว่า "แจ้ง ไม่ใช่ถาม" — จดหมายเขียนเสร็จแล้วแต่ผูก
+> กับ build · **B3/C3 ลูกค้าขอไฮไลต์ทั้งแถว เราให้ chip** และ §7.3 เขียนเองว่าถ้าเขายืนยันต้อง
+> กลับมาคุย — **ยังไม่เคยถาม** · บวก 4 คำถามใน `.scratch/export-files/customer-questions.md`
+
+> ✅ **กล่องนี้ล้าสมัยแล้ว (2026-09-18)** — build เกิดขึ้นแล้วตั้งแต่ 0.6.0 (`50fa910`) ถึง 0.7.2
+> (`c0a0849`) ทุกตัวมี fix ของ 017 และเลขใน `.iss` ตามของที่ build จริงทุกครั้ง · ที่ยังจริงอยู่คือ
+> **ไม่มีบันทึกว่า build ไหนถึงเครื่องลูกค้า** ⇒ ทางแก้ชั่วคราวของ 017 ยังต้องรันซ้ำที่นั่นจนกว่าจะส่งมอบ
+> *(ข้อความเดิมเก็บไว้ข้างล่าง)*
+>
+> ⚠️ **ผลข้างเคียงของการเลื่อน build** — issue 017 (โฟลเดอร์ capture ที่ Syncthing อ่านไม่ได้)
+> commit แล้วที่ `1458ab3` แต่**ยังไม่ส่งมอบ** ⇒ เครื่องลูกค้ายังพังอยู่จนกว่าจะ build รอบนี้เสร็จ ·
+> ทางแก้ชั่วคราว (`icacls /inheritance:e /T` + `/grant`) ครอบเฉพาะโฟลเดอร์ที่มีอยู่ —
+> **มิเตอร์ตัวถัดไปที่เพิ่มจะสร้างโฟลเดอร์ใหม่ที่พังเหมือนเดิม ต้องรันซ้ำ** ·
+> และ `installer/arichds.iss` เขียน **0.5.3** ไว้แล้วและ commit ไปแล้ว ⇒ ถ้า implement ครบก่อน
+> build ต้องขยับเลขอีกครั้งให้ตรงกับของที่ส่งจริง
+
+### 7.5 บั๊กที่เจอระหว่างตรวจ — `avg_geo_pf` ว่างทุกแถว · ✅ **แก้แล้ว** `08a96d3`
+
+**0 จาก 87,000+ แถว ข้าม 4 มิเตอร์**
+
+| รุ่น | แถว | `avg_geo_pf` ที่ไม่ใช่ NULL |
+|---|---|---|
+| prometer100 (dev 1) | 8,709 | **0** |
+| premier550 | 8,706 | 0 |
+| saral305 | 8,709 | 0 |
+| prometer100 (dev 4) | 8,709 | **0** |
+
+Premier กับ Saral ว่างถูกแล้ว — มิเตอร์ไม่มี `1.0.13.24.0.255` และ `saral305.py:46` เขียนกำกับไว้ ·
+**แต่ Prometer 100 ไม่ควรว่าง** — probe 2026-09-08 เห็น object นั้นใน Logger 1 และ
+`prometer100.py:77` map ไว้แล้ว · capture object มี · mapping มี · ค่าไม่มี
+
+> **บั๊กนี้ล้มเหตุผลที่เคยใช้ไปครึ่งหนึ่ง** — ระหว่าง grill เคยอ้างว่า *"ลูกค้าได้ไฟล์ที่มีคอลัมน์
+> ว่าง 2 คอลัมน์อยู่แล้วและไม่เคยทัก แปลว่าคอลัมน์ว่างเป็นเรื่องที่รับได้"* · จริงสำหรับ
+> `Frequency (Hz)` ที่มิเตอร์สองรุ่นไม่มีจริงๆ · **ไม่จริงสำหรับ `Avg Geo PF` ที่ว่างเพราะบั๊ก** —
+> คอลัมน์ที่ว่างเพราะบั๊ก เอามาอ้างเป็นบรรทัดฐานว่า "ส่งคอลัมน์ว่างได้" ไม่ได้
+
+> ✅ **สาเหตุปิดแล้ว 2026-09-09 — วัดมา ไม่ใช่เดา** · ticket `.scratch/export-files/issues/05`
+>
+> ผู้ต้องสงสัยข้อแรกถูก · probe อ่านอย่างเดียวบน `WP079074` แสดงว่า sibling
+> `1.0.13.7.0.255` ตอบหน่วยเป็น **`NO_UNIT` (255)** ส่วนแผนที่ประกาศ **`Unit.NONE` (0)** —
+> คนละสมาชิกของ enum เดียวกัน · `_read_scaler_unit` รับ multiplier เฉพาะเมื่อ
+> `obj.unit == required_unit` ⇒ ปฏิเสธ ⇒ `build_fields` เก็บ `None` ทุกแถว **โดยไม่มี error
+> ที่ไหนเลย** · **แก้คือค่า enum เดียว** — ไม่ต้อง `/diagnosing-bugs` แล้ว
+>
+> **สองข้อที่ต้องไม่ทำตอนแก้**: อย่าผ่อนการเช็ค unit ให้รับทุกหน่วย (แลกคอลัมน์ว่างเป็น
+> คอลัมน์ผิด) · อย่ารวมเข้า ticket 04 ที่ประกาศตัวเองว่าไม่เปลี่ยนพฤติกรรม
+>
+> **เกณฑ์ผ่านต้องเป็นการอ่านมิเตอร์จริงด้วยมือ** — `fake_meter` เป็น autouse จึงตอบตามที่ fake
+> บอกไม่ว่า scaler จะ resolve ได้หรือไม่ · **นั่นคือช่องที่บั๊กนี้ลอดผ่านทุกด่านมา 87,000 แถว**
+
+### 7.6 M13 — ไฟล์ export · grill + spec + ticket `f0967ab` · **implement เสร็จ → §7.7**
+
+`/grill-with-docs` + `/domain-modeling` เสร็จ 2026-09-09 · **37 คำถาม 8 รอบ** ·
+**probe มิเตอร์จริง 2 ครั้งกลางทาง** เพราะการออกแบบพิงข้อเท็จจริงที่ไม่มีใครเคยตรวจ ·
+spec + ticket 7 ใบอยู่ที่ `.scratch/export-files/`
+
+**หลักเดียวที่ทั้งสามไฟล์เดินตาม — นี่คือของจริงของเฟสนี้ ไม่ใช่ตัวไฟล์**
+
+> **ไฟล์ที่ต่อท้ายคือสัญญา · หัวเปลี่ยนเมื่อไร ไฟล์นั้นปิด ไฟล์ใหม่เปิด · ไฟล์เก่าไม่เคยถูกเขียนทับ
+> และไม่เคยรับแถวที่ไม่ตรงกับหัวที่มันเปิดมา**
+
+⇒ **amendment ของ ADR 0013** ไม่ใช่ ADR ใหม่ — เข้าเกณฑ์ครบสามข้อในตัวเอง แต่มันคือก้าวถัดไป
+ของคำตัดสินเดิม ไม่ใช่คำตัดสินคนละเรื่อง
+
+#### สิ่งที่ probe เปลี่ยน — ทั้งสามข้อ brief ไม่รู้
+
+1. **งาน 11 คอลัมน์เล็กกว่าที่ประเมินไว้มาก** · brief เขียนว่า *"new capture objects → new
+   driver reads"* ซึ่ง**ผิด** — `_LOGGER_1_COLUMNS` map ไว้ 12 จาก 25 คอลัมน์ที่อ่านมาแล้ว
+   ที่เหลือหล่นทิ้งเชิงโครงสร้าง ⇒ **ไม่มีการอ่านใหม่ ไม่มี poll ใหม่ ไม่มีแถวใหม่** ·
+   การแบ่ง "ครึ่งที่ 3 ตระกูลมี / ครึ่งที่ Prometer มีตัวเดียว" ใน §7.2 จึงตกไป
+2. **scaler candidate ต้องมี class ไม่ใช่แค่ OBIS** · own-address ถูกปฏิเสธทั้ง 12 เป้าหมาย
+   (ตรงกับ scan 2026-08-09) · 9 ใน 11 ผ่าน sibling `D=7` · **กำลังไฟขาออกสองช่องต้องใช้
+   `1.0.2/4.6.0.255` อ่านเป็น `GXDLMSExtendedRegister`** ขณะที่ขาเข้าใช้ `1.0.1.7.0.255`
+   เป็น Register ธรรมดา — ไม่สมมาตรบนมิเตอร์เดียวกัน ⇒ **บังคับให้มี ticket prefactor**
+3. **`avg_geo_pf` ปิดได้ระหว่างทาง** — §7.5
+
+#### ตัวเลขเดียวที่ต้องจำตอน implement
+
+**scaler ทุกตัวบนมิเตอร์อ้างอิงเป็น `1.0`** · scaler ที่ resolve ไม่ได้ไม่ได้ให้ค่าผิดขนาด
+มันให้ `None` ⇒ **ความผิดพลาดของเฟสนี้จะไม่หน้าตาเหมือนตัวเลขผิด มันจะหน้าตาเหมือนมิเตอร์
+ไม่มีข้อมูล** — ซึ่งคือหน้าตาที่ `avg_geo_pf` ใช้หลอกทุกด่านมา 87,000 แถว
+
+#### 7 ticket · formatter ก่อน driver
+
+| # | งาน | ติดที่ |
+|---|---|---|
+| 01 | ไฟล์ billing CSV + **กลไกไฟล์ที่ใช้ร่วมสามไฟล์** (หัวไฟล์ · การม้วน) | — |
+| 02 | ไฟล์ Energy Summary (ต่อท้ายรายวัน + กดบันทึกเอง) | 01 |
+| 03 | คำเตือนเมื่อแก้วันหยุดแล้วไฟล์ Energy ล้าสมัย | 02 |
+| 04 | prefactor: คำประกาศคอลัมน์ load profile · **ไม่เปลี่ยนพฤติกรรม** | — |
+| 05 | แก้ `avg_geo_pf` | 04 |
+| 06 | 11 คอลัมน์ถึงฐานข้อมูล | 05 |
+| 07 | 11 คอลัมน์ถึงไฟล์และหน้าจอ | 06 + 01 |
+
+**01 กับ 04 ขนานกันได้** — คนละชั้น ไม่แตะไฟล์เดียวกัน
+
+#### สามจุดที่ลำดับ ticket ตัดสินแทนคน
+
+- **หัวไฟล์ของ LP ไปอยู่ที่ 07 ไม่ใช่ 01** ทั้งที่กฎบอกว่าทั้งสามไฟล์มีหัว · เพราะการเพิ่มหัว
+  คือการเปลี่ยนหัว ⇒ ม้วนไฟล์ · ใส่ที่ 01 แล้วไฟล์ของลูกค้าจะม้วน **สองรอบ** แทนรอบเดียว
+- **11 คอลัมน์แยกเป็นสองใบ** — 06 คือ "ข้อมูลเข้าฐานข้อมูล" ยืนยันด้วยมิเตอร์ · 07 คือ
+  "ข้อมูลออกไปให้คนเห็น" ยืนยันด้วยไฟล์ · รวมกันจะได้ diff ที่แยกไม่ออกว่าอะไรพิสูจน์ด้วยอะไร
+- **04 → 05 → 06 เป็นสายตรง** ทั้งที่ 05 กับ 06 ไม่พึ่งกันทางตรรกะ · ผูกเพราะแก้คำประกาศชุด
+  เดียวกัน และการแยก diff สำคัญกว่าการรันขนาน
+
+#### สองอย่างที่เทสอัตโนมัติปิดไม่ได้ และเขียนไว้ใน ticket ทุกใบที่เกี่ยว
+
+**อ่านมิเตอร์จริง** — `fake_meter` เป็น autouse · **ตรวจข้ามปริมาณ** `kW × 0.25 ชม. ≈ kWh`
+เพราะ scaler ที่ยืมมาผิดจะให้ตัวเลขที่ดูดี ไม่ใช่ช่องว่าง
+
+#### เทส Output Parity ต้องเขียนให้ปฏิเสธการแก้ที่ผิด
+
+v1 อ่านมุมเฟสที่ address ซึ่งถูกสำหรับ SMART TCC และผิดสำหรับ CEWE ⇒ **v2 ที่ถูกจะมีตัวเลข
+ในช่องที่ v1 ว่าง** · parity เทียบ 14 คอลัมน์เดิม · **มุมเฟส assert กลับด้าน** ว่า v2 ต้องไม่ NULL
+พร้อมเหตุผลในชื่อเทส — ไม่งั้นอีกหกเดือนคนจะ "แก้ให้ตรงกัน" แล้วเทสจะเขียว
+
+#### แจ้งลูกค้า ไม่ใช่ถาม
+
+ชื่อหัวคอลัมน์ใช้ของ v2 · ไม่มี Rate D (มิเตอร์ลูกค้าเป็น `0.0` ทุกช่อง · CEWE เป็น NULL ทั้ง
+39 แถว) · Record Status เป็นคำไม่ใช่จุด · **L-L สามช่องกับกำลังไฟสี่ช่องมีค่าเฉพาะ Prometer
+100** · SMART TCC ได้แค่มุมเฟส · **ไฟล์ billing บนเครื่องเขาจะว่างจนกว่าจะตัดรอบแรก** —
+วันนี้มีแถวเดียวและเป็น Open Period
+
+#### ผลข้างเคียงข้ามโมดูล
+
+**11 คอลัมน์จะไหลเข้า MySQL ของลูกค้าเอง** — `dataout/schema.py` อนุมาน column จาก model
+ของเรา และ `reconcile` สั่ง `ALTER TABLE … ADD COLUMN` ให้อัตโนมัติในรอบ sync ถัดไป ·
+ถูกต้องตาม ADR 0020 (ปลายทางสะท้อนหน้าต่างของเรา) และมีบรรทัดฐานแล้ว (billing โต 40→60
+คอลัมน์ที่ M4c) · **แต่เป็น DDL ที่ยิงเข้าฐานข้อมูลของคนอื่น จึงต้องเขียนให้เห็น**
+
+### 7.7 M13 — ไฟล์ export · ✅ **ปิดงานแล้ว** 2026-09-11
+
+7 ticket ลงครบ + งานที่ `/scrutinize` เจอเพิ่ม 1 ใบ · **2106 passed · 57 skipped** ·
+ruff / pnpm lint / pnpm build สะอาด · จดหมายลูกค้าอยู่ที่ `.scratch/export-files/customer-letter.md`
+
+| commit | งาน |
+|---|---|
+| `19b68ac` | 01 ไฟล์ billing CSV + **ตัวเขียนไฟล์ร่วม + กฎการม้วน** |
+| `f6bfe08` | 02 ไฟล์ Energy Summary (รายวัน + กดบันทึกเอง) |
+| `0295532` | 03 คำเตือนวันหยุด → ไฟล์ Energy ล้าสมัย |
+| `fa671bc` | 04 prefactor `LpColumn` (ไม่เปลี่ยนพฤติกรรม) |
+| `08a96d3` | 05 `avg_geo_pf` — `Unit.NONE` → `Unit.NO_UNIT` |
+| `70d35a4` | 06 11 คอลัมน์ถึงฐานข้อมูล + migration 0016 |
+| `d2a9342` | 07 11 คอลัมน์ถึงไฟล์ (25 คอลัมน์) และหน้าจอ |
+| `f697e95` | ผลรีวิว — ตรึงว่า `GXUInt8` รอดการเก็บลงฐาน |
+| `a89afb5` | **ผล `/scrutinize` — กรอง `ALL_INVALID` ออกจาก Energy / หน้าจอ / CSV** |
+| `ce720d5` | ย้าย probe เข้า `app/scripts/` + `docs/meter-notes/lp-new-columns-scan.md` |
+
+#### สิ่งที่ implement เปลี่ยนจาก spec — สามข้อ
+
+1. **`_SCALER_ATTRIBUTE` ต้องรู้ attribute ไม่ใช่แค่ class** — กำลังไฟเฉลี่ยถูก capture ที่
+   **attribute 3 ของ Demand Register (class 5)** ไม่ใช่ attribute 2 · attribute 3 คือ
+   `last_average_value` ซึ่งเป็นค่าที่ลูกค้าต้องการ · และ class นั้นเก็บ scaler ที่
+   **attribute 4** ⇒ อ่าน attribute 3 เพื่อหา scaler จะได้ *ค่า* กลับมา ซึ่งเป็นคำตอบผิด
+   ชนิดที่คนจะเชื่อ · spec ไม่รู้เรื่องนี้ เพิ่งเจอจากการอ่าน capture list สด
+2. **แรงดันระหว่างสายอยู่ที่ Logger 2 ของ Prometer 100** ไม่ใช่ Logger 1 · เป็นที่เดียวใน
+   โปรแกรมที่ logger ของคอลัมน์ไม่ใช่ตัวที่เดาได้ · รอดผ่าน `COALESCE` เพราะขอบ 900 วิ
+   เป็นขอบ 300 วิ เสมอ
+3. **`read_load_profile` เปลี่ยนไปใช้ `**fields`** — รายชื่อที่เขียนมือ 12 ชื่อจะกลายเป็น 23
+   ซึ่งแต่ละชื่อคือโอกาสพิมพ์ `export_active_kwh` แทน `export_active_kw` (ต่างกันตัวเดียว
+   เป็นคอลัมน์จริงทั้งคู่ ไม่มีอะไรรายงาน) · มี contract test คุมว่าทุก field ที่ driver
+   ประกาศมีอยู่จริงบน dataclass
+
+#### `/scrutinize` เจอของที่สอง code-review ทั้งสองแกนมองไม่เห็น
+
+**v1 กรองแถวที่มิเตอร์ตั้งธง `ALL_INVALID` ออกใน 6 query** (`INV-LP-06`) — Energy Summary,
+หน้า Load Profile + count, และ CSV · **v2 ไม่กรองเลย**
+
+ไม่ใช่ความสะเพร่าตั้งแต่ต้น: **ไม่มีคอลัมน์ให้กรองจนกระทั่ง ticket 06** ⇒ ticket 06 ทำให้
+กรองได้ · ticket 07 เอาคำสถานะไปแสดง · แต่ไม่มีใครเอาไปใช้ ⇒ จาก "ทำไม่ได้" กลายเป็น
+"ทำได้แต่ไม่ได้ทำ" · CLAUDE.md ผูก Output Parity ไว้กับ 3 โมดูล และข้อนี้โดนสองในสาม
+รวมตัวที่ลูกค้าใช้คิดเงิน
+
+ใส่ที่ **2 จุด ไม่ใช่ 6** เพราะ `merged_rows_select` จ่ายทั้งแถวหน้าจอ + `total` + CSV จาก
+Select เดียวอยู่แล้ว · **Records ยังนับแถวเหล่านั้นต่อ** ตาม `_GRID_SQL` ของ v1 และตาม
+CONTEXT.md: Records ถามว่าแถวมาถึงไหม · Interval Status ถามว่าแถวนี้เชื่อได้ไหม
+
+**และ watermark ต้องแก้ตามด้วย** — ถ้าเลื่อนตามแถวที่*เขียน*เท่านั้น แถว `ALL_INVALID` ที่
+หัวแถวจะไม่เคยถูกข้าม หน้าต่างโตทุกรอบ query ซ้ำตลอดไป ⇒ **กับดัก
+self-healing-watermark ที่ไม่ต้องมีบั๊กเลย แค่มิเตอร์ตั้งธงครั้งเดียว**
+
+#### ตัวเลขที่ยืนยันกับมิเตอร์จริง — และที่ยังยืนยันไม่ได้
+
+`docs/meter-notes/lp-new-columns-scan.md` เก็บไว้ครบ · probe สองตัว **อ่าน target จาก
+column map ของ driver** ⇒ ล้าสมัยไม่ได้
+
+- **ทุกคอลัมน์ resolve scaler ได้** รวม export ทั้งสองผ่าน `1.0.2/4.6.0.255` เป็น
+  ExtendedRegister
+- **cross-check: `export_reactive_kvar` ยืนยันแล้ว 12/12 แถวไม่เป็นศูนย์ error 0.00 %** —
+  คือ declaration ที่เสี่ยงที่สุดในชุด
+- **`export_active_kw` ยังยืนยันไม่ได้** — ไซต์นี้ไม่จ่าย active ออก ⇒ ศูนย์ทั้งสองข้าง ·
+  ความเสี่ยงแคบลงเพราะเส้นทางเดียวกันพิสูจน์บนฝาแฝด reactive แล้ว · **ต้องมีไซต์ที่จ่ายไฟออก**
+- **มุมเฟสอ่านได้ `0.0` / `-1.0`** ขณะที่ PF บน association เดียวกันคือ 0.076 (⇒ ควรราว 86°)
+  · ตรวจกับ register instantaneous ตรง ๆ แล้วได้ค่าเดียวกัน ⇒ **มิเตอร์รายงานเอง
+  mapping ถูก** · น่าจะยังไม่ commission — เป็นคำถามของ CEWE ไม่ใช่ของซอฟต์แวร์
+- **แก้คำกล่าวเดิมที่ผิด**: เอกสารหลายที่เขียนว่า own-address ถูกปฏิเสธ *ทุกตัว* ·
+  `freq` ที่ `1.0.14.27.0.255` **ตอบที่ own address** เป็นตัวเดียว ⇒ sibling ที่ประกาศไว้
+  ไม่เคยถูกใช้
+
+#### เครื่องมือเองก็หลอกได้ — บทเรียนที่จับต้องได้ที่สุดของเฟสนี้
+
+probe รอบ 2026-09-09 รายงาน export cross-check ว่า `OK` **ทั้งที่เทียบศูนย์กับศูนย์** —
+แยกไม่ออกระหว่าง "ยืนยันแล้ว" กับ "ไม่มีอะไรให้เทียบ" · ตอนนี้มันนับแถวที่ไม่เป็นศูนย์และ
+เรียกกรณีโมฆะว่าโมฆะ ⇒ **ข้อบกพร่องอยู่ที่เครื่องมือ ไม่ใช่ที่มิเตอร์** และมันปิดด่านรับรอง
+ที่ spec ชี้ไว้เองไปได้หนึ่งรอบเต็ม
+
+#### mutation probe — ตัวเลขที่ควรจำ
+
+รวม 22 ตัวทั้งเฟส · **4 ตัวรอดในรอบแรกและต้องเขียนเทสเพิ่ม** ทุกตัวเป็นแบบเดียวกัน:
+assertion ตรวจสิ่งที่ *ประกาศ* ไม่ตรวจสิ่งที่ *ทำงานจริง*
+
+- ลบคอลัมน์กำลังไฟออกจากหน้าจอทั้งหมด → รอด (เทสตรวจแต่ tuple ที่ประกาศ)
+- ลบ `IS NULL` จากตัวกรอง → รอด (เคส NULL อยู่แต่ในคลาส Energy) ⇒ จะทำให้หน้าจอและ CSV
+  ของ SMW110W4 + Saral 305 ว่างทั้งหมดโดยไม่มีเทสแดง
+- เปลี่ยน `& 1` เป็น `= 0` → รอด (ไม่มีเคส DISTURBED ในคลาสนั้น)
+
+### 7.8 M14 — E4 push ขึ้น server กลาง · grill 2026-09-14 · ADR 0022 · 0023 · 0024 · ✅ implement ครบ 2026-09-14
+
+**E4 ของลูกค้าคือคำเดียว** — sheet 13 cell P17 เขียน `"API"` · เจ้าของยืนยันว่าคือ **push ออก** ⇒ งานคือ
+M8 ที่วางแผนไว้ แต่ grill รอบนี้พบว่าแผนเดิมยืนอยู่บนสามข้อที่ไม่จริง และขยายไปแตะ Energy Summary กับ
+ไฟล์ export
+
+#### หลักฐานที่เปลี่ยนรูปงาน
+
+- **v1 ไม่มี push ข้อมูลเลย** — HTTP ขาออกมีแต่ licensing (`/renew` `/redeem` `/activate`) ซึ่งไม่มีค่ามิเตอร์
+  ⇒ M8 ไม่มี Output Parity ให้ยึด มีแต่ข้อมูล v1 ให้ตรง
+- **memory เรื่อง "API ตัวกลางบนเครื่องลูกค้า query ตารางตรง" ผิด** — sweep v1 ไม่พบ service นั้น สิ่งที่มีคือ
+  FastAPI ของ v1 เองรับ `X-API-Key` (แก้ memory แล้ว)
+- **ปลายทางไม่ใช่ `arichds-portal`** — SPEC ของ portal ประกาศ "not an AMR dashboard" เป็น non-goal · portal
+  คือ gate ของ M9
+- **`sync_state` ขัด ADR 0008** และไม่เคยถูกสร้าง
+- **SPEC §3.8 กับ ADR 0012 ขัดกัน** ว่าจะ push summary หรือไม่
+
+#### คำตัดสิน
+
+| เรื่อง | ตัดสิน |
+|---|---|
+| ใครใช้ | ทุกไซต์ · ไซต์เดียวที่ห้าม cloud = ไม่กรอก URL (ใช้ Syncthing) |
+| สัญญา | **เรากำหนด** มี version · เผยแพร่บนหน้า **API** สร้างจาก model ตัวเดียวกับที่ serialize |
+| ส่งอะไร | billing · load profile · energy summary · รายชื่อมิเตอร์ + สถานะ |
+| ตัวระบุ / เวลา | Meter Serial · ISO 8601 มี offset |
+| ยืนยันตัวตน | **Push Token** JWT EdDSA ด้วย key เดิม แยกโดเมนจาก Activation Code · denylist ฝั่ง server |
+| state | ไม่ถือ — ถาม server ต้นรอบ · **`sync_state` ตัดทิ้ง** |
+| ต่อไม่ติด | ตาม §3.10: timeout · เพดานเวลา · ท้ายคิว · ข้ามรอบ |
+| server เก็บ | ตลอด · เกิน 90 วันแข็งที่ค่า push ล่าสุด |
+| **Energy Summary** | **เก็บลงตาราง · หน้าจออ่านตาราง · คำนวณใหม่ทั้ง 90 วันทุกรอบ** (ย้อน ADR 0012) |
+| log วันหยุด | ตาราง Holiday Change 90 วัน + App Log · ครอบ 5 ทาง |
+| **ไฟล์ export** | **FIFO 90 วัน** (billing = ทุกงวด) · LP ตัดวันละครั้ง · energy + billing เขียนทับทุกรอบ · atomic · **ไม่มี Closed Edition** (ย้อน amendment ของ ADR 0013) |
+| ตาราง | 10 → **12** |
+
+#### สิ่งที่ M13 ทำผิด และถูกแก้ในรอบนี้
+
+เหตุผลเรื่อง **พื้นที่ดิสก์จำกัด** ถูกบันทึกไว้ใน ADR 0020 ตั้งแต่ 24 ส.ค. · แต่ spec ของ M13 สองสัปดาห์ต่อมา
+เรียกไฟล์ energy รายวันว่า *"archive ระยะยาว อยู่นานกว่า retention"* และ amendment ของ ADR 0013 ให้ไฟล์ที่มี
+วันที่สะสม *"เหมือนตู้เอกสาร"* ⇒ ลบฐานข้อมูลที่ 90 วันขณะที่โฟลเดอร์ export โตไม่สิ้นสุด ไม่ได้ประหยัดอะไร ·
+เจ้าของชี้เองว่า **ถ้า FIFO แค่ในฐานข้อมูลของเรา มันไร้ประโยชน์**
+
+#### ตัวเลขที่วัด (สำเนาฐานข้อมูลจริงใน scratchpad · 4 มิเตอร์ · 96,017 แถว · 90 วันเต็ม)
+
+- คำนวณใหม่ทั้ง 90 วัน ≈ **0.07 วินาทีต่อมิเตอร์** · จำนวนวันหยุด 0 กับ 37 แทบไม่ต่าง · ไซต์ใหญ่สุดที่เจ้าของเจอ
+  < 20 มิเตอร์ ⇒ ≈ 1.4 วินาทีต่อรอบ · เจ้าของเลือกคำนวณทุกรอบเพราะไม่ต้องการความซับซ้อน
+- ไฟล์ LP จริง ≈ 1.5 MB ต่อมิเตอร์ ที่ 14 คอลัมน์ · template `[meter].csv`
+- เครื่อง install รัน build ก่อน migration 0016 — M13 ยังไม่ถึงเครื่อง (build ถูกเลื่อนตามที่ตัดสินไว้)
+
+#### เอกสารที่เขียนแล้ว
+
+ADR 0022 · 0023 · 0024 (ใหม่) · ADR 0012 และ amendment ของ 0013 มาร์ค superseded · SPEC §3.8 เขียนใหม่ ·
+§3.5/§3.6/§3.7 มาร์คข้อที่ถูกแทนที่ · §4 ตาราง 12 · Open Question ของ push ปิด · CONTEXT.md (Energy Summary ·
+Holiday Change · ไฟล์ export ทั้งสอง · Central Push · Push Token · ลบ Closed Edition) · CLAUDE.md digest ·
+จดหมายลูกค้า §1/§4/§5 + คำถามข้อ 3 (ยังไม่ได้ส่ง)
+
+~~**ขั้นถัดไป**: `/to-spec` ⇒ `/to-tickets`~~ ✅ **ทำแล้ว** — spec `7074ef8` · 8 ticket `28f334e` ·
+implement `9efb1f6` … `93bf70e` (2026-09-14) · ยังไม่เคยคุยกับ server จริงของทีม
+
+### 7.9 ตรวจ 0.7.0 บนเครื่องจริง · issue 022 · 023 · งานที่เหลือ — 2026-09-18
+
+#### ตรวจ 0.7.0 ที่ติดตั้งจริง เทียบ workbook สองไฟล์ของลูกค้า
+
+- **การติดตั้ง** — DisplayVersion 0.7.0 · service Running · port 8000 · alembic `0021` ·
+  Scheduler 11 job (`file_upload` ตัวสุดท้าย)
+- **เดิน UI ทุกหน้าเทียบโน้ตลูกค้า** — ทุกข้อที่นับว่าเสร็จแสดงตรงบนเครื่องจริง: E1 (ไม่ถาม Meter
+  Activation Code · Unlimited · All models) · brand/model บนหน้า Devices · ไฟล์ LP 25 คอลัมน์ (18 ของลูกค้า
+  ตามลำดับเดิม + 7 ต่อท้าย) · ไฟล์ billing 24 คอลัมน์พร้อม Export สี่ช่อง · ไฟล์ energy · แถบ
+  Total/Issues/Complete/Auto · แท็บ All Meters · Save to file · Import from meter · Data-out สามเมนู ·
+  Files (optional) บนหน้า API
+- **พบหนึ่งเรื่อง** → issue 022 ข้างล่าง
+
+#### issue 022 และ 023 — "หน้าว่าง = ปิด" ต้องจริงตลอดอายุของหน้า
+
+- **022 หน้า FTP** — บันทึกแท็บไปแล้วปิดจากหน้าไม่ได้ · grill 9 คำตัดสิน: **บังคับใช้ประโยคที่ ADR 0025
+  เขียนไว้แล้ว** ("an empty page *is* the switch") ไม่ใช่เพิ่มปุ่ม Stop — host/URL ว่างบนแท็บที่ active คือปิด
+  · แท็บอื่นที่ว่างถูกปฏิเสธ 422 · ค่าอื่นรวม host key คงไว้ · ปุ่มเปลี่ยนเป็น **Test saved connection** ·
+  `03cf39b` → **0.7.1**
+- **023 หน้า Database** — ข้อความบอก "The sync is off while Host is empty" แต่ฟอร์มบังคับ Host ทั้งที่ sync
+  นี้**ลบ**แถวในฐานลูกค้าด้วย (ADR 0020) · เอา required ออก และการ์ด Last sync บอกว่าปิดจาก settings
+  ที่บันทึก · `c0a0849` → **0.7.2**
+- ทั้งสองผ่าน gate เต็ม (2476 passed, 55 skipped) และ review · **ยังไม่ได้ลองด้วยตาบน build ที่ติดตั้ง**
+  เพราะเบราว์เซอร์ที่ login อยู่ชี้ 0.7.0 และการบันทึก host ว่างบนเครื่องที่ติดตั้งจะแก้ค่าจริงของเครื่องนั้น
+
+#### installer
+
+| เวอร์ชัน | commit | สถานะ |
+|---|---|---|
+| 0.7.0 | build จาก `586d36c` (bump ไม่ได้ commit แยก) | ติดตั้งบนเครื่อง dev 2026-09-18 · ตรวจตามข้างบน |
+| 0.7.1 | `03cf39b` | build แล้ว ไม่ได้ติดตั้ง |
+| 0.7.2 | `c0a0849` | build แล้ว — `installer\Output\arichds-setup-0.7.2.exe` · **ตัวที่จะส่งมอบ** |
+
+#### งานที่เหลือ
+
+- **ส่งมอบ** — ติดตั้ง 0.7.2 แล้วลองล้าง Host บนหน้า FTP และ Database · push commit ที่ค้างในเครื่อง ·
+  ส่งจดหมายลูกค้า + คำถาม 4 ข้อ (`.scratch/export-files/`) รวมเรื่อง B3/C3 ที่ลูกค้าขอไฮไลต์ทั้งแถว
+  แต่เราให้ chip (ยังไม่เคยถาม)
+- **รอคำตัดสินของเจ้าของ / ลูกค้า** — **E2** (ST-1DH ต้องมี ADR · สามรุ่น TCC ที่ wire แล้วยังพิสูจน์ไม่ได้) ·
+  **E5** (7 หน้าไม่มีโน้ต) · **issue 020** (`logger.exception` หลบ redaction ใน cycle ของ push/Database) ·
+  **issue 021** (รับ URL `http://` บนแท็บ HTTPS/Central Push)
+- **รอของจริง** — endpoint ของทีมปลายทาง `/v1/holdings` `/v1/push` `/v1/files/*` · SFTP/FTPS server จริง ·
+  ลิงก์ TCC `203.170.148.103` (5 จาก 9 รุ่นติดข้อนี้) · มิเตอร์ที่ export จริง (issue 018)
+- **issue เล็กที่ยังเปิด ไม่บล็อกการส่งมอบ** — 003 · 005 · 008 · 009 ข้อ 5–6 (ต้องใช้เครื่องที่ติดตั้ง) ·
+  019 · 006/007 ถูกอ้างใน commit ของ #45 แต่ยังไม่ยืนยันว่าปิดครบ · ข้อความ Test saved connection บน
+  หน้า Database ยังบอก "Fill the form in and press Save first" หลังตั้งใจปิด (review ของ 023 ปล่อยไว้ตามขอบเขต)
+- **milestone ที่ยังไม่เริ่ม** — ~~M4b Modbus~~ **ตัดออก 2026-09-18** (ADR 0026 — Modbus อยู่ในโปรแกรม Go
+  แยกต่างหาก) · **parity เทียบ v1 ระดับแถว** (งานของ
+  เจ้าของตาม §4 M4c) · **M9** (portal v2 + ต้องเลือกนโยบาย lease ก่อนออก license จริงใบแรก) ·
+  **M10** pilot ลูกค้าหนึ่งราย 2 สัปดาห์

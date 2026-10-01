@@ -27,16 +27,19 @@ replace-the-whole-set operation is a set nobody chose.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import delete, select
+from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import delete, func, select
 
 from arichds.acquisition.special_days import read_special_days
 from arichds.api.deps import AdminDep, SessionDep, get_current_user, require_feature
 from arichds.api.envelope import ApiResponse
-from arichds.db.models import Device, Holiday
+from arichds.db.models import Device, Holiday, HolidayChange
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/holidays",
@@ -124,8 +127,136 @@ class HolidayImportFromMeterResult(BaseModel):
     skipped: int
 
 
+class HolidayMutationOut(BaseModel):
+    """The answer to any change that may move the Energy Summary (ADR 0022,
+    M14 ticket 04).
+
+    **Drops `affected_date` and `energy_files_written_past`** (M13, issue 03):
+    those existed because the daily Energy Export File was a snapshot that
+    could fall behind a Holiday entered after the fact, so the API told the
+    operator which files needed a manual re-save. Since ADR 0022/0023 the
+    Energy Summary is a stored table recomputed over the whole window every
+    scheduler cycle and the Energy file is rewritten from it every cycle too
+    (ticket 04), so neither can be stale by more than one cycle — there is
+    nothing left to compute or report here, and the page shows a fixed notice
+    instead (`web/src/pages/Holidays.tsx`).
+
+    Attributes:
+        holiday: The row as it now stands, or ``None`` for a delete.
+    """
+
+    holiday: HolidayOut | None
+
+
+def _mutation_out(row: Holiday | None) -> HolidayMutationOut:
+    return HolidayMutationOut(holiday=_to_out(row) if row is not None else None)
+
+
 def _to_out(row: Holiday) -> HolidayOut:
     return HolidayOut(id=row.id, kind=row.kind, name=row.name, date=row.date, month=row.month, day=row.day)
+
+
+class HolidayChangeOut(BaseModel):
+    """One recorded Holiday Change (ADR 0022, M14 ticket 06; CONTEXT.md —
+    Holiday Change), as ``GET /api/holidays/changes`` renders it."""
+
+    id: int
+    created_at: dt.datetime
+    username: str
+    action: Literal["add", "edit", "delete", "import_csv", "import_meter"]
+    holiday_kind: Literal["annual", "public"] | None
+    holiday_name: str | None
+    holiday_date: dt.date | None
+    holiday_month: int | None
+    holiday_day: int | None
+    count: int | None
+
+    @field_validator("created_at")
+    @classmethod
+    def _ensure_utc(cls, value: dt.datetime) -> dt.datetime:
+        """Re-attach UTC to the naive datetime SQLite hands back.
+
+        The house pattern (``BillingRowOut._ensure_utc``, `docs/issues/006`):
+        SQLite has no timezone type, so a ``DateTime(timezone=True)`` column
+        comes back naive and the drawer would otherwise print 04:10 for a
+        change made at 11:10 (+07:00) — ui-audit ticket 02.
+        """
+        return value.replace(tzinfo=dt.UTC) if value.tzinfo is None else value.astimezone(dt.UTC)
+
+
+class HolidayChangePage(BaseModel):
+    """One page of the Holiday Change record (antd-ui: a list that can grow
+    pages server-side — mirrors :class:`~arichds.api.devices.DeviceEventPage`).
+
+    Attributes:
+        items: The changes, newest first.
+        total: How many changes exist in total (unpaged).
+        limit: The page size that was applied.
+        offset: How many rows were skipped.
+    """
+
+    items: list[HolidayChangeOut]
+    total: int
+    limit: int
+    offset: int
+
+
+def _change_to_out(row: HolidayChange) -> HolidayChangeOut:
+    return HolidayChangeOut(
+        id=row.id,
+        created_at=row.created_at,
+        username=row.username,
+        action=row.action,  # type: ignore[arg-type]
+        holiday_kind=row.holiday_kind,  # type: ignore[arg-type]
+        holiday_name=row.holiday_name,
+        holiday_date=row.holiday_date,
+        holiday_month=row.holiday_month,
+        holiday_day=row.holiday_day,
+        count=row.count,
+    )
+
+
+def _day_description(holiday: Holiday) -> str:
+    """The Holiday's day, however it is stored — an exact date or a
+    recurring month/day (used for the one App Log line each change writes)."""
+    return holiday.date.isoformat() if holiday.kind == "public" else f"{holiday.month}/{holiday.day}"
+
+
+def _record_holiday_change(session: SessionDep, *, action: str, username: str, holiday: Holiday) -> None:
+    """Add one Holiday Change row for a single-Holiday action — add, edit or
+    delete — to *session*. The caller commits it in the **same transaction**
+    as the mutation itself (ADR 0022, M14 ticket 06): a mutation the API
+    refuses never reaches here, so it records nothing.
+    """
+    session.add(
+        HolidayChange(
+            username=username,
+            action=action,
+            holiday_kind=holiday.kind,
+            holiday_name=holiday.name,
+            holiday_date=holiday.date,
+            holiday_month=holiday.month,
+            holiday_day=holiday.day,
+        )
+    )
+
+
+def _record_import_change(session: SessionDep, *, action: str, username: str, count: int) -> None:
+    """Add **one** Holiday Change row for a whole-set-replace import — never
+    one row per imported Holiday. Same transaction as the import itself."""
+    session.add(HolidayChange(username=username, action=action, count=count))
+
+
+def _log_holiday_change(*, action: str, username: str, name: str, day: str) -> None:
+    """The one App Log line ADR 0022 asks every single-Holiday change to
+    leave, naming the action, the user and the day."""
+    logger.info("Holiday %s: %r (%s) by %s", action, name, day, username)
+
+
+def _log_import_change(*, action: str, username: str, count: int) -> None:
+    """The one App Log line ADR 0022 asks every import to leave, naming the
+    action, the user and how many Holidays it brought in."""
+    logger.info("Holiday %s: %d holiday(s) by %s", action, count, username)
 
 
 def _find_colliding_holiday(
@@ -159,7 +290,7 @@ def list_holidays(session: SessionDep) -> ApiResponse[list[HolidayOut]]:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-def create_holiday(body: HolidayIn, session: SessionDep, _admin: AdminDep) -> ApiResponse[HolidayOut]:
+def create_holiday(body: HolidayIn, session: SessionDep, admin: AdminDep) -> ApiResponse[HolidayMutationOut]:
     """Add one Holiday. Admin-only."""
     collision = _find_colliding_holiday(session, body.kind, body.date, body.month, body.day)
     if collision is not None:
@@ -170,13 +301,18 @@ def create_holiday(body: HolidayIn, session: SessionDep, _admin: AdminDep) -> Ap
     row = Holiday(kind=body.kind, name=body.name, date=body.date, month=body.month, day=body.day)
     session.add(row)
     session.flush()
+    _record_holiday_change(session, action="add", username=admin.username, holiday=row)
+    name, day = row.name, _day_description(row)
     session.commit()
     session.refresh(row)
-    return ApiResponse.ok(_to_out(row))
+    _log_holiday_change(action="add", username=admin.username, name=name, day=day)
+    return ApiResponse.ok(_mutation_out(row))
 
 
 @router.patch("/{holiday_id}")
-def update_holiday(holiday_id: int, body: HolidayIn, session: SessionDep, _admin: AdminDep) -> ApiResponse[HolidayOut]:
+def update_holiday(
+    holiday_id: int, body: HolidayIn, session: SessionDep, admin: AdminDep
+) -> ApiResponse[HolidayMutationOut]:
     """Replace one Holiday's fields in place. Admin-only."""
     row = session.get(Holiday, holiday_id)
     if row is None:
@@ -193,20 +329,26 @@ def update_holiday(holiday_id: int, body: HolidayIn, session: SessionDep, _admin
     row.date = body.date
     row.month = body.month
     row.day = body.day
+    _record_holiday_change(session, action="edit", username=admin.username, holiday=row)
+    name, day = row.name, _day_description(row)
     session.commit()
     session.refresh(row)
-    return ApiResponse.ok(_to_out(row))
+    _log_holiday_change(action="edit", username=admin.username, name=name, day=day)
+    return ApiResponse.ok(_mutation_out(row))
 
 
 @router.delete("/{holiday_id}")
-def delete_holiday(holiday_id: int, session: SessionDep, _admin: AdminDep) -> ApiResponse[bool]:
+def delete_holiday(holiday_id: int, session: SessionDep, admin: AdminDep) -> ApiResponse[HolidayMutationOut]:
     """Remove one Holiday. Admin-only."""
     row = session.get(Holiday, holiday_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such holiday.")
+    name, day = row.name, _day_description(row)
+    _record_holiday_change(session, action="delete", username=admin.username, holiday=row)
     session.delete(row)
     session.commit()
-    return ApiResponse.ok(True)
+    _log_holiday_change(action="delete", username=admin.username, name=name, day=day)
+    return ApiResponse.ok(_mutation_out(None))
 
 
 @router.get("/export")
@@ -224,8 +366,41 @@ def export_holidays(session: SessionDep) -> ApiResponse[HolidayDocument]:
     )
 
 
+@router.get("/changes")
+def list_holiday_changes(
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=200, description="Page size")] = 50,
+    offset: Annotated[int, Query(ge=0, description="Rows to skip")] = 0,
+) -> ApiResponse[HolidayChangePage]:
+    """Return one page of the Holiday Change record, newest first (ADR 0022,
+    M14 ticket 06; CONTEXT.md — Holiday Change). Any authenticated role —
+    same licence gate as the rest of this router, no extra admin requirement.
+
+    Paginated server-side like ``GET /api/devices/{id}/events`` — the record
+    grows by one row per mutation and is kept for
+    :data:`~arichds.constants.RETENTION_DAYS`, so it is exactly the kind of
+    list that must not be dumped whole into a client-side table.
+
+    The ``id`` tiebreak in the ordering matches
+    :func:`arichds.api.devices.list_device_events`: SQLite's
+    ``CURRENT_TIMESTAMP`` has one-second resolution, so two changes made
+    within the same second — two quick edits, or an edit that collides right
+    after a create — would otherwise sort arbitrarily between pages.
+    """
+    total = session.scalar(select(func.count()).select_from(HolidayChange)) or 0
+    rows = session.scalars(
+        select(HolidayChange)
+        .order_by(HolidayChange.created_at.desc(), HolidayChange.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    return ApiResponse.ok(
+        HolidayChangePage(items=[_change_to_out(row) for row in rows], total=total, limit=limit, offset=offset)
+    )
+
+
 @router.post("/import")
-def import_holidays(body: HolidayDocument, session: SessionDep, _admin: AdminDep) -> ApiResponse[list[HolidayOut]]:
+def import_holidays(body: HolidayDocument, session: SessionDep, admin: AdminDep) -> ApiResponse[list[HolidayOut]]:
     """Replace the whole calendar with *body* (decision 13). Admin-only.
 
     Each entry's own shape (kind/date/month/day, 29-Feb refusal) was already
@@ -260,10 +435,12 @@ def import_holidays(body: HolidayDocument, session: SessionDep, _admin: AdminDep
         for entry in body.holidays
     ]
     session.add_all(rows)
+    _record_import_change(session, action="import_csv", username=admin.username, count=len(rows))
     session.flush()
     session.commit()
     for row in rows:
         session.refresh(row)
+    _log_import_change(action="import_csv", username=admin.username, count=len(rows))
     return ApiResponse.ok([_to_out(row) for row in rows])
 
 
@@ -271,7 +448,7 @@ def import_holidays(body: HolidayDocument, session: SessionDep, _admin: AdminDep
 def import_holidays_from_meter(
     device_id: Annotated[int, Query(ge=1, description="Which device's Special Days Table to import")],
     session: SessionDep,
-    _admin: AdminDep,
+    admin: AdminDep,
 ) -> ApiResponse[HolidayImportFromMeterResult]:
     """Read *device_id*'s Special Days Table and replace the whole calendar
     with it (decision 18). Admin-only.
@@ -322,8 +499,10 @@ def import_holidays_from_meter(
 
     session.execute(delete(Holiday))
     session.add_all(rows)
+    _record_import_change(session, action="import_meter", username=admin.username, count=len(rows))
     session.flush()
     session.commit()
     for row in rows:
         session.refresh(row)
+    _log_import_change(action="import_meter", username=admin.username, count=len(rows))
     return ApiResponse.ok(HolidayImportFromMeterResult(imported=[_to_out(row) for row in rows], skipped=skipped))

@@ -212,3 +212,56 @@ class TestLiveCaptureListsMatchTheMeterNotes:
             mapped_obis = {obis for obis, _attr in mapped}
             missing = mapped_obis - set(live_obis)
             assert not missing, f"{driver_cls.__name__} logger {logger_id} maps {missing}, absent from the live scan"
+
+
+class TestPhaseAngleParityIsInverted:
+    """M13, issue 07 — the one place Output Parity is asserted **backwards**,
+    and it is written this way to reject the wrong fix.
+
+    v1 maps phase angle only at ``1.0.81.7.4/15/26.255`` — the instantaneous
+    register — with a comment claiming the address was *"confirmed in both
+    CSVs"*. That address is right for the SMART TCC family and wrong for CEWE:
+    a Prometer 100 captures ``1.0.81.27.4/15/26.255``, the interval average.
+    So v1 reads those columns off the meter every fifteen minutes and throws
+    them away, and its ``avg_phase_angle_*`` columns are NULL on every CEWE row.
+
+    A correct v2 therefore prints numbers where v1 prints blanks. Without this
+    assertion that reads as a regression, and the obvious repair is to point v2
+    at v1's address — which would break it. The assertion is the reason nobody
+    does that.
+    """
+
+    def test_v1s_phase_angle_addresses_are_absent_from_the_live_capture_list(self) -> None:
+        """The mechanical fact underneath the whole thing: v1 cannot fill those
+        columns on this meter, because what it looks for is not captured."""
+        v1_addresses = {"1.0.81.7.4.255", "1.0.81.7.15.255", "1.0.81.7.26.255"}
+
+        assert v1_addresses.isdisjoint(PROMETER100_LOGGER1_LIVE)
+        assert v1_addresses.isdisjoint(PROMETER100_LOGGER2_LIVE)
+
+    def test_v2s_phase_angle_addresses_are_present_in_the_live_capture_list(self) -> None:
+        from arichds.acquisition.drivers.prometer100 import Prometer100Driver
+
+        mapped = {
+            obis
+            for obis, _attr in Prometer100Driver.LOAD_PROFILE_COLUMN_MAP[1]
+            if Prometer100Driver.LOAD_PROFILE_COLUMN_MAP[1][(obis, _attr)].field.startswith("phase_angle_")
+        }
+
+        assert mapped == {"1.0.81.27.4.255", "1.0.81.27.15.255", "1.0.81.27.26.255"}
+        assert mapped <= set(PROMETER100_LOGGER1_LIVE)
+
+    def test_the_two_address_sets_are_disjoint_so_this_is_not_a_naming_difference(self) -> None:
+        """Guards against the reading that v1 and v2 name the same object two
+        ways. They are different OBIS codes for different statistics of the
+        same quantity: D=7 is instantaneous, D=27 is the interval average."""
+        from arichds.acquisition.drivers.prometer100 import Prometer100Driver
+
+        v1_addresses = {"1.0.81.7.4.255", "1.0.81.7.15.255", "1.0.81.7.26.255"}
+        v2_addresses = {
+            obis
+            for obis, attr in Prometer100Driver.LOAD_PROFILE_COLUMN_MAP[1]
+            if Prometer100Driver.LOAD_PROFILE_COLUMN_MAP[1][(obis, attr)].field.startswith("phase_angle_")
+        }
+
+        assert v1_addresses.isdisjoint(v2_addresses)

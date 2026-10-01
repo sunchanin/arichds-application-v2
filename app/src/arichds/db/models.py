@@ -55,6 +55,11 @@ class Device(Base):
             across the devices that currently exist. Nullable only because rows
             created before M3 were never probed; code must never assume it is
             set. Deleting a device frees its serial for reuse.
+        meter_activation_code: The Meter Activation Code (ADR 0019, issue #42)
+            this device was verified against at Create — checked once, never
+            re-evaluated. Nullable is what grandfathering means: a device
+            created before this gate landed holds no code and keeps working.
+            Not returned by the API; nothing reads it back.
         site_name: Which site this meter is at — required by the form, and how
             the Devices tree groups. Pre-M3 rows carry the placeholder the
             migration wrote.
@@ -86,6 +91,15 @@ class Device(Base):
         consecutive_failures: How many failed reads in a row (ADR 0004's
             3-strikes rule).
         created_at: Row creation time (UTC).
+        csv_exported_through: The newest ``read_at`` already appended to this
+            device's Load Profile CSV (M7 slice 3, issue #30, D-8) — the
+            watermark the CSV export job and "Save CSV now" both advance.
+            ``None`` means nothing has been exported: export everything
+            stored, up to the skew cap (D-9) — there is no separate
+            first-enable/backfill mechanism the way v1 needed two for.
+            A column, not a table (SPEC §3.5/§3.7): it may drift without
+            losing data, because the rows themselves stay in
+            ``load_profile_readings`` regardless of what this says.
         events: Every Device Event recorded for this device.
     """
 
@@ -98,6 +112,9 @@ class Device(Base):
     # Unique AND nullable on purpose: SQLite permits many NULLs in a unique
     # index, which is exactly the "not yet identified" state pre-M3 rows are in.
     meter_serial: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, default=None)
+    # Not unique, not indexed: the serial column above is already the unique
+    # key, and nothing queries devices by their code.
+    meter_activation_code: Mapped[str | None] = mapped_column(String(1024), default=None)
     # The server_default is duplicated verbatim in migration 0003 rather than
     # shared through a constant: a migration must freeze the world as it was
     # when it was written, so it may not import anything that can be edited
@@ -136,6 +153,13 @@ class Device(Base):
     # produced. It also survives a Windows service restart.
     consecutive_failures: Mapped[int] = mapped_column(default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    csv_exported_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # M14 ticket 04 / ADR 0023 — `billing_exported_through` (M13, issue 01) and
+    # `energy_exported_through` (M13, issue 02) are gone: the Billing and
+    # Energy export files are now rewritten whole from their source tables
+    # every export cycle, so neither file needs a watermark to avoid
+    # repeating a row. `csv_exported_through` above is untouched — the Load
+    # Profile CSV still appends.
 
     readings: Mapped[list[LoadProfileReading]] = relationship(
         back_populates="device",
@@ -172,7 +196,7 @@ class LoadProfileReading(Base):
     **Every row here is an interval the meter itself recorded.** The name
     changed with the contents at M3-4: ADR 0007 deleted the ``interval='60s'``
     rows the Poller used to write each tick, and what remains — 15-minute load
-    profile (M5) and the Modbus cadences (M4b) — genuinely is load profile.
+    profile (M5; the Modbus cadences once planned for M4b were dropped, ADR 0026) — genuinely is load profile.
     Renaming was cheapest here, with the table empty and no reader, no push
     payload and no customer data attached to it yet.
 
@@ -205,6 +229,23 @@ class LoadProfileReading(Base):
             The rest of the twelve-column set the v1 Load Profile page shows
             (SPEC §3.5). **Empty until M4c** — the SMW110W4 does not capture
             them; all three CEWE models do.
+        phase_angle_a/phase_angle_b/phase_angle_c: Average phase angle per
+            phase (degrees) — M13, issue 06. Prometer 100 and SMART TCC only.
+        volt_l1_l2/volt_l2_l3/volt_l3_l1: Line-to-line voltage (V) —
+            Prometer 100 only, and from its **Logger 2**.
+        import_active_kw/import_reactive_kvar/export_active_kw/export_reactive_kvar:
+            Average power over the interval — kW/kvar, normalized down from
+            the meter's W/var at write time. Prometer 100 only. Deliberately
+            **not** the same quantity as the ``_kwh``/``_kvarh`` columns one
+            character away: those are energy accumulated over the interval,
+            these are the average power during it.
+        interval_status_flag: The meter's own Interval Status word, stored as
+            **the raw integer** and decoded at render time (CONTEXT.md —
+            Interval Status). Named for the glossary term, not the customer's
+            ``Record Status`` header — ``billing_readings.record_status``
+            already carries that name with a different meaning. Prometer 100
+            and Premier 550; the SMART TCC's word is a different object whose
+            bits nobody has verified, so it stays unmapped.
         created_at: When this row was written (UTC).
     """
 
@@ -233,6 +274,21 @@ class LoadProfileReading(Base):
     export_active_kwh: Mapped[float | None] = mapped_column(default=None)
     export_reactive_kvarh: Mapped[float | None] = mapped_column(default=None)
     avg_geo_pf: Mapped[float | None] = mapped_column(default=None)
+
+    # ── M13, issue 06 (migration 0016) — the eleven the customer's sample
+    # asks for. Every one of them already arrived in the buffer the product
+    # reads each cycle and was discarded for want of a column.
+    phase_angle_a: Mapped[float | None] = mapped_column(default=None)
+    phase_angle_b: Mapped[float | None] = mapped_column(default=None)
+    phase_angle_c: Mapped[float | None] = mapped_column(default=None)
+    volt_l1_l2: Mapped[float | None] = mapped_column(default=None)
+    volt_l2_l3: Mapped[float | None] = mapped_column(default=None)
+    volt_l3_l1: Mapped[float | None] = mapped_column(default=None)
+    import_active_kw: Mapped[float | None] = mapped_column(default=None)
+    import_reactive_kvar: Mapped[float | None] = mapped_column(default=None)
+    export_active_kw: Mapped[float | None] = mapped_column(default=None)
+    export_reactive_kvar: Mapped[float | None] = mapped_column(default=None)
+    interval_status_flag: Mapped[int | None] = mapped_column(Integer, default=None)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -277,6 +333,11 @@ class BillingReading(Base):
         source: Which acquisition path produced it (``dlms``) — a property of
             the reading, never a branch in read-path code.
         meter_serial: Snapshot per row (SPEC §3.6).
+        captured_at: When the Capture for this period was last written to the
+            capture folder (UTC) — stamped by the automatic path when a new
+            closed period is captured and by a hand-pressed Capture image; None
+            until a document exists (ui-audit ticket 03). Never backfilled
+            from file timestamps.
         created_at: When this row was first written (UTC).
         updated_at: When this row last changed (UTC). Required because the
             Open Period slot is upserted **in place** on every read (SPEC
@@ -306,10 +367,17 @@ class BillingReading(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
     bill_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # The Billing Sequence (ADR 0029, CONTEXT.md): this row's position among
+    # the closed periods sharing its bill date, counted from the newest as the
+    # meter lists them — `0` for every bill date with one period. Declared
+    # right after `bill_date` because the destination table and the export
+    # file both derive their column order from this one.
+    sequence: Mapped[int] = mapped_column(default=0, server_default=text("0"))
     read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     record_status: Mapped[str | None] = mapped_column(String(16), default=None)
     source: Mapped[str] = mapped_column(String(16))
     meter_serial: Mapped[str | None] = mapped_column(String(64), default=None)
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -407,11 +475,13 @@ class BillingReading(Base):
         # range, either tab.
         Index("ix_billing_readings_device_bill_date", "device_id", "bill_date"),
         # Closed-period dedup — reading the same buffer twice stores nothing
-        # new (ADR 0009).
+        # new (ADR 0009); `sequence` joined the key with ADR 0029, because a
+        # meter can stamp two periods on one second.
         Index(
             "uq_billing_readings_closed",
             "device_id",
             "bill_date",
+            "sequence",
             unique=True,
             sqlite_where=text("record_status IS NULL"),
         ),
@@ -494,6 +564,52 @@ class Holiday(Base):
     )
 
 
+class HolidayChange(Base):
+    """One recorded Holiday mutation — who, when, and which day (ADR 0022,
+    M14 ticket 06; CONTEXT.md — Holiday Change).
+
+    Written in the **same transaction** as the Holiday mutation it records, on
+    all five ways a Holiday moves: ``add``/``edit``/``delete`` (one Holiday) and
+    ``import_csv``/``import_meter`` (a whole-set replace). A mutation the API
+    refuses — a colliding Holiday, a 29 February annual Holiday — never reaches
+    the write path, so it records nothing (ADR 0008: no state for work that
+    didn't happen). No ``device_id``, same as :class:`Holiday` — the calendar
+    is machine-wide.
+
+    Attributes:
+        id: Surrogate primary key.
+        created_at: When the change was made (UTC).
+        username: The signed-in user who made it.
+        action: ``"add"``, ``"edit"``, ``"delete"``, ``"import_csv"`` or
+            ``"import_meter"``.
+        holiday_kind: The changed Holiday's kind, for the three single-Holiday
+            actions. ``None`` for an import.
+        holiday_name: The changed Holiday's name, for the three single-Holiday
+            actions. ``None`` for an import.
+        holiday_date: The changed Holiday's exact date (``public`` only).
+        holiday_month: The changed Holiday's recurring month (``annual`` only).
+        holiday_day: The changed Holiday's recurring day-of-month (``annual``
+            only).
+        count: How many Holidays the import brought in, for the two import
+            actions. ``None`` for a single-Holiday action.
+    """
+
+    __tablename__ = "holiday_changes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    username: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(16))
+    holiday_kind: Mapped[str | None] = mapped_column(String(16), default=None)
+    holiday_name: Mapped[str | None] = mapped_column(String(128), default=None)
+    holiday_date: Mapped[date | None] = mapped_column(Date, default=None)
+    holiday_month: Mapped[int | None] = mapped_column(default=None)
+    holiday_day: Mapped[int | None] = mapped_column(default=None)
+    count: Mapped[int | None] = mapped_column(default=None)
+
+    __table_args__ = (Index("ix_holiday_changes_created_at", "created_at"),)
+
+
 class EnergyRegisterReading(Base):
     """One dated snapshot of a meter's cumulative Energy Registers (M7-1,
     issue #28; CONTEXT.md — Energy Registers).
@@ -565,6 +681,102 @@ class EnergyRegisterReading(Base):
     device: Mapped[Device] = relationship()
 
     __table_args__ = (UniqueConstraint("device_id", "read_at", name="uq_energy_register_readings_device_read_at"),)
+
+
+class EnergySummaryDay(Base):
+    """One meter's Time-of-Use split for one **local** calendar day, stored
+    and recomputed over the whole retention window every scheduler cycle
+    (ADR 0022, supersedes ADR 0012; CONTEXT.md — Energy Summary).
+
+    The Energy Summary page, the Energy Export File and the Central Push all
+    read these rows instead of each re-aggregating ``load_profile_readings``
+    on their own, so the three cannot disagree. Field names match
+    :class:`arichds.db.energy_query.EnergySummaryDay` (the pydantic shape the
+    live aggregation still returns, and the recompute job's own input)
+    exactly, so writing a fresh row is a straight field copy.
+
+    Attributes:
+        id: Surrogate primary key.
+        device_id: Owning device. Rows go when the device does.
+        local_date: The meter's local calendar day
+            (``METER_LOCAL_UTC_OFFSET_HOURS``), never a UTC date — Time-of-Use
+            days are local days.
+        peak_import_kwh/offpeak_import_kwh/holiday_import_kwh/total_import_kwh:
+            Import active energy, split the way
+            :func:`arichds.db.energy_query.energy_summary_rows` classifies it.
+        peak_export_kwh/offpeak_export_kwh/holiday_export_kwh/total_export_kwh:
+            The same split for export active energy.
+        updated_at: When a bucket value on this row last actually changed
+            (UTC), stamped explicitly by the recompute job — only when a
+            value differs from what is already stored, so a recompute that
+            finds nothing new leaves this untouched. Otherwise a future push
+            would resend the whole window every cycle.
+    """
+
+    __tablename__ = "energy_summary_days"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    local_date: Mapped[date] = mapped_column(Date)
+
+    peak_import_kwh: Mapped[float] = mapped_column(default=0.0)
+    offpeak_import_kwh: Mapped[float] = mapped_column(default=0.0)
+    holiday_import_kwh: Mapped[float] = mapped_column(default=0.0)
+    total_import_kwh: Mapped[float] = mapped_column(default=0.0)
+    peak_export_kwh: Mapped[float] = mapped_column(default=0.0)
+    offpeak_export_kwh: Mapped[float] = mapped_column(default=0.0)
+    holiday_export_kwh: Mapped[float] = mapped_column(default=0.0)
+    total_export_kwh: Mapped[float] = mapped_column(default=0.0)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    device: Mapped[Device] = relationship()
+
+    __table_args__ = (UniqueConstraint("device_id", "local_date", name="uq_energy_summary_days_device_local_date"),)
+
+
+class BatteryReading(Base):
+    """One dated snapshot of a meter's battery status (M7-2, issue #29;
+    CONTEXT.md — Battery Reading).
+
+    ``status`` is the raw charge/status value the meter reports at
+    ``0.0.96.6.1.255`` — **stored verbatim, never interpreted** (D8): no
+    scaling, no threshold, no colour classification. Written by an hourly
+    scheduler job (D1) that skips a device already read today (D2/D3); a
+    failed read stores no row at all so the next hour retries it (D4).
+
+    **No ``remaining_seconds`` column** (D7) — this narrows what earlier
+    drafts of this feature described, because nothing in v2 can produce a
+    remaining-time value: v1's CEWE path leaves it ``NULL`` by design, the
+    register read here is a charge/status display, not a duration, and no
+    other v2 driver is battery-capable at all.
+
+    Attributes:
+        id: Surrogate primary key.
+        device_id: Owning device.
+        read_at: **Our** clock, UTC — like ``energy_register_readings.read_at``,
+            not the meter's. The day-guard (D2) is judged against this column's
+            UTC calendar day.
+        status: The raw value, ``str(raw).strip()``, truncated to the column
+            width by the writer (D8) — never truncated silently by SQLite.
+            ``NULL`` when the meter answered with nothing, which still counts
+            as today's row (D4).
+        created_at: When this row was first written (UTC).
+    """
+
+    __tablename__ = "battery_readings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str | None] = mapped_column(String(20), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    device: Mapped[Device] = relationship()
+
+    __table_args__ = (UniqueConstraint("device_id", "read_at", name="uq_battery_readings_device_read_at"),)
 
 
 class DeviceEvent(Base):

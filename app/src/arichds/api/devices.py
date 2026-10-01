@@ -65,9 +65,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import delete, func, select
 
 from arichds.acquisition.billing import read_and_store_billing
-from arichds.acquisition.catalog import CATALOG, ModelSpec
+from arichds.acquisition.catalog import BRAND_LABELS, CATALOG, Brand, ModelSpec, brand_key
 from arichds.acquisition.connection_params import connection_params_from_transport
-from arichds.acquisition.drivers.factory import supported_models
+from arichds.acquisition.drivers.factory import supported_framings, supported_models
 from arichds.acquisition.load_profile import read_and_store_load_profile
 from arichds.acquisition.probe import ProbeError, ProbeResult, probe_meter
 from arichds.acquisition.status import (
@@ -79,10 +79,20 @@ from arichds.acquisition.status import (
     record_no_driver,
     record_success,
 )
-from arichds.api.deps import AdminDep, CurrentUserDep, LicenseServiceDep, PollerDep, SessionDep, get_current_user
+from arichds.api.deps import (
+    AdminDep,
+    CurrentUserDep,
+    LicenseServiceDep,
+    PollerDep,
+    SchedulerDep,
+    SessionDep,
+    get_current_user,
+)
 from arichds.api.envelope import ApiResponse
 from arichds.constants import JOB_BILLING, JOB_LIVENESS, JOB_LOAD_PROFILE
 from arichds.db.models import BillingReading, Device, DeviceEvent, LoadProfileReading
+from arichds.licensing import WRONG_METER, verify_meter_activation_code
+from arichds.licensing import activation_code as ac
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +119,13 @@ class NetTransport(BaseModel):
     kind: Literal["net"] = "net"
     host: str = Field(min_length=1, max_length=255)
     port: int = Field(ge=1, le=65535)
+    #: WRAPPER or HDLC over the socket — a property of the install, not the
+    #: model (``docs/issues/025``): a meter behind a serial-to-TCP converter
+    #: speaks HDLC whatever it is. ``None`` = the driver's own default, which is
+    #: also what every row stored before this field existed means. Whether the
+    #: *model* offers the choice is the driver's declaration, checked by
+    #: :func:`_require_supported_framing` — the schema only knows the two words.
+    framing: Literal["wrapper", "hdlc"] | None = None
 
 
 class SerialTransport(BaseModel):
@@ -163,6 +180,7 @@ class NetTransportOut(BaseModel):
     kind: Literal["net"] = "net"
     host: str
     port: int
+    framing: str | None = None
 
 
 class SerialTransportOut(BaseModel):
@@ -228,7 +246,11 @@ def _transport_out(transport: dict[str, Any]) -> NetTransportOut | SerialTranspo
             parity=str(transport.get("parity", "")),
             stop_bits=_safe_int(transport.get("stop_bits")),
         )
-    return NetTransportOut(host=str(transport.get("host", "")), port=_safe_int(transport.get("port")))
+    return NetTransportOut(
+        host=str(transport.get("host", "")),
+        port=_safe_int(transport.get("port")),
+        framing=str(transport.get("framing")) if transport.get("framing") else None,
+    )
 
 
 class DeviceCreate(BaseModel):
@@ -251,6 +273,11 @@ class DeviceCreate(BaseModel):
             security boundary, so convenience (the edit form prefills it and
             Test Connection needs no retyping) wins over secrecy. The two
             cipher keys below are unaffected — they are never returned.
+        meter_activation_code: The Meter Activation Code (ADR 0019, issue
+            #42) — signed by the vendor for this Meter Serial and this
+            Machine ID. Verified against the **probed** serial, never the
+            operator's claim, and required: a customer can only add the
+            meters they were sold.
         site_code: Record-only.
         customer: Record-only.
         meter_number: Record-only operator label — not the Meter Serial.
@@ -268,6 +295,7 @@ class DeviceCreate(BaseModel):
     site_name: str = Field(min_length=1, max_length=255)
     transport: Transport
     password: str = Field(default="", max_length=128)
+    meter_activation_code: str | None = Field(default=None, min_length=1, max_length=1024)
     site_code: str | None = Field(default=None, max_length=80)
     customer: str | None = Field(default=None, max_length=255)
     meter_number: str | None = Field(default=None, max_length=80)
@@ -292,6 +320,16 @@ class DeviceUpdate(DeviceCreate):
     """
 
     password: str | None = Field(default=None, max_length=128)
+    # Accepted but never checked on this leg (ADR 0019, issue #42, "the issue
+    # and the ADR are both wrong about the shipped code" — see the code
+    # review that produced this decision). ADR 0019 asks Update to re-check a
+    # code when the probed serial changes; it does not need to, because
+    # `_reject_changed_serial` already refuses *any* Update whose probed
+    # serial differs from the stored one, unconditionally — a stricter gate
+    # than a re-check would be. This field exists only so the inherited
+    # required field does not turn every PUT into a 422; the frontend never
+    # sends it on edit.
+    meter_activation_code: str | None = Field(default=None, max_length=1024)
 
 
 class DeviceOut(BaseModel):
@@ -436,22 +474,30 @@ class CatalogEntry(BaseModel):
 
     Attributes:
         model: Canonical model identifier — what to submit.
-        brand: Owning brand.
+        brand: Owning brand — the catalog key, what to submit and compare.
+        brand_label: What to show for the brand (ui-audit ticket 01).
         ui_label: What to show in the dropdown.
         fixed_password: Prefill for the Password field, or None when the model
             uses key-based auth.
         supports_battery: True if the model exposes a battery reading.
         supports_energy_summary: True if the model exposes an energy summary.
         supports_special_days: True if the model exposes a special-days table.
+        framings: The framings the operator may choose for this model on a TCP
+            transport, default first — empty when the model offers no choice, in
+            which case the form shows no Framing field at all. The one piece of
+            transport information the catalog *does* carry, and it is the
+            driver's declaration, not the catalog's (``docs/issues/025``).
     """
 
     model: str
     brand: str
+    brand_label: str
     ui_label: str
     fixed_password: str | None
     supports_battery: bool
     supports_energy_summary: bool
     supports_special_days: bool
+    framings: list[str]
 
 
 class QuotaOut(BaseModel):
@@ -608,12 +654,36 @@ def _to_catalog_entry(model: str, spec: ModelSpec) -> CatalogEntry:
     return CatalogEntry(
         model=model,
         brand=spec.brand.value,
+        brand_label=BRAND_LABELS[spec.brand],
         ui_label=spec.ui_label,
         fixed_password=spec.fixed_password,
         supports_battery=spec.supports_battery,
         supports_energy_summary=spec.supports_energy_summary,
         supports_special_days=spec.supports_special_days,
+        framings=list(supported_framings(model)),
     )
+
+
+def _require_known_brand(brand: str) -> str:
+    """Return the catalog key for *brand*, or refuse it.
+
+    A brand is a catalog key (SPEC §3.3, ui-audit ticket 01): the device form
+    compares brands with ``===``, so a row stored as ``"CEWE"`` beside a
+    catalog that says ``"cewe"`` showed its own model as "not licensed on this
+    machine". Accept any casing, store the key.
+
+    Raises:
+        HTTPException: 422 naming the accepted brands when *brand* matches
+            none of them even case-insensitively.
+    """
+    key = brand_key(brand)
+    if key is None:
+        accepted = ", ".join(b.value for b in Brand)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unknown meter brand {brand!r}. Accepted brands: {accepted}.",
+        )
+    return key.value
 
 
 def _require_known_model(model: str) -> None:
@@ -630,6 +700,71 @@ def _require_known_model(model: str) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Unknown meter model {model!r}. Supported: {supported_models()}",
         )
+
+
+def _require_supported_framing(model: str, transport: NetTransport | SerialTransport) -> None:
+    """Refuse a framing the model's driver does not declare.
+
+    A form error, not a meter failure — 422, and no socket is opened. Without
+    it the driver factory would raise the same complaint as a 500 from inside
+    the probe, and a driver that ignored the word would speak its default at a
+    meter configured for the other one.
+
+    Raises:
+        HTTPException: 422 naming the model and what it does offer.
+    """
+    framing = getattr(transport, "framing", None)
+    if framing is None:
+        return
+    offered = supported_framings(model)
+    if framing not in offered:
+        choice = ", ".join(offered) if offered else "no choice of framing"
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"The {model} model does not support the {framing!r} framing — it offers: {choice}.",
+        )
+
+
+def _require_licensed_model(model: str, licensed: list[str] | None) -> None:
+    """Refuse a model this machine's licence does not name (issue 015).
+
+    ``licensed is None`` grants every catalogued model — the same ceiling
+    shape ``licensing/features.py``'s ``effective_features`` already uses for
+    features (D2): every licence issued before this landed carries no
+    ``models`` key at all and must keep working exactly as it does today.
+    An **empty list** is meaningfully different: it means the licence
+    permits no model at all.
+
+    A form error, not a meter failure or a state conflict, so it answers 422
+    — the same convention :func:`_require_known_model` already answers to
+    the same question about the same field ("is this model string
+    acceptable here?") — and never opens a socket. 409 is spoken for by a
+    conflict with state that exists (a full quota, a taken name); nothing
+    the operator deletes makes an unlicensed model licensed. 403 is spoken
+    for by the role guard and Limited Mode.
+
+    Compared lowercased: ``payload.model.lower()`` is what Create and Update
+    both store. *licensed* itself is trusted to already be lowercase model
+    keys — the only real issuer, ``tools/arichds_vendor.py``, validates every
+    named model against the app's own catalog, whose keys are all lowercase,
+    so a mixed-case entry cannot reach a licence through that path (fix
+    round 1, code review).
+
+    Raises:
+        HTTPException: 422 naming the model that was rejected and every
+            model the licence allows (or that it allows none, when the list
+            is empty) — a bare "not licensed" would make the operator phone
+            the vendor to learn what they bought.
+    """
+    if licensed is None:
+        return
+    if model.lower() in licensed:
+        return
+    allowed_text = ", ".join(sorted(licensed)) if licensed else "none"
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=(f"This machine's licence does not permit meter model {model!r}. Licensed models: {allowed_text}."),
+    )
 
 
 def _probe_failure(response: Response, exc: ProbeError) -> ApiResponse[DeviceOut]:
@@ -712,6 +847,92 @@ def _enforce_quota(session: SessionDep, max_meters: int | None) -> None:
                 "Delete a device or ask the vendor for a larger license."
             ),
         )
+
+
+def _verify_meter_activation_code(code: str, *, meter_serial: str, machine_id: str) -> str:
+    """Verify a Meter Activation Code against the **probed** serial and this
+    machine's Machine ID (ADR 0019, issue #42).
+
+    Checked once, at Create — deliberately **not** a live re-check the way
+    ADR 0001 requires of the machine licence. ADR 0019's "When it is
+    checked" section makes this an entitlement decided at the moment of
+    entitlement: a meter already added keeps working, and nothing here
+    should grow into a background re-validation loop.
+
+    ``meter_serial`` must be the probed serial (ADR 0005), never the
+    operator's typed claim — the row's identity and the code's identity are
+    checked independently of each other.
+
+    Raises:
+        HTTPException: 409 naming which of the three things was wrong.
+            ``WRONG_METER``'s message is the only one that echoes a serial
+            from the code's own payload — it is the one case where the
+            signature has already verified, so that serial is vendor-signed
+            rather than attacker-controlled.
+
+    Returns:
+        *code*, unchanged, to store on the new row.
+    """
+    result = verify_meter_activation_code(code, meter_serial=meter_serial, machine_id=machine_id)
+    if result.valid:
+        return code
+
+    if result.reason == WRONG_METER:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This Meter Activation Code was issued for meter {result.meter_serial!r}, not "
+                f"{meter_serial!r}. Ask the vendor for a code issued for this meter."
+            ),
+        )
+    if result.reason == ac.WRONG_MACHINE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This Meter Activation Code was issued for a different machine. "
+                "Ask the vendor for a code issued for this machine."
+            ),
+        )
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="This is not a valid Meter Activation Code. Ask the vendor for one issued for this meter.",
+    )
+
+
+def _resolve_meter_activation_code(
+    code: str | None, *, required: bool, meter_serial: str, machine_id: str
+) -> str | None:
+    """Apply the machine's **Meter Activation Requirement** (CONTEXT.md, issue 01).
+
+    *required* comes off the machine's own Activation Code. When it is unstated
+    — the full version — an operator adds a meter with no code at all.
+
+    **A supplied code is verified either way.** The requirement is "you need
+    not supply one", never "you may not": ignoring a code an operator did send
+    would write an unverified string into a column a later reader will assume
+    was checked.
+
+    Raises:
+        HTTPException: 422 when the machine demands a code and none was sent —
+            the same status the required field itself used to produce, so an
+            operator sees no change in behaviour. 409 for a code that does not
+            verify, from :func:`_verify_meter_activation_code`.
+
+    Returns:
+        The code to store, or ``None`` when none was supplied and none was
+        demanded.
+    """
+    if code is None:
+        if required:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "This machine requires a Meter Activation Code for each meter. "
+                    "Ask the vendor for one issued for this meter."
+                ),
+            )
+        return None
+    return _verify_meter_activation_code(code, meter_serial=meter_serial, machine_id=machine_id)
 
 
 def _require_device(session: SessionDep, device_id: int) -> Device:
@@ -802,7 +1023,8 @@ def test_connection(payload: TestConnectionRequest, admin: AdminDep) -> ApiRespo
         HTTPException: 403 for a non-admin, 422 if the model is unknown.
     """
     _require_known_model(payload.model)
-    conn = connection_params_from_transport(payload.transport.model_dump())
+    _require_supported_framing(payload.model, payload.transport)
+    conn = connection_params_from_transport(payload.transport.model_dump(exclude_none=True))
     try:
         result = probe_meter(model=payload.model, conn=conn, password=payload.password)
     except ProbeError as exc:
@@ -826,6 +1048,7 @@ def create_device(
     response: Response,
     session: SessionDep,
     poller: PollerDep,
+    scheduler: SchedulerDep,
     license_service: LicenseServiceDep,
     admin: AdminDep,
 ) -> ApiResponse[DeviceOut]:
@@ -835,24 +1058,49 @@ def create_device(
     quota and the name are cheap and decided locally, so a person never waits
     seconds on a DLMS association to be told they made a typo. Only then does
     the machine talk to the meter, and only if the meter answers with an
-    identity is a row written — ADR 0005's "no serial, no row".
+    identity is a row written — ADR 0005's "no serial, no row". The Meter
+    Activation Code is checked last, against the **probed** serial — a taken
+    serial is refused before it, since that is a structural conflict the
+    operator must resolve whatever their code says (ADR 0019).
 
     The Poller restarts so the new device gets a worker without waiting for a
     process restart — the same "applies live" principle as activation.
 
+    **The first load-profile read is queued, not run here** (issue #44,
+    D1/D4/D5) — after the commit, so the queued callable never resolves the
+    device by id before the row exists, and via
+    :meth:`~arichds.jobs.scheduler.Scheduler.run_soon` rather than inline, so
+    this handler keeps returning as fast as it does today. See
+    :func:`_read_initial_load_profile` for what runs and why it takes the
+    Manual path.
+
     Raises:
-        HTTPException: 403 for a non-admin · 422 for an unknown model · 409 for
-            a full quota, a taken name, or a serial another device holds.
+        HTTPException: 403 for a non-admin · 422 for an unknown or unlicensed
+            model (issue 015) · 409 for a full quota, a taken name, a serial
+            another device holds, or a Meter Activation Code that does not
+            verify (ADR 0019).
 
     Returns:
         The created device, or a 502 failure envelope naming why the meter
         refused — in which case **nothing was written**.
     """
+    brand = _require_known_brand(payload.brand)
     _require_known_model(payload.model)
-    _enforce_quota(session, license_service.current_state().max_meters)
+    # One read, reused by both gates below (code review, fix round 1) — two
+    # separate `current_state()` calls are two separate `RLock` acquisitions
+    # that can straddle a staleness-TTL re-evaluation, so the model gate and
+    # the quota gate could in principle judge against two different licences.
+    # A local, never a default argument or a cache (ADR 0001): the read
+    # itself still happens exactly once per request.
+    license_state = license_service.current_state()
+    _require_licensed_model(payload.model, license_state.models)
+    _enforce_quota(session, license_state.max_meters)
     _reject_duplicate_name(session, payload.name)
 
-    transport = payload.transport.model_dump()
+    _require_supported_framing(payload.model, payload.transport)
+    # exclude_none: a framing the operator never chose is not written into the
+    # row as `"framing": null` — the stored shape stays what it was (issue 025).
+    transport = payload.transport.model_dump(exclude_none=True)
     conn = connection_params_from_transport(transport)
     try:
         probe = probe_meter(model=payload.model, conn=conn, password=payload.password)
@@ -860,12 +1108,22 @@ def create_device(
         return _probe_failure(response, exc)
 
     _reject_duplicate_serial(session, probe.meter_serial)
+    # Same `license_state` local the model gate and the quota gate above read,
+    # for the same reason: one evaluation per request, never two that could
+    # straddle a staleness-TTL re-evaluation (ADR 0001).
+    stored_code = _resolve_meter_activation_code(
+        payload.meter_activation_code,
+        required=bool(license_state.require_meter_activation),
+        meter_serial=probe.meter_serial,
+        machine_id=license_service.machine_id,
+    )
 
     device = Device(
         name=payload.name,
-        brand=payload.brand,
+        brand=brand,
         model=payload.model.lower(),
         meter_serial=probe.meter_serial,
+        meter_activation_code=stored_code,
         site_name=payload.site_name,
         site_code=payload.site_code,
         customer=payload.customer,
@@ -897,7 +1155,54 @@ def create_device(
     logger.info("Device %s added at %s (serial %s)", device.name, device.transport_endpoint, device.meter_serial)
 
     poller.restart()
+    # After the commit (D5) — the row must exist before the queued callable
+    # resolves it by id on the Scheduler's own thread. Ordering relative to
+    # poller.restart() above does not matter: the Manual path this callable
+    # takes waits for the Transport Endpoint rather than requiring the
+    # Poller's worker to exist first.
+    device_id = device.id
+    scheduler.run_soon(f"initial_load_profile:{device_id}", lambda: _read_initial_load_profile(device_id))
     return ApiResponse.ok(_to_out(device))
+
+
+def _read_initial_load_profile(device_id: int) -> None:
+    """The first load-profile read after Create (issue #44, D1/D4/D5) — a
+    machine that was just activated should start collecting now, not wait up
+    to ``LOAD_PROFILE_INTERVAL_SEC``.
+
+    Runs on the Scheduler's one-shot lane (:meth:`~arichds.jobs.scheduler.Scheduler.run_soon`),
+    never inline in the request — ``POST /devices`` must return as fast as it
+    does today.
+
+    **Takes the Manual path** (``background=False``, the default) — D4.
+    ``create_device`` calls ``poller.restart()`` a few lines up, and a new
+    worker's first tick runs immediately (``poller.py``), so the Transport
+    Endpoint is *predictably* held the moment this runs. A background
+    acquisition would return ``skipped=True`` and never actually read the
+    meter in production, while every unit test that does not reproduce that
+    exact race would stay green — the same failure #43's review caught by
+    mutation.
+
+    **Calls the load-profile reader and nothing else** (D1) — a device with
+    no stored closed billing period already gets a whole-buffer billing read
+    from inside the ordinary Load Profile cycle's own Billing Change Check
+    (``billing.py``'s ``stored_newest is None`` branch, #43/ADR 0018), so this
+    must not call :func:`~arichds.acquisition.billing.read_and_store_billing`
+    or ``billing_change_check`` — that would read billing over a *second*
+    Transport Endpoint acquisition for no reason ADR 0018 has priced.
+
+    Never raises: a meter failure is a log line, exactly like every other
+    background read in this product (ADR 0004 — a load-profile failure is
+    never a device-status strike, and this queued callable is not allowed to
+    take the Scheduler thread down with it either).
+    """
+    try:
+        outcome = read_and_store_load_profile(device_id)
+    except Exception:  # noqa: BLE001 — a one-shot must never raise past the Scheduler.
+        logger.exception("Initial load-profile read of device id %s failed", device_id)
+        return
+    if outcome.error is not None:
+        logger.warning("Initial load-profile read of device id %s: %s", device_id, outcome.error)
 
 
 @router.put("/{device_id}")
@@ -907,6 +1212,7 @@ def update_device(
     response: Response,
     session: SessionDep,
     poller: PollerDep,
+    license_service: LicenseServiceDep,
     admin: AdminDep,
 ) -> ApiResponse[DeviceOut]:
     """Re-probe a meter, then save every edited field.
@@ -917,13 +1223,21 @@ def update_device(
     meters' history into one row. A row whose serial is still NULL — created
     before M3 — is identified here, which is that row's only way out.
 
+    **The licence gate applies here too** (issue 015, D3) — a gate on Create
+    alone would be bypassable by adding a licensed model, then editing the row
+    onto an unlicensed one. Read per request through ``LicenseServiceDep``
+    (ADR 0001), never cached, exactly as :func:`create_device` reads it for
+    ``max_meters``. Deliberately **not** relying on
+    :func:`_reject_changed_serial` for this: that guard is a side effect of
+    ADR 0005, depends on a successful probe, and says nothing about licensing.
+
     Nothing is assigned until the probe has succeeded and both serial checks
     have passed, so a refusal leaves every column exactly as it was.
 
     Raises:
-        HTTPException: 403 for a non-admin · 404 for an unknown device · 422 for
-            an unknown model · 409 for a taken name, a changed serial, or a
-            serial another device holds.
+        HTTPException: 403 for a non-admin · 404 for an unknown device · 422
+            for an unknown or unlicensed model (issue 015) · 409 for a taken
+            name, a changed serial, or a serial another device holds.
 
     Returns:
         The updated device, or a 502 failure envelope naming why the meter
@@ -933,7 +1247,9 @@ def update_device(
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No device with id {device_id}")
 
+    brand = _require_known_brand(payload.brand)
     _require_known_model(payload.model)
+    _require_licensed_model(payload.model, license_service.current_state().models)
     _reject_duplicate_name(session, payload.name, exclude_id=device_id)
 
     # The effective secrets: blank means keep (D10). The re-probe has to use the
@@ -943,7 +1259,10 @@ def update_device(
     block_cipher_key = _kept(payload.block_cipher_key, device.block_cipher_key or "") or None
     authentication_key = _kept(payload.authentication_key, device.authentication_key or "") or None
 
-    transport = payload.transport.model_dump()
+    _require_supported_framing(payload.model, payload.transport)
+    # exclude_none: a framing the operator never chose is not written into the
+    # row as `"framing": null` — the stored shape stays what it was (issue 025).
+    transport = payload.transport.model_dump(exclude_none=True)
     conn = connection_params_from_transport(transport)
     try:
         probe = probe_meter(model=payload.model, conn=conn, password=password)
@@ -954,7 +1273,7 @@ def update_device(
     _reject_duplicate_serial(session, probe.meter_serial, exclude_id=device_id)
 
     device.name = payload.name
-    device.brand = payload.brand
+    device.brand = brand
     device.model = payload.model.lower()
     device.meter_serial = probe.meter_serial
     device.site_name = payload.site_name
@@ -1260,7 +1579,14 @@ def _read_load_profile_job(device_id: int, model: str) -> ReadNowJobResult:
     # to a shorter sentence instead of a TypeError inside the format.
     through = f" up to {outcome.through:%Y-%m-%d %H:%M} UTC" if outcome.through is not None else ""
     detail = f"Stored {outcome.stored} Interval Readings{through}."
-    if outcome.budget_exhausted:
+    # Gated on `history_remains` (D10, issue #44), not `budget_exhausted`
+    # alone — pressing Read now again after a call that stored nothing
+    # re-walks the identical empty window and cannot make progress
+    # (`LoadProfileReadResult.history_remains`'s own docstring). The
+    # `stored == 0` branch above already returns before this point, so this
+    # is the single, canonical gate rather than a second definition of the
+    # same rule.
+    if outcome.history_remains:
         detail += " More history remains — press Read now again to continue."
     return ReadNowJobResult(job=JOB_LOAD_PROFILE, ok=True, detail=detail)
 

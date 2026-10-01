@@ -58,7 +58,7 @@ from arichds.acquisition.connection_params import ConnectionParams
 from arichds.acquisition.drivers import _gurux_net_patch  # noqa: F401 — import applies the patch
 from arichds.acquisition.drivers._gurux_trace import silence_frame_trace
 from arichds.acquisition.drivers.base import EnergyRegisterReading, MeterConnectionError, MeterDriver, SpecialDayEntry
-from arichds.acquisition.obis import ENERGY_COLUMNS_WH
+from arichds.acquisition.obis import ENERGY_COLUMNS_WH, POWER_COLUMNS_W
 from arichds.constants import (
     CONNECT_ASSOC_RETRY_ATTEMPTS,
     CONNECT_ASSOC_RETRY_BACKOFF_SEC,
@@ -105,6 +105,13 @@ def _cosem_class(obis_code: str) -> Any:
 #: that exposes it (``smw110``, the SMART TCC family — M7-1, issue #28;
 #: gurux-dlms skill "Special Days Table").
 SPECIAL_DAYS_OBIS = "0.0.11.0.0.255"
+
+#: The CEWE battery-status register — "Battery charge display", not a
+#: remaining-time counter (M7-2, issue #29, Finding 1). Shared by the three
+#: CEWE models (``prometer100``, ``saral305``, ``premier550``); ``smw110``
+#: and the SMART TCC family are not battery-capable in v2 (D7/D10). Ported
+#: unchanged from v1 ``cewe-worker/src/constants.py:84-90``.
+CEWE_BATTERY_STATUS_OBIS = "0.0.96.6.1.255"
 
 #: `C` -> the :class:`~arichds.acquisition.drivers.base.EnergyRegisterReading`
 #: field prefix, for the twenty standalone cumulative energy registers
@@ -253,6 +260,44 @@ def read_special_days_via(driver: DlmsDriver) -> list[SpecialDayEntry]:
         if mapped is not None:
             classified.append(mapped)
     return classified
+
+
+def read_battery_status_via(driver: DlmsDriver) -> str | None:
+    """Read *driver*'s CEWE battery-status register
+    (:data:`CEWE_BATTERY_STATUS_OBIS`, attribute 2) — M7-2, issue #29.
+
+    A free function, not a :class:`DlmsDriver` method, for the identical
+    reason :func:`read_energy_registers_via` gives, inverted: this base class
+    is shared by every CEWE model *and* :class:`~arichds.acquisition.drivers.smart_tcc.SmartTccDriver`
+    (through :class:`~arichds.acquisition.drivers._dlms_profile.DlmsProfileDriver`),
+    and only the three CEWE models are battery-capable (D9). Putting the
+    mechanism on the base class would have made it silently callable — and
+    working — on ``SmartTccDriver`` too, exactly the ``hasattr`` hazard
+    ``base.py``'s module docstring exists to prevent.
+
+    **The value is stored verbatim, never interpreted** (D8): no scaling, no
+    threshold, no colour classification — the register is a charge/status
+    display (Findings 1-2), and the wire type is unconfirmed until a
+    real-meter read. ``None`` in, ``None`` out; any other value becomes
+    ``str(raw).strip()``.
+
+    **Does not catch exceptions.** A refused read propagates to the caller —
+    unlike :func:`read_energy_registers_via`'s per-address isolation, there is
+    only one address here, and the job (not this function) is what turns a
+    failed read into "no row, retry next hour" (D4).
+
+    Returns:
+        The raw value as a string, or ``None`` when the meter answered with
+        nothing, or when *driver* is disconnected.
+    """
+    if driver._reader is None or driver._client is None:  # noqa: SLF001 — same module, DlmsDriver's own internals.
+        logger.warning("read_battery_status() called on a disconnected driver %s", driver)
+        return None
+
+    raw = driver.read_register(CEWE_BATTERY_STATUS_OBIS, 2)
+    if raw is None:
+        return None
+    return str(raw).strip()
 
 
 class DlmsDriver(MeterDriver):
@@ -522,8 +567,10 @@ class DlmsDriver(MeterDriver):
     def _normalize(self, column: str, raw: Any) -> float | None:
         """Coerce *raw* to a float in the unit the column name promises.
 
-        Energy registers report Wh on the wire and are stored as kWh — the
-        division happens here, at write time, exactly once (REMAKE-PLAN §6.1).
+        Energy registers report Wh on the wire and are stored as kWh, and
+        the average-power columns report W/var and are stored as kW/kvar (M13,
+        issue 06) — the division happens here, at write time, exactly once
+        (REMAKE-PLAN §6.1).
         """
         if raw is None:
             return None
@@ -534,6 +581,6 @@ class DlmsDriver(MeterDriver):
             return None
         value = float(raw)
 
-        if column in ENERGY_COLUMNS_WH:
+        if column in ENERGY_COLUMNS_WH or column in POWER_COLUMNS_W:
             return value / WH_TO_KWH_DIVISOR
         return value

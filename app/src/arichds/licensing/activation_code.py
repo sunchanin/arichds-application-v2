@@ -87,6 +87,17 @@ class ActivationVerification:
         expires_at: Lease end (UTC), or ``None`` for a perpetual offline license.
         max_meters: Device quota, or ``None`` for unlimited.
         features: Licensed feature names, or ``None``.
+        models: Licensed meter model keys (issue 015), or ``None``. ``None``
+            grandfathers every catalogued model — the same ceiling shape
+            ``features.py``'s ``effective_features`` already uses for
+            *features*; an **empty list** is meaningfully different: it means
+            the license permits no model at all.
+        require_meter_activation: The **Meter Activation Requirement**
+            (CONTEXT.md) — whether this machine demands a Meter Activation
+            Code per meter. ``None`` means unstated, which means **not
+            required**, matching every other constraint here. Never a feature
+            key: ``features`` names what the product may *do*, this names what
+            the operator must *supply*.
     """
 
     valid: bool
@@ -98,6 +109,8 @@ class ActivationVerification:
     expires_at: datetime | None = None
     max_meters: int | None = None
     features: list[str] | None = None
+    models: list[str] | None = None
+    require_meter_activation: bool | None = None
 
 
 def canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
@@ -118,12 +131,25 @@ def build_payload(
     expires_at: datetime | None = None,
     max_meters: int | None = None,
     features: list[str] | None = None,
+    models: list[str] | None = None,
+    require_meter_activation: bool | None = None,
 ) -> dict[str, Any]:
     """Build a well-formed v2 payload.
 
     Every optional field is present and explicitly ``null`` rather than omitted,
     so the canonical bytes have a fixed key set and a missing key always means a
     malformed code.
+
+    ``models`` (issue 015) is deliberately **not** in ``_REQUIRED_FIELDS`` and
+    ``PAYLOAD_VERSION`` is unchanged, so every license already issued — which
+    carries no ``models`` key at all — keeps verifying. The consequence,
+    recorded here because it is easy to miss: ``verify_activation_code``
+    re-canonicalizes the payload it parsed and only checks that the required
+    fields are *present*, so an *extra* key verifies cleanly on a build that
+    predates this change — that build accepts the license and silently
+    ignores the model lock. A model lock is therefore a **contractual**
+    control, not a security boundary, exactly like ``max_meters``: an old exe
+    defeats both (SPEC §3.9).
 
     Args:
         customer: Customer or company name recorded in the license.
@@ -133,6 +159,13 @@ def build_payload(
         expires_at: Lease end; ``None`` for a non-expiring offline license.
         max_meters: Device quota; ``None`` for unlimited.
         features: Licensed feature names; ``None`` for "not restricted here".
+        models: Licensed meter model keys (issue 015); ``None`` grandfathers
+            every catalogued model.
+        require_meter_activation: The Meter Activation Requirement
+            (full-version licence, issue 01); ``None`` means not required.
+            Added under exactly the rules ``models`` was — absent from
+            ``_REQUIRED_FIELDS``, ``PAYLOAD_VERSION`` unchanged — so every
+            license already issued keeps verifying and reads it as unstated.
 
     Returns:
         The payload dict, ready to canonicalize and sign.
@@ -147,6 +180,8 @@ def build_payload(
         "expires_at": _to_iso(expires_at),
         "max_meters": max_meters,
         "features": features,
+        "models": models,
+        "require_meter_activation": require_meter_activation,
     }
 
 
@@ -285,6 +320,16 @@ def verify_activation_code(
     features = payload.get("features")
     if features is not None and not (isinstance(features, list) and all(isinstance(f, str) for f in features)):
         return _malformed()
+    models = payload.get("models")
+    if models is not None and not (isinstance(models, list) and all(isinstance(m, str) for m in models)):
+        return _malformed()
+    # `isinstance(1, bool)` is False, so a payload carrying `1` here really is
+    # refused rather than read as True. An absent key and an explicit `null`
+    # are the same value and both mean "not required" — that is the rule, not
+    # an accident of `.get`.
+    require_meter_activation = payload.get("require_meter_activation")
+    if require_meter_activation is not None and not isinstance(require_meter_activation, bool):
+        return _malformed()
 
     details: dict[str, Any] = {
         "payload": payload,
@@ -294,6 +339,8 @@ def verify_activation_code(
         "expires_at": expires_at,
         "max_meters": max_meters,
         "features": features,
+        "models": models,
+        "require_meter_activation": require_meter_activation,
     }
 
     # ── Signature, over the canonical bytes of the payload we just parsed ─────

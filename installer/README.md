@@ -9,10 +9,10 @@ ARICHDS install — with no database questions (SPEC §2: install in under
 | Step | Detail |
 |---|---|
 | Program files | `C:\Program Files\ARICHDS` (the PyInstaller onedir build + `nssm.exe`) |
-| Data | `C:\ProgramData\ARICHDS\` — `arichds.db`, `license\`, `logs\`, `secret\` (the generated JWT signing key — ADR 0003; deleting it signs every user out), `backup\` (seven daily `VACUUM INTO` copies, M5c), `captures\` |
+| Data | `C:\ProgramData\ARICHDS\` — `arichds.db`, `license\`, `logs\`, `secret\` (the generated JWT signing key — ADR 0003; deleting it signs every user out), `backup\` (seven daily `VACUUM INTO` copies, M5c), `captures\`, `tmp\` (the capture browser's one reused Edge profile directory — issue #40) |
 | Service | `arichds`, wrapped by NSSM: auto-start, restart on exit, stdout/stderr to `logs\service.log` rotated at 50 MB |
-| Port | TCP **8000**, bound on all interfaces |
-| Firewall | Inbound allow rule `ARICHDS Web UI (TCP 8000)` so other machines on the site LAN can open `http://<ip>:8000` |
+| Port | TCP **8000** by default, **chosen on a wizard page** (remembered for the next upgrade), bound on all interfaces — the installer warns when another program already listens on the chosen port, which is what a WCF service on one customer machine did on 2026-09-16 |
+| Firewall | Inbound allow rule `ARICHDS Web UI (TCP <port>)` so other machines on the site LAN can open `http://<ip>:<port>`; an upgrade that changes the port removes the previous port's rule |
 | Migrations | **None here.** The service runs `alembic upgrade head` itself before serving, so install and upgrade both converge with no extra step |
 | Activation | **None here.** The machine boots into Limited Mode; the operator activates from the web page, and it applies live with no restart (ADR 0001) |
 
@@ -56,7 +56,7 @@ Inno Setup **6** (6.7.x) from <https://jrsoftware.org/isdl.php>. The compiler is
 iscc installer\arichds.iss
 ```
 
-Output: `installer\Output\arichds-setup-0.1.0.exe`.
+Output: `installer\Output\arichds-setup-0.3.0.exe`.
 
 ## Upgrading
 
@@ -67,8 +67,15 @@ replacing files (`PrepareToInstall`), reinstalls, and starts it again. The
 database, the license and the logs are untouched, and the service brings the
 schema to head on its next start.
 
+The service runs with its working directory set to `%ProgramData%\ARICHDS\logs`
+(the application does this itself at startup — `fastapi dev` does the same
+under its own data dir, whose path is resolved once at startup so the move
+cannot redirect it). The one file that cares is the vendored Gurux reader's
+`logFile.txt`, which it opens relative to the working directory — it now lands
+in that folder instead of failing with `PermissionError` under `Program Files`.
+
 **Bump `AppVersion` in `arichds.iss` before every release.** It is hardcoded
-(`#define AppVersion "0.1.0"`) and drives both the output filename and what
+(`#define AppVersion "0.3.0"`) and drives both the output filename and what
 "Programs and Features" reports. Ship two different builds under one number and
 nobody on site can tell which one a machine is running.
 
@@ -100,9 +107,135 @@ Removing them would
 be unrecoverable, so it is a manual decision — delete that folder by hand if you
 really mean it.
 
+## The service account and the capture browser task (issue #40)
+
+The service runs as **`LocalSystem`** — NSSM's default, so the installer
+sets no `ObjectName` at all for it. This reverses an earlier build (0.2.0),
+which pointed the whole service at `NT AUTHORITY\LocalService`; that turned
+out to be the wrong fix (see below), and this installer actively resets
+`ObjectName` back on an upgrade (`nssm reset arichds ObjectName`) so a
+machine that ran 0.2.0 does not silently keep the old account.
+
+**Only the capture browser leaves LocalSystem.** The Billing capture `.png`
+(ADR 0017) is a headless screenshot of the running Billing page, taken by
+driving the already-installed Microsoft Edge over the Chrome DevTools
+Protocol. `msedge.exe` exits **1002** immediately under `nt authority\system`
+— for any argument, including `--version` — so Edge cannot run under the
+account the *service* uses. #38's first attempt moved the whole service to
+`NT AUTHORITY\LocalService` to work around that, and on the first real
+install that broke a `capture_dir` (ADR 0010) or a Load Profile export
+folder (issue #30) pointed at a path under `C:\Users\…` — LocalService
+cannot write there, and `capture_reading()` swallowed the failure silently.
+
+**issue #40 replaces that**: Edge is launched through a Windows scheduled
+task, `ARICHDS Capture Browser`, registered at install time
+(`register-capture-task.ps1`, installed alongside `nssm.exe`) to run under
+`NT AUTHORITY\LOCAL SERVICE`. The service — still LocalSystem — triggers it
+with `schtasks /run` (`capture/screenshot.py`) rather than launching Edge
+itself. Edge only renders and hands bytes back over CDP; the service (as
+LocalSystem, administrator-equivalent) is the one that writes the capture
+file, so an operator-chosen `capture_dir` under `C:\Users\…` stays writable.
+The one thing `NT AUTHORITY\LOCAL SERVICE` needs write access to is Edge's
+own reused profile directory, `C:\ProgramData\ARICHDS\tmp` — the *only*
+`[Dirs]` entry in `arichds.iss` that still carries a `Permissions:` grant.
+
+#### Capture folders created before 0.5.3 are unreadable — repair once
+
+Builds before 0.5.3 created each `<capture_dir>\<meter serial>\` folder with
+`os.mkdir(..., 0o700)` (issue 017). On Windows that is the one mode CPython
+does **not** ignore: it replaces inheritance with an ACL granting only SYSTEM,
+Administrators and OWNER RIGHTS. The service is LocalSystem, so the operator's
+own account was left off, and a Syncthing agent running as a user reported
+`scan: open …\billing\<serial>: Access is denied.`
+
+0.5.3 creates them with no mode, so they inherit whatever the operator granted
+on `capture_dir` itself — the same thing the Load Profile CSV export has always
+done. Folders that already exist keep the old ACL, because `mkdir` never runs
+for a directory that is already there. Repair them once, elevated:
+
+```powershell
+icacls "<capture_dir>" /inheritance:e /T
+icacls "<capture_dir>" /grant "<user>:(OI)(CI)F" /T
+```
+
+where `<user>` is the account the sync agent runs as. The app never rewrites
+ACLs itself: a service silently re-permissioning a directory under someone's
+Desktop is a worse surprise than the bug it would fix.
+
+### Give every install two admins — before handover
+
+An `admin` can reset any account's password from **User Management**, so two admin accounts
+recover each other and no escape hatch is needed. One admin account is a single point of
+failure with **no** recovery path: see the Troubleshooting row above, and `SPEC.md` §3.2, where
+the vendor-CLI escape hatch that line used to promise is now explicitly descoped.
+
+At handover, create a second `admin` — the operator's own account plus one held by whoever
+maintains the machine — and confirm both can log in. If the customer insists on exactly one
+operator, say plainly that forgetting that password costs a reinstall, which loses the local
+database.
+
+### What the owner must verify after installing or upgrading
+
+```powershell
+sc qc arichds
+```
+Expect `SERVICE_START_NAME : LocalSystem`.
+
+```powershell
+schtasks /query /TN "ARICHDS Capture Browser" /V /FO LIST
+```
+Expect the task to exist, `Run As User` to read `NT AUTHORITY\LOCAL SERVICE`
+(Task Scheduler and `schtasks` may display the same well-known account as
+`NT AUTHORITY\LocalService` or `.\LocalService` — NSSM has nothing to do
+with this display, only with the *service's* own account, `sc qc` above),
+and `Status` to read `Ready` — never stuck `Running` (that would mean every
+subsequent capture is refused; see Troubleshooting).
+
+```powershell
+icacls C:\ProgramData\ARICHDS\tmp
+```
+Expect an ACE for `NT AUTHORITY\LOCAL SERVICE` carrying **`(OI)(CI)`** and
+`(M)` (modify) — scoped to this one subfolder now, not the whole
+`C:\ProgramData\ARICHDS` tree (LocalSystem needs no grant on the rest of
+it). **The `(OI)(CI)` inheritance flags are the thing to check.** Inno
+Setup 6's `[Dirs] Permissions:` docs state the permission is applied
+"regardless of whether the directory existed prior to installation," but
+say nothing about whether the ACE it writes is flagged inheritable —
+verified against the published docs 2026-08-22, no primary source either
+way. If `(OI)(CI)` is missing, the one-time fix is:
+```powershell
+icacls C:\ProgramData\ARICHDS\tmp /grant "NT AUTHORITY\LOCAL SERVICE":(OI)(CI)M /T
+```
+This command is documentation only — **do not run it** unless `icacls`
+above actually shows the flags missing.
+
+**Residue on a machine upgraded from an earlier build (decision D4):** an
+install that ever ran 0.2.0 (which granted `Permissions:` on the *whole*
+`C:\ProgramData\ARICHDS` tree to `NT AUTHORITY\LOCAL SERVICE`) keeps those
+ACEs — removing `Permissions:` from `arichds.iss` does not revoke ACEs
+already written to disk. This is harmless (an unused grant, not a missing
+one) and left as a manual cleanup if it is ever worth doing:
+```powershell
+icacls C:\ProgramData\ARICHDS /remove "NT AUTHORITY\LOCAL SERVICE" /T
+```
+This command is documentation only — **do not run it** as part of a normal
+upgrade.
+
+- The **Activation page still shows a Machine ID** after install — this is
+  the proof the `MachineGuid` registry read
+  (`HKLM\SOFTWARE\Microsoft\Cryptography`, `licensing/fingerprint.py`)
+  succeeded under LocalSystem, which it always has (LocalSystem is
+  administrator-equivalent). If it instead shows an error, the machine has
+  dropped into Limited Mode (ADR 0001).
+- A **Billing capture `.png` appears under `capture_dir`** for a device
+  with a closed period (wait for the next scheduled billing read, or use
+  the Billing page's "Capture image" button) — including when `capture_dir`
+  is set to a path under `C:\Users\…`, the exact case that failed on the
+  first 0.2.0 install.
+
 ## After installing
 
-1. Open `http://localhost:8000/` (the installer offers this at the end).
+1. Open `http://localhost:<port>/` — 8000 unless you chose another on the wizard page (the installer offers this at the end).
 2. The **Setup** page appears while the machine has no accounts. Create the
    administrator (username + password, 8 characters minimum), then sign in.
    Setup closes permanently once that account exists.
@@ -115,12 +248,28 @@ really mean it.
 5. Paste the code into the Activation page (an administrator account is required
    to do this). It takes effect immediately — the poller starts and the Devices
    page appears with no service restart.
+6. Run the checks under **The service account** above.
+
+**Renewing or replacing a license later** is done on **Settings → License**, not on the
+Activation page — that page is a first-run/Limited Mode gate and disappears once the machine is
+licensed. The card shows the current customer, mode, expiry and meter limit next to this
+machine's Machine ID, and an administrator pastes the new code there. It applies immediately, a
+rejected code changes nothing, and `C:\ProgramData\ARICHDS\license\license.lic` is never
+deleted or edited by hand.
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
 | Service will not start | `C:\ProgramData\ARICHDS\logs\service.log` (NSSM's capture) and `arichds.log` (the app's own rotating, credential-redacted log) |
-| Web UI unreachable from another machine | The firewall rule exists (`netsh advfirewall firewall show rule name="ARICHDS Web UI (TCP 8000)"`) and nothing else holds port 8000 |
+| Web UI unreachable from another machine | The firewall rule exists (`netsh advfirewall firewall show rule name="ARICHDS Web UI (TCP <port>)"`) and nothing else holds the port |
+| The browser shows a **.NET "Service" page** ("Windows Communication Foundation service … metadata publishing … disabled") instead of ARICHDS | Another program holds the port (`netstat -ano \| findstr :<port>`, then `tasklist /FI "PID eq <pid>"`; a WCF service through HTTP.sys shows as PID 4 and in `netsh http show servicestate`). Re-run the installer and choose a free port on the wizard page — it rewrites the service's `ARICHDS_PORT`, the firewall rule and the shortcut; nothing else changes |
 | Uninstall hangs | An `nssm remove` without `confirm` opens a GUI dialog. The script always passes `confirm`; if you removed it by hand, put it back |
+| The only `admin` forgot the password | **There is no recovery on the machine — this is the one lockout the product cannot undo.** Nothing installed can rewrite a bcrypt hash: the installer ships no `python.exe` and no `sqlite3.exe`, and `arichds.exe` takes no subcommands. See **Give every install two admins** above, and do it before handover rather than after a lockout |
 | Activation refused with `WRONG_MACHINE` | The Machine ID sent to the vendor does not match this machine. Re-copy it from the Activation page — it is bound to the hardware |
+| A Billing capture `.png` fails with a 500 naming Edge | `resolve_edge_path()` (`capture/screenshot.py`) could not find `msedge.exe` via the registry or either well-known Program Files location — Edge was uninstalled or is at a non-standard path |
+| A Billing capture `.png` fails with a 500 naming `schtasks`, or every capture after the first one fails | The `ARICHDS Capture Browser` scheduled task is missing (registration failed at install — check `SetupLogging`'s log) or stuck `Running` (a hard-killed service left it that way; `schtasks /query /TN "ARICHDS Capture Browser"` shows `Status`). `capture/screenshot.py` runs `schtasks /end` before every `/run` as a self-heal, so a *stuck* task should clear itself on the next capture attempt; a *missing* task needs `register-capture-task.ps1` re-run by hand (see **The service account and the capture browser task** above) |
+| A Billing capture `.png` fails with "Edge never wrote DevToolsActivePort", and this worked before | If `C:\ProgramData\ARICHDS\tmp` was ever deleted by hand (it is just a folder named `tmp`, easy to mistake for disposable), `Settings.ensure_directories()` silently recreates it on the next service start — but **without** the `NT AUTHORITY\LOCAL SERVICE` ACE, because that grant now comes only from the installer's `[Dirs] Permissions:` line (the service itself is LocalSystem and never re-applies it). Edge then cannot write its profile there and every capture fails the same way. Fix: `icacls C:\ProgramData\ARICHDS\tmp /grant "NT AUTHORITY\LOCAL SERVICE":(OI)(CI)M /T` (same command as the `(OI)(CI)` check above) |
+| The File Upload Destination's HTTPS tab (menu **FTP**) is refused by Test connection or by a scheduled cycle | The status card / `POST .../https/test` names which check failed: `unreachable` (host/DNS — confirm the URL and that the server is reachable from this machine, not just a browser elsewhere), `timed_out` (the server accepted the TCP connection but never answered within 5s on Test connection or the cycle's own longer budget — a firewall dropping packets instead of refusing them looks like this too), `unauthorized` (the token the server received does not match what it expects — re-paste it; it may be the Push Token or a different one, ADR 0025), `other` (a non-2xx status other than 401/403/404, or no URL saved yet — the message names the HTTP status). A self-signed certificate is always refused (no CA-file field, by design) — use a certificate from a trusted authority |
+| The File Upload Destination's SFTP tab (menu **FTP**) reports `host_key_mismatch`, or a scheduled cycle ends `skipped` with `HostKeyMismatchError` | The server presented a different host key than the one pinned on this page — either the server was legitimately rebuilt/re-keyed, or something is intercepting the connection. **This machine never re-pins on its own** (ADR 0025/ticket 04): confirm the new fingerprint out of band with whoever runs the server, then press **Test connection** on the SFTP tab and **Pin this key** to accept it. `host_key_not_pinned` on first contact is not an error — it is the normal first-connection state; press **Pin this key** once you recognise the fingerprint shown |
+| The File Upload Destination's FTPS tab (menu **FTP**) reports `untrusted_certificate`, or a scheduled cycle ends `skipped` with `SSLCertVerificationError` | The server's certificate is not trusted by this machine's Windows trust store — self-signed, expired, or issued by an internal CA that was never installed. **There is no CA-file field** (ADR 0025 Out of Scope) — the fix runs on the machine, not in this app: install the issuing CA's certificate into the **Local Machine \ Trusted Root Certification Authorities** store (`certlm.msc`), or replace the server's certificate with one from a publicly trusted authority. A self-signed certificate is refused by design and is never a prompt to accept |

@@ -31,6 +31,8 @@ from arichds.acquisition.drivers.base import (
     MeterDriver,
     SpecialDayEntry,
 )
+from arichds.acquisition.drivers.prometer100 import Prometer100Driver
+from arichds.acquisition.drivers.smw110 import Smw110Driver
 from arichds.constants import SOURCE_DLMS
 
 #: The serial the fake meter reports unless a test says otherwise.
@@ -97,6 +99,28 @@ class FakeMeterState:
         special_days_reads: How many times ``read_special_days()`` was
             called.
         special_days_error: What a failing Special Days read raises.
+        battery_status: What :meth:`FakeMeterDriver.read_battery_status`
+            replays (M7-2, issue #29) — the raw status string, or ``None``
+            for "the meter answered with nothing" (D4).
+        battery_reads: How many times ``read_battery_status()`` was called —
+            what the job's "one meter call regardless of how many times the
+            cycle runs today" test counts against.
+        battery_error: What a failing battery read raises.
+        billing_newest_closed: What :meth:`FakeSmw110Driver.billing_newest_closed_bill_date`
+            replays (the Billing Change Check, ADR 0018, issue #43). ``None``
+            (the default) is the base-class behaviour — a driver that cannot
+            say, exactly like :attr:`load_profile_oldest`'s own default. A
+            fake that answered by default here would silently turn the
+            billing trigger on in every existing background load-profile
+            test.
+        billing_newest_closed_reads: How many times it was asked.
+        billing_newest_closed_error: What a failing read raises — the Load
+            Profile walk it rides on must survive it (D9).
+        call_order: Every ``connect``/``read_load_profile``/``billing_check``/
+            ``disconnect`` call, in the order the fake actually saw them —
+            the only way a test can prove the Billing Change Check runs
+            *after* the walk and *before* disconnect (D8) rather than merely
+            "at some point during the visit".
     """
 
     meter_serial: str | None = DEFAULT_FAKE_SERIAL
@@ -105,6 +129,9 @@ class FakeMeterState:
     entered_read: threading.Event = field(default_factory=threading.Event)
     hold_read: threading.Event | None = None
     connects: int = 0
+    #: The framing each ``connect()`` was built with, in order — what lets an API
+    #: test prove the operator's choice reached the driver (``docs/issues/025``).
+    framings_seen: list[str | None] = field(default_factory=list)
     disconnects: int = 0
     load_profile_loggers: tuple[int, ...] = (1,)
     load_profile_rows: list[IntervalReading] = field(default_factory=list)
@@ -123,6 +150,13 @@ class FakeMeterState:
     special_days_entries: list[SpecialDayEntry] = field(default_factory=list)
     special_days_reads: int = 0
     special_days_error: Exception | None = None
+    battery_status: str | None = None
+    battery_reads: int = 0
+    battery_error: Exception | None = None
+    billing_newest_closed: datetime | None = None
+    billing_newest_closed_reads: int = 0
+    billing_newest_closed_error: Exception | None = None
+    call_order: list[str] = field(default_factory=list)
 
 
 _STATE = FakeMeterState()
@@ -163,6 +197,11 @@ class FakeMeterDriver(MeterDriver):
     #: class each.
     _MODEL_NAME: str = "prometer100"
 
+    #: Read off the **real** driver, never retyped: a fake that mirrored the
+    #: declaration by hand would keep the API's framing tests green after the
+    #: real one changed (the three-copy trap, file-upload ticket 02).
+    SUPPORTED_FRAMINGS = Prometer100Driver.SUPPORTED_FRAMINGS
+
     def __init__(self, conn: ConnectionParams, password: str = "", **kwargs: Any) -> None:
         """Initialise the fake.
 
@@ -192,6 +231,8 @@ class FakeMeterDriver(MeterDriver):
         """Record the connect, or raise whatever the test asked for."""
         with _GUARD:
             _STATE.connects += 1
+            _STATE.framings_seen.append(self._conn.framing)
+            _STATE.call_order.append("connect")
             error = _STATE.connect_error
         if error is not None:
             raise error
@@ -200,6 +241,7 @@ class FakeMeterDriver(MeterDriver):
         """Record the disconnect. Never raises, like every real driver."""
         with _GUARD:
             _STATE.disconnects += 1
+            _STATE.call_order.append("disconnect")
 
     def _park(self) -> None:
         """Announce that a read has begun and hold there if the test asked."""
@@ -215,6 +257,24 @@ class FakeMeterDriver(MeterDriver):
             raise _STATE.serial_error
         return _STATE.meter_serial
 
+    def supports_battery(self) -> bool:
+        """Yes — ``prometer100`` is the CEWE, battery-capable registration
+        (M7-2, issue #29; D10). This is the **inverse** of every other
+        capability in this file: the base fake is the capable one here,
+        while :class:`FakeSmw110Driver` explicitly turns it back off below,
+        because the real ``smw110`` has no battery register."""
+        return True
+
+    def read_battery_status(self) -> str | None:
+        """Record the call, honour the failure knob, replay the seeded status."""
+        with _GUARD:
+            _STATE.battery_reads += 1
+            error = _STATE.battery_error
+            status = _STATE.battery_status
+        if error is not None:
+            raise error
+        return status
+
 
 class FakeSmw110Driver(FakeMeterDriver):
     """The same fake, registered under ``smw110`` (issue #9) with a truthful name.
@@ -225,6 +285,7 @@ class FakeSmw110Driver(FakeMeterDriver):
     """
 
     _MODEL_NAME = "smw110"
+    SUPPORTED_FRAMINGS = Smw110Driver.SUPPORTED_FRAMINGS
 
     def supports_load_profile(self) -> bool:
         """Yes — like the real ``Smw110Driver``."""
@@ -248,6 +309,7 @@ class FakeSmw110Driver(FakeMeterDriver):
         """
         with _GUARD:
             _STATE.load_profile_windows.append((logger_id, start_utc, end_utc))
+            _STATE.call_order.append("read_load_profile")
             reads = len(_STATE.load_profile_windows)
             error = _STATE.load_profile_error
             fail_after = _STATE.load_profile_fail_after
@@ -296,6 +358,24 @@ class FakeSmw110Driver(FakeMeterDriver):
 
         return rows
 
+    def billing_newest_closed_bill_date(self) -> datetime | None:
+        """Record the call and the order it happened in, honour the failure
+        knob, replay the seeded answer.
+
+        ``None`` (the default) is the base-class behaviour, exactly like
+        :meth:`load_profile_oldest_reading` above — a driver that cannot say,
+        which must degrade the Billing Change Check to "never trigger"
+        rather than turning it on in every existing background test.
+        """
+        with _GUARD:
+            _STATE.billing_newest_closed_reads += 1
+            _STATE.call_order.append("billing_check")
+            error = _STATE.billing_newest_closed_error
+            answer = _STATE.billing_newest_closed
+        if error is not None:
+            raise error
+        return answer
+
     def supports_energy_registers(self) -> bool:
         """Yes — like the real ``Smw110Driver``/``SmartTccDriver`` (M7-1,
         issue #28)."""
@@ -331,3 +411,11 @@ class FakeSmw110Driver(FakeMeterDriver):
             raise error
 
         return entries
+
+    def supports_battery(self) -> bool:
+        """No — explicitly overridden back to ``False`` (M7-2, issue #29;
+        D10). Without this override ``FakeSmw110Driver`` would inherit
+        :class:`FakeMeterDriver`'s ``True`` and the job's unsupported-model
+        path would become untestable: the real ``smw110`` has no battery
+        register, only the three CEWE models do."""
+        return False

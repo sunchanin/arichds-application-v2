@@ -125,6 +125,13 @@ const NOTHING = "—";
  * The five parity names the backend's ``-S`` argv parser resolves (issue #9).
  * Sent case-insensitively; the API normalizes to this exact casing.
  */
+/**
+ * What the Brand and Model pickers say when the licence names an empty model
+ * list (issue 015) — distinct from AntD's default "No data", which would read
+ * as a failed catalog load rather than a licence that permits nothing.
+ */
+const NO_LICENSED_MODELS = "This machine's licence permits no meter models. Ask the vendor for a new Activation Code.";
+
 const PARITY_OPTIONS = [
   { value: "None", label: "None" },
   { value: "Odd", label: "Odd" },
@@ -132,6 +139,16 @@ const PARITY_OPTIONS = [
   { value: "Mark", label: "Mark" },
   { value: "Space", label: "Space" },
 ];
+
+/**
+ * What each framing means to the person choosing it. The words on the wire are
+ * the API's (`wrapper` / `hdlc`); which of them a model offers comes from the
+ * catalog, never from this table.
+ */
+const FRAMING_LABELS: Record<string, string> = {
+  wrapper: "WRAPPER — the meter's own network port",
+  hdlc: "HDLC — through a serial-to-TCP converter",
+};
 
 const TRANSPORT_KIND_OPTIONS = [
   { value: "net", label: "TCP" },
@@ -150,6 +167,7 @@ interface DeviceFormValues {
   name: string;
   brand: string;
   model: string;
+  meter_activation_code: string;
   site_name: string;
   site_code: string;
   customer: string;
@@ -158,6 +176,8 @@ interface DeviceFormValues {
   transportKind: "net" | "serial";
   host: string;
   port: number;
+  /** `""` = the model's default framing, which is sent as no field at all. */
+  framing: string;
   serialPort: string;
   baudRate: number;
   dataBits: number;
@@ -175,6 +195,7 @@ const EMPTY_FORM: DeviceFormValues = {
   name: "",
   brand: "",
   model: "",
+  meter_activation_code: "",
   site_name: "",
   site_code: "",
   customer: "",
@@ -183,6 +204,7 @@ const EMPTY_FORM: DeviceFormValues = {
   transportKind: "net",
   host: "",
   port: 4059,
+  framing: "",
   serialPort: "",
   baudRate: 19200,
   dataBits: 8,
@@ -212,6 +234,9 @@ function transportFromForm(values: DeviceFormValues): Transport {
     kind: "net",
     host: values.host.trim(),
     port: values.port,
+    // The default is sent as *nothing*, so a device the operator never touched
+    // keeps the stored shape it always had.
+    ...(values.framing ? { framing: values.framing } : {}),
   };
 }
 
@@ -237,6 +262,9 @@ function toFormValues(device: Device): DeviceFormValues {
     name: device.name,
     brand: device.brand,
     model: device.model,
+    // The API never returns a stored code (`DeviceOut` deliberately omits
+    // it), and edit never sends one (`toInput`'s `mode === "create"` guard).
+    meter_activation_code: "",
     site_name: device.site_name,
     site_code: device.site_code ?? "",
     customer: device.customer ?? "",
@@ -245,6 +273,7 @@ function toFormValues(device: Device): DeviceFormValues {
     transportKind: transport.kind,
     host: transport.kind === "net" ? transport.host : "",
     port: transport.kind === "net" ? transport.port : EMPTY_FORM.port,
+    framing: transport.kind === "net" ? (transport.framing ?? "") : "",
     serialPort: transport.kind === "serial" ? transport.serial_port : "",
     baudRate: transport.kind === "serial" ? transport.baud_rate : EMPTY_FORM.baudRate,
     dataBits: transport.kind === "serial" ? transport.data_bits : EMPTY_FORM.dataBits,
@@ -278,6 +307,18 @@ function toInput(values: DeviceFormValues, mode: "create" | "edit"): DeviceInput
     model: values.model,
     site_name: values.site_name.trim(),
     transport: transportFromForm(values),
+    // Create only — ADR 0019 checks it once, at Create; Update never
+    // re-validates it, so sending it there would be misleading at best.
+    //
+    // Sent when the operator supplied one, not when the machine demands one
+    // (issue 01): the field is absent from the form on a machine with no
+    // Meter Activation Requirement, so there is nothing to send there — and
+    // keying on the value rather than the requirement keeps this a pure
+    // function of its arguments, and matches the server, which verifies a
+    // supplied code either way.
+    ...(mode === "create" && values.meter_activation_code
+        ? { meter_activation_code: values.meter_activation_code }
+        : {}),
     site_code: blankToNull(values.site_code),
     customer: blankToNull(values.customer),
     meter_number: blankToNull(values.meter_number),
@@ -317,7 +358,25 @@ function toInput(values: DeviceFormValues, mode: "create" | "edit"): DeviceInput
  * is never shown a control it may not use — discovering a permission by
  * collecting a 403 is not a design (SPEC §3.2).
  */
-export function Devices({ role }: { role: "admin" | "user" }) {
+export function Devices({
+  role,
+  licensedModels,
+  meterActivationRequired,
+}: {
+  role: "admin" | "user";
+  /**
+   * The model keys this machine's licence permits **adding** (issue 015), or
+   * `null` for no restriction — which is what every licence issued before the
+   * model lock carries. `[]` means none may be added.
+   */
+  licensedModels: string[] | null;
+  /**
+   * Whether this machine demands a **Meter Activation Code** for each meter
+   * added (issue 01). Already resolved by the server — the licence's
+   * "unstated means not required" rule lives there, not here.
+   */
+  meterActivationRequired: boolean;
+}) {
   const { message, modal } = App.useApp();
   const isAdmin = role === "admin";
 
@@ -353,6 +412,26 @@ export function Devices({ role }: { role: "admin" | "user" }) {
   const watchedPort = Form.useWatch("port", form);
   const watchedSerialPort = Form.useWatch("serialPort", form);
   const watchedModel = Form.useWatch("model", form);
+  const watchedFraming = Form.useWatch("framing", form);
+
+  /** The framings the chosen model offers — empty for a model with no choice. */
+  const offeredFramings = useMemo(
+    () => catalog.find((entry) => entry.model === watchedModel)?.framings ?? [],
+    [catalog, watchedModel],
+  );
+
+  // A framing left over from another model must not ride along invisibly: the
+  // field is hidden when the model offers no choice, and the server would refuse
+  // the save naming a field the operator cannot see. Only once the catalog
+  // actually lists the model, though — before it has loaded "offers nothing" is
+  // merely "not known yet", and clearing then would silently strip HDLC from a
+  // device that needs it, to be saved away by the next edit.
+  useEffect(() => {
+    const entry = catalog.find((candidate) => candidate.model === watchedModel);
+    if (entry && watchedFraming && !entry.framings.includes(watchedFraming)) {
+      form.setFieldValue("framing", "");
+    }
+  }, [catalog, form, watchedFraming, watchedModel]);
 
   const selected = devices.find((device) => device.id === selectedId) ?? null;
   const mode: "create" | "edit" = selected ? "edit" : "create";
@@ -440,22 +519,60 @@ export function Devices({ role }: { role: "admin" | "user" }) {
 
   // ─── Catalog ────────────────────────────────────────────────────────────────
 
+  /**
+   * The catalog narrowed to what the licence permits adding (issue 015).
+   *
+   * **Only the Brand and Model pickers read this** — `applyModelDefaults` and
+   * `modelFilterOptions` keep reading the full `catalog`, because a device that
+   * predates a narrowed licence is still polled and still listed (issue 015 D6),
+   * and it must keep its label and its password default. Narrowing those too
+   * would blank a grandfathered row's own name in its own tree.
+   *
+   * `null` means no restriction — every licence issued before the model lock
+   * carries no `models` key at all — so the pickers behave exactly as before.
+   *
+   * This is a **convenience, never the gate**: `POST`/`PUT /api/devices` refuse
+   * an unlicensed model with 422 whatever the dropdown offered.
+   */
+  const licensedCatalog = useMemo(() => {
+    if (licensedModels === null) return catalog;
+    const allowed = new Set(licensedModels);
+    return catalog.filter((entry) => allowed.has(entry.model));
+  }, [catalog, licensedModels]);
+
+  /** A licence that names an empty model list forbids adding anything at all. */
+  const noLicensedModels = licensedModels !== null && licensedModels.length === 0;
+
   const brandOptions = useMemo(() => {
-    const brands = new Set(catalog.map((entry) => entry.brand));
-    // A row created before this build's catalog (SPEC §3.3) keeps its own brand
-    // selectable, or opening it would silently blank the field.
-    if (watchedBrand) brands.add(watchedBrand);
-    return [...brands].sort().map((brand) => ({ value: brand, label: brand }));
-  }, [catalog, watchedBrand]);
+    // Keyed by the catalog key, labelled by the catalog's display name — a
+    // brand is a key (ui-audit ticket 01), so the label never takes part in a
+    // comparison. A row created before this build's catalog (SPEC §3.3) — or
+    // before the licence narrowed — keeps its own brand selectable, or opening
+    // it would silently blank the field; its key is its own label.
+    const brands = new Map<string, string>();
+    for (const entry of licensedCatalog) brands.set(entry.brand, entry.brand_label);
+    if (watchedBrand && !brands.has(watchedBrand)) {
+      brands.set(watchedBrand, catalog.find((entry) => entry.brand === watchedBrand)?.brand_label ?? watchedBrand);
+    }
+    return [...brands].sort(([a], [b]) => a.localeCompare(b)).map(([value, label]) => ({ value, label }));
+  }, [catalog, licensedCatalog, watchedBrand]);
 
   const modelOptions = useMemo(() => {
-    const forBrand = catalog.filter((entry) => entry.brand === watchedBrand);
+    const forBrand = licensedCatalog.filter((entry) => entry.brand === watchedBrand);
     const options = forBrand.map((entry) => ({ value: entry.model, label: entry.ui_label }));
     if (watchedModel && !forBrand.some((entry) => entry.model === watchedModel)) {
-      options.push({ value: watchedModel, label: `${watchedModel} (no driver in this build)` });
+      // Two different reasons a stored model is missing from the list, and the
+      // operator needs to be told which: the build has no driver for it, or it
+      // has one and the licence does not cover it. Either way the value stays
+      // selectable so editing an existing row cannot blank its own model.
+      const known = catalog.some((entry) => entry.model === watchedModel);
+      options.push({
+        value: watchedModel,
+        label: known ? `${watchedModel} (not licensed on this machine)` : `${watchedModel} (no driver in this build)`,
+      });
     }
     return options;
-  }, [catalog, watchedBrand, watchedModel]);
+  }, [catalog, licensedCatalog, watchedBrand, watchedModel]);
 
   /**
    * Apply what the catalog knows about a model: on create, its password.
@@ -477,7 +594,7 @@ export function Devices({ role }: { role: "admin" | "user" }) {
 
   /** Choosing a brand narrows the models — and picks the only one when there is only one. */
   const onBrandChange = (brand: string) => {
-    const forBrand = catalog.filter((entry) => entry.brand === brand);
+    const forBrand = licensedCatalog.filter((entry) => entry.brand === brand);
     if (forBrand.length === 1) {
       form.setFieldsValue({ model: forBrand[0].model });
       applyModelDefaults(forBrand[0].model, mode);
@@ -494,7 +611,10 @@ export function Devices({ role }: { role: "admin" | "user" }) {
     for (const device of devices) {
       const key = `${device.brand}|${device.model}`;
       if (pairs.has(key)) continue;
-      const entry = catalog.find((candidate) => candidate.model === device.model && candidate.brand === device.brand);
+      // Model keys are unique across the catalog, so the display name is
+      // found by model alone — a brand stored in a stray casing (ui-audit
+      // ticket 01) can no longer push a raw `brand · model` key into the list.
+      const entry = catalog.find((candidate) => candidate.model === device.model);
       pairs.set(key, entry ? entry.ui_label : `${device.brand} · ${device.model}`);
     }
     return [
@@ -575,12 +695,15 @@ export function Devices({ role }: { role: "admin" | "user" }) {
    * The name is cleared because it must be unique — a copied name is a
    * guaranteed 409 — and the password goes back to the brand default, since the
    * field was blank while editing and blank on a *create* would send nothing.
+   * The Meter Activation Code is cleared for the same reason as the name: a
+   * copied code belongs to the other meter, and pasting it here is a
+   * guaranteed refusal (ADR 0019 — a code is bound to one Meter Serial).
    */
   const copyDevice = () => {
     const values = form.getFieldsValue();
     const entry = catalog.find((candidate) => candidate.model === values.model);
     setSelectedId(null);
-    fill({ ...values, name: "", password: entry?.fixed_password ?? "" });
+    fill({ ...values, name: "", password: entry?.fixed_password ?? "", meter_activation_code: "" });
   };
 
   // ─── Actions ────────────────────────────────────────────────────────────────
@@ -922,6 +1045,27 @@ export function Devices({ role }: { role: "admin" | "user" }) {
                         <Typography.Text>{meterSerial ?? NOTHING}</Typography.Text>
                       </Form.Item>
                     </Col>
+                    {/* Hidden, not disabled, on a machine that does not
+                        require one (issue 01) — a greyed control invites the
+                        question an absent one does not, and there is nothing
+                        the operator could do about it anyway: the requirement
+                        lives on the machine's own Activation Code. */}
+                    {mode === "create" && meterActivationRequired ? (
+                      <Col xs={24} md={8}>
+                        <Form.Item
+                          name="meter_activation_code"
+                          label="Meter Activation Code"
+                          rules={[{ required: true, message: "Paste the code the vendor issued for this meter." }]}
+                          extra="Test connection to read the Meter Serial, ask the vendor for a code, then paste it here before Create Device."
+                        >
+                          <Input.TextArea
+                            rows={2}
+                            placeholder="Paste the code the vendor issued"
+                            style={{ fontFamily: "monospace", fontSize: 12 }}
+                          />
+                        </Form.Item>
+                      </Col>
+                    ) : null}
                     <Col xs={24} md={8}>
                       <Form.Item name="site_code" label="Site Code">
                         <Input placeholder="Optional" />
@@ -958,7 +1102,12 @@ export function Devices({ role }: { role: "admin" | "user" }) {
                   <Row gutter={12}>
                     <Col xs={24} md={8}>
                       <Form.Item name="brand" label="Brand" rules={[{ required: true, message: "Pick a brand." }]}>
-                        <Select placeholder="Select" options={brandOptions} onChange={onBrandChange} />
+                        <Select
+                          placeholder="Select"
+                          options={brandOptions}
+                          onChange={onBrandChange}
+                          notFoundContent={noLicensedModels ? NO_LICENSED_MODELS : undefined}
+                        />
                       </Form.Item>
                     </Col>
                     <Col xs={24} md={8}>
@@ -967,6 +1116,7 @@ export function Devices({ role }: { role: "admin" | "user" }) {
                           placeholder="Select"
                           options={modelOptions}
                           onChange={(model: string) => applyModelDefaults(model, mode)}
+                          notFoundContent={noLicensedModels ? NO_LICENSED_MODELS : undefined}
                         />
                       </Form.Item>
                     </Col>
@@ -1041,6 +1191,22 @@ export function Devices({ role }: { role: "admin" | "user" }) {
                           <InputNumber min={1} max={65535} style={{ width: "100%" }} />
                         </Form.Item>
                       </Col>
+                      {offeredFramings.length > 1 && (
+                        <Col xs={24} md={12}>
+                          <Form.Item
+                            name="framing"
+                            label="Framing"
+                            extra="How the meter is reached, not what it is. If Test connection answers “Invalid connection” on one, try the other."
+                          >
+                            <Select
+                              options={offeredFramings.map((framing, index) => ({
+                                value: index === 0 ? "" : framing,
+                                label: `${FRAMING_LABELS[framing] ?? framing}${index === 0 ? " (default)" : ""}`,
+                              }))}
+                            />
+                          </Form.Item>
+                        </Col>
+                      )}
                     </Row>
                   )}
                   <Row gutter={12}>

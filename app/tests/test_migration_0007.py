@@ -110,6 +110,8 @@ class TestTheTableExists:
             "record_status",
             "source",
             "meter_serial",
+            "captured_at",  # ui-audit ticket 03, migration 0021
+            "sequence",  # ADR 0029, migration 0022
             "created_at",
             "updated_at",
         }

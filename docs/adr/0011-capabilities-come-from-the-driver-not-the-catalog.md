@@ -1,14 +1,18 @@
 # A model's capabilities come from its driver, not from the catalog
 
-Status: accepted (2026-08-11, owner decision during M7 grilling). **Partially implemented**, M7-1
-(issue #28): `supports_energy_registers()`/`read_energy_registers()` and
-`supports_special_days()`/`read_special_days()` landed on `MeterDriver`, implemented on `smw110.py`
-and `smart_tcc.py`, and `test_catalog.py` now asserts the driver-catalog correspondence this ADR
-calls for (`TestEnergySummaryAndSpecialDaysFlagsMatchTheDriver`) in place of the two hardcoded-list
-tests it names below. The `supports_energy_summary`/`supports_special_days` *values* already
-matched what this ADR proposes — the 2026-08-11 ST-3CL probe (`docs/meter-notes/`) confirmed both
-on real hardware, so no flag flip was needed this round. `read_battery_status()` and the
-`supports_battery` correction are still outstanding — that is issue #29's slice, not this one.
+Status: accepted (2026-08-11, owner decision during M7 grilling). **Fully implemented.** M7-1
+(issue #28) landed `supports_energy_registers()`/`read_energy_registers()` and
+`supports_special_days()`/`read_special_days()` on `MeterDriver`, implemented on `smw110.py`
+and `smart_tcc.py`. M7-2 (issue #29) landed the third flag: `supports_battery()`/
+`read_battery_status()` on `MeterDriver`, implemented on the three CEWE models
+(`prometer100.py`, `saral305.py`, `premier550.py`) via the shared `_dlms.py` free function
+`read_battery_status_via()`, and the catalog's `supports_battery` corrected from all nine
+models to exactly those three. `test_catalog.py` now asserts the driver-catalog correspondence
+this ADR calls for (`TestCapabilityFlagsMatchTheDriver`, covering all three flags) in place of
+the three hardcoded-list tests it names below. The `supports_energy_summary`/
+`supports_special_days` *values* already matched what this ADR proposes — the 2026-08-11 ST-3CL
+probe (`docs/meter-notes/`) confirmed both on real hardware, so no flag flip was needed for
+those two.
 
 Reverses a rule this repo states about itself. `CLAUDE.md` lists among the invariants:
 
@@ -101,11 +105,13 @@ SMART TCC does have a backup battery will see no Battery page, because we have n
 read. That is a real loss of information, and the honest version of it: the flag now means *"we
 can"*, not *"the meter can"*.
 
-`test_catalog.py` currently asserts the aspirational values —
-`test_every_model_reports_battery`, `test_the_new_brands_have_both`. Those tests were written
-to lock the catalog against drift, and they will now fail. They should be rewritten to assert
-the *correspondence* — every model flagged `True` resolves to a driver that implements the
-method — which is a test that cannot go stale the way a hardcoded list can.
+`test_catalog.py` asserted the aspirational values — `test_every_model_reports_battery`,
+`test_the_new_brands_have_both`. Those tests were written to lock the catalog against drift, and
+both are now gone: `test_the_new_brands_have_both` was removed with issue #28 (the
+energy-summary/special-days correspondence test replaced it), and `test_every_model_reports_battery`
+was removed with issue #29, folded into the same `TestCapabilityFlagsMatchTheDriver` correspondence
+class the other two flags already use — every model flagged `True` resolves to a driver that
+implements the method, a test that cannot go stale the way a hardcoded list can.
 
 ## What was rejected
 
@@ -117,3 +123,19 @@ the call site — v1's second gate protected a background daemon, not a UI.
 **Implement all three features on all nine models.** Rejected because five of the nine cannot
 be reached from this machine at all, so it means inventing OBIS addresses for meters we cannot
 test — the practice `docs/meter-notes/` exists to prevent.
+
+## Amended 2026-09-16 — the battery flag narrows to Premier 550 (ui-audit ticket 04)
+
+M7-2 (issue #29) turned `supports_battery` on for the three CEWE models because the driver
+implemented the read, and this ADR's own rule — *a flag turns on from a meter, never a
+datasheet* — was applied to the driver rather than to the meters. The first real install
+showed the difference: `0.0.96.6.1.255` is *"Device reports a undefined object"* on both
+Prometer 100 units and on the Saral 305, and answers only on the Premier 550
+(`docs/meter-notes/cewe-battery-scan.md`, probed with `app/scripts/probe_battery.py`). The
+flag is therefore `False` on Prometer 100 and Saral 305 — driver and catalog together, as the
+correspondence test requires — and `True` on Premier 550 alone. The Prometer 100 exposes the
+group's `E=0` use-time counter instead; it is recorded and deliberately not read as a "status".
+
+The runtime consequence lands beside it: a flagged meter whose read still fails is one WARNING
+per device per day with the meter's own reason, kept in memory (ADR 0008 — never persisted) and
+shown on the Battery page, not an ERROR with a traceback every hour.

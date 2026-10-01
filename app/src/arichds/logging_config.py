@@ -35,6 +35,11 @@ class CredentialRedactionFilter(logging.Filter):
         re.compile(r"(password\s*[=:]\s*)\S+", re.IGNORECASE),
         re.compile(r"(pwd\s*[=:]\s*)\S+", re.IGNORECASE),
         re.compile(r"(passwd\s*[=:]\s*)\S+", re.IGNORECASE),
+        # File Upload Destination SFTP key-file passphrase (ticket 01, ADR
+        # 0025). NOT covered by the `password` pattern above — "passphrase"
+        # does not contain the substring "password" — so this is a genuinely
+        # new pattern, despite the ticket's own text claiming none was needed.
+        re.compile(r"(passphrase\s*[=:]\s*)\S+", re.IGNORECASE),
         re.compile(r"(authentication_key\s*[=:]\s*)\S+", re.IGNORECASE),
         re.compile(r"(block_cipher_key\s*[=:]\s*)\S+", re.IGNORECASE),
         # SMART TCC HighGMAC system title — accepts system_title, system-title,
@@ -59,13 +64,20 @@ class CredentialRedactionFilter(logging.Filter):
         re.compile(r"(activation_code\s*[=:]\s*)\S+", re.IGNORECASE),
     ]
 
+    @classmethod
+    def redact(cls, text: str) -> str:
+        """Apply every redaction pattern to *text* — the same rewrite the
+        handlers get, for the one place a failure sentence leaves the process
+        by another route (the Battery page's last-failure reason, ui-audit
+        ticket 04 review nit)."""
+        for pattern in cls.PATTERNS:
+            text = pattern.sub(r"\1[REDACTED]", text)
+        return text
+
     def filter(self, record: logging.LogRecord) -> bool:
         """Apply all redaction patterns to the formatted message."""
         try:
-            msg = record.getMessage()
-            for pattern in self.PATTERNS:
-                msg = pattern.sub(r"\1[REDACTED]", msg)
-            record.msg = msg
+            record.msg = self.redact(record.getMessage())
             record.args = None
         except Exception:  # noqa: BLE001
             # Never let the filter itself crash the logging machinery.

@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-**ARICHDS Application v2** — a Windows-installed meter-monitoring app (DLMS/COSEM + Modbus,
-9 models, 3 brands): reads meters, stores locally, serves a local web UI, pushes data to the
+**ARICHDS Application v2** — a Windows-installed meter-monitoring app (DLMS/COSEM only — Modbus
+stays in the owner's separate Go program, ADR 0026 — 9 models, 3 brands): reads meters, stores locally, serves a local web UI, pushes data to the
 team's central server. A ground-up remake of v1 (`C:\Users\HP\Documents\Work\cewe`) with one
 process · one exe · one SQLite DB · one license — replacing v1's two services (Python + Go),
 MySQL, and ~30 tables.
@@ -50,29 +50,646 @@ MySQL, and ~30 tables.
   a capture is a document a human carries to a customer, a backup is not; **do not "make these
   consistent"**; **fully implemented**: the `settings` table, `capture_dir` API/form, path
   validation, the two renderers off one shared section module, the hardened write and the
-  render-on-miss download all landed with issue #22/M6b) ·
+  render-on-miss download all landed with issue #22/M6b; **Save all / the Capture Sweep since
+  capture-sweep ticket 04, 2026-09-23**: `capture/sweep.py` writes every closed period's missing
+  Capture into the current Billing Folder — the folder is the state, nothing persisted, never over
+  an existing file — in 60 s slices on the one-shot lane, admin-only `POST /api/billing/save-all` +
+  `GET .../save-all/status`, replacing the per-device *Save billing file now*; a moved folder is
+  filled by pressing it, never automatically — the owner's choice; the Billing page's
+  `captures_missing` (ticket 05: *Captured* empty or older than the folder row's own `updated_at`,
+  counted in the database, zero while the folder is empty) is the hint that says so) ·
   0011 (a model's capabilities come from its **driver**, not the catalog — **reverses** the
   "catalog copied from v1 verbatim, locked" rule for the three capability booleans only, because
   v1's flags claimed 9/6/6 models against drivers that implement 3/1/1; keys, brands, order and
-  fixed passwords stay locked; a flag turns on from a meter, never a datasheet; **partially
-  implemented** with issue #28/M7-1: `supports_energy_registers()`/`read_energy_registers()` and
-  `supports_special_days()`/`read_special_days()` landed on `MeterDriver`, and `test_catalog.py`
-  now asserts the driver-catalog correspondence instead of a hardcoded list; the
+  fixed passwords stay locked; a flag turns on from a meter, never a datasheet; **fully
+  implemented**: issue #28/M7-1 landed `supports_energy_registers()`/`read_energy_registers()`
+  and `supports_special_days()`/`read_special_days()` on `MeterDriver` — the
   `supports_energy_summary`/`supports_special_days` *values* already matched what this ADR
-  proposes, confirmed on real ST-3CL hardware 2026-08-11 — no flag flip was needed; `supports_battery`
-  and `read_battery_status()` are still outstanding, for issue #29) ·
-  0012 (the Energy Summary is **derived on every request and deliberately not reproducible** —
-  adding a Holiday today changes what last January reports tomorrow, and that is the point,
-  because holidays are rules a human enters late; no summary table, no cache; the peak window
-  stays a constant so there is only ever **one** retroactive knob and it tracks reality;
-  **fully implemented** with issue #28/M7-1: `GET /api/energy/summary` aggregates
-  `load_profile_readings` live, bounded to 31 local days) ·
+  proposes, confirmed on real ST-3CL hardware 2026-08-11, so no flag flip was needed for those
+  two — and issue #29/M7-2 landed the third: `supports_battery()`/`read_battery_status()` on
+  `MeterDriver`, implemented on the three CEWE models, with `supports_battery` corrected from
+  all nine models to exactly those three; `test_catalog.py` now asserts the driver-catalog
+  correspondence for all three flags instead of a hardcoded list. **Narrowed again 2026-09-16, ui-audit
+  ticket 04**: the register is "undefined object" on both Prometer 100 units and the Saral 305 and answers
+  only on the Premier 550 (`docs/meter-notes/cewe-battery-scan.md`, `scripts/probe_battery.py`), so
+  `supports_battery` is now true for **Premier 550 alone**; a flagged meter whose read still fails is one
+  WARNING per device per day kept in memory, and the Battery page names that failure instead of an empty
+  table) ·
+  0012 (**SUPERSEDED by ADR 0022** — `GET /api/energy/summary` no longer aggregates
+  `load_profile_readings` live; the paragraph below records what 0012 decided and why, kept for
+  history rather than because it is still the shipped read path. The Energy Export File and Save to
+  file followed it onto `energy_summary_days` with M14 ticket 04 (ADR 0023), so the only live caller
+  of `db/energy_query.py::energy_summary_rows()` left is the recompute job itself) (the
+  Energy Summary was **derived on every request and deliberately not reproducible** — adding a
+  Holiday today changed what last January reported tomorrow, and that was the point, because
+  holidays are rules a human enters late; no summary table, no cache; the peak window stays a
+  constant so there is only ever **one** retroactive knob and it tracks reality;
+  **fully implemented** with issue #28/M7-1, bounded to 31 local days, until M14 ticket 01
+  replaced the read path — see 0022 below) ·
   0013 (display units are a **view**, an appended file is a **contract** — the machine-wide
   kW/W setting reaches anything rendered per request, and never the Load Profile CSV, which
   appends for months under a header written once; **reverses** v1's `divide_by_1000`, which
-  write-time normalization already made vacuous; the setting itself shipped in `bbdd6b7`, the
-  boundary lands at M7, and the mixed-unit capture folder is a **recorded shipped gap** needing
-  its own issue).
+  write-time normalization already made vacuous; the setting itself shipped in `bbdd6b7`;
+  **fully implemented** with issue #30/M7 slice 3: the boundary landed on the Load Profile CSV
+  — `export/` never imports the render-time scale machinery, and the mixed-unit capture folder
+  stays a **recorded shipped gap** — now filed as `docs/issues/019`, because GitHub #32 was
+  filed for it and closed without the fix; the code is still unchanged, so believe the ADR's
+  Outstanding section over the tracker.
+  **Amended at M13 (issue 01, `19b68ac`), and that amendment is SUPERSEDED by ADR 0023**
+  (2026-09-14): M13 closed a file under a dated name when its head changed and let those Closed
+  Editions accumulate; ADR 0023 makes every export file mirror our 90-day window instead
+  (billing: every closed period), rewritten atomically, one head per file, no editions — because
+  the customer's stated constraint is disk space (ADR 0020). The core rule above — units never
+  reach a file — stands. **Closed Editions are gone as of M14 ticket 02**: `export/writer.py`'s
+  `_roll` is deleted, `head_changed()` tells a caller when the on-disk head no longer matches, and
+  `replace_rows()` swaps a temp file over the target in one `os.replace` — a head change now
+  rewrites the whole file in place (each of the three files' own "whole current content" query)
+  instead of opening a dated edition, and a caller that skips the `head_changed` check gets a
+  refused append rather than a corrupted file. M14 tickets 04 and 05 then made the rewrite the
+  normal path — Energy and Billing are rewritten every cycle, the Load Profile CSV is trimmed
+  daily; see ADR 0023 below) ·
+  0014 (the capture image is **drawn, never screenshotted** — Pillow as a third renderer over
+  `_render_shared`; shipped with issue #35 and **REVERSED by ADR 0017** — read 0017 first, and do
+  not cite 0014's "no screen to photograph" premise or its 250 MB browser costing, both of which
+  a working prototype disproved on 2026-08-22) ·
+  0015 (**three capture formats share one filename stem while only the `.png` spans ten
+  periods** — `<capture_dir>/<serial>/<bill_date>.{pdf,xlsx,png}`, where the pdf and xlsx hold
+  that one period and the png holds the ten most recent; it looks like a bug and is a decision
+  the owner made explicitly, so **do not "fix" it** by renaming, suffixing or foldering;
+  **fully implemented** with issue #35; **amended by ADR 0029** (billing-sequence ticket 02): the
+  stem carries `_<sequence + 1>` for the older members of a same-second pair *only* — a period
+  alone on its bill date keeps its unsuffixed name, so nothing already handed over is renamed —
+  and `png_source_rows` counts a pair as two of the ten; **amended again 2026-09-23, capture-sweep
+  ticket 03**: the Billing Export File is written into the same `<serial>/` subfolder as the
+  meter's captures — the customer keeps a meter's billing documents together — with the capture
+  names and spans untouched, and a stale top-level file from 0.8.2/0.8.3 never moved or deleted) ·
+  0016 (a customer's database is a **destination, not our store** — MySQL cannot express the
+  partial unique indexes ADR 0009's invariant rests on, and making their database the store
+  would make their downtime our downtime; FTP upload, a customer MySQL and a replicated folder
+  are all the same shape, a **Data-out Destination**, which is SPEC §3.8's surface; the
+  presentation-only pages landed with issue #37. **Three transports, do not conflate them**:
+  the **Database Destination** (the customer's own MariaDB/MySQL, SPEC §3.10) **landed with
+  issue #46** — `dataout/`, the `dbdest_sync` scheduler job, the three
+  `/api/settings/database-destination` endpoints and a working
+  `web/src/pages/DatabaseDestination.tsx` — whose Host and Database fields are **not** required as
+  of `docs/issues/023` (2026-09-18): an empty host or database is the off state the page's own
+  "sync is off while Host is empty" sentence always promised and the API always accepted, and the
+  form no longer blocks it (the same class of gap `docs/issues/022` closed on the FTP page; no
+  "only the active tab" guard here, since this page has one tab); the **central-server push** (SPEC §3.8, JSON + JWT,
+  no watermark — each cycle asks the server what it holds, ADR 0024) **landed with M14 ticket
+  08**, its own queue, separate contract, separate module (`centralpush/`); the **File Upload
+  Destination** (menu **FTP**, SPEC §3.8, ADR 0025) had its configuration land with ticket 01 —
+  `fileupload/`, `api/file_upload.py` and a working `web/src/pages/FileUploadDestination.tsx`
+  with its three protocol tabs — and the upload cycle itself, the Upload Manifest model and the
+  one transport seam landed with ticket 02, registered as the `file_upload` scheduler job, last
+  and one behind `central_push`; proven against an in-memory transport only at first — the three
+  real transports (SFTP/FTPS/HTTPS, tickets 03-05) all landed, so every protocol the page offers
+  now moves real bytes. **HTTPS landed with ticket 03**:
+  `fileupload/https_transport.py`'s `HttpsTransport` implements the seam over `urllib` alone
+  (no `httpx`/`requests`), reusing the Central Push client's own split-timeout opener — factored
+  out first, in its own commit, into `arichds/split_timeout_http.py` (the neutral module both
+  now import, parametrised by timeout rather than each hand-copying the connect/read-split
+  recipe) — `_build_transport()` in `cycle.py` returns a real `HttpsTransport` for
+  `active_protocol == "https"`, so a page saved
+  on the HTTPS tab genuinely moves bytes; `POST .../https/test` (mirroring
+  `database-destination/test`'s "HTTP 200 on every outcome") reports `ok` /
+  `unreachable` / `timed_out` / `unauthorized` / `other` from a manifest `GET` on the short
+  connect timeout (`FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC`); the three endpoints are
+  published on the API page's **Files (optional)** section, rendered by
+  `centralpush/contract.py::render_contract()` from the same
+  `MANIFEST_PATH`/`FILE_PATH_PREFIX`/`SHA256_HEADER` (`X-ARICHDS-File-Sha256`) constants the
+  transport itself builds requests from, contract version unchanged at 1. **Remote root reaches
+  the wire only through `PUT .../v1/files/{relative path}`, decided rather than left open**: the
+  two manifest endpoints (`GET`/`PUT {url}/v1/files/manifest`) are deliberately un-prefixed,
+  because a receiving server scopes a manifest by the token/URL it issued — each machine gets its
+  own — not by a path segment; spec.md story 10 ("several machines share one server by choosing
+  different roots") is satisfied because it is the *files* that collide when several machines
+  write under one root, and Remote root is exactly what keeps their relative paths apart. A
+  receiving team joining a manifest key to a stored object path must still know the manifest's
+  own keys are the **un-prefixed** relative path — see `_render_files_contract()`'s notes) ·
+  0017 (the capture image is a **headless screenshot of our own page** — **reverses 0014**:
+  Edge ships with Windows and `websockets` already arrives via `uvicorn[standard]`, so driving
+  the installed browser over CDP costs **0 MB** and makes fidelity an identity rather than an
+  approximation; the price is that Edge itself cannot run as LocalSystem (`msedge.exe` exits
+  1002 under `nt authority\system`) and that the image is truncated exactly as the screen is,
+  which the owner chose; 0015 and 0010 are untouched; **fully implemented** with issue #38 —
+  `capture/screenshot.py` drives Edge over CDP against a seeded `web/src/capture.ts` request
+  (`app/` decides which ten periods, never the page's own defaults), the DOM/JS contract lives
+  in `capture/dom.py`, and `capture/png.py`'s Pillow renderer is gone — **corrected by issue
+  #40**, which replaced #38's own fix: #38 read "the service can no longer run as LocalSystem"
+  too widely and moved the *whole service* to `NT AUTHORITY\LocalService`, which broke a
+  `capture_dir` (ADR 0010) or export folder (issue #30) under `C:\Users\…` on the first real
+  install (LocalService cannot write there); #40 puts the service back on **LocalSystem** and
+  launches only Edge through a Windows scheduled task, `ARICHDS Capture Browser`
+  (`installer/register-capture-task.ps1`), registered to `NT AUTHORITY\LOCAL SERVICE` and
+  triggered with `schtasks /run` — `capture/task.py` is the installer↔app contract for that
+  task, the same shape `capture/dom.py` is for the web↔app one; `%ProgramData%\ARICHDS\tmp`
+  is the only directory carrying a `[Dirs] Permissions:` grant, and it is now Edge's one
+  reused profile directory rather than a fresh one per capture, so captures are serialised by
+  a process-wide lock) ·
+  0018 (billing has **two read shapes but still one write path** — a fifteen-minute *change
+  check* rides the **Load Profile cycle's existing connection** and triggers the unchanged
+  whole-buffer read only when the newest bill_date it finds actually changed; ADR 0009's "one
+  read path" is about how rows are *produced*, and that is untouched. **Not `entriesInUse`** —
+  a full ring saturates it (`smw110w4-scan.md:71`), which would be silent after about a year.
+  `BILLING_INTERVAL_SEC` stays daily as a **backstop**, deliberately, so do not "fix" it to
+  900. Measured, because the first draft guessed: the saving is 33–73 % of a cycle, not 13x,
+  and the real cost is the association — Premier 550 was seen at **95.5 s** to connect;
+  **fully implemented, with two corrections, by issue #43**: the ADR's own literal steps 2–3
+  were wrong on real hardware and are amended in the ADR text itself rather than silently
+  overridden — the newest *entry* is the Open Period on every model shipped today and its
+  `bill_date` advances on every single read (CONTEXT.md — Open Period), so comparing against
+  it would have fired the whole-buffer read on every tick; the actual signal is the newest
+  **closed** period, found by reading two entries and classifying them with the driver's own
+  `_classify_open`. And the comparison keys on `device_id` alone, not `(device, meter_serial)`
+  — both driver read paths already store `meter_serial=None` when the serial register read
+  fails after the buffer was read, which would have made the filtered `MAX` come back `NULL`
+  forever and fired a full read every cycle. `MeterDriver.billing_newest_closed_bill_date()` /
+  `BILLING_NEWEST_ENTRY_FIRST` (base default `True`, entry ordering is a property of the
+  profile per the gurux-dlms skill) landed on `base.py`, `_dlms_profile.py` and `smw110.py`;
+  `billing_change_check()` landed on `billing.py`; the wiring inside
+  `load_profile.py::_read_while_holding` runs the check **after** the logger walk and
+  **before** `disconnect()`, gated to the background path only (a Manual Read must not grow a
+  whole billing read on a path someone is waiting on), and fires
+  `read_and_store_billing(device_id, background=True)` **after** the Transport Endpoint lock
+  block has exited — `PriorityEndpointLock` is not reentrant, so calling it from inside that
+  lock would return `skipped=True` silently while every fake-lock unit test stayed green) ·
+  0019 (a meter is **licensed individually, not just counted** — `max_meters` already gates the
+  *count*; a **Meter Activation Code** is signed per meter and bound to **Meter Serial + Machine
+  ID**, checked once at Create, grandfathering devices that predate it and stacking with
+  `max_meters` rather than replacing it; the price is that an RMA and a hardware migration both
+  cost new codes; the vendor half landed with issue #41 —
+  `licensing/meter_activation_code.py` and `tools/arichds_vendor.py sign-meter` (**there is no
+  `/activate-meter` endpoint** — this digest named one until 2026-09-11 and none was ever
+  specified: #41's own criteria ask only that a code can be issued and verified, and the
+  verification happens at Create, in `api/devices.py:785-809`) — the product half landed with
+  issue #42: the nullable `devices.
+  meter_activation_code` column (migration 0013), the gate wired into `create_device` between
+  `_reject_duplicate_serial` and the row write, and the Add-device form field. **Update needs no
+  code check** — the ADR's own text originally described one ("re-checked at Update when the
+  serial changes"), but the shipped `_reject_changed_serial` (ADR 0005) already refuses *any*
+  Update whose probed serial differs from the stored one, unconditionally, which is stricter than
+  a re-check would be; adding one would only re-open the bypass by loosening that refusal. The
+  ADR's "When it is checked" section is amended in place to say so.
+  **Amended again (full-version licence, issue 01): whether the gate applies at all is now
+  decided by the machine's own Activation Code** — `require_meter_activation`, a field on the
+  signed payload beside `max_meters` and `models`, where **unstated means not required**, so the
+  full version is sold by saying nothing and adds meters with no code. Deliberately **not** a
+  feature key: `features` names what the product may *do*, this names what the operator must
+  *supply*, and a `features: null` licence would otherwise have picked it up automatically. A
+  supplied code is still verified either way, switching it never disturbs a device already added,
+  and there is still no check at Update (the licensed-model list *is* checked at both, because a
+  device can be edited onto another model but cannot be moved onto another meter). ·
+  0020 (a destination **mirrors our window, it never archives** — the customer's MySQL holds
+  exactly the 90 days our own store holds, so the sync **deletes from their database** as well as
+  writing to it; the owner chose this against the grill's recommendation, and it is why a
+  `DELETE` fired into someone else's database is deliberate rather than a bug. It dissolves the
+  silent data-loss window an append-only destination would have past day 90. **Do not "fix" the
+  asymmetry it creates**: deleting a device erases its billing from the destination on the next
+  cycle but leaves its load profile for up to 90 days, because billing is replaced wholesale and
+  load profile is appended; **fully implemented with issue #46**: `dataout/sync.py`'s
+  `_purge_destination` deletes past `RETENTION_DAYS` from the customer's
+  `load_profile_readings` in `DELETE … LIMIT` batches, `_replace_billing` writes billing
+  wholesale inside one transaction and **never purges it**, and the purge runs even when the
+  append hit its budget so the window cannot drift. One correction the implementation forced,
+  in the ADR's favour: the ADR says nothing records that a purge ran, and nothing persisted
+  does — but the page needs a status, so the counts live in one in-memory frozen dataclass
+  (`dataout/status.py`) that resets on restart, which is ADR 0008-clean. **Three device labels ride
+  on every row since 2026-09-20** (the customer's request): `device_name`, `meter` (their word for
+  `meter_number`) and `site_name`, declared once in `dataout/schema.py::DEVICE_LABEL_COLUMNS`, typed
+  from `devices` itself, always nullable and placed **directly after `meter_serial`** in both
+  tables (the owner's choice — which meter a row belongs to is read in one place); `reconcile` now
+  adds every missing column `AFTER` its neighbour in our own definition, so an upgraded destination
+  ends in a fresh one's order (measured on MariaDB 10.4.32, 200,000 rows: 3–5 ms instant, 570 ms
+  forced to copy) — and still never moves a column that is already there. **A label is a snapshot,
+  not a reference**: a sent
+  load-profile row is never relabelled on a rename (the `ON DUPLICATE KEY UPDATE` still rewrites
+  only `source`), billing always carries the current ones, and rows sent before the columns
+  existed stay `NULL`) ·
+  0021 (a destination **speaks local time** — UTC stops at our boundary; the store stays UTC and
+  the invariant above is untouched, but the Database Destination receives
+  `METER_LOCAL_UTC_OFFSET_HOURS`-shifted values in `DATETIME` (never `TIMESTAMP`, whose
+  conversion depends on the customer's `my.cnf`). This names a rule that already held —
+  `export/format.py:162` and the web pages both convert — rather than inventing one; the hazard
+  is that the load-profile watermark now compares local against UTC, absorbed by one shared
+  conversion plus `INSERT … ON DUPLICATE KEY UPDATE` on a rewound watermark — **not `INSERT
+  IGNORE`**, which dedups the same way but swallows data errors even under `STRICT_TRANS_TABLES`,
+  measured on MariaDB 10.4.32; **fully implemented with issue #46**: `dataout/sync.py`'s
+  `_to_local` / `_from_local` are the one pair the row write, the watermark read and the purge
+  cutoff all go through, and `dataout/schema.py` maps every `DateTime(timezone=True)` to a naive
+  `DATETIME`. `dataout/` imports nothing from `export/`, as this ADR's Consequences require, and
+  `test_dataout_sync.py` asserts that rather than trusting it. Two corrections the real server
+  forced, both about the *implementation's* research rather than the ADR's own text: PyMySQL
+  reports **2003** for an unresolvable host as well as for a refused connection — not 2005, and
+  not the C client's 2002 — so the Test connection check keys on neither; and SQLAlchemy's
+  `CreateTable` renders a `UniqueConstraint` inline but emits a plain `Index` as a **separate**
+  statement, so `reconcile` must create the secondary indexes itself or the destination silently
+  gets none) ·
+  0022 (the Energy Summary is **stored and recomputed over the whole 90-day window every cycle** —
+  **supersedes 0012**: one row per meter per local day that the page, the Energy Export File and
+  the central push all read, so the three cannot disagree; a Holiday change and a late Interval
+  Reading both land within one cycle with no trigger for either; `updated_at` moves only when
+  values change; a **Holiday Change** log (who/when/which day, all five paths) kept 90 days;
+  measured at ~0.07 s per meter for the full window, and the owner's largest site is under 20
+  meters. **The stored table and the recompute landed with M14 ticket 01**
+  (`.scratch/central-push/issues/01-energy-summary-is-stored-and-recomputed.md`): migration 0017
+  creates `energy_summary_days` (device, local date, the eight buckets, `updated_at`, unique on
+  device+local date, cascades with the device); `db/energy_summary_store.py`'s
+  `energy_summary_recompute_cycle()` is the `energy_summary_recompute` scheduler job, registered
+  immediately behind `load_profile` at the same interval — it re-runs the **unchanged**
+  `db/energy_query.py::energy_summary_rows()` aggregation over the whole retention window per
+  device and upserts only the days whose buckets actually differ, so `updated_at` stays quiet on
+  a repeat recompute — and a stored day *inside* the window that the live aggregation no longer
+  produces (its readings deleted, or a re-read reclassified every interval all-invalid) is deleted
+  in the same pass, never left to linger until Retention; `GET /api/energy/summary` now reads that
+  table (`stored_energy_summary_rows()`) instead of aggregating live, with its response shape and
+  31-day bound unchanged; `db/retention.py::purge_expired()` drops rows past the same
+  local-day-shifted `RETENTION_DAYS` window the recompute maintains. **The Energy Export File and
+  Save to file moved onto the stored table with M14 ticket 04**: both now call
+  `stored_energy_summary_rows()` instead of the live `energy_summary_rows()` aggregation — see
+  0023 below for the file's own every-cycle rewrite — and the Holidays page's per-change
+  computation is retired with it: `HolidayMutationOut` dropped `affected_date`/
+  `energy_files_written_past`, `db/energy_query.py::most_recent_occurrence`/
+  `energy_files_written_past` are deleted, and the page shows one fixed "will be recalculated
+  within 15 minutes" notice on every Holiday change instead. **The Holiday Change log itself
+  landed with M14 ticket 06**: migration 0019's `holiday_changes` (no `device_id`, machine-wide
+  like `holidays`) is written in the same transaction as each of the five mutation paths —
+  `api/holidays.py`'s `_record_holiday_change`/`_record_import_change`, called before the one
+  `session.commit()` each handler already had, so a refused mutation (a collision, a 29 February
+  annual) records nothing and a commit failure rolls both writes back together — and also logged
+  to the App Log; `GET /api/holidays/changes` reads it newest-first under the router's existing
+  `energy_summary` gate, open to any signed-in role; `db/retention.py` purges it on `created_at`
+  alongside `device_events`; the recalculation notice now also fires after both imports, which
+  ticket 04 had left out) ·
+  0023 (export files **mirror our window and are rewritten, never archived** — **amended 2026-09-23:
+  each export file has its own folder** — `export_output_dir` stays the Load Profile CSV's (Load
+  Profile page), the billing file follows **`capture_dir`** — the Billing page's one folder, the
+  captures' (owner decision ก, same day; since capture-sweep ticket 03 the file sits **inside the
+  meter's capture subfolder** beside its PDF/xlsx/PNG, ADR 0015 amended; `export_billing_output_dir`
+  lived for one build and
+  migration 0023 drops its row) — and `export_energy_output_dir` is set on the Energy Summary page
+  (`GET`/`PUT /api/energy/settings`, new) — **an empty folder turns that file off** (capture-sweep
+  ticket 02, 2026-09-23: the fallback to the Load Profile folder that 0.8.2/0.8.3 carried is
+  withdrawn; a file is never written into another file's folder, and each page's Save button
+  answers 422 naming its own empty folder) — read through `db/app_settings.py`'s
+  `billing_export_dir`/`energy_export_dir` by the writers, the two Save-now buttons and
+  `fileupload/cycle.py`, which
+  lists each file's own folder against its template — the billing file's being the meter's subfolder
+  — with the manifest keys unchanged, and whose capture walk skips the folder's top level and any
+  file matching the billing template in a meter's subfolder, so the billing file is sent once as
+  `export/<name>`; the
+  owner put each folder on its file's page, not on Export Format (`.scratch/export-folders/spec.md`)
+  — **supersedes 0013's
+  M13 amendment**, extends 0020 to the export folder: Load Profile CSV and Energy file hold 90
+  days, the Billing file every closed period; LP appends and is trimmed daily with retention, the
+  two small files are rewritten whole every cycle; every rewrite is temp-then-replace; Closed
+  Editions are gone. **The atomic-replace primitive and the in-place head-change rewrite landed
+  with M14 ticket 02**: `export/writer.py::replace_rows()` is the temp-file-then-`os.replace`
+  swap, `head_changed()` is what a caller checks before choosing it over the cheap
+  `append_rows()`, and each of the three files gained its own "whole current content" query
+  (Load Profile: the 90-day merged query, same skew cap and all-invalid exclusion; Billing:
+  every closed period, unfiltered; Energy: the live `energy_summary_rows()` 90-day window at that
+  point). `append_rows()` no longer rolls a mismatched head to a dated file; it refuses, on the
+  assumption a caller has already checked `head_changed()`. **Energy and Billing rewritten whole
+  every cycle landed with M14 ticket 04**: `export/energy_csv.py::export_device_energy` and
+  `export/billing_csv.py::export_device_billing` call `replace_rows()` unconditionally now —
+  `head_changed()` is gone from both, because a normal cycle already does what a head change used
+  to trigger specially; Energy reads `energy_summary_days` (today inclusive, so a wrong partial-day
+  number is corrected next cycle rather than held back) and Billing reads every closed period,
+  unfiltered — both drop their `_exported_through` watermark (migration 0018 removes
+  `devices.billing_exported_through`/`devices.energy_exported_through`, and nothing in the
+  application reads or writes either column any more); a device with nothing stored in its window
+  still holds quietly rather than writing an empty file, the same choice the Load Profile CSV
+  already makes, with the one residual gap flagged rather than silently fixed: a device that stops
+  reporting for a whole retention window leaves its last Energy file in place rather than being
+  emptied (Billing cannot hit this — a closed period is never deleted, ADR 0009). **The Load
+  Profile CSV's own daily 90-day trim landed with M14 ticket 05**: `export/csv_export.py` gained
+  `trim_device_load_profile_csv()` / `csv_trim_cycle()`, the Scheduler's `lp_csv_trim` job
+  (`constants.py::JOB_LP_CSV_TRIM` / `LP_CSV_TRIM_INTERVAL_SEC`, aliased to
+  `RETENTION_INTERVAL_SEC` the way `ENERGY_SUMMARY_RECOMPUTE_INTERVAL_SEC` aliases
+  `LOAD_PROFILE_INTERVAL_SEC`), registered immediately behind `retention`. It reuses ticket 02's
+  whole-window rewrite (`_replace_whole_window`, factored out of the head-change branch into a
+  helper both paths now share) **unconditionally**, every day, rather than only on a head change —
+  the fifteen-minute `csv_export` cycle still only ever appends or rewrites on an actual head
+  change, never to trim the window on its own. The file may still hold up to 91 days between
+  trims, exactly as ADR 0023's own Consequences section says; **a deleted Load Profile CSV is
+  rebuilt whole since 2026-09-24** — `_export_device_locked` sends a device whose watermark is set but
+  whose file is missing or empty through `_replace_whole_window`, so *Save CSV now* recovers it at
+  once instead of answering "No new rows to export") ·
+  0024 (the **central push holds no state and is signed** — customer requirement E4: billing, load
+  profile, energy summary and the meter roster, JSON every 15 min; **our** versioned contract,
+  published on the in-app API page from the same models that serialize the payload; no
+  `sync_state` — each cycle asks the server what it holds; Meter Serial not `device_id`; ISO 8601
+  with offset; a **Push Token** JWT signed EdDSA with the existing vendor key, domain-separated from
+  an Activation Code, verified by public key with a server-side denylist — **never run `keygen`**;
+  no URL configured = no push. **The Push Token issue/verify primitive landed with M14 ticket
+  03**: `tools/arichds_vendor.py sign-push --machine-id <64-hex>` prints a real JWT — unlike
+  `sign`/`sign-meter`'s one-dot custom format — signed EdDSA with the same private key, loaded
+  exactly as `sign` loads it; `app/src/arichds/licensing/push_token.py`'s `verify_push_token()`
+  accepts it and returns the Machine ID, or refuses with `MALFORMED` / `INVALID_SIGNATURE` /
+  `WRONG_PRODUCT` / `UNSUPPORTED_VERSION` / `LICENCE_CODE_NOT_PUSH_TOKEN`. Domain separation
+  needed no code in the two licence verifiers: a JWT has two dots and an Activation Code's/Meter
+  Activation Code's own format has exactly one, so `activation_code.py`'s and
+  `meter_activation_code.py`'s existing dot-count guard already refuses a Push Token as
+  `MALFORMED`. The other direction gets its own reason: the Push Token verifier recognises
+  either licence format by its shape (one dot, a JSON payload naming `arichds`) and refuses it as
+  `LICENCE_CODE_NOT_PUSH_TOKEN`, without checking its signature, so an operator who pastes the
+  wrong secret into the Push Token field is told which mistake they made.
+  **The configuration, the admin endpoints and the published contract landed with M14 ticket
+  07**: `app/src/arichds/api/central_push.py` is the first caller of `verify_push_token` —
+  `GET`/`PUT /api/settings/central-push` (config: URL + write-only Push Token, `token_set`
+  rather than the token itself, never returned — `CentralPushOut` has no `token` field, and
+  `central_push_token` ends in the literal `token` so the existing redaction filter pattern
+  already covers it with no new pattern), `GET .../status` (always `None` until ticket 08) and
+  `GET .../contract`, all `AdminDep` and gated by **no licence feature key** — ADR 0024's own
+  text, "no separate licence key". `GET .../status` reads `None` until a first cycle has run,
+  which ticket 08 below makes true again after a fresh install/restart (ADR 0008: it resets).
+  Saving a token verifies it and additionally requires its
+  Machine ID to equal `LicenseService.machine_id` (never a new derivation); a rejected token
+  changes nothing and the response names which check failed (`MALFORMED` /
+  `INVALID_SIGNATURE` / `WRONG_PRODUCT` / `UNSUPPORTED_VERSION` /
+  `LICENCE_CODE_NOT_PUSH_TOKEN` / this endpoint's own `WRONG_MACHINE`). `app/src/arichds/
+  centralpush/` is the new module ADR 0024 asks for, separate from `dataout/`: `contract.py`
+  declares contract version 1 as Pydantic models — `LoadProfileItem`/`BillingItem`/
+  `EnergySummaryItem`'s measurement columns are built by walking the ORM model's own columns
+  (`LoadProfileReading`/`BillingReading`/`EnergySummaryDay`) rather than typed out by hand, so
+  "every measured column" cannot go stale — and `render_contract()` renders the published
+  document from `model_fields`, never a hand-written duplicate list, so a field added to a
+  model reaches the API page with no other edit; `status.py`'s in-memory `CycleStatus` slot is
+  populated by ticket 08 below (ADR 0008: no persisted job state). Web: an
+  **API** page under the Data-out group (`web/src/pages/CentralPush.tsx`), admin-only like its
+  two siblings but `kind: "always"` in `features.ts` (no licence key), which also means the
+  Data-out group header no longer disappears on a licence lacking `database_destination` — this
+  entry alone now holds it up. **The cycle itself — the scheduler job, the holdings/push HTTP
+  client, and everything that writes `centralpush/status.py` — landed with M14 ticket 08**:
+  `centralpush/client.py` is the stdlib-`urllib`-only transport (hard constraint — no
+  `httpx`/`requests` in the product) — `GET /v1/holdings` and `POST /v1/push`, every request
+  carrying `Authorization: Bearer <Push Token>`, with **separate connect and read timeouts**
+  (`CENTRAL_PUSH_CONNECT_TIMEOUT_SEC`/`CENTRAL_PUSH_READ_TIMEOUT_SEC`) that plain
+  `urlopen(timeout=)` cannot express — a small `http.client.HTTPConnection` subclass fixes the
+  connect timeout before `connect()` and re-`settimeout`s the live socket for reads, wired into
+  `urllib.request` through a custom opener; a non-2xx, a timeout or an unreachable host all
+  collapse into one `PushRequestError` carrying only the failure's class name, never the URL or
+  the token. `centralpush/cycle.py`'s `central_push_cycle()` is the `central_push` Scheduler job
+  (`jobs/scheduler.py`), registered **last**, one behind `dbdest_sync` — the cycle asks holdings
+  first, sends the meter roster as a full snapshot every time (`send_when_empty=True`, the only
+  way the server learns every device is gone), then billing/Energy Summary/load profile gated
+  per kind by `feature_enabled` (background-path shape, no `Request`) and each kind's own
+  `updated_at`/`read_at` watermark from the holdings answer — load profile's is rewound by
+  `CENTRAL_PUSH_LOAD_PROFILE_REWIND_SEC` (60 s, ADR 0024's "small safety margin"; deliberately
+  smaller than `DBDEST_WATERMARK_REWIND_SEC`'s 3600 s, which exists for a timezone-crossing
+  hazard — ADR 0021 — this wire, carrying an explicit UTC offset, does not have). A device with
+  no known Meter Serial is skipped and counted, for every kind including the roster; any HTTP
+  failure — the holdings read or a push — ends the whole cycle `"skipped"` right there, with no
+  retry inside the cycle (the next cycle's holdings answer is the retry) — `CycleOutcome` is now
+  `Literal["success", "skipped"]` (renamed from ticket 07's `"unreachable"`/`"timed_out"`, its
+  own reviewer's nit, to match this wording). Tests (`test_central_push_cycle.py`) run against
+  `fake_central_push_receiver.py`, an in-process `ThreadingHTTPServer` implementing contract
+  version 1 on `127.0.0.1:0` — an ephemeral port so `pytest -n auto` workers never collide —
+  verifying the Push Token with `verify_push_token` and upserting on the contract's own natural
+  keys; every test asserts only on what it holds. **Contract version 2 since ADR 0029**
+  (billing-sequence ticket 03, 2026-09-22): `BillingItem` carries `sequence`, declared explicitly
+  beside `bill_date` (never by the measurement walk — it is in `_BILLING_EXCLUDE` so the walk
+  cannot pick it up), and `NATURAL_KEYS["billing"]` is `(meter_serial, bill_date, sequence)`; the
+  published contract's notes say why a version-1 server collapses a same-second pair. Nothing else
+  on the wire changed — the roster, Energy Summary and load-profile items are asserted
+  field-for-field unchanged. Nobody consumes the push as of 2026-09-22 (only the Database
+  Destination to `localhost` is in use), so there was no server team to coordinate with. ·
+  0025 (the **File Upload Destination speaks three protocols and keeps its state in a
+  server-side manifest** — menu label **FTP**, the customer's own word (CONTEXT.md's glossary
+  term stays *File Upload Destination*; the two disagree on purpose) — a third Data-out
+  Destination beside the customer's database (ADR 0016/0020/0021) and the Central Push (ADR
+  0024): SFTP (paramiko, ticket 04), FTPS (explicit TLS, standard library, ticket 05) and HTTPS
+  (the push's own split-timeout `urllib` client, ticket 03) copy the export files and the Billing
+  capture documents to a server the operator names, one protocol active at a time, and an
+  **Upload Manifest** — plain JSON on the *server*, not this machine (ADR 0008) — is what lets a
+  cycle send only what changed; nothing is ever deleted remotely, unlike the Database
+  Destination's Mirror Window (ADR 0020). **Ticket 01 landed the configuration only**: `fileupload/`
+  (`config.py`'s settings loader, `status.py`'s in-memory last-cycle slot, always `None` until
+  ticket 02 lands a cycle) and `api/file_upload.py` — `GET`/`PUT .../sftp`/`PUT .../ftps`/
+  `PUT .../https`/`GET .../status`, all admin-only and gated by `require_feature`
+  (`"file_upload_destination"`), the same shape `database-destination`'s endpoints use; saving a
+  tab makes it the active protocol and the other two keep what they hold; a password/passphrase/
+  token is write-only (`…_set` booleans only, never echoed) and an omitted or `null` one keeps
+  the stored value the same way `db_dest_password` does; the SFTP tab is refused when its host is
+  non-empty and neither a password nor a key-file path would be configured after the save —
+  checked against the *effective* value, not just what the request sent. **An empty host/URL on
+  the active tab is the off state and is savable** (`docs/issues/022`, 2026-09-18, amending the
+  ADR's Consequences in place): the cycle publishes `not_configured` and builds no transport,
+  every other field is kept, and an empty save on a tab that is *not* the active one — including
+  when nothing is active yet — is a 422 naming the way out (`_refuse_empty_unless_active`, the one
+  helper the three `PUT`s share); ticket 01's unconditional "HTTPS tab refused with no URL" is
+  gone, and the three page buttons read **Test saved connection** because the test endpoints take
+  no body.
+  `file_upload_destination` left `RESERVED_FEATURE_KEYS` (now empty) and is sold exactly like
+  `database_destination`; `web/src/features.ts` gates the page `kind: "feature"` on that key with
+  on-screen label **FTP**, and `AppShell`'s nav entry follows. **One correction the
+  implementation forced**: the ticket's own text claimed the existing credential redaction filter
+  already covered a key ending in `passphrase` "with no new pattern" — false, because
+  `passphrase` does not contain the substring `password`, the only thing the filter's `password`
+  pattern matches; `logging_config.py` gained a dedicated `passphrase` pattern in this same
+  change, proven by `test_fileupload_config_api.py`'s `TestSecretsNeverReachALog`. **HTTPS landed
+  with ticket 03**: `fileupload/https_transport.py::HttpsTransport` fills the transport seam for
+  `active_protocol == "https"` — `GET`/`PUT {url}/v1/files/manifest` and `PUT
+  {url}/v1/files/{relative path}` (the file body plus its sha256 in the `X-ARICHDS-File-Sha256`
+  header), every request carrying `Authorization: Bearer <token>`, over the Central Push client's
+  own split-timeout `urllib` opener — factored out first into `arichds/split_timeout_http.py` so
+  neither module hand-copies the connect/read-timeout-split recipe (or its `check_hostname`
+  hazard) a second time. `POST .../https/test` mirrors `database-destination/test`: HTTP 200 on
+  every outcome (`ok`/`unreachable`/`timed_out`/`unauthorized`/`other`), the short connect timeout
+  (`FILEUPLOAD_HTTPS_TEST_CONNECT_TIMEOUT_SEC`, 5s). The three endpoints are published on the API
+  page (`central-push`) as a **Files (optional)** Collapse panel, rendered from the same
+  path/header constants the transport itself uses — contract version unchanged at 1. Remote root
+  reaches the wire only through the file-put path, never the two manifest endpoints — a receiving
+  server scopes a manifest by the token/URL it was issued, not by a path segment. **SFTP landed
+  with ticket 04**: `fileupload/sftp_transport.py::SftpTransport` fills the transport seam for
+  `active_protocol == "sftp"`, driving `paramiko.Transport` directly rather than `SSHClient` —
+  one pinned fingerprint per server row, not a `known_hosts` file, so `SSHClient`'s
+  `MissingHostKeyPolicy` (and the demo-only `AutoAddPolicy` this product must never reach for)
+  never enters the picture; `Transport.get_remote_server_key().fingerprint` is read immediately
+  after the handshake, **before** any authentication attempt, so the fingerprint is always
+  observable whether or not the connection goes on to authenticate. **Host key pinning is
+  asymmetric by design**: a real transport (what the cycle builds) refuses outright —
+  `HostKeyNotPinnedError`/`HostKeyMismatchError`, both `TransportError` subclasses whose class
+  name alone reaches the cycle's status/log — the moment a fingerprint is missing or wrong,
+  never authenticating against an unverified server; `check_sftp_connection` (`POST
+  .../sftp/test`) is the one place allowed to *observe* an unpinned or changed fingerprint and
+  report it, still without authenticating past that point. **`POST .../sftp/host-key` is the
+  only write path for the pinned row** — nothing in `sftp_transport.py` or `cycle.py` ever
+  writes it, proven by `test_fileupload_sftp_transport.py::TestHostKeyPinning::test_a_cycle_never_pins_on_its_own`
+  driving a whole cycle against an unpinned fake server and asserting the stored fingerprint
+  setting stays empty. Password or key-file authentication (key file wins when both are
+  configured); the key is read from disk at connect time under the service account, never at
+  save time, via `PKey.from_path` (paramiko 5.0.0 — auto-detects RSA vs Ed25519 from the file's
+  own contents, no manual "try Ed25519 then RSA" needed). `mkdir` is walked one path segment at
+  a time with a `stat()` first, since a real `sshd`'s "already exists" mkdir failure carries no
+  errno to test (`docs/lib-notes/paramiko-sftp.md` §3). Every paramiko/OS-level failure collapses
+  through one shared classifier (`_classify_exception`, mirroring `https_transport.py`'s own
+  single classifier) into a bare `TransportError` carrying only the original exception's class
+  name — never a host, a credential, or a paramiko message that might carry one. Tests
+  (`tests/fake_sftp_server.py`, an in-process paramiko server — `tests/_stub_sftp.py`'s shapes
+  reimplemented locally, since that file ships with paramiko's source checkout, not the
+  installed package) cover password and key-file auth, the manifest round trip, a changed host
+  key being refused by both the transport and Test connection, and a wrong password surfacing as
+  `TransportError("AuthenticationException")`, never a bare paramiko exception. paramiko and
+  PyNaCl (paramiko 5's own hard runtime dependency, not an extra) are the one runtime addition
+  this whole feature makes — `pyinstaller-hooks-contrib`'s `hook-nacl.py` already collects
+  PyNaCl's compiled `_sodium` cffi extension with no hook of our own needed; a onedir build grew
+  by ~1.07 MiB (75,894,788 → 77,018,224 bytes, measured 2026-09-17). **FTPS landed with ticket
+  05, the last of the three transports**: `fileupload/ftps_transport.py::FtpsTransport` fills
+  the seam over the standard library's `ftplib.FTP_TLS` alone — explicit `AUTH TLS` (called
+  directly, ahead of `login()`, so the certificate can be read before any credential is sent),
+  passive mode, `PROT P`, `TYPE I` fixed for the whole session (measured: `SIZE`, used to test
+  whether the manifest exists, is refused in ASCII mode — `550 SIZE not allowed in ASCII mode`
+  — on a real server). **No CA-file field** (ADR 0025 Out of Scope): `FtpsTransport` and
+  `check_ftps_connection` both take a keyword-only `ssl_context: ssl.SSLContext | None = None`
+  that defaults to `ssl.create_default_context()` at call time — a constructor seam for tests
+  only, never a setting; the product (the cycle, `POST .../ftps/test`) never passes one, so a
+  self-signed certificate is refused in production exactly as measured against a real
+  `pyftpdlib` `TLS_FTPHandler` (`docs/lib-notes/pyftpdlib-tls.md`): `ssl.SSLCertVerificationError`.
+  Every other measured failure matched the digest's own table without correction: wrong
+  credentials raise `ftplib.error_perm` (`530`), a missing remote directory or manifest the same
+  class (`550`), a refused port `ConnectionRefusedError` — all collapse through one shared
+  classifier (`_classify_exception`, the `https_transport.py`/`sftp_transport.py` shape) into a
+  bare `TransportError` carrying only the original exception's class name. `mkd` is walked one
+  path segment at a time, each `error_perm` swallowed (not idempotent on a real server, the same
+  shape SFTP's `mkdir` has, `docs/lib-notes/pyftpdlib-tls.md` §6). Certificate subject for
+  `POST .../ftps/test` is read off `ftp.sock.getpeercert()["subject"]` right after `auth()`, and
+  rendered as a `CN=…` readable string. Tests (`tests/fake_ftps_server.py`, an in-process
+  `pyftpdlib` `TLS_FTPHandler` with `tls_data_required=True`) cover a self-signed certificate
+  refused, the same certificate trusted through the test's own `load_verify_locations`
+  succeeding byte-equal with the manifest round-tripping, a wrong password surfacing as
+  `TransportError("error_perm")`, and nested `captures/<serial>/` directory creation — no
+  runtime dependency added; `pyftpdlib[ssl]` (PyOpenSSL, plus `pyasynchat`/`pyasyncore` resolved
+  automatically for Python 3.12+) is dev-only. No PyInstaller build was needed for this ticket
+  (nothing runtime changed). **Corrected in round 1 (five reviewer findings)**: Test connection
+  now actually lists the remote root over the *protected, passive* data channel (`ftps.nlst(...)`,
+  never `ftps.cwd(...)`, which is control-channel-only and so never caught a blocked/NAT-broken
+  passive channel — exactly ADR 0025's own reason FTPS was nearly dropped); `ftps.timeout` (not
+  only the socket's own `settimeout`) is set to `FILEUPLOAD_FTPS_READ_TIMEOUT_SEC`, since
+  `ftplib.FTP.ntransfercmd` reads the former, not the latter, for every passive data connection it
+  opens; `_classify_exception` now reads the 3-digit reply code off an `error_perm` and only
+  `530`/`532` become `bad_credentials` — a server refusing `PROT P`/`PBSZ` used to be misreported
+  as a wrong password; `tests/fake_ftps_server.py` refuses `PORT`/`EPRT` outright, so a dropped
+  `set_pasv(True)` is now caught (it previously traced correct but was pinned by no test — a
+  loopback fake tolerates active mode); the same fixture's `passive_ports` pin is gone (it rested
+  on a false premise about what the port range controls, `docs/lib-notes/pyftpdlib-tls.md` §3,
+  corrected in the same round) since the default already binds `127.0.0.1` for both control and
+  data.) ·
+  0026 (**Modbus stays in the owner's separate Go program — v2 reads DLMS/COSEM only**, 2026-09-18:
+  M4b is dropped, reversing REMAKE-PLAN D1 "port the Go program to Python" and SPEC's
+  one-process goal for Modbus sites; all 9 models keep a DLMS driver, so coverage is unchanged;
+  the `source` column and `SOURCE_MODBUS` stay as a reserved value no code writes, never a
+  read-path branch; no integration with the Go program — an assumption to revisit the first time a
+  site needs one UI or one push for both) ·
+  0027 (**the Database Destination's load profile is one merged row per interval**, 2026-09-20, the
+  customer's request — amends SPEC §3.10 and ADR 0021's per-`(meter_serial, logger_id)` key; **our own
+  store is untouched** and still keeps a row per Logger, for the reasons in
+  `load-profile-capture-objects.md`. The destination's `load_profile_readings` has **no
+  `logger_id`**, unique key `(meter_serial, read_at)` plus one index on `read_at` for the purge
+  (whose `DELETE … WHERE read_at <` names no serial) — and its rows come
+  from `db/load_profile_query.py::merged_rows_select`, the query the Load Profile page and the CSV
+  are built on, never a second copy of the rule; `source`/`interval_sec`/`created_at` come from
+  the Logger 1 row (`dataout/schema.py::LOAD_PROFILE_SPINE_COLUMNS`, pinned as an exact set so a
+  new measurement column cannot slip in un-merged). The watermark is per `meter_serial`; a
+  lagging Logger 2 is handled by the **cap** — `merged_rows_cap`, the CSV's F5 rule, moved out of
+  `export/csv_export.py` into `db/load_profile_query.py` because `dataout/` may not import
+  `export/` — since a sent row never changes. **The destination's 24 h escape is not the CSV's**
+  (`never_rewritten=True`, code review 2026-09-20): the walk reads Logger 1 to the present before
+  Logger 2 gets more than a chunk per visit, so "more than 24 h behind" is the normal state of a
+  backfill, and nothing repairs a destination row the way the daily rewrite repairs the CSV — the
+  escape therefore waits until Logger 2 has **stored nothing for 24 h** (`MAX(created_at)`,
+  stateless). **Costs the owner accepted**: a Logger 2 row with no Logger 1 partner (two in three
+  on a Prometer 100) is not sent; a Logger 2 value arriving after the escape never reaches the
+  destination; a two-Logger meter whose Logger 2 has never stored a row runs a day behind. **A
+  per-logger table from 0.7.5 or earlier is refused, not reshaped** — by the load-profile step
+  (`per_logger_load_profile_error`, raised on `reconcile`'s own returned answer), *after* billing
+  has been replaced, naming `DROP TABLE
+  load_profile_readings;`; `reconcile` leaves such a table exactly as it found it. A device whose
+  driver cannot be built is still sent — its stored rows say whether it has a Logger 2, with one
+  WARNING per device per day. `scripts/probe_dbdest_merge_backfill.py` is the acceptance probe: a
+  real two-Logger backfill into a real MariaDB, checking the hold after every round and the
+  merged rows against `merged_rows_select` at the end — `fake_meter` cannot prove either) ·
+  0028 (**the capture image has a style, and Classic reproduces the customer's previous program**,
+  2026-09-21 — **the setting and the Classic view model landed with capture-style ticket 01**
+  (2026-09-22): `capture_style` rides on `GET`/`PUT /api/billing/settings` beside `capture_dir`
+  (omitted on `PUT` keeps the stored style, so the old one-field body still works), the Billing
+  page's Capture folder card carries the Standard/Classic control (read-only for a `user`, who
+  now sees the card), and `GET /api/billing/capture-classic/{device_id}?reading_id=` hands the
+  Classic page everything it draws already formatted — rows are `png_source_rows`' own window
+  for the anchor reversed (never a second copy of the rule; keyed by the anchor's reading id
+  rather than the spec's `end`+`limit`, because only the id can name a same-second pair's older
+  member, ADR 0029), cells `100.302`/`319840.2819`/`1/21/2026 00:00` local with the meter's
+  epoch `2000-01-01 00:00` an empty cell, the column mapping declared once in
+  `api/billing.py::_CLASSIC_NUMBER_COLUMNS`, statistics over the same **site** — the Group box shows
+  `site_name`, owner decision 2026-09-22, since `group_name` is optional and was blank on the owner's
+  own machine — and `_capture_anchor` now shared with the image download.
+  **The Classic page and the drive landed with ticket 02** (2026-09-22): the seeded request
+  carries `style` and `anchorId` (`capture/dom.py::CAPTURE_STYLE_FIELD`/`CAPTURE_ANCHOR_FIELD`,
+  read leniently by `capture.ts` — a malformed value is Standard/absent), `App.tsx` renders
+  `pages/ClassicCapture.tsx` in place of the whole shell on `classic`, `_run_capture` reads
+  `read_capture_style` on the session it mints the token with (never cached), and
+  `_drive_capture` sets a 1280×709 viewport and clips exactly that box — no
+  `Page.getLayoutMetrics`, no `captureBeyondViewport` — while the Standard drive's request list
+  is pinned byte-identical (`test_capture_screenshot_style.py`); the Classic page's rows are found
+  by `CLASSIC_TABLE_BODY_ROW_SELECTOR`, declared in `dom.py` beside the AntD one. Every distance,
+  colour and column width lives in `web/src/pages/classic-capture.css` (measured with Pillow from
+  `capture_WP081200.png`; font Segoe UI 12px by width comparison), the ten icons in
+  `web/public/images/classic/` cut from the owner's strip at native size. **Overlay done with
+  ticket 03** (2026-09-22, `app/scripts/probe_classic_overlay.py` — real Edge, launched directly
+  from the shell since the LOCAL SERVICE task needs an administrator): every frame line, button,
+  combo, tab, scrollbar and text start agrees with ARICHDS Meter's own PNG to the pixel, the eight
+  data rows and `212 / 36 / 176` match cell for cell; the accepted differences are glyph rendering
+  (Chromium draws digit strings 2–5 px wider over ~80 px than GDI), the 2px sunken field edge drawn
+  as 1px, and the schedule time `00 : 00` against the reference's `00 : 10` by design. Images in
+  the owner's `Downloads\arichds-classic-overlay\`; a third round from the owner's own product capture
+  added the spinner arrows, the combo chevron and the checked button's inner edges. **A hand-pressed
+  Capture image on a period whose `.png` exists serves that file, whatever style wrote it** — the
+  owner chose this (2026-09-22, ข) over re-rendering on a style mismatch: delete the file to re-issue
+  it, nothing on disk is ever rewritten. — amends 0017: **Capture Style** (CONTEXT.md) is a
+  machine-wide admin setting beside the capture folder, `standard` (default, today's image) or
+  `classic`, no licence key; Classic is a page in `web/` no menu reaches, drawn only to be
+  photographed by the same headless pipeline at a fixed 1280×709, imitating the window of the
+  customer's **own** desktop program (not v1) with its toolbar icons as bitmaps they confirmed
+  they own; ten closed periods **oldest first**, always kWh/kW; **every value is true or is
+  inert** — real folder/group/device/rows, Statistics Summary counted from Poller status over the
+  same group at the moment of writing (Paused uncounted, Issues = Offline only — *not* billing
+  completeness, because captures are written meter by meter), the Auto Read Schedule panel fixed
+  text; switching style rewrites nothing on disk; **acceptance is an overlay against a PNG the
+  old program itself wrote** — done, see above; a *second* reference from another meter or
+  machine is still worth asking the customer for) ·
+  0029 (**a closed billing period is keyed by bill date and sequence — every entry the meter
+  holds is stored**, 2026-09-22 — **the store, the page, the export file and the Database
+  Destination landed with billing-sequence ticket 01** (migration 0022; the sequence is counted in
+  `acquisition/billing.py::_store`, from whichever end `BILLING_NEWEST_ENTRY_FIRST` says the
+  driver's list starts at — no driver changed; the Billing page **selects** newest first and
+  **returns each page reversed**, so page one is the newest periods read oldest first, exactly
+  the window a capture picks; `_drive_capture` waits for the row ids in that reversed order;
+  `latest_closed_per_device` joins on `sequence = 0`; the Billing Export File has a `Sequence`
+  column after `Time` — 25 columns now; `dataout/schema.py` renders the column's `DEFAULT 0` in
+  both `CREATE TABLE` and `ADD COLUMN`); the capture-document suffix is ticket 02 and the push's
+  contract version 2 is ticket 03 — amends 0009's `(device,
+  bill_date)` key: site TC's Prometer 100 stamps commissioning resets in **pairs on the same
+  second** (six pairs, *Invocation of Scaling tariff*, `31.18` vs `3118.25` = one register before
+  and after a ×100 scaling; two pairs identical in every column), the vendor tool shows thirteen
+  and ARICHDS kept seven, skipping the rest with *already stored with a different value*; the
+  owner chose "store what the meter holds" over my recommendation to explain the six.
+  **Billing Sequence** (CONTEXT.md) = position within a same-bill-date group counted from the
+  newest, `0` for every single-entry bill date, so existing rows keep their key; identical pairs
+  are still two rows; **not** an auto id (cannot recognise a re-read — 13 rows become 26 on
+  day two), not the buffer position (shifts every cut). Rides into the Billing Export File, the
+  Database Destination and the Central Push (**contract version 2**, natural key
+  `(meter_serial, bill_date, sequence)`); capture stems get `_<sequence+1>` only for
+  `sequence > 0`, so no existing file is renamed; the Billing page shows no column for it and
+  **every page now lists periods oldest first** — which changes the Standard capture image's
+  order too. Change Check (0018) unaffected. **The older member's Standard `_2.png` renders since
+  capture-sweep ticket 01** (2026-09-23): `GET /api/billing?anchor_id=` applies
+  `capture/service.py::png_window_filters()` — the one predicate `png_source_rows` selects by — so the
+  page in capture mode lists the anchor's window without the pair's newer member, which `end` alone
+  could never exclude (before this the drive timed out after 90 s on every pair). TC's six rows arrive on the first whole-buffer read
+  of the new build, no manual step)
+  **Note**: `SPEC.md` also cites an "ADR 0016" in several places that is **v1's** numbering —
+  TOU buckets, holidays, `showDirectoryPicker` — and is unrelated; those now read "ADR 0016 (v1)".
 - `.claude/skills/fastapi/` — **mandated API style** (Annotated params/deps, pyproject
   entrypoint, lifespan). Read before writing any FastAPI code.
 - `.claude/skills/gurux-dlms/` — **mandated before touching any Gurux/DLMS code**: drivers,
@@ -82,8 +699,24 @@ MySQL, and ~30 tables.
   in v2 yet* so nobody cites v1 code as if it were ours.
 - `docs/meter-notes/` — OBIS and capture-object maps **scanned off real meters**, not vendor
   datasheets: `load-profile-capture-objects.md` (CEWE ×3, 2026-08-05 — including the evidence
-  that SPEC §3.5's Logger-1/2 merge is impossible), plus `tcc-obis-scan.md` and
-  `mitsu-obis-scan.md` ported from v1. The skill above says *how* to read a register; these
+  that SPEC §3.5's Logger-1/2 merge is impossible), `lp-new-columns-scan.md` (the M13
+  columns read off the Prometer 100, 2026-09-09 — every scaler resolved, `export_reactive_kvar`
+  cross-checked 12/12, and the two things measurement could **not** close),
+  `prometer100-load-profile-access.md` (2026-09-20, lab + customer site — the Prometer 100
+  **refuses every entry-access read** of its load profile and answers a range holding no entries
+  with `Data Block Unavailable` rather than `[]`; together they kept a two-day-old buffer at zero
+  stored rows, fixed by `load_profile_oldest_reading` falling back to
+  `now − (entries_in_use + 1) × capture_period`, measured 10–20 min early against the true oldest
+  row; the mid-buffer gap stall stays open as `docs/issues/024`; the HDLC-framed Prometer 100
+  (`docs/issues/025`) is **resolved**: **Framing** (CONTEXT.md) is a field of the `net` transport —
+  `ConnectionParams.framing`, stored only when chosen, never part of the Transport Endpoint — and
+  a driver *declares* what it was measured on (`MeterDriver.SUPPORTED_FRAMINGS`, empty = no
+  choice; `Prometer100Driver` = `("wrapper", "hdlc")`, its HDLC argument list being the Premier
+  550's flag for flag, proven against the lab HDLC meter); `factory.supported_framings()` feeds
+  the catalog's `framings`, the Devices form shows the field only when there is a choice, and
+  `_require_supported_framing` answers 422 before any socket opens;
+  `scripts/probe_lp_buffer.py` / `dist/probe_lp_buffer.exe` is the carry-to-site probe that found it), plus
+  `tcc-obis-scan.md` and `mitsu-obis-scan.md` ported from v1. The skill above says *how* to read a register; these
   say *which*. Each carries its own limitations section — read it before trusting a value.
 
 ## Layout
@@ -92,18 +725,90 @@ MySQL, and ~30 tables.
   (`src/arichds/`): FastAPI (API + serves the built SPA, one origin, no CORS) ·
   **SQLAlchemy 2** ORM + SQLite WAL + one Alembic setup (`render_as_batch=True`) · poller ·
   job-registry scheduler · licensing · `auth/` (bcrypt + PyJWT, Role enum, token service —
-  HTTP-free; the guard dependencies live in `api/deps.py`). Venv at `app/.venv`,
-  `pyproject.toml` + pip.
+  HTTP-free; the guard dependencies live in `api/deps.py`) · `export/` (the three
+  **export files** — Load Profile CSV (issue #30), billing CSV and Energy Summary file (M13) —
+  behind **one shared writer**, `export/writer.py`, which owns the file-head rule — a head change
+  rewrites the file in place under an atomic `os.replace` swap (`replace_rows()`), never M13's
+  dated edition (ADR 0023, M14 ticket 02 — `_roll` is gone); `format.py` holds row/filename
+  formatting. A fourth export file means a new renderer *over that writer*, never a second
+  writer) · `dataout/` (the
+  **Database Destination** — the customer's own MariaDB/MySQL written through SQLAlchemy Core +
+  PyMySQL on the `dbdest_sync` job, issue #46; deliberately **not** part of `export/`, which
+  ADR 0021 forbids it from sharing a local-time helper with) · `fileupload/` (the **File Upload
+  Destination**, menu **FTP** — SPEC §3.8, ADR 0025; `config.py`'s settings loader and
+  `status.py`'s in-memory last-cycle slot landed with ticket 01, imports nothing from `export/`
+  for the same reason `dataout/` does not; the **Upload Manifest** model (`manifest.py`), the one
+  transport seam (`transport.py`'s `Transport` Protocol + `TransportError`, carrying only a
+  failure's class name — never its message, since `logger.exception` would otherwise leak it
+  through `exc_info`, which the redaction filter does not scrub) and the `file_upload_cycle`
+  itself (`cycle.py`) landed with ticket 02, registered **last** in the scheduler, one job behind
+  `central_push` — proven against an in-memory transport only; HTTPS (ticket 03), SFTP
+  (ticket 04) and FTPS (ticket 05) now all move real bytes — `_build_transport()` builds a real
+  transport for every protocol the page offers.
+  **Corrected at ticket 02 round 1** (reviewer findings): the export group is found by
+  **listing** `export_dir` and matching each entry against the three filename templates —
+  never by predicting a name and hoping it exists, which a mutation to `render_filename`
+  proved could drift silently and which permanently hid an earlier day's `[date]`-templated
+  file; `POST .../upload-now` returns `{finished, status}` rather than a bare status, since the
+  one-shot lane can outlast the endpoint's own wait (a load-profile pass alone can exceed it,
+  ADR 0018); an unconfigured cycle now publishes an explicit `"not_configured"` outcome instead
+  of leaving the status `None`; and a quiet cycle (the manifest read back intact, nothing to
+  send) skips the manifest write entirely rather than re-writing an identical copy every fifteen
+  minutes)
+  · `filename_tokens.py` (the one place the `[meter]`/`[serial]`/`[date]` export-filename tokens
+  are defined — landed at ticket 02 round 1, at the package top for the same reason
+  `interval_status.py` is: `fileupload/cycle.py` must not import `export/`, so
+  `export/format.py::render_filename` delegates to it instead of duplicating the substitution)
+  · `https_transport.py` (the **HTTPS transport**, landed with ticket 03 — `HttpsTransport` fills
+  the `Transport` seam over `urllib` alone; `check_https_connection()` is `POST .../https/test`'s
+  own check, sharing the same request logic; `cycle.py::_build_transport()` returns it for
+  `active_protocol == "https"`, so the scheduler job and `Upload now` genuinely move bytes)
+  · `sftp_transport.py` (the **SFTP transport**, landed with ticket 04 — `SftpTransport` fills
+  the `Transport` seam over paramiko, driving `paramiko.Transport` directly rather than
+  `SSHClient` for one-fingerprint-per-row host-key pinning; `check_sftp_connection()` is `POST
+  .../sftp/test`'s own check and `describe()`'s own shared classifier, the same split
+  `https_transport.py` uses; `cycle.py::_build_transport()` returns it for `active_protocol
+  == "sftp"`; `POST .../sftp/host-key` (`api/file_upload.py`) is the only write path for the
+  pinned fingerprint row — see the ADR 0025 digest above for the host-key asymmetry and the
+  onedir size delta)
+  · `ftps_transport.py` (the **FTPS transport**, landed with ticket 05, the last of the three —
+  `FtpsTransport` fills the `Transport` seam over the standard library's `ftplib.FTP_TLS` alone;
+  `check_ftps_connection()` is `POST .../ftps/test`'s own check and `describe()`'s own shared
+  classifier, the same split `https_transport.py`/`sftp_transport.py` use;
+  `cycle.py::_build_transport()` returns it for `active_protocol == "ftps"` — every protocol the
+  page offers now moves real bytes; see the ADR 0025 digest above for the measured exception
+  classes and the no-CA-file test seam)
+  · `interval_status.py` (the one
+  Interval Status decoder, at the package top because `api/` must not import `export/` — that
+  direction closes a cycle through `api/deps` -> `jobs/scheduler` -> `export/csv_export`).
+  `split_timeout_http.py` (the package top, ticket 03's own prefactor) is the one place the
+  connect/read-timeout-split `urllib` opener recipe lives — `centralpush/client.py` and
+  `fileupload/https_transport.py` both call `build_split_timeout_opener()` with their own
+  timeout constants rather than each carrying a hand-copied connection-subclass pair.
+  Venv at `app/.venv`, `pyproject.toml` + pip.
+- `app/scripts/` — read-only hardware probes, run by hand. **They are acceptance criteria, not
+  scratch work**: `fake_meter` is autouse in the suite, so no automated test can prove a driver
+  change against a real meter. `probe_lp_new_column_scalers.py` and `probe_lp_column_fill.py`
+  derive their targets from `LOAD_PROFILE_COLUMN_MAP`, so they cannot go stale the way the
+  first hand-written version of the scaler probe already had.
 - `web/` — Vite + React + TS + **AntD v6 re-themed** (deep teal `#0f766e`, compact, light,
   English-only UI). No Tailwind — AntD tokens + its layout primitives cover the UI. pnpm.
-- `installer/` — Inno Setup script + NSSM service wrapper (`installer/vendor/nssm.exe` is a
-  vendor drop, never committed). Installs to `Program Files\ARICHDS`, data at
-  `%ProgramData%\ARICHDS` (`arichds.db`, `license\`, `logs\`, `backup\`, and
+- `installer/` — Inno Setup script (`arichds.iss`) + NSSM service wrapper
+  (`installer/vendor/nssm.exe` is a vendor drop, never committed) +
+  `register-capture-task.ps1` (registers the `NT AUTHORITY\LOCAL SERVICE`
+  scheduled task the capture browser runs under, ADR 0017, issues #38/#40).
+  Installs to `Program Files\ARICHDS`, data at
+  `%ProgramData%\ARICHDS` (`arichds.db`, `license\`, `logs\`, `backup\`,
+  `tmp\` (the capture browser's one **reused** Edge profile directory, ADR 0017, issue #40 —
+  never `%TEMP%`, and the only `[Dirs] Permissions:` grant in the tree), and
   `secret\jwt_secret.key` —
   generated on first run, ADR 0003; deleting it signs everyone out). Port 8000, firewall
-  rule. Migration runs at service start — no installer migrate step.
-- `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code signing. Private keys are
-  NEVER committed.
+  rule. Migration runs at service start — no installer migrate step. The service itself runs
+  as **LocalSystem**; only the capture browser's scheduled task runs as
+  `NT AUTHORITY\LOCAL SERVICE` (ADR 0017, issue #40 — corrects issue #38's own fix, which had
+  moved the whole service there) — see `installer/README.md`.
+- `tools/` — vendor-side CLI: Ed25519 keygen + Activation Code + Meter Activation Code
+  signing. Private keys are NEVER committed.
 - `mockups/` — throwaway comparison app that decided D4 (AntD). Do not extend.
 - `docs/` — REMAKE-PLAN + ADRs, plus `lib-notes/` (per-module API digests), `meter-notes/`
   (register maps scanned off real meters) and `issues/` (local issue files for work that does
@@ -116,8 +821,8 @@ MySQL, and ~30 tables.
 .venv\Scripts\activate            # Windows venv
 fastapi dev                        # dev server (entrypoint in pyproject [tool.fastapi])
 ruff format . && ruff check . --fix
-pytest -n auto                     # full suite in parallel (~17s across 16 cores)
-pytest tests/<file>::<test>        # one file/test — plain, NEVER -n auto (workers cost 4s, the run costs 0.05s)
+pytest -n auto                     # full suite in parallel — 190–290s across 16 workers (2464 tests, measured 2026-09-17; 143s/2163 on 2026-09-11)
+pytest tests/<file>::<test>        # one file/test — plain, NEVER -n auto (workers cost 6.4s, the run costs 0.1s)
 python -m alembic upgrade head     # manual; app also auto-migrates at startup
 
 # Frontend (web/)
@@ -159,10 +864,17 @@ onedir over `Program Files\ARICHDS` excluding `nssm.exe`, start it again —
   `MeterDriver` capability methods (v1 ADR 0004 principle).
 - **OBIS/register maps and vendored Gurux (`GX*.py`) are copied from v1 verbatim** — they
   are field-proven; never "improve", rename, or reformat their APIs.
-- **Credential redaction filter on every log handler** — keys like `password=`, `*_key=`,
-  `token=` become `[REDACTED]`.
-- **Auth is user JWT only** — no API keys, no inbound M2M surface. Data leaves the box via
-  the push sync module only; nothing external reads our tables.
+- **Credential redaction filter on every log handler** — keys like `password=`, `passphrase=`,
+  `*_key=`, `token=` become `[REDACTED]`.
+- **Auth is user JWT only** — no API keys, no inbound M2M surface. Data leaves the box only
+  through a **Data-out Destination we drive outbound** — the Database Destination
+  (ADR 0016/0020/0021, issue #46, `dataout/`), the central-server push (SPEC §3.8, ADR
+  0024, `centralpush/`, M14 ticket 08) and the File Upload Destination (menu **FTP**, SPEC
+  §3.8, ADR 0025, `fileupload/`, ticket 01 for configuration, ticket 02 for the cycle itself,
+  ticket 03 for the first real transport (HTTPS), ticket 04 for the second (SFTP, host-key
+  pinned) and ticket 05 for the third (FTPS, explicit TLS, no CA-file field) — every protocol
+  the page offers now moves real bytes), which are **three transports
+  and three contracts, not one** (SPEC §3.10). Nothing external reads our tables.
 - **English-only UI** — no Thai strings in `web/` (v1 had them; do not carry them over).
 
 ## v1 as reference (read-only)
@@ -199,8 +911,13 @@ Do NOT create issues for modules that have not been grilled. "เทสผ่า
 The full suite is the gate — **never narrow it to "the tests for what I changed"**, because the
 party choosing the subset is the one with an incentive to under-scope, and this codebase's changes
 cross layers routinely (a base-class rename touched 7 files; an `endpoint` fix broke a lock key two
-modules away). It costs ~17s, so there is nothing to buy by skipping it. Use plain scoped runs
-inside the red→green loop and `-n auto` for the gate.
+modules away). It costs 143s with `-n auto`, so there is nothing to buy by skipping it. Use plain
+scoped runs inside the red→green loop and `-n auto` for the gate — **and never the bare `pytest`
+for the gate**, which was 428s when last measured against 1910 tests. That has happened repeatedly (`634 passed in
+407.27s`, `659 passed in 299.09s` in the run logs), and it is ~5.7 minutes of the owner's wall clock
+per occurrence, spent proving nothing the parallel run does not prove. The split is why there is no
+`addopts` in `pyproject.toml`: a config default would fix the gate and tax every scoped run in the
+loop by 6.4s, so the command has to be chosen per run, not baked in.
 
 Two rules that keep the pipeline honest — apply them when running `/to-issues`, not inside
 `/run-issue` (fixing it there is the wrong layer):
@@ -219,6 +936,14 @@ Two rules that keep the pipeline honest — apply them when running `/to-issues`
   with nothing local to read.
   Skip the digest for modules that only reuse the established stack (FastAPI, SQLAlchemy 2,
   AntD v6 — those are covered by `.claude/skills/fastapi/` and `antd-ui`).
+- **A ticket that waits on a human is typed, not just labelled.** `/run-batch` and `/run-issue`
+  skip a local ticket only on `Type: HITL` or a `Status:` other than `ready-for-agent` (the
+  local status gate, added 2026-09-16). A placeholder written to hold a slot — "blocked until
+  the grill", "needs the customer's answer" — must carry `Type: HITL` and a non-ready
+  `Status:`; prose alone ("do not run this yet") is invisible to the pipeline, which would lint
+  it, fail it, and hand it to Job A to invent a prompt from. And when several
+  `.scratch/*/issues/` folders exist, always pass the feature slug — the batch now refuses to
+  guess between them.
 
 Issue tracker: GitHub `sunchanin/arichds-application-v2` via `gh` CLI — with `docs/issues/NNN-*.md`
 as the local alternative for small leftovers (a nit an audit log parked for the owner), which

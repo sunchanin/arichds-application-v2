@@ -53,6 +53,17 @@ def supported_models() -> list[str]:
     return sorted(_registry())
 
 
+def supported_framings(model: str) -> tuple[str, ...]:
+    """The framings an operator may choose for *model*, default first — empty
+    when the model offers no choice (or is not registered at all).
+
+    Read off the driver class (``MeterDriver.SUPPORTED_FRAMINGS``), never a
+    table here: what a model can speak is the driver's to declare.
+    """
+    driver_class = _registry().get(model.lower())
+    return tuple(driver_class.SUPPORTED_FRAMINGS) if driver_class is not None else ()
+
+
 def create_driver(model: str, conn: ConnectionParams, password: str = "", **kwargs: Any) -> MeterDriver:
     """Create a driver for *model*.
 
@@ -69,12 +80,17 @@ def create_driver(model: str, conn: ConnectionParams, password: str = "", **kwar
         A concrete, unconnected driver.
 
     Raises:
-        ValueError: If *model* is not registered.
+        ValueError: If *model* is not registered, or *conn* names a framing the
+            model's driver does not declare — a driver that ignored the word
+            would silently speak its default at a meter configured for another.
     """
     key = model.lower()
     registry = _registry()
     if key not in registry:
         raise ValueError(f"Unknown meter model {model!r}. Supported models: {sorted(registry)}")
+    if conn.framing is not None and conn.framing not in registry[key].SUPPORTED_FRAMINGS:
+        offered = ", ".join(registry[key].SUPPORTED_FRAMINGS) or "no choice of framing"
+        raise ValueError(f"{key} does not support the {conn.framing!r} framing — it offers: {offered}")
 
     logger.debug("Creating %s driver for %s", key, conn.endpoint)
     return registry[key](conn=conn, password=password, **kwargs)
