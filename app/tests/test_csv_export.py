@@ -245,7 +245,11 @@ class TestWatermarkIsAStrictLowerBound:
         at_watermark = BASE
         newer = BASE + timedelta(minutes=15)
         seed(device_id, at_watermark, import_active_kwh=1.0)
-        set_watermark(device_id, at_watermark)
+        # Exported for real, so the file exists — a watermark with no file is
+        # the deleted-file case, which rebuilds the whole window instead
+        # (TestADeletedFileIsRebuiltWhole).
+        export_device(device_id, require_auto_save=True)
+        assert watermark(device_id) == at_watermark
         seed(device_id, newer, import_active_kwh=2.0)
 
         result = export_device(device_id, require_auto_save=True)
@@ -1192,3 +1196,75 @@ class TestTheDailyTrimJob:
         csv_trim_cycle()
 
         assert not (tmp_path / "SN-PAUSED.csv").exists(), "the trim cycle created a file that never existed"
+
+
+class TestADeletedFileIsRebuiltWhole:
+    """A Load Profile CSV deleted by hand (or never there) is rebuilt with the
+    whole 90-day window the next time it is written — by *Save CSV now* or the
+    fifteen-minute cycle — rather than resumed from the watermark, which would
+    write nothing ("No new rows to export") or only the newest rows, and leave
+    the daily trim (which only rewrites a file that exists) with nothing to do."""
+
+    def _export_twice_then_delete(self, device_id: int, tmp_path: Path) -> Path:
+        seed(device_id, BASE, import_active_kwh=1.0)
+        seed(device_id, BASE + timedelta(minutes=15), import_active_kwh=2.0)
+        assert export_device(device_id, require_auto_save=True).rows_written == 2
+        path = tmp_path / "SN-1.csv"
+        path.unlink()
+        return path
+
+    def test_save_csv_now_rebuilds_every_row_with_nothing_new_since_the_watermark(
+        self, migrated_db: Settings, tmp_path: Path
+    ) -> None:
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        path = self._export_twice_then_delete(device_id, tmp_path)
+
+        result = export_device(device_id, require_auto_save=False)
+
+        assert result.rows_written == 2
+        assert result.path == path
+        assert len(read_file(path).splitlines()) == HEAD_LINES + 2
+        assert watermark(device_id) == BASE + timedelta(minutes=15)
+
+    def test_the_cycle_rebuilds_old_and_new_rows_together(self, migrated_db: Settings, tmp_path: Path) -> None:
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        path = self._export_twice_then_delete(device_id, tmp_path)
+        seed(device_id, BASE + timedelta(minutes=30), import_active_kwh=3.0)
+
+        result = export_device(device_id, require_auto_save=True)
+
+        assert result.rows_written == 3
+        assert len(read_file(path).splitlines()) == HEAD_LINES + 3
+
+    def test_an_empty_file_is_rebuilt_too(self, migrated_db: Settings, tmp_path: Path) -> None:
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        path = self._export_twice_then_delete(device_id, tmp_path)
+        path.write_bytes(b"")
+
+        result = export_device(device_id, require_auto_save=False)
+
+        assert result.rows_written == 2
+        assert len(read_file(path).splitlines()) == HEAD_LINES + 2
+
+    def test_a_file_that_is_there_still_only_appends(self, migrated_db: Settings, tmp_path: Path) -> None:
+        """The rebuild is for a missing file only — an existing file keeps the
+        cheap append, byte for byte up to the new row."""
+        device_id = make_device()
+        fake_meter_state().load_profile_loggers = (1,)
+        configure(output_dir=tmp_path)
+        seed(device_id, BASE, import_active_kwh=1.0)
+        export_device(device_id, require_auto_save=True)
+        path = tmp_path / "SN-1.csv"
+        before = path.read_bytes()
+        seed(device_id, BASE + timedelta(minutes=15), import_active_kwh=2.0)
+
+        result = export_device(device_id, require_auto_save=True)
+
+        assert result.rows_written == 1
+        assert path.read_bytes().startswith(before)

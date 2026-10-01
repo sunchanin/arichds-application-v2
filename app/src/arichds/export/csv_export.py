@@ -320,6 +320,19 @@ def _export_device_locked(device_id: int, *, require_auto_save: bool) -> CsvExpo
         if head_changed(ctx.final_path, ctx.header_block, _EXPORT_HEADERS):
             return _replace_whole_window(session, ctx)
 
+        # A file already written once (the watermark is set) that is now
+        # missing or empty — deleted by hand — is rebuilt from the whole
+        # window, not resumed from the watermark (2026-09-24, owner report from
+        # site SP): the watermark describes rows that reached a file that is no
+        # longer there, so resuming would write nothing ("No new rows to
+        # export") or only the newest rows, and the daily trim only ever
+        # rewrites a file that exists. A device never exported has no
+        # watermark and its append below already writes everything.
+        if ctx.device.csv_exported_through is not None and (
+            not ctx.final_path.exists() or ctx.final_path.stat().st_size == 0
+        ):
+            return _replace_whole_window(session, ctx)
+
         watermark = ctx.device.csv_exported_through
         watermark = _as_utc(watermark) if watermark is not None else None
 

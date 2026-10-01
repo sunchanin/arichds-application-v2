@@ -114,3 +114,10 @@ is where a customer looks for one kind of file; a file appearing somewhere else 
 left blank is a surprise, not a convenience. Consequence they accepted: an install that set only
 the Load Profile folder stops getting a billing file and an Energy file until their folders are
 set. Spec: `.scratch/capture-sweep/spec.md`.
+
+**A deleted Load Profile CSV is rebuilt whole (2026-09-24, owner report from site SP).** A file already
+written once — its watermark set — that is now missing or empty is rewritten with the whole 90-day window
+by the next fifteen-minute cycle or *Save CSV now*, instead of resuming from the watermark: resuming wrote
+nothing ("No new rows to export") or only the newest rows, and the daily trim only rewrites a file that
+exists, so a deleted file could not be recovered on demand. A device never exported (no watermark) keeps
+the append path, which already writes everything.

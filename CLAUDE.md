@@ -372,7 +372,10 @@ MySQL, and ~30 tables.
   helper both paths now share) **unconditionally**, every day, rather than only on a head change —
   the fifteen-minute `csv_export` cycle still only ever appends or rewrites on an actual head
   change, never to trim the window on its own. The file may still hold up to 91 days between
-  trims, exactly as ADR 0023's own Consequences section says) ·
+  trims, exactly as ADR 0023's own Consequences section says; **a deleted Load Profile CSV is
+  rebuilt whole since 2026-09-24** — `_export_device_locked` sends a device whose watermark is set but
+  whose file is missing or empty through `_replace_whole_window`, so *Save CSV now* recovers it at
+  once instead of answering "No new rows to export") ·
   0024 (the **central push holds no state and is signed** — customer requirement E4: billing, load
   profile, energy summary and the meter roster, JSON every 15 min; **our** versioned contract,
   published on the in-app API page from the same models that serialize the payload; no
